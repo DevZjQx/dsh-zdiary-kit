@@ -20,6 +20,10 @@ import {
 import type { NoteRecord, NoteDoc, SupersedeResult } from '../../lib/zk.ts'
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
+import { lintNotebook } from '../../lib/lint.ts'
+import type { LintResult } from '../../lib/lint.ts'
+import { dreamNotebook } from '../../lib/dream.ts'
+import type { DreamResult } from '../../lib/dream.ts'
 
 const text = (value: string): ContentBlockLike[] => [{ type: 'text', text: value }]
 
@@ -29,6 +33,33 @@ const objSchema = (properties: Record<string, SchemaNode>, required: string[]): 
   required,
   additionalProperties: false,
 })
+
+/** lint 输出的三个共用形状（每类最多 50 条 + 总数） */
+const LINT_ENTRY = objSchema({ title: { type: 'string' }, path: { type: 'string' } }, ['title', 'path'])
+const LINT_BUCKET = objSchema(
+  { total: { type: 'number' }, items: { type: 'array', items: LINT_ENTRY } },
+  ['total', 'items'],
+)
+const LINT_STALE = objSchema(
+  {
+    total: { type: 'number' },
+    items: {
+      type: 'array',
+      items: objSchema({ title: { type: 'string' }, path: { type: 'string' }, modified: { type: 'string' } }, ['title', 'path', 'modified']),
+    },
+  },
+  ['total', 'items'],
+)
+const LINT_DUPLICATE = objSchema(
+  {
+    total: { type: 'number' },
+    items: {
+      type: 'array',
+      items: objSchema({ title: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } } }, ['title', 'paths']),
+    },
+  },
+  ['total', 'items'],
+)
 
 function fail(err: unknown): never {
   if (err instanceof ZkError) {
@@ -566,6 +597,170 @@ export function buildTools(): ToolDefinitionLike[] {
         const v = value as MemoryPayload
         if (!v.text) return text(`知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的）。`)
         return text(v.text)
+      },
+    }),
+
+    def({
+      name: 'zk_lint',
+      description:
+        '给知识库做体检：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧（N 天没改）/ 重名标题，每类最多 50 条并给总数。' +
+        '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
+        '只读：不改任何笔记。拿到清单后自己判断先修哪个，再用 zk_link / zk_append / zk_supersede 动手。',
+      parameters: {
+        type: 'object',
+        properties: {
+          stale_days: S.num('多少天没修改算陈旧（1-3650，默认 90）'),
+        },
+        additionalProperties: false,
+      },
+      output: {
+        schema: objSchema({
+          notebook: { type: 'string' },
+          notes: { type: 'number' },
+          truncated: { type: 'boolean' },
+          staleDays: { type: 'number' },
+          orphans: LINT_BUCKET,
+          brokenLinks: LINT_BUCKET,
+          stale: LINT_STALE,
+          tagless: LINT_BUCKET,
+          missingBacklink: LINT_BUCKET,
+          duplicateTitles: LINT_DUPLICATE,
+        }, ['notebook', 'notes', 'truncated', 'staleDays', 'orphans', 'brokenLinks', 'stale', 'tagless', 'missingBacklink', 'duplicateTitles']),
+      },
+      async run(args, signal) {
+        const cfg = config()
+        await ensureNotebook(cfg, signal)
+        return lintNotebook(cfg, {
+          staleDays: args.stale_days === undefined ? undefined : Number(args.stale_days),
+        }, signal)
+      },
+      render(_args, value) {
+        const v = value as LintResult
+        const sample = (items: Array<{ path: string }>): string => {
+          const head = items.slice(0, 5).map((n) => n.path).join('、')
+          return items.length > 5 ? head + ' …' : head
+        }
+        const line = (label: string, bucket: { total: number; items: Array<{ path: string }> }): string =>
+          bucket.total === 0 ? '✓ ' + label + '：0' : '✗ ' + label + '：' + bucket.total + ' 篇 — ' + sample(bucket.items)
+        const lines = ['体检 ' + v.notebook + '：' + v.notes + ' 篇笔记（陈旧阈值 ' + v.staleDays + ' 天）']
+        lines.push(line('断链', v.brokenLinks))
+        lines.push(line('孤儿', v.orphans))
+        lines.push(line('无标签', v.tagless))
+        lines.push(line('缺反链', v.missingBacklink))
+        lines.push(
+          v.stale.total === 0
+            ? '✓ 陈旧：0'
+            : '✗ 陈旧：' + v.stale.total + ' 篇 — ' +
+              v.stale.items.slice(0, 5).map((s) => s.path + '（' + s.modified + '）').join('、') +
+              (v.stale.total > 5 ? ' …' : ''),
+        )
+        lines.push(
+          v.duplicateTitles.total === 0
+            ? '✓ 重名标题：0'
+            : '✗ 重名标题：' + v.duplicateTitles.total + ' 组 — ' +
+              v.duplicateTitles.items.slice(0, 3).map((d) => '「' + d.title + '」→ ' + d.paths.join(' / ')).join('；'),
+        )
+        if (v.truncated) lines.push('⚠️ 笔记数触到扫描上限：结果不完整，先归档旧笔记再跑一次')
+        lines.push('（只报告，没有改动任何文件）')
+        return text(lines.join('\n'))
+      },
+    }),
+
+    def({
+      name: 'zk_dream',
+      description:
+        '整理晋升材料：最近 N 天新增的笔记（机械筛掉 authority=informal 与无标签的，其余作为候选）、' +
+        'daily 里没划掉的 Loose ends、被引用最多的笔记。' +
+        '只返回材料：写 MEMORY.md / DREAMS.md 由你按 AGENTS.md 决定，这个工具不写任何文件。',
+      parameters: {
+        type: 'object',
+        properties: {
+          days: S.num('看最近多少天（1-365，默认 7）'),
+        },
+        additionalProperties: false,
+      },
+      output: {
+        schema: objSchema({
+          notebook: { type: 'string' },
+          windowDays: { type: 'number' },
+          since: { type: 'string' },
+          truncated: { type: 'boolean' },
+          counts: objSchema({
+            window: { type: 'number' },
+            daily: { type: 'number' },
+            candidates: { type: 'number' },
+            rejected: { type: 'number' },
+            looseEnds: { type: 'number' },
+          }, ['window', 'daily', 'candidates', 'rejected', 'looseEnds']),
+          newNotes: {
+            type: 'array',
+            items: objSchema({
+              title: { type: 'string' },
+              path: { type: 'string' },
+              type: { type: 'string' },
+              authority: { type: 'string' },
+              tags: { type: 'array', items: { type: 'string' } },
+              created: { type: 'string' },
+              cited: { type: 'number' },
+            }, ['title', 'path', 'type', 'authority', 'tags', 'created', 'cited']),
+          },
+          rejected: {
+            type: 'array',
+            items: objSchema({ title: { type: 'string' }, path: { type: 'string' }, reason: { type: 'string' } }, ['title', 'path', 'reason']),
+          },
+          topCited: {
+            type: 'array',
+            items: objSchema({ title: { type: 'string' }, path: { type: 'string' }, cited: { type: 'number' } }, ['title', 'path', 'cited']),
+          },
+          dailyLooseEnds: {
+            type: 'array',
+            items: objSchema({
+              path: { type: 'string' },
+              date: { type: 'string' },
+              items: { type: 'array', items: { type: 'string' } },
+            }, ['path', 'date', 'items']),
+          },
+        }, ['notebook', 'windowDays', 'since', 'truncated', 'counts', 'newNotes', 'rejected', 'topCited', 'dailyLooseEnds']),
+      },
+      async run(args, signal) {
+        const cfg = config()
+        await ensureNotebook(cfg, signal)
+        return dreamNotebook(cfg, { days: args.days === undefined ? undefined : Number(args.days) }, signal)
+      },
+      render(_args, value) {
+        const v = value as DreamResult
+        const lines = [
+          '做梦：近 ' + v.windowDays + ' 天（自 ' + v.since + '）— 窗口 ' + v.counts.window +
+          ' 篇（日记 ' + v.counts.daily + '）· 候选 ' + v.counts.candidates + ' · 拒绝 ' + v.counts.rejected +
+          ' · 未完成 ' + v.counts.looseEnds,
+        ]
+        if (v.newNotes.length) {
+          lines.push('晋升候选：')
+          for (const [i, n] of v.newNotes.slice(0, 10).entries()) {
+            const badges = [n.type || '—', n.authority || '—'].join(' · ')
+            lines.push('  ' + (i + 1) + '. ' + (n.title || n.path) + '  [' + badges + ']  ' + n.path +
+              (n.tags.length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : '') +
+              ' · 被引 ' + n.cited)
+          }
+          if (v.newNotes.length > 10) lines.push('  …还有 ' + (v.newNotes.length - 10) + ' 篇')
+        }
+        if (v.rejected.length) {
+          lines.push('机械拒绝（不进候选）：')
+          for (const r of v.rejected.slice(0, 10)) lines.push('  · ' + (r.title || r.path) + '（' + r.path + '）：' + r.reason)
+          if (v.rejected.length > 10) lines.push('  …还有 ' + (v.rejected.length - 10) + ' 篇')
+        }
+        if (v.dailyLooseEnds.length) {
+          lines.push('未完成（daily）：')
+          for (const d of v.dailyLooseEnds.slice(0, 10)) lines.push('  · ' + d.path + '：' + d.items.join('；'))
+        }
+        if (v.topCited.length) {
+          lines.push('被引用最多：')
+          for (const [i, c] of v.topCited.slice(0, 5).entries()) lines.push('  ' + (i + 1) + '. ' + (c.title || c.path) + '（' + c.path + '）· ' + c.cited + ' 次')
+        }
+        if (!v.newNotes.length && !v.dailyLooseEnds.length && !v.topCited.length) lines.push('这个窗口里没有新材料。')
+        if (v.truncated) lines.push('⚠️ 笔记数触到扫描上限：窗口与排名都不完整')
+        lines.push('（只报告：MEMORY.md / DREAMS.md 由你按 AGENTS.md 写）')
+        return text(lines.join('\n'))
       },
     }),
 

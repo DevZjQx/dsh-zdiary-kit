@@ -20,6 +20,8 @@ const store = await import('../src/config/store.ts')
 const zk = await import('../src/lib/zk.ts')
 const memory = await import('../src/lib/memory.ts')
 const notebookLib = await import('../src/lib/notebook.ts')
+const lintLib = await import('../src/lib/lint.ts')
+const dreamLib = await import('../src/lib/dream.ts')
 const toolsFeature = await import('../src/features/zk-tools/feature.ts')
 const toolLib = await import('../src/lib/tool.ts')
 const fm = await import('../src/lib/frontmatter.ts')
@@ -441,6 +443,160 @@ describe('M2: 结构化检索与废弃', () => {
   })
 })
 
+describe('M3: 巡检与做梦', () => {
+  const dir = path.join(home, 'nb-m3')
+  const m3 = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+  const note = (title: string, dirName: string, body: string) =>
+    zk.createNote(m3, { title, dir: dirName, content: body })
+
+  it('lint：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧 / 重名各自命中', async () => {
+    await notebookLib.ensureNotebook(m3)
+    const orphan = await note('孤岛概念', 'notes/concepts', '没人链我，我也没标签。')
+    const cited = await note('被引用概念', 'notes/concepts', '有入链的正文 #cited')
+    const source = await note('引用来源', 'notes/sources', '来源正文 #src')
+    await zk.linkNotes(m3, source.path, cited.path)
+    const broken = await note('断链概念', 'notes/concepts', '见 [[notes/nope]] #broken')
+    const dupA = await note('同名标题', 'notes/concepts', '甲 #dup')
+    const dupB = await note('同名标题', 'notes/patterns', '乙 #dup')
+    const stale = await note('陈旧概念', 'notes/concepts', '很久没动 #stale')
+    const old = new Date(Date.now() - 120 * 86_400_000)
+    fs.utimesSync(stale.absPath, old, old)
+    const daily = await zk.ensureDailyNote(m3)
+    await zk.indexNotebook(m3)
+
+    const lint = await lintLib.lintNotebook(m3, { staleDays: 90 })
+    expect(lint.notes).toBe(8)
+    expect(lint.truncated).toBe(false)
+    expect(lint.orphans.items.map((i) => i.path)).toContain(orphan.path)
+    expect(lint.brokenLinks.items.map((i) => i.path)).toEqual([broken.path])
+    expect(lint.tagless.items.map((i) => i.path)).toContain(orphan.path)
+    expect(lint.missingBacklink.items.map((i) => i.path)).toContain(cited.path)
+    expect(lint.stale.items.map((i) => i.path)).toEqual([stale.path])
+    expect(lint.stale.items[0].modified).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(lint.duplicateTitles.total).toBe(1)
+    expect(lint.duplicateTitles.items[0].paths.sort()).toEqual([dupA.path, dupB.path].sort())
+    // total 是命中数，items 只截前 50 —— 这里两类都要自洽
+    // 日记天然无入链、无标签：不进这两类，否则真问题会被淹掉（断链仍照报）
+    expect(lint.orphans.items.map((i) => i.path)).not.toContain(daily.path)
+    expect(lint.tagless.items.map((i) => i.path)).not.toContain(daily.path)
+    expect(lint.orphans.total).toBeGreaterThanOrEqual(lint.orphans.items.length)
+    expect(lint.brokenLinks.total).toBe(1)
+  })
+
+  it('lint / dream 只读：一个字节都不改', async () => {
+    const snapshot = (): Map<string, string> => {
+      const out = new Map<string, string>()
+      const walk = (d: string): void => {
+        for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+          const abs = path.join(d, entry.name)
+          if (entry.isDirectory()) {
+            if (entry.name === '.zk') continue
+            walk(abs)
+            continue
+          }
+          out.set(abs, fs.readFileSync(abs, 'utf8') + '|' + fs.statSync(abs).mtimeMs)
+        }
+      }
+      walk(dir)
+      return out
+    }
+    const before = snapshot()
+    await lintLib.lintNotebook(m3)
+    await dreamLib.dreamNotebook(m3)
+    const after = snapshot()
+    expect([...after.keys()].sort()).toEqual([...before.keys()].sort())
+    for (const [abs, fingerprint] of before) expect(after.get(abs)).toBe(fingerprint)
+  })
+
+  it('dream：候选 / 机械拒绝 / daily 未完成 / 被引用排行', async () => {
+    const candidate = await note('可晋升概念', 'notes/concepts', '有标签的正文 #keep')
+    const tagless = await note('无标签笔记', 'notes/concepts', '正文一句标签都没有')
+    const informal = await zk.createNote(m3, {
+      title: '口头传闻',
+      dir: 'notes/concepts',
+      content: '听说的 #rumor',
+      authority: 'informal',
+    })
+    const daily = await zk.ensureDailyNote(m3)
+    fs.writeFileSync(
+      daily.absPath,
+      '# 今天\n\n## Events\n\n- 开会\n\n## Loose ends\n\n- [ ] 补实验数据\n- [x] 已完成的事\n- 回邮件\n',
+      'utf8',
+    )
+
+    const dream = await dreamLib.dreamNotebook(m3, { days: 7 })
+    const candidates = dream.newNotes.map((n) => n.path)
+    expect(candidates).toContain(candidate.path)
+    expect(dream.rejected.map((r) => r.path)).toContain(informal.path)
+    expect(dream.rejected.find((r) => r.path === informal.path)?.reason).toMatch(/informal/)
+    expect(dream.rejected.map((r) => r.path)).toContain(tagless.path)
+    expect(dream.rejected.find((r) => r.path === tagless.path)?.reason).toMatch(/无标签/)
+    expect(dream.counts.window).toBeGreaterThan(0)
+    expect(dream.truncated).toBe(false)
+    expect(dream.topCited.length).toBeGreaterThan(0)
+    expect(dream.topCited[0].cited).toBeGreaterThanOrEqual(1)
+
+    const loose = dream.dailyLooseEnds.find((d) => d.path === daily.path)
+    expect(loose?.items).toEqual(['补实验数据', '回邮件'])
+
+    // 窗口：把所有笔记都甩到 30 天前之后，窗口应当为空
+    const later = await dreamLib.dreamNotebook(m3, { days: 1, now: new Date(Date.now() + 30 * 86_400_000) })
+    expect(later.counts.window).toBe(0)
+    expect(later.newNotes).toEqual([])
+    expect(later.dailyLooseEnds).toEqual([])
+  })
+
+  test('looseEndsOf：认 Loose ends / 未完成 / 待办，跳过 [x]', () => {
+    const src = '# 日记\n\n## Events\n\n- 开会\n\n## Loose ends\n\n- [ ] 补数据\n- [x] 做完了\n- 回邮件\n\n## 其他\n\n不该收\n'
+    expect(dreamLib.looseEndsOf(src)).toEqual(['补数据', '回邮件'])
+    expect(dreamLib.looseEndsOf('## 未完成\n\n1. 甲\n')).toEqual(['1. 甲'])
+    expect(dreamLib.looseEndsOf('# 没有小节\n正文')).toEqual([])
+  })
+
+  test('透传参数：会破坏不变量的 flag 被丢掉，查询条件保留', () => {
+    const args = zk.sanitizeListArgs([
+      '--notebook-dir', '/x', '-x', 'raw', '--exclude=/y', '-f', 'json',
+      '--limit', '5', '-m', '词', '-t', 'a', '-W', '/z', '-q', '--json', '--', 'pos',
+    ])
+    expect(args).toEqual(['--limit', '5', '-m', '词', '-t', 'a', 'pos'])
+  })
+
+  it('zk-kit query：用户传 -x 也绕不过统一排除', async () => {
+    fs.writeFileSync(path.join(dir, 'raw', 'secret.md'), '# 素材\n\nQUERY-RAW-TOKEN\n')
+    await zk.indexNotebook(m3)
+    expect((await zk.queryNotes(m3, ['-x', 'notes', '-m', 'QUERY-RAW-TOKEN'])).length).toBe(0)
+    const one = await zk.queryNotes(m3, ['-t', 'keep', '--limit', '1', '-s', 'title'])
+    expect(one.length).toBe(1)
+    expect(one[0].tags).toContain('keep')
+  })
+
+  it('query 透传：中文 0 命中退回 -M re（Z12）', async () => {
+    const hits = await zk.queryNotes(m3, ['-m', '被引用'])
+    expect(hits.map((n) => n.title)).toContain('被引用概念')
+  })
+
+  it('200 条笔记上 lint 在 3 秒内返回', async () => {
+    const big = path.join(home, 'nb-200')
+    const cfg200 = store.normalizeConfig({ notebook: big, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfg200)
+    const concepts = path.join(big, 'notes', 'concepts')
+    for (let i = 0; i < 200; i++) {
+      const link = i > 0 ? '[[notes/concepts/n' + (i - 1) + ']]' : ''
+      fs.writeFileSync(
+        path.join(concepts, 'n' + i + '.md'),
+        '---\ntype: concept\ntitle: 批量 ' + i + '\nstatus: active\ntags: []\n---\n\n# 批量 ' + i + '\n\n正文 ' + i + ' #t' + (i % 10) + ' ' + link + '\n',
+        'utf8',
+      )
+    }
+    await zk.indexNotebook(cfg200)
+    const started = Date.now()
+    const result = await lintLib.lintNotebook(cfg200)
+    const elapsed = Date.now() - started
+    expect(result.notes).toBe(200)
+    expect(elapsed).toBeLessThan(3000)
+  })
+})
+
 describe('daily', () => {
   it('ensureDailyNote 幂等 + 追加带时间的小节', async () => {
     const first = await zk.ensureDailyNote(cfg)
@@ -466,10 +622,11 @@ describe('daily', () => {
 })
 
 describe('tools', () => {
-  it('10 个工具，参数校验拒绝坏输入', () => {
+  it('12 个工具，参数校验拒绝坏输入', () => {
     const defs = toolsFeature.buildTools()
     expect(defs.map((d) => d.name)).toEqual([
-      'zk_search', 'zk_query', 'zk_read', 'zk_new', 'zk_daily', 'zk_append', 'zk_link', 'zk_supersede', 'zk_context', 'zk_stats',
+      'zk_search', 'zk_query', 'zk_read', 'zk_new', 'zk_daily', 'zk_append', 'zk_link', 'zk_supersede',
+      'zk_context', 'zk_lint', 'zk_dream', 'zk_stats',
     ])
     const zkNew = defs.find((d) => d.name === 'zk_new')!
     expect(toolLib.validateArgs(zkNew.parameters, { body: 'x' }).some((i) => i.includes('title'))).toBe(true)
@@ -514,6 +671,12 @@ describe('tools', () => {
     expect(preview.performed).toBe(false)
     const ctxPayload = await call('zk_context', {})
     expect(typeof ctxPayload.text).toBe('string')
+    const lint = await call('zk_lint', {})
+    expect(Number(lint.notes)).toBeGreaterThan(3)
+    expect(typeof (lint.orphans as Record<string, unknown>).total).toBe('number')
+    const dream = await call('zk_dream', { days: 7 })
+    expect(Array.isArray(dream.newNotes)).toBe(true)
+    expect(Array.isArray(dream.rejected)).toBe(true)
     const stats = await call('zk_stats', {})
     expect(Number(stats.notes)).toBeGreaterThan(3)
   })

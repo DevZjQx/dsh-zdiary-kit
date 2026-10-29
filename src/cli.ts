@@ -8,9 +8,14 @@ import { config } from './config/store.ts'
 import { ensureNotebook } from './lib/notebook.ts'
 import { installZk } from './lib/install.ts'
 import {
-  resolveZk, searchNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
+  resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
   appendDaily, linkNotes, notebookStats, indexNotebook, withTags, hasNotebook, localDate, ZkError,
 } from './lib/zk.ts'
+import type { NoteRecord } from './lib/zk.ts'
+import { lintNotebook } from './lib/lint.ts'
+import type { LintResult } from './lib/lint.ts'
+import { dreamNotebook } from './lib/dream.ts'
+import type { DreamResult } from './lib/dream.ts'
 
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
 
@@ -23,6 +28,9 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit daily [--entry 一段] [--date yesterday]
   zk-kit append <路径> --text 一段 [--heading 标题]
   zk-kit link <来源路径> <目标路径或标题>
+  zk-kit lint [--stale-days 90]       体检：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧 / 重名（只读）
+  zk-kit dream [--days 7]             晋升材料：窗口新增 / daily 未完成 / 被引最多（只读）
+  zk-kit query [-- <zk list 参数>]     透传 zk list（--notebook-dir / --format / -x 会被替换掉）
   zk-kit index                        重建索引
 
 任何时候加 --json 输出结构化结果。`
@@ -36,6 +44,7 @@ function parse(argv: string[]): Parsed {
   const out: Parsed = { pos: [], flags: {} }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
+    if (a === '--') { out.pos.push(...argv.slice(i + 1)); break }
     if (!a.startsWith('--')) { out.pos.push(a); continue }
     const eq = a.indexOf('=')
     if (eq > 0) { out.flags[a.slice(2, eq)] = a.slice(eq + 1); continue }
@@ -51,6 +60,70 @@ const list = (v: string | boolean | undefined): string[] =>
   str(v).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
 const print = (value: unknown, asJson: boolean): void => {
   console.log(asJson || typeof value !== 'string' ? JSON.stringify(value, null, 2) : value)
+}
+
+function noteList(notes: NoteRecord[]): string {
+  if (!notes.length) return '没有匹配的笔记'
+  const lines = [`${notes.length} 条：`]
+  for (const [i, n] of notes.entries()) {
+    const tags = n.tags.length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : ''
+    lines.push(`${i + 1}. ${n.title || n.path}\n   ${n.path} · ${localDate(n.created)}${tags}${n.lead ? '\n   ' + n.lead : ''}`)
+  }
+  return lines.join('\n')
+}
+
+function lintReport(r: LintResult): string {
+  const sample = (items: Array<{ path: string }>): string => {
+    const head = items.slice(0, 5).map((n) => n.path).join('、')
+    return items.length > 5 ? head + ' …' : head
+  }
+  const row = (label: string, total: number, items: Array<{ path: string }>): string =>
+    total === 0 ? `✓ ${label}：0` : `✗ ${label}：${total} 篇 — ${sample(items)}`
+  const lines = [`体检 ${r.notebook}：${r.notes} 篇笔记（陈旧阈值 ${r.staleDays} 天）`]
+  lines.push(row('断链', r.brokenLinks.total, r.brokenLinks.items))
+  lines.push(row('孤儿', r.orphans.total, r.orphans.items))
+  lines.push(row('无标签', r.tagless.total, r.tagless.items))
+  lines.push(row('缺反链', r.missingBacklink.total, r.missingBacklink.items))
+  lines.push(r.stale.total === 0
+    ? '✓ 陈旧：0'
+    : `✗ 陈旧：${r.stale.total} 篇 — ` + r.stale.items.slice(0, 5).map((s) => `${s.path}（${s.modified}）`).join('、'))
+  lines.push(r.duplicateTitles.total === 0
+    ? '✓ 重名标题：0'
+    : `✗ 重名标题：${r.duplicateTitles.total} 组 — ` + r.duplicateTitles.items.slice(0, 3).map((d) => `「${d.title}」→ ${d.paths.join(' / ')}`).join('；'))
+  if (r.truncated) lines.push('⚠️ 笔记数触到扫描上限：结果不完整')
+  lines.push('（只报告，没有改动任何文件）')
+  return lines.join('\n')
+}
+
+function dreamReport(r: DreamResult): string {
+  const lines = [
+    `做梦：近 ${r.windowDays} 天（自 ${r.since}）— 窗口 ${r.counts.window} 篇（日记 ${r.counts.daily}）· 候选 ${r.counts.candidates} · 拒绝 ${r.counts.rejected} · 未完成 ${r.counts.looseEnds}`,
+  ]
+  if (r.newNotes.length) {
+    lines.push('晋升候选：')
+    for (const [i, n] of r.newNotes.slice(0, 10).entries()) {
+      const tags = n.tags.length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : ''
+      lines.push(`  ${i + 1}. ${n.title || n.path}  [${n.type || '—'} · ${n.authority || '—'}]  ${n.path}${tags} · 被引 ${n.cited}`)
+    }
+    if (r.newNotes.length > 10) lines.push(`  …还有 ${r.newNotes.length - 10} 篇`)
+  }
+  if (r.rejected.length) {
+    lines.push('机械拒绝（不进候选）：')
+    for (const x of r.rejected.slice(0, 10)) lines.push(`  · ${x.title || x.path}（${x.path}）：${x.reason}`)
+    if (r.rejected.length > 10) lines.push(`  …还有 ${r.rejected.length - 10} 篇`)
+  }
+  if (r.dailyLooseEnds.length) {
+    lines.push('未完成（daily）：')
+    for (const d of r.dailyLooseEnds.slice(0, 10)) lines.push(`  · ${d.path}：${d.items.join('；')}`)
+  }
+  if (r.topCited.length) {
+    lines.push('被引用最多：')
+    for (const [i, c] of r.topCited.slice(0, 5).entries()) lines.push(`  ${i + 1}. ${c.title || c.path}（${c.path}）· ${c.cited} 次`)
+  }
+  if (!r.newNotes.length && !r.dailyLooseEnds.length && !r.topCited.length) lines.push('这个窗口里没有新材料。')
+  if (r.truncated) lines.push('⚠️ 笔记数触到扫描上限：窗口与排名都不完整')
+  lines.push('（只报告：MEMORY.md / DREAMS.md 由你按 AGENTS.md 写）')
+  return lines.join('\n')
 }
 
 async function doctor(): Promise<boolean> {
@@ -82,7 +155,8 @@ async function doctor(): Promise<boolean> {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2)
   const cmd = argv[0] ?? 'doctor'
-  const { pos, flags } = parse(argv.slice(1))
+  const raw = argv.slice(1)
+  const { pos, flags } = parse(raw)
   const json = flags.json === true
   const cfg = config()
 
@@ -126,12 +200,7 @@ async function main(): Promise<void> {
         limit: Number(str(flags.limit)) || 10,
         sort: str(flags.sort) || 'created-desc',
       })
-      if (json) { print(notes, true); return }
-      if (!notes.length) { console.log('没有匹配的笔记'); return }
-      console.log(`${notes.length} 条：`)
-      for (const [i, n] of notes.entries()) {
-        console.log(`${i + 1}. ${n.title || n.path}\n   ${n.path} · ${localDate(n.created)}${n.tags.length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : ''}${n.lead ? '\n   ' + n.lead : ''}`)
-      }
+      print(json ? notes : noteList(notes), json)
       return
     }
 
@@ -166,6 +235,28 @@ async function main(): Promise<void> {
       if (!from || !to) throw new ZkError('用法：zk-kit link <来源路径> <目标路径或标题>')
       const r = await linkNotes(cfg, from, to)
       print(json ? r : `${r.from} → ${r.link}${r.added ? '（已添加）' : '（已存在）'}`, json)
+      return
+    }
+
+    case 'lint': {
+      await ensureNotebook(cfg)
+      const r = await lintNotebook(cfg, { staleDays: Number(str(flags['stale-days'])) || 90 })
+      print(json ? r : lintReport(r), json)
+      return
+    }
+
+    case 'dream': {
+      await ensureNotebook(cfg)
+      const r = await dreamNotebook(cfg, { days: Number(str(flags.days)) || 7 })
+      print(json ? r : dreamReport(r), json)
+      return
+    }
+
+    case 'query': {
+      await ensureNotebook(cfg)
+      // 透传不给 parse() 处理：-- 之后的参数要原样交给 zk
+      const notes = await queryNotes(cfg, raw.filter((a) => a !== '--'))
+      print(json ? notes : noteList(notes), json)
       return
     }
 

@@ -90,7 +90,7 @@ for (const tool of tools) checkSchema(tool.output.schema, `${tool.name}.output.s
 
 console.log('工具：' + tools.map((t) => t.name).join(', '))
 console.log('路由：' + [...routes.keys()].join(', '))
-if (tools.length !== 10) throw new Error('工具数量不对：' + tools.length)
+if (tools.length !== 12) throw new Error('工具数量不对：' + tools.length)
 if (routes.size !== 6) throw new Error('路由数量不对：' + routes.size)
 
 const call = async (name: string, args: unknown) => {
@@ -114,6 +114,10 @@ const queried = await call('zk_query', { tags: ['smoke'], status: 'active' })
 if (Number(queried.count) < 1) throw new Error('zk_query 没查到刚写的笔记')
 const preview = await call('zk_supersede', { path: created.path })
 if (preview.dryRun !== true || preview.performed !== false) throw new Error('zk_supersede 默认不是预演')
+const linted = await call('zk_lint', {})
+if (typeof (linted.orphans as Record<string, unknown>).total !== 'number') throw new Error('zk_lint 输出不对')
+const dreamed = await call('zk_dream', { days: 7 })
+if (!Array.isArray(dreamed.newNotes)) throw new Error('zk_dream 输出不对')
 await call('zk_stats', {})
 
 // ── 真发 HTTP：设置页依赖的 6 条路由 ──────────────────────────────────────

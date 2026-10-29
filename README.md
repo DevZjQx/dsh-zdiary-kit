@@ -19,6 +19,8 @@
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选） |
 | `zk_supersede` | 废弃过时结论：标 `superseded` + 搬进 `archive/` + 重写所有入链；默认只预演 |
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）；宿主支持注入时每轮已自动带进系统提示 |
+| `zk_lint` | 体检：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧 / 重名标题，每类最多 50 条；只报告不改写 |
+| `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签）、daily 未完成项、被引最多；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立笔记 |
 
 写笔记前 agent 会先 `zk_search` 查重；双链用相对路径（zk 的 `link-format = "wiki"` 认这个），
@@ -27,6 +29,9 @@
 **长期记忆**：笔记本根目录放 `AGENTS.md`（工作约定）、`USER.md`（偏好）、`MEMORY.md`（精炼记忆），
 插件会在每个 step 把它们注入系统提示（默认预算 300 词，超了先丢 MEMORY 的尾部整段，并明确告诉你截了多少）。
 DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不会**读笔记本根目录，所以别指望宿主帮你加载。
+
+维护用 `zk_lint`（结构体检）和 `zk_dream`（晋升候选 / 拒绝原因 / 未完成项）：两个工具都**只读**，
+写 `MEMORY.md` / `DREAMS.md` 由 agent 按 `AGENTS.md` 自己决定 —— 机械活留在插件，语义判断留在可审计的地方。
 
 ## 装
 
@@ -146,6 +151,9 @@ bun src/cli.ts search "关键词" --tags a --since "last week" --limit 5
 bun src/cli.ts read notes/f2sj.md
 bun src/cli.ts daily --entry "今天……"
 bun src/cli.ts link notes/a.md "某篇标题"
+bun src/cli.ts lint --stale-days 90      # 体检（只读）
+bun src/cli.ts dream --days 7            # 晋升材料（只读）
+bun src/cli.ts query -- -t 项目 --limit 5  # 透传 zk list：--notebook-dir / --format / -x 会被替换掉
 bun src/cli.ts index
 ```
 
@@ -175,7 +183,7 @@ bun src/cli.ts index
 - 源码全是 `.ts`；宿主半边用 `tsc` 编到 `dist/`（普通 ESM，DSH 用 Node 加载）；
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：跑一遍 10 个工具 + 发 6 条 HTTP 请求，并检查输出 schema 在 DSH 支持的子集内）
+  `bun run smoke`（加载 dist：跑一遍 12 个工具 + 发 6 条 HTTP 请求，并检查输出 schema 在 DSH 支持的子集内）
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
 - `dist/` 随仓库提交：`dsh plugin add github:…` 不会触发安装时构建（pnpm 默认禁止 git 依赖跑构建脚本）。
@@ -189,13 +197,14 @@ src/
 ├── lib/
 │   ├── zk.ts                     # zk 唯一的调用面：解析二进制、list/new/append/link/daily/graph、路径守卫
 │   ├── frontmatter.ts            # 只改 status / superseded-by 这类标量，其余行原样保留
+│   ├── lint.ts / dream.ts        # 巡检与做梦：只报告，绝不写文件
 │   ├── notebook.ts               # 自举：zk init + 日记模板 + group 配置（幂等）
 │   ├── install.ts / platform.ts  # 内置 zk：平台映射、下载、解包、验证
 │   ├── tool.ts                   # 最小 JSON Schema 构造 + 输入校验（裸注册工具自己兜）
 │   ├── dsh.ts                    # 宿主契约（纯类型，编译后为空）
 │   └── exec.ts / http.ts / json-file.ts
 ├── features/
-│   ├── zk-tools/feature.ts       # 10 个工具
+│   ├── zk-tools/feature.ts       # 12 个工具
 │   └── settings/                 # 宿主 API + 浏览器 section
 └── cli.ts                        # zk-kit 命令行
 ```

@@ -12,10 +12,10 @@ agent 负责日常 upkeep，人每周审 30 分钟。不用向量库。
 | M0 结构自举 + 统一排除 | ✅ 2026-10-29 | `structure` / `archiveDir`、layered 目录与三套模板、`excludedNames()` |
 | M1 上下文注入 | ✅ 2026-10-29（端到端待验） | `lib/memory.ts`、`zdiary:memory` 段（order 5200）、`zk_context` |
 | M2 记忆读写 | ✅ 2026-10-29 | `zk_query` / `zk_supersede`、`NoteRecord.metadata`、撞名报错、`lib/frontmatter.ts` |
-| M3 巡检与做梦 | 待开工 | `zk_lint` / `zk_dream` / `zk-kit` 子命令 |
+| M3 巡检与做梦 | ✅ 2026-10-29 | `lib/lint.ts` / `lib/dream.ts`、`zk_lint` / `zk_dream`、`zk-kit lint|dream|query` |
 | M4 设置页与文档 | 待开工 | 结构模式、注入预算、归档目录、`docs/features/memory.md`（已先建） |
 
-当前测试：`bun run test` 34 pass / 0 fail（zk 0.15.7）；`bun run smoke` 通过。
+当前测试：`bun run test` 42 pass / 0 fail（zk 0.15.7）；`bun run smoke` 通过（12 个工具）。
 
 ---
 
@@ -241,6 +241,25 @@ layered 建 7 个目录 + 3 套模板 + 5 个 group；`excludedNames()` 一个�
 - `zk_dream` 的输出能被 agent 直接改写成 DREAMS.md 的三栏格式（晋升/拒绝/flag）。
 - 断言：两个工具都不写任何笔记（dry-run 语义由工具保证，不是靠提示词）。
 
+**实现状态（2026-10-29）**：已落地 —— `lib/lint.ts`（6 个桶 + 重名分组 / 标题归一化）、
+`lib/dream.ts`（窗口 / 机械拒绝 / Loose ends 解析 / 入链计数）、两个工具与三个 CLI 子命令。
+计划里没写死、这里定下来的口径：
+
+- **调用次数**：lint = 1 次 `zk list --format json` + 4 次原生过滤器（`--orphan` / `--broken-links` /
+  `--missing-backlink` / `--tagless`），**顺序执行**（并发进程会同时补索引、撞 SQLite 写锁）；
+  路径格式用 `{{absPath}}` 而不是 `{{path}}`（后者相对 cwd，Z4 同款坑）。
+- **陈旧的阈值**：`stale_days` 默认 90。zk 的 `stale` **不是**内置过滤器（只在你自己的 `[filter]` 里定义过才存在），
+  所以由插件按 `modified` 在 JS 里算，不赌用户配置。
+- **扫描上限要说话**：一次最多扫 10000 篇，到顶时结果带 `truncated: true` 并在文本里告警 —— 静默截断比慢更糟。
+- **日记不算噪音**：`orphans` 与 `tagless` 排除 `cfg.dailyDir`（日记按天写，天然没入链没标签）；
+  `brokenLinks` / `missingBacklink` 仍包含日记 —— 那里出错是真问题。
+- **dream 的拒绝规则只有两条**（`authority=informal`、无标签），日记不进候选/拒绝，未完成项单独一栏；
+  再加规则就是语义判断，违反 D5。
+- **`zk-kit query` 透传**：丢掉 `--notebook-dir` / `-W` / `--format` / `-x|--exclude` / `-q` / `-P` / `--json` / `--help`
+  连同它们的值，再注入自己的排除与 `--format json`；只保留查询条件（`-m` / `-t` / `--limit` / `-s` / 日期 / 位置参数）。
+  0 命中且给了 `-m` 时退回 `-M re`（中文召回，Z12）；用户自己写了 `-M` 就尊重用户。
+- 测试新增 8 条（lint / 只读快照 / dream / 解析 / 透传 3 / 性能），34 → 42 pass；smoke 增加到 12 个工具。
+
 ### M4 设置页与文档
 
 范围
@@ -270,13 +289,13 @@ layered 建 7 个目录 + 3 套模板 + 5 个 group；`excludedNames()` 一个�
 | `zk_stats` | 改 | 增加 `superseded/archived` 计数 —— 未做，留到 M4 |
 | `zk_query` | 新 ✅ | 结构化检索，agent 的主查询入口 |
 | `zk_context` | ✅ 已完成 | 读 AGENTS/MEMORY/USER，按预算截断（与注入共用 payload） |
-| `zk_lint` | 新 | 只报告，不改写 |
-| `zk_dream` | 新 | 只报告，不改写 |
+| `zk_lint` | 新 ✅ | 只报告，不改写 |
+| `zk_dream` | 新 ✅ | 只报告，不改写 |
 | `zk_supersede` | 新 ✅ | 默认 dry_run，改状态 + 重写入链 + 归档 |
 
 > M0/M1/M2 已落地的部分：`zk_search` / `zk_stats` 带统一排除（`excludedNames`，绝对路径）；
 > `zk_context` 已上线；`zk_read` 已能直接读 meta 文件（不进索引，走磁盘）；
-> `zk_query` / `zk_supersede` 已上线；`zk_new` 已带 type/authority 与撞名检测。`zk_lint` / `zk_dream` 仍待 M3。
+> `zk_query` / `zk_supersede` 已上线；`zk_new` 已带 type/authority 与撞名检测；`zk_lint` / `zk_dream` 已上线（M3）。
 
 ---
 
@@ -426,6 +445,6 @@ meta 文件放根目录的理由：AGENTS.md 在根目录是给人和其他工�
 - [x] layered 下同一标题重复创建会报错而不是静默丢内容（flat 是随机 id 文件名，不会撞名）—— 2026-10-29
 - [x] supersede 后原笔记在 archive/（保留原相对路径），检索不再命中，git 显示 rename，断链计数不增加 —— 2026-10-29
 - [ ] 新会话第一轮能引用 MEMORY.md（注入通道已落地，**端到端待真机验证**）
-- [ ] `zk_lint` / `zk_dream` 只读，200 条笔记 3 秒内返回
+- [x] `zk_lint` / `zk_dream` 只读，200 条笔记 3 秒内返回 —— 2026-10-29（实测 200 条约 0.9 秒；只读由逐字节快照比对证明）
 - [x] 现有测试全绿（34 pass，含不依赖 zk 的配置与注入测试；flat 模式无回归）—— 2026-10-29
 - [ ] README / docs/features/memory.md / AGENTS.md 模板 三处口径一致（前两处已更新，AGENTS.md 模板待 M4 随插件分发）

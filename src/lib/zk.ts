@@ -279,6 +279,123 @@ export async function searchNotes(cfg: Config, opts: SearchOptions = {}, signal?
   }
 }
 
+/** 巡检 / 做梦一次最多扫多少篇：到顶就告警，不静默截断（静默失败最难查） */
+export const MAX_SCAN = 10_000
+
+/** 一次取回全部笔记（巡检 / 做梦用；调用方自己截断）。 */
+export async function allNotes(
+  cfg: Config,
+  opts: { includeArchived?: boolean; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<NoteRecord[]> {
+  const limit = Math.min(MAX_SCAN, Math.max(1, Math.trunc(opts.limit ?? MAX_SCAN)))
+  const args = ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', String(limit)]
+  for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived })) args.push('-x', name)
+  return parseList(await zk(cfg, args, { signal })).map((raw) => toRecord(raw, cfg))
+}
+
+/** zk 自带的布尔过滤器（比在 JS 里重算更贴近 zk 的定义） */
+export type FlagFilter = '--orphan' | '--tagless' | '--missing-backlink' | '--broken-links'
+
+/**
+ * 用 zk 的过滤器挑笔记，只取**绝对路径**。
+ * 别用 `{{path}}`：它相对 cwd，换个工作目录就变成 `../../tmp/...`（Z4 同款坑）。
+ * 一类过滤器一次进程，不要按笔记逐条跑。
+ */
+export async function notesWithFlag(cfg: Config, flag: FlagFilter, signal?: AbortSignal): Promise<string[]> {
+  const args = ['list', '--quiet', '--no-pager', '--format', '{{absPath}}', '--limit', '10000', flag]
+  for (const name of excludedNames(cfg)) args.push('-x', name)
+  const out = await zk(cfg, args, { signal })
+  return out.split('\n').map((line) => line.trim()).filter(Boolean)
+}
+
+export interface GraphEdge {
+  sourcePath: string
+  targetPath: string
+}
+
+/** 全部双链边（一次 `zk graph`）。路径是**笔记本相对**的，按路径比对，不缓存 targetId（Z11 之后 id 会变）。 */
+export async function graphEdges(cfg: Config, signal?: AbortSignal): Promise<GraphEdge[]> {
+  const args = ['graph', '--quiet', '--format', 'json', '--limit', '10000']
+  for (const name of excludedNames(cfg)) args.push('-x', name)
+  const text = await zk(cfg, args, { signal })
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) return []
+  let graph: { links?: Array<Record<string, unknown>> }
+  try {
+    graph = JSON.parse(text.slice(start, end + 1)) as { links?: Array<Record<string, unknown>> }
+  } catch {
+    return []
+  }
+  const out: GraphEdge[] = []
+  for (const link of graph.links ?? []) {
+    const sourcePath = String(link.sourcePath ?? '')
+    const targetPath = String(link.targetPath ?? '')
+    if (sourcePath && targetPath) out.push({ sourcePath, targetPath })
+  }
+  return out
+}
+
+/**
+ * `zk-kit query` 会被**丢掉**的参数：它们要么绕开「统一排除」，要么弄坏 JSON 解析。
+ * 长名与短名都列出来（`--exclude` / `-x` 是同一个东西的两个写法）。
+ */
+const LIST_FLAGS_DROPPED = new Set([
+  'notebook-dir', 'working-dir', 'format', 'exclude', 'no-input', 'no-pager', 'quiet', 'json', 'help',
+  'f', 'x', 'W', 'P', 'q', 'h',
+])
+const LIST_FLAGS_WITH_VALUE = new Set(['notebook-dir', 'working-dir', 'format', 'exclude', 'f', 'x', 'W'])
+
+/** 过滤透传参数：把会破坏不变量的 flag 连同它的值一起丢掉，其余原样保留 */
+export function sanitizeListArgs(argv: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < argv.length; i++) {
+    const arg = String(argv[i] ?? '')
+    if (!arg || arg === '--') continue
+    if (arg.startsWith('--')) {
+      const name = arg.slice(2).split('=')[0]
+      if (LIST_FLAGS_DROPPED.has(name)) {
+        if (!arg.includes('=') && LIST_FLAGS_WITH_VALUE.has(name)) i++
+        continue
+      }
+      out.push(arg)
+      continue
+    }
+    // 负数是参数值（如 --created-after 之后），不是短 flag
+    if (arg.length > 1 && arg[0] === '-' && !/^-\d/.test(arg)) {
+      const name = arg[1]
+      if (LIST_FLAGS_DROPPED.has(name)) {
+        if (arg.length === 2 && LIST_FLAGS_WITH_VALUE.has(name)) i++
+        continue
+      }
+    }
+    out.push(arg)
+  }
+  return out
+}
+
+/**
+ * `zk list` 的透传入口（人终端用）。排除项与 format 在这里注入，不交给调用方。
+ *
+ * 0 命中且给了 `-m` 时退回正则（`-M re`）：FTS5 不切中文，不兜底的话
+ * `query -m 中文短语` 会静默返回空（Z12，和 searchNotes 同一个坑）。
+ * 用户自己写了 `-M` 就尊重用户的选择，不覆盖。
+ */
+export async function queryNotes(cfg: Config, argv: string[], signal?: AbortSignal): Promise<NoteRecord[]> {
+  const passthrough = sanitizeListArgs(argv)
+  const base = ['list', '--quiet', '--no-pager', '--format', 'json']
+  for (const name of excludedNames(cfg)) base.push('-x', name)
+  const runOnce = async (extra: string[]): Promise<NoteRecord[]> =>
+    parseList(await zk(cfg, [...base, ...passthrough, ...extra], { signal })).map((raw) => toRecord(raw, cfg))
+
+  const hasMatch = passthrough.some((a) => a === '-m' || a === '--match' || a.startsWith('--match=') || a.startsWith('-m='))
+  const hasStrategy = passthrough.some((a) => a === '-M' || a === '--match-strategy' || a.startsWith('--match-strategy=') || a.startsWith('-M='))
+  const hits = await runOnce([])
+  if (hits.length === 0 && hasMatch && !hasStrategy) return await runOnce(['-M', 're'])
+  return hits
+}
+
 /** 路径 → 绝对路径；出笔记本直接拒绝 */
 export function absPathOf(cfg: Config, p: string): string {
   const raw = String(p ?? '').trim()
@@ -555,23 +672,10 @@ export async function indexNotebook(cfg: Config, signal?: AbortSignal): Promise<
 
 /** 指向某篇笔记的所有来源笔记（相对路径）—— 一次 `zk graph`，不按笔记逐个跑 */
 async function inboundSources(cfg: Config, rel: string, signal?: AbortSignal): Promise<string[]> {
-  const args = ['graph', '--quiet', '--format', 'json', '--limit', '10000']
-  for (const name of excludedNames(cfg)) args.push('-x', name)
-  const text = await zk(cfg, args, { signal })
-  const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start < 0 || end <= start) return []
-  let graph: { links?: Array<Record<string, unknown>> }
-  try {
-    graph = JSON.parse(text.slice(start, end + 1)) as { links?: Array<Record<string, unknown>> }
-  } catch {
-    return []
-  }
   const out: string[] = []
-  for (const link of graph.links ?? []) {
-    if (String(link.targetPath ?? '') !== rel) continue
-    const source = String(link.sourcePath ?? '')
-    if (source && source !== rel && !out.includes(source)) out.push(source)
+  for (const edge of await graphEdges(cfg, signal)) {
+    if (edge.targetPath !== rel) continue
+    if (edge.sourcePath !== rel && !out.includes(edge.sourcePath)) out.push(edge.sourcePath)
   }
   return out
 }
