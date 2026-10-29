@@ -16,7 +16,7 @@ import {
   allNotes, parseErrorWarnings,
 } from './lib/zk.ts'
 import type { NoteRecord } from './lib/zk.ts'
-import { lintNotebook } from './lib/lint.ts'
+import { formatMemoryLinks, lintNotebook } from './lib/lint.ts'
 import type { LintResult } from './lib/lint.ts'
 import { dreamNotebook } from './lib/dream.ts'
 import type { DreamResult } from './lib/dream.ts'
@@ -160,6 +160,8 @@ function lintReport(r: LintResult): string {
   lines.push(r.duplicateTitles.total === 0
     ? '✓ 重名标题：0'
     : `✗ 重名标题：${r.duplicateTitles.total} 组 — ` + r.duplicateTitles.items.slice(0, 3).map((d) => `「${d.title}」→ ${d.paths.join(' / ')}`).join('；'))
+  const memLine = formatMemoryLinks(r.memoryLinks)
+  if (memLine) lines.push(memLine)
   if (r.truncated) lines.push('⚠️ 笔记数触到扫描上限：结果不完整')
   lines.push('（只报告，没有改动任何文件）')
   return lines.join('\n')

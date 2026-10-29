@@ -742,6 +742,8 @@ describe('M3: 巡检与做梦', () => {
     expect(lint.tagless.items.map((i) => i.path)).not.toContain(daily.path)
     expect(lint.orphans.total).toBeGreaterThanOrEqual(lint.orphans.items.length)
     expect(lint.brokenLinks.total).toBe(1)
+    // 没启用记忆层的库：不报这一项（files = 0），别给老 vault 添噪音
+    expect(lint.memoryLinks).toEqual({ files: 0, links: 0, total: 0, unlinked: 0, items: [] })
   })
 
   it('lint：frontmatter 写坏的那篇单列一类（zk 只写 stderr，它不在索引里）', async () => {
@@ -885,6 +887,48 @@ describe('M3: 巡检与做梦', () => {
     const elapsed = Date.now() - started
     expect(result.notes).toBe(200)
     expect(elapsed).toBeLessThan(3000)
+  })
+})
+
+describe('记忆层体检', () => {
+  const dir = path.join(home, 'nb-memlint')
+  const memCfg = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+  const note = (title: string, dirName: string, body: string) =>
+    zk.createNote(memCfg, { title, dir: dirName, content: body })
+
+  it('MEMORY 链接：旧路径搬进 archive 报 superseded，显式 archive 引用不算', async () => {
+    await notebookLib.ensureNotebook(memCfg)
+    const live = await note('活着的结论', 'notes/concepts', '活 #ok')
+    const old = await note('已废弃的结论', 'notes/concepts', '旧 #old')
+    const next = await note('替代结论', 'notes/concepts', '新 #new')
+    const done = await zk.supersedeNote(memCfg, { path: old.path, by: next.path, dryRun: false })
+
+    fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+      '# 记忆',
+      '',
+      `- 活：[[${live.path}]]`,
+      `- 按标题：[[${live.title}]]`,
+      `- 漂移：[[${old.path}]]`,
+      `- 有意引用：[[${done.archivePath}]]`,
+      '- 不存在的：[[notes/concepts/根本没有]]',
+      '- 没附来源的一条',
+      '',
+    ].join('\n'))
+    fs.writeFileSync(path.join(dir, 'USER.md'), '# 偏好\n\n- 说话短一点 [[notes/concepts/也没有]]\n- 别啰嗦\n')
+
+    const lint = await lintLib.lintNotebook(memCfg)
+    expect(lint.memoryLinks.files).toBe(2)
+    expect(lint.memoryLinks.links).toBe(6)
+    expect(lint.memoryLinks.total).toBe(3) // 旧路径漂移 + MEMORY 的不存在 + USER 的不存在
+    expect(lint.memoryLinks.items.map((i) => i.link)).toContain(old.path)
+    expect(lint.memoryLinks.items.map((i) => i.link)).toContain('notes/concepts/根本没有')
+    expect(lint.memoryLinks.items.map((i) => i.link)).toContain('notes/concepts/也没有')
+    expect(lint.memoryLinks.items.find((i) => i.link === old.path)?.reason).toBe('superseded')
+    expect(lint.memoryLinks.items.find((i) => i.link === old.path)?.path).toBe(done.archivePath)
+    expect(lint.memoryLinks.items.some((i) => i.link === live.path)).toBe(false)
+    expect(lint.memoryLinks.items.some((i) => i.link === done.archivePath)).toBe(false)
+    // 只数 MEMORY 里那条「没附来源」的列表项；USER 的偏好条目不计
+    expect(lint.memoryLinks.unlinked).toBe(1)
   })
 })
 

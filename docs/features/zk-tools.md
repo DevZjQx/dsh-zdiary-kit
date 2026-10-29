@@ -53,6 +53,15 @@ layered 同目录同名靠 `{{slug title}}` 文件名拦住，不同目录允许
 按 `excludedNames` 同一套口径过滤（归档 / raw / inbox / meta 的坏文件本来就不参与检索，报了只会淹掉真问题），
 `zk_lint` 与 `zk-kit doctor` 各回一行；`doctor` 用 ⚠️ 标，不影响它的退出码。
 一次最多扫 10000 篇，到顶时两个工具都返回 `truncated: true` 并在文本里告警（不静默截断）。
+`memoryLinks` 单独查**记忆层**：`MEMORY.md` / `USER.md` 里的 `[[来源]]` 是否还指向活笔记。
+解析顺序固定：原路径 → 加 `.md` → `archive/` 下同名 → 活笔记标题 / 文件名；旧路径在 `archive/` 下找到同名，
+或活文件带 `status: superseded`，报 `superseded`；都找不到报 `missing`。**显式写 `archive/` 路径的链接是有意引用**
+（supersede 重写入链就是这个形状），不算漂移。归档标题不反查（归档默认不进检索，反查就成了第二套索引），
+「语义重复」不查。为什么必须有：`zk_supersede` 只重写 `zk graph` 里的入链，meta 文件被 `excludedNames`
+排除在图外 —— 链接不会跟着搬，`--broken-links` 也统计不到；记忆说 X、库里 X 已废弃，这是两层脱节的入口。
+`unlinked` 只数 **MEMORY.md** 的列表条目里没有 `[[链接]]` 的（USER.md 是偏好清单，本来大多没有来源，
+不计；散文段落也不算，避免把自由文本变成告警噪音）。文案由 `lib/lint` 的 `formatMemoryLinks()` 统一生成，
+`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
 `zk_dream` 的拒绝规则只有两条（`authority=informal`、无标签），日记不进候选/拒绝（它的未完成项单独一栏）：
 再加第三条就是语义判断，违反 D5。`topCited` 用一次 `zk graph` 数入链，不按笔记逐条跑。
 `zk-kit query` 的透传在 0 命中且给了 `-m` 时退回 `-M re`：FTS5 不切中文，不兜底会静默返回空（Z12）。

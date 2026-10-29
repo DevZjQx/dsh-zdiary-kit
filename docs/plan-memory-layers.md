@@ -489,3 +489,18 @@ meta 文件放根目录的理由：AGENTS.md 在根目录是给人和其他工�
 - **`raw/` 只读机械拦截**：`zk_new` / `zk_append` / `zk_link` / `zk_supersede` 的写入入口统一走 `assertWritablePath`。
   原因：raw 被 `excludedNames` 排除，写进去不报错但永远搜不到 —— 静默失败比明确拒绝更难查。
 - 测试 79 pass；`bun run test` 仍是 skip = 0 才通过。
+
+## 14. v0.3.1：记忆层体检
+
+`zk_supersede` 只重写 `zk graph` 里的入链，而 `excludedNames` 把 meta 文件排除在图外 ——
+`MEMORY.md` / `USER.md` 里的 `[[来源]]` 不会跟着搬，`--broken-links` 也不统计它们。
+于是「记忆说 X、库里 X 已废弃」没有任何一层能发现。v0.3.1 只补机械核对（D5 / D6 不变）：
+
+- `zk_lint` 新增 `memoryLinks`：原路径 → 加 `.md` → `archive/` 下同名 → 活笔记标题 / 文件名；
+  旧路径在归档下找到同名（或活文件带 `status: superseded`）报 `superseded`，都找不到报 `missing`；
+  显式 `archive/` 链接视为有意引用；`unlinked` 只数 MEMORY.md 里没有链接的列表条目。
+- `AGENTS.md` 模板加一条约定：MEMORY.md 每条结论后附 `[[来源路径]]`（12 词预算成本）。
+- 同一版把模板从 195 词压到 159 词：195/300 = 65%，留给 USER + MEMORY 的只有 105 词，
+  再让每条结论都带来源链接，记忆层会长期停在「被截断」状态 —— 规则本身可以写得更紧，预算不能涨（D6）。
+- 纯机械，不做语义重复判断、不自动改 MEMORY.md —— 记忆层的写入仍然归 agent。
+- `package.json` 补 `repository`（插件市场的仓库校验需要它，之前只有 git remote，注册表读不到）。

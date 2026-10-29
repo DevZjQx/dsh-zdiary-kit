@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 0.3.0
+# dsh-zdiary-kit 0.3.1
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -19,7 +19,7 @@
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题） |
 | `zk_supersede` | 废弃过时结论：标 `superseded` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演 |
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）；宿主支持注入时每轮已自动带进系统提示 |
-| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 缺反链 / 陈旧 / 重名标题，每类最多 50 条；只报告不改写 |
+| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 缺反链 / 陈旧 / 重名标题 / 记忆链接失效，每类最多 50 条；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签）、daily 未完成项、被引最多；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded） |
 
@@ -31,8 +31,10 @@
 超了先丢 MEMORY 的尾部整段，并明确告诉你截了多少、以及是不是 AGENTS 吃掉了大半预算）。
 DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不会**读笔记本根目录，所以别指望宿主帮你加载 —— 是插件自己读、自己注入。
 
-维护用 `zk_lint`（结构体检）和 `zk_dream`（晋升候选 / 拒绝原因 / 未完成项）：两个工具都**只读**，
+维护用 `zk_lint`（结构体检 + 记忆链接核对）和 `zk_dream`（晋升候选 / 拒绝原因 / 未完成项）：两个工具都**只读**，
 写 `MEMORY.md` / `DREAMS.md` 由 agent 按 `AGENTS.md` 自己决定 —— 机械活留在插件，语义判断留在可审计的地方。
+`zk_lint` 会核对 `MEMORY.md` / `USER.md` 里的 `[[来源路径]]` 是否还指向活笔记 ——
+`zk_supersede` 只重写笔记之间的入链，meta 文件不在图里，链接不会跟着搬，`--broken-links` 也看不见。
 插件不跑定时任务：`DREAMS.md` 开头写一行 `上次做梦：YYYY-MM-DD`，注入里就会按 7 天节奏提醒该整理
 （没做过就提示先跑一次；没有 `AGENTS.md` 的库不提醒）。
 
@@ -268,6 +270,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 安装 zk 报「解包失败」 | 系统没有 `tar`；手动解包后把 `zk` 放进 `~/.dsh/zdiary/bin` |
 | 搜索结果不全 | 索引落后：点「重建索引」（`zk index`），或确认文件没被 `.zk/config.toml` 的 `exclude` 排除 |
 | 自检报「✗ 长期记忆：N/预算 词」 | AGENTS + USER + MEMORY 写太长：先压缩，或在设置页调高「注入预算」（超预算时注入会先丢 MEMORY 尾部整段） |
+| 体检报「记忆链接：N 条失效」 | `MEMORY.md` / `USER.md` 里的 `[[来源]]` 指向的笔记已归档或删除：改成 `archive/` 下的新路径，或改指活笔记；显式写 `archive/` 的链接不算失效 |
 | `Read` / `Edit` 笔记本报 `file access denied under workspace-write mode` | 笔记本被指到了工作区外。改用 `zk_*` 工具（不经这层策略），或把目录加进 `additionalWritableRoots`，或开会话到 `danger-full-access` |
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「补建 *名* 的目录」，别手改配置去将就磁盘 |
 | 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |

@@ -22,7 +22,7 @@ import type { NoteRecord, NoteDoc, SupersedeResult } from '../../lib/zk.ts'
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
 import { META_NAMES } from '../../lib/meta.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
-import { lintNotebook } from '../../lib/lint.ts'
+import { formatMemoryLinks, lintNotebook } from '../../lib/lint.ts'
 import type { LintResult } from '../../lib/lint.ts'
 import { dreamNotebook } from '../../lib/dream.ts'
 import type { DreamResult } from '../../lib/dream.ts'
@@ -61,6 +61,26 @@ const LINT_DUPLICATE = objSchema(
     },
   },
   ['total', 'items'],
+)
+/** 记忆层体检：MEMORY.md / USER.md 里的来源链是否还指向活笔记 */
+const LINT_MEMORY = objSchema(
+  {
+    files: { type: 'number' },
+    links: { type: 'number' },
+    total: { type: 'number' },
+    unlinked: { type: 'number' },
+    items: {
+      type: 'array',
+      items: objSchema({
+        source: { type: 'string' },
+        entry: { type: 'string' },
+        link: { type: 'string' },
+        reason: { type: 'string', enum: ['missing', 'superseded'] },
+        path: { type: 'string' },
+      }, ['source', 'entry', 'link', 'reason', 'path']),
+    },
+  },
+  ['files', 'links', 'total', 'unlinked', 'items'],
 )
 /** frontmatter 解析失败：这些笔记不在索引里，所以单列一桶（path 相对笔记本，不带 title） */
 const LINT_PARSE = objSchema(
@@ -633,6 +653,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       description:
         '给知识库做体检：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧（N 天没改）/ 重名标题，每类最多 50 条并给总数。' +
         'frontmatter 解析失败的笔记单列一类：它们进不了索引，别的项统计不到，先修它们再看其余。' +
+        'memoryLinks 查 MEMORY.md / USER.md 里的 [[来源链接]] 是否还指向活笔记（已废弃 / 不存在）—— ' +
+        'supersede 不会重写 meta 文件里的链接，这类漂移 broken-links 看不见。' +
         '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
         '只读：不改任何笔记。拿到清单后自己判断先修哪个，再用 zk_link / zk_append / zk_supersede 动手。',
       parameters: {
@@ -655,7 +677,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           tagless: LINT_BUCKET,
           missingBacklink: LINT_BUCKET,
           duplicateTitles: LINT_DUPLICATE,
-        }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'missingBacklink', 'duplicateTitles']),
+          memoryLinks: LINT_MEMORY,
+        }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'missingBacklink', 'duplicateTitles', 'memoryLinks']),
       },
       async run(args, env) {
         const cfg = config(env.workspace)
@@ -698,6 +721,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             : '✗ 重名标题：' + v.duplicateTitles.total + ' 组 — ' +
               v.duplicateTitles.items.slice(0, 3).map((d) => '「' + d.title + '」→ ' + d.paths.join(' / ')).join('；'),
         )
+        const memLine = formatMemoryLinks(v.memoryLinks)
+        if (memLine) lines.push(memLine)
         if (v.truncated) lines.push('⚠️ 笔记数触到扫描上限：结果不完整，先归档旧笔记再跑一次')
         lines.push('（只报告，没有改动任何文件）')
         return text(lines.join('\n'))

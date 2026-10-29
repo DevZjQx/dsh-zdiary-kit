@@ -10,7 +10,7 @@ import { ensureNotebook, structureStatus } from './lib/notebook.js';
 import { buildMemoryPayload } from './lib/memory.js';
 import { installZk } from './lib/install.js';
 import { resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
-import { lintNotebook } from './lib/lint.js';
+import { formatMemoryLinks, lintNotebook } from './lib/lint.js';
 import { dreamNotebook } from './lib/dream.js';
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
 
@@ -153,6 +153,9 @@ function lintReport(r) {
     lines.push(r.duplicateTitles.total === 0
         ? '✓ 重名标题：0'
         : `✗ 重名标题：${r.duplicateTitles.total} 组 — ` + r.duplicateTitles.items.slice(0, 3).map((d) => `「${d.title}」→ ${d.paths.join(' / ')}`).join('；'));
+    const memLine = formatMemoryLinks(r.memoryLinks);
+    if (memLine)
+        lines.push(memLine);
     if (r.truncated)
         lines.push('⚠️ 笔记数触到扫描上限：结果不完整');
     lines.push('（只报告，没有改动任何文件）');

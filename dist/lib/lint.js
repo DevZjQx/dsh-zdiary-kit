@@ -13,9 +13,14 @@
  * 解析失败单列一桶：frontmatter 写坏（典型是 `tags: [#你好世界]`，`#` 不是 tag 前缀）时
  * zk 只在 stderr 吭一声就跳过那篇，它于是从索引里消失 —— 搜不到，也不进上面任何一个桶。
  * 不单独报出来，用户只会看到「邻居突然孤儿、突然断链」，永远查不到根因。
+ *
+ * 记忆层（MEMORY.md / USER.md）的 `[[来源]]` 单列一项：它们不进索引，supersede 也不会重写，
+ * 旧结论搬进 archive/ 之后链接会静默停在旧路径 —— 断链、孤儿、缺反链都统计不到。
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { allNotes, localDate, MAX_SCAN, notesWithFlag, parseErrorWarnings } from './zk.js';
+import { parseFrontmatter } from './frontmatter.js';
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50;
 /** 标题归一化只压空白与大小写，不改字（中文不受影响，也不会把「A B」和「AB」当成同一个） */
@@ -38,6 +43,159 @@ export function duplicateTitles(notes, max = MAX_ITEMS) {
     const dup = [...groups.values()].filter((g) => g.paths.length > 1);
     dup.sort((a, b) => b.paths.length - a.paths.length || a.title.localeCompare(b.title));
     return { total: dup.length, items: dup.slice(0, max) };
+}
+/** 注入的三份 meta 里只有 MEMORY / USER 会写来源链接；AGENTS 是规则，不查 */
+const MEMORY_LINK_FILES = ['MEMORY.md', 'USER.md'];
+/** `[[路径]]` / `[[路径|别名]]` / `[[路径#小节]]` 都认，取路径部分 */
+const WIKI_LINK = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g;
+/** 按列表条目切分（含缩进续行）：只有条目才谈得上「没附来源」 */
+function listEntries(body) {
+    const out = [];
+    let current = null;
+    const flush = () => {
+        if (current)
+            out.push(current.join('\n'));
+        current = null;
+    };
+    for (const line of String(body ?? '').split('\n')) {
+        if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(line)) {
+            flush();
+            current = [line];
+        }
+        else if (current && /^\s+\S/.test(line)) {
+            current.push(line);
+        }
+        else {
+            flush();
+        }
+    }
+    flush();
+    return out;
+}
+function collapse(text, max = 100) {
+    const one = text.replace(/\s+/g, ' ').trim();
+    return one.length > max ? one.slice(0, max) + '…' : one;
+}
+function insideNotebook(cfg, abs) {
+    const root = path.resolve(cfg.notebook);
+    const p = path.resolve(abs);
+    return p === root || p.startsWith(root + path.sep);
+}
+function statusOf(abs) {
+    try {
+        return parseFrontmatter(fs.readFileSync(abs, 'utf8')).fields.status ?? '';
+    }
+    catch {
+        return '';
+    }
+}
+function relOf(cfg, abs) {
+    return path.relative(cfg.notebook, abs).split(path.sep).join('/');
+}
+/**
+ * 记忆层体检：MEMORY.md / USER.md 里的 `[[来源]]` 是否还指向活笔记。
+ *
+ * 为什么必须有这一项：supersede 只重写 `zk graph` 里的入链，而 meta 文件被 `excludedNames`
+ * 排除在图外 —— MEMORY.md 里的链接不会跟着搬，broken-links 也看不见它。记忆说 X、库里 X 已废弃，
+ * 这是记忆层与事实层脱节最典型的一种。
+ *
+ * 纯机械解析：路径优先（原路径 → 加 .md → archive/ 下同名），退而按标题/文件名匹配**活笔记**；
+ * 归档标题不反查 —— 归档默认不进检索，这里再造一套索引就成了第二真相。「语义重复」也不查。
+ */
+export function memoryLinkIssues(cfg, notes, max = MAX_ITEMS) {
+    const titles = new Set();
+    for (const n of notes) {
+        titles.add(normalizeTitle(n.title));
+        titles.add(normalizeTitle(path.basename(n.path, path.extname(n.path))));
+    }
+    const items = [];
+    const seen = new Set();
+    let files = 0;
+    let links = 0;
+    let unlinked = 0;
+    /** null = 活着 / 没问题；否则给出失效原因与命中路径 */
+    const resolve = (target) => {
+        const rel = target.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+        if (!rel)
+            return null;
+        const candidates = /\.md$/i.test(rel) ? [rel] : [rel, `${rel}.md`];
+        for (const candidate of candidates) {
+            const abs = path.resolve(cfg.notebook, candidate);
+            if (!insideNotebook(cfg, abs) || !fs.existsSync(abs) || !fs.statSync(abs).isFile())
+                continue;
+            const hit = relOf(cfg, abs);
+            // 显式写 archive/ 路径 = 有意引用旧结论（supersede 就是这样重写入链的），不算漂移
+            if (hit === cfg.archiveDir || hit.startsWith(`${cfg.archiveDir}/`))
+                return null;
+            return statusOf(abs) === 'superseded'
+                ? { reason: 'superseded', path: hit }
+                : null;
+        }
+        // 链接还停在废弃前的路径：文件已经搬进 archive/ —— 这正是要抓的漂移
+        if (!rel.startsWith(`${cfg.archiveDir}/`)) {
+            for (const candidate of candidates) {
+                const abs = path.resolve(cfg.notebook, cfg.archiveDir, candidate);
+                if (!insideNotebook(cfg, abs) || !fs.existsSync(abs) || !fs.statSync(abs).isFile())
+                    continue;
+                return { reason: 'superseded', path: relOf(cfg, abs) };
+            }
+        }
+        // 标题式链接只在活笔记里找（zk 的 wiki 链接两种写法都认）
+        if (titles.has(normalizeTitle(rel)))
+            return null;
+        return { reason: 'missing', path: '' };
+    };
+    for (const name of MEMORY_LINK_FILES) {
+        let body = '';
+        try {
+            body = fs.readFileSync(path.join(cfg.notebook, name), 'utf8');
+        }
+        catch {
+            continue;
+        }
+        files += 1;
+        for (const line of body.split('\n')) {
+            for (const match of line.matchAll(WIKI_LINK)) {
+                links += 1;
+                const target = String(match[1] ?? '').trim();
+                const issue = resolve(target);
+                if (!issue)
+                    continue;
+                const key = `${name}\u0000${target}`;
+                if (seen.has(key))
+                    continue;
+                seen.add(key);
+                items.push({ source: name, entry: collapse(line), link: target, reason: issue.reason, path: issue.path });
+            }
+        }
+        // 只对 MEMORY.md 数「没附来源」：USER.md 是偏好清单，大多数条目本来就没有来源
+        if (name === 'MEMORY.md') {
+            unlinked += listEntries(body).filter((entry) => !entry.includes('[[')).length;
+        }
+    }
+    return { files, links, total: items.length, unlinked, items: items.slice(0, max) };
+}
+/**
+ * 一行「记忆链接」摘要：`zk-kit lint` 与 `zk_lint` 共用，免得两处各写一遍文案、
+ * 下次改措辞只改到一半。返回 null = 这个库还没启用记忆层（files = 0），不占一行。
+ */
+export function formatMemoryLinks(bucket) {
+    if (bucket.files === 0)
+        return null;
+    const parts = [];
+    if (bucket.total > 0) {
+        const sample = bucket.items.slice(0, 3).map((i) => {
+            const why = i.reason === 'superseded' ? '已废弃' + (i.path ? ` → ${i.path}` : '') : '不存在';
+            return `${i.source} [[${i.link}]]（${why}）`;
+        }).join('、');
+        parts.push(`${bucket.total} 条失效 — ${sample}${bucket.total > 3 ? ' …' : ''}`);
+    }
+    else {
+        parts.push(bucket.links > 0 ? `${bucket.links} 条都可核对` : 'MEMORY.md / USER.md 里没有 [[来源链接]]');
+    }
+    if (bucket.unlinked > 0)
+        parts.push(`${bucket.unlinked} 个条目没附来源链接`);
+    return `${bucket.total === 0 ? '✓' : '✗'} 记忆链接：${parts.join('｜')}`;
 }
 export async function lintNotebook(cfg, opts = {}, signal) {
     const staleDays = Math.min(3650, Math.max(1, Math.trunc(opts.staleDays ?? 90)));
@@ -89,5 +247,6 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         tagless: bucket(taglessAbs.filter((abs) => !isDaily(abs))),
         missingBacklink: bucket(missingAbs),
         duplicateTitles: duplicateTitles(notes),
+        memoryLinks: memoryLinkIssues(cfg, notes),
     };
 }
