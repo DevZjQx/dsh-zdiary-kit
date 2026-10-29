@@ -744,6 +744,24 @@ describe('M3: 巡检与做梦', () => {
     expect(lint.brokenLinks.total).toBe(1)
   })
 
+  it('lint：frontmatter 写坏的那篇单列一类（zk 只写 stderr，它不在索引里）', async () => {
+    const badDir = path.join(home, 'nb-broken')
+    const bad = store.normalizeConfig({ notebook: badDir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(bad)
+    fs.mkdirSync(path.join(badDir, 'notes', 'concepts'), { recursive: true })
+    // YAML 里 # 不是 tag 前缀：未加引号时整块 frontmatter 解析失败，那篇被 zk 跳过
+    fs.writeFileSync(path.join(badDir, 'notes', 'concepts', 'bad-tags.md'), '---\ntitle: 坏标签\ntags: [#你好世界]\n---\n正文 #你好世界\n')
+    // 归档里的坏文件不进索引查询，报出来只会淹掉真问题
+    fs.mkdirSync(path.join(badDir, 'archive'), { recursive: true })
+    fs.writeFileSync(path.join(badDir, 'archive', 'old.md'), '---\ntitle: 旧\ntags: [#旧]\n---\n旧\n')
+
+    const lint = await lintLib.lintNotebook(bad)
+    expect(lint.notes).toBe(0) // 索引里一篇都没有：写坏的那篇被 zk 跳过了
+    expect(lint.parseErrors.total).toBe(1)
+    expect(lint.parseErrors.items[0].path).toBe('notes/concepts/bad-tags.md')
+    expect(lint.parseErrors.items[0].reason).toContain('yaml')
+  })
+
   it('lint / dream 只读：一个字节都不改', async () => {
     const snapshot = (): Map<string, string> => {
       const out = new Map<string, string>()

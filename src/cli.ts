@@ -13,6 +13,7 @@ import { installZk } from './lib/install.ts'
 import {
   resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
   appendDaily, linkNotes, notebookStats, indexNotebook, withTags, hasNotebook, localDate, ZkError,
+  allNotes, parseErrorWarnings,
 } from './lib/zk.ts'
 import type { NoteRecord } from './lib/zk.ts'
 import { lintNotebook } from './lib/lint.ts'
@@ -143,6 +144,12 @@ function lintReport(r: LintResult): string {
   const row = (label: string, total: number, items: Array<{ path: string }>): string =>
     total === 0 ? `✓ ${label}：0` : `✗ ${label}：${total} 篇 — ${sample(items)}`
   const lines = [`体检 ${r.notebook}：${r.notes} 篇笔记（陈旧阈值 ${r.staleDays} 天）`]
+  lines.push(r.parseErrors.total === 0
+    ? '✓ 解析失败：0'
+    : `✗ 解析失败：${r.parseErrors.total} 篇 — ` +
+      r.parseErrors.items.slice(0, 5).map((e) => `${e.path}（${e.reason}）`).join('、') +
+      (r.parseErrors.total > 5 ? ' …' : '') +
+      '｜这些笔记没进索引：搜不到，也不进别的项；修好 frontmatter 重跑一次')
   lines.push(row('断链', r.brokenLinks.total, r.brokenLinks.items))
   lines.push(row('孤儿', r.orphans.total, r.orphans.items))
   lines.push(row('无标签', r.tagless.total, r.tagless.items))
@@ -225,12 +232,24 @@ async function doctor(): Promise<boolean> {
     try {
       const s = await notebookStats(cfg)
       rows.push(`✓ 索引：${s.notes} 篇笔记 / ${s.tags} 个标签 / 断链 ${s.brokenLinks} / 孤立 ${s.orphans}`)
+      // frontmatter 写坏的笔记不在索引里：zk 只在 stderr 吭一声，不主动收就永远没人知道
+      const warnings: string[] = []
+      await allNotes(cfg, { warnings })
+      const parseErrors = parseErrorWarnings(cfg, warnings)
+      if (parseErrors.length > 0) {
+        rows.push(
+          `⚠️ 解析失败：${parseErrors.length} 篇 — ` +
+          parseErrors.slice(0, 3).map((e) => `${e.path}（${e.reason}）`).join('、') +
+          '（不在索引里：搜不到，也不进巡检的任何一项）',
+        )
+      }
     } catch (err) {
       rows.push('✗ 索引：' + (err instanceof Error ? err.message : String(err)))
     }
   }
   console.log(rows.join('\n'))
-  return rows.every((r) => r.startsWith('✓'))
+  // ⚠️ 是内容问题（笔记写坏了），不是装坏了 —— 别让它把 doctor 的退出码翻掉
+  return rows.every((r) => r.startsWith('✓') || r.startsWith('⚠️'))
 }
 
 async function main(): Promise<void> {

@@ -157,11 +157,19 @@ function baseArgs(cfg: Config): string[] {
   return ['--notebook-dir', cfg.notebook, '--no-input']
 }
 
-/** 跑一条 zk 命令，返回 stdout；非零退出 → ZkError（带 zk 自己最后几行 stderr） */
+/** stderr 里的一行 warning（`zk: warning: ...`），exit 0 时也会出现 */
+const WARNING_LINE = /^zk: warning: /
+
+/**
+ * 跑一条 zk 命令，返回 stdout；非零退出 → ZkError（带 zk 自己最后几行 stderr）。
+ *
+ * `opts.warnings` 收 exit 0 时的 stderr warning：zk 解析不了 frontmatter 只在这里吭一声，
+ * 不收的话那篇笔记就从索引里静默消失（能搜不到、也不进任何一个巡检桶）。
+ */
 export async function zk(
   cfg: Config,
   args: string[],
-  opts: { signal?: AbortSignal; input?: string; timeoutMs?: number } = {},
+  opts: { signal?: AbortSignal; input?: string; timeoutMs?: number; warnings?: string[] } = {},
 ): Promise<string> {
   const loc = await requireZk(cfg)
   try {
@@ -170,11 +178,50 @@ export async function zk(
       signal: opts.signal,
       timeoutMs: opts.timeoutMs ?? 60_000,
     })
+    if (opts.warnings) {
+      for (const line of r.stderr.split('\n')) {
+        const trimmed = line.trim()
+        if (WARNING_LINE.test(trimmed)) opts.warnings.push(trimmed)
+      }
+    }
     return r.stdout
   } catch (err) {
     if (err instanceof ExecError) throw new ZkError(err.message)
     throw err
   }
+}
+
+export interface ZkParseError {
+  /** 笔记本相对路径 */
+  path: string
+  /** zk 给的原因，例如 `yaml: line 2: did not find expected node content` */
+  reason: string
+}
+
+/** `zk: warning: error parsing note content <absPath>: <reason>` */
+const PARSE_WARNING = /^zk: warning: error parsing note content (.+?): (.+)$/
+
+/**
+ * 从收集到的 warning 里挑出 frontmatter 解析失败的笔记。
+ *
+ * 归档 / raw / inbox / meta 文件即使写坏也不影响检索口径（它们本来就不进索引查询），
+ * 报出来只会把真问题淹掉 —— 所以按 `excludedNames` 同一套口径过滤。
+ */
+export function parseErrorWarnings(cfg: Config, warnings: string[]): ZkParseError[] {
+  const excluded = excludedNames(cfg)
+  const seen = new Set<string>()
+  const out: ZkParseError[] = []
+  for (const line of warnings) {
+    const m = line.match(PARSE_WARNING)
+    if (!m) continue
+    const abs = path.resolve(cfg.notebook, m[1])
+    if (excluded.some((p) => abs === p || abs.startsWith(p + path.sep))) continue
+    const rel = path.relative(cfg.notebook, abs).split(path.sep).join('/')
+    if (seen.has(rel)) continue
+    seen.add(rel)
+    out.push({ path: rel, reason: m[2].trim() })
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path))
 }
 
 function toRecord(raw: Record<string, unknown>, cfg: Config): NoteRecord {
@@ -288,16 +335,16 @@ export async function searchNotes(cfg: Config, opts: SearchOptions = {}, signal?
 /** 巡检 / 做梦一次最多扫多少篇：到顶就告警，不静默截断（静默失败最难查） */
 export const MAX_SCAN = 10_000
 
-/** 一次取回全部笔记（巡检 / 做梦用；调用方自己截断）。 */
+/** 一次取回全部笔记（巡检 / 做梦用；调用方自己截断）。`warnings` 见 `zk()`。 */
 export async function allNotes(
   cfg: Config,
-  opts: { includeArchived?: boolean; limit?: number } = {},
+  opts: { includeArchived?: boolean; limit?: number; warnings?: string[] } = {},
   signal?: AbortSignal,
 ): Promise<NoteRecord[]> {
   const limit = Math.min(MAX_SCAN, Math.max(1, Math.trunc(opts.limit ?? MAX_SCAN)))
   const args = ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', String(limit)]
   for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived })) args.push('-x', name)
-  return parseList(await zk(cfg, args, { signal })).map((raw) => toRecord(raw, cfg))
+  return parseList(await zk(cfg, args, { signal, warnings: opts.warnings })).map((raw) => toRecord(raw, cfg))
 }
 
 /** zk 自带的布尔过滤器（比在 JS 里重算更贴近 zk 的定义） */

@@ -9,9 +9,13 @@
  *
  * 孤儿与无标签**不含日记**：日记按天写，天然没有入链、也没有标签，
  * 全报出来只会把真正的问题（断链、缺反链）淹掉。断链与缺反链仍包含日记 —— 那里出错是真问题。
+ *
+ * 解析失败单列一桶：frontmatter 写坏（典型是 `tags: [#你好世界]`，`#` 不是 tag 前缀）时
+ * zk 只在 stderr 吭一声就跳过那篇，它于是从索引里消失 —— 搜不到，也不进上面任何一个桶。
+ * 不单独报出来，用户只会看到「邻居突然孤儿、突然断链」，永远查不到根因。
  */
 import path from 'node:path';
-import { allNotes, localDate, MAX_SCAN, notesWithFlag } from './zk.js';
+import { allNotes, localDate, MAX_SCAN, notesWithFlag, parseErrorWarnings } from './zk.js';
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50;
 /** 标题归一化只压空白与大小写，不改字（中文不受影响，也不会把「A B」和「AB」当成同一个） */
@@ -41,7 +45,9 @@ export async function lintNotebook(cfg, opts = {}, signal) {
     const cutoff = now.getTime() - staleDays * 86_400_000;
     // 顺序跑而不是并发：zk 每次都会顺手补索引（写 SQLite），并发进程容易撞锁；
     // 一次进程 ~50ms，5 次照样远低于「200 条 3 秒」的验收线。
-    const notes = await allNotes(cfg, {}, signal);
+    // warning 只从第一次 list 收：每篇坏笔记每次进程都会再报一遍，收五遍还得去重。
+    const warnings = [];
+    const notes = await allNotes(cfg, { warnings }, signal);
     const orphanAbs = await notesWithFlag(cfg, '--orphan', signal);
     const brokenAbs = await notesWithFlag(cfg, '--broken-links', signal);
     const missingAbs = await notesWithFlag(cfg, '--missing-backlink', signal);
@@ -58,6 +64,7 @@ export async function lintNotebook(cfg, opts = {}, signal) {
             .map((n) => ({ title: n.title, path: n.path }));
         return { total: absPaths.length, items };
     };
+    const parseErrors = parseErrorWarnings(cfg, warnings);
     const staleNotes = notes
         .map((n) => ({ note: n, at: Date.parse(n.modified) }))
         .filter((x) => Number.isFinite(x.at) && x.at < cutoff)
@@ -75,6 +82,7 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         notes: notes.length,
         truncated: notes.length >= MAX_SCAN,
         staleDays,
+        parseErrors: { total: parseErrors.length, items: parseErrors.slice(0, MAX_ITEMS) },
         orphans: bucket(orphanAbs.filter((abs) => !isDaily(abs))),
         brokenLinks: bucket(brokenAbs),
         stale,

@@ -30,6 +30,14 @@ const LINT_DUPLICATE = objSchema({
         items: objSchema({ title: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } } }, ['title', 'paths']),
     },
 }, ['total', 'items']);
+/** frontmatter 解析失败：这些笔记不在索引里，所以单列一桶（path 相对笔记本，不带 title） */
+const LINT_PARSE = objSchema({
+    total: { type: 'number' },
+    items: {
+        type: 'array',
+        items: objSchema({ path: { type: 'string' }, reason: { type: 'string' } }, ['path', 'reason']),
+    },
+}, ['total', 'items']);
 function fail(err) {
     if (err instanceof ZkError) {
         throw new Error(err.hint ? `${err.message}（${err.hint}）` : err.message);
@@ -564,6 +572,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
         t({
             name: 'zk_lint',
             description: '给知识库做体检：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧（N 天没改）/ 重名标题，每类最多 50 条并给总数。' +
+                'frontmatter 解析失败的笔记单列一类：它们进不了索引，别的项统计不到，先修它们再看其余。' +
                 '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
                 '只读：不改任何笔记。拿到清单后自己判断先修哪个，再用 zk_link / zk_append / zk_supersede 动手。',
             parameters: {
@@ -579,13 +588,14 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     notes: { type: 'number' },
                     truncated: { type: 'boolean' },
                     staleDays: { type: 'number' },
+                    parseErrors: LINT_PARSE,
                     orphans: LINT_BUCKET,
                     brokenLinks: LINT_BUCKET,
                     stale: LINT_STALE,
                     tagless: LINT_BUCKET,
                     missingBacklink: LINT_BUCKET,
                     duplicateTitles: LINT_DUPLICATE,
-                }, ['notebook', 'notes', 'truncated', 'staleDays', 'orphans', 'brokenLinks', 'stale', 'tagless', 'missingBacklink', 'duplicateTitles']),
+                }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'missingBacklink', 'duplicateTitles']),
             },
             async run(args, env) {
                 const cfg = config(env.workspace);
@@ -602,6 +612,12 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 };
                 const line = (label, bucket) => bucket.total === 0 ? '✓ ' + label + '：0' : '✗ ' + label + '：' + bucket.total + ' 篇 — ' + sample(bucket.items);
                 const lines = ['体检 ' + v.notebook + '：' + v.notes + ' 篇笔记（陈旧阈值 ' + v.staleDays + ' 天）'];
+                lines.push(v.parseErrors.total === 0
+                    ? '✓ 解析失败：0'
+                    : '✗ 解析失败：' + v.parseErrors.total + ' 篇 — ' +
+                        v.parseErrors.items.slice(0, 5).map((e) => e.path + '（' + e.reason + '）').join('、') +
+                        (v.parseErrors.total > 5 ? ' …' : '') +
+                        '｜这些笔记没进索引：搜不到，也不进别的项；修好 frontmatter 重跑一次');
                 lines.push(line('断链', v.brokenLinks));
                 lines.push(line('孤儿', v.orphans));
                 lines.push(line('无标签', v.tagless));
