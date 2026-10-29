@@ -1,2 +1,25 @@
+# 依赖
 node_modules/
+
+# 构建：dist/ 是发布物，必须提交（安装方不编译，见 package.json files）
+# 这里只忽略编译器的增量缓存
+*.tsbuildinfo
+
+# 日志与临时文件
 *.log
+tmp/
+.tmp/
+
+# 本地环境变量（发布包不需要；示例文件保留）
+.env
+.env.*
+!.env.example
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 插件运行期数据一律在 ~/.dsh/zdiary（src/config/paths.ts），不落仓库，
+# 所以不忽略 notes/ journal/ .zk/——真出现了就是配置写错了。
