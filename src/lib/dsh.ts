@@ -20,6 +20,8 @@ export interface ContentBlockLike {
 export interface ToolRunContextLike {
   /** 调用方取消信号：长任务必须转发 */
   signal?: AbortSignal
+  /** 发起这次调用的 Agent（宿主只保证 id = 会话 id；用它反查会话工作区） */
+  agent?: { id?: string }
 }
 
 /** 裸工具定义（ToolDefinition 的最小可用子集；output 是必填） */

@@ -26,15 +26,21 @@ export const BIN_DIR = path.join(WORK_DIR, 'bin')
 export const CACHE_DIR = path.join(WORK_DIR, 'cache')
 
 /**
- * 会话工作区根：$DSH_WORKSPACE → 进程 cwd。
- * 不直接用 cwd 的地方在于——插件可能在任意 cwd 下被加载，显式环境变量能钉死。
+ * 进程级工作区兜底：$DSH_WORKSPACE → 进程 cwd（每次现读）。
+ *
+ * 真正该用的是「调用方会话的工作区」：工具执行时由宿主的 session cwd 传进来
+ * （见 lib/workspace.ts）。这里是拿不到会话时的退路 —— 设置页、CLI、记忆注入
+ * 没有会话上下文，用的就是它。
  */
-export const WORKSPACE = process.env.DSH_WORKSPACE
-  ? path.resolve(process.env.DSH_WORKSPACE)
-  : process.cwd()
+export function processWorkspace(): string {
+  const env = String(process.env.DSH_WORKSPACE ?? '').trim()
+  return env ? path.resolve(env) : process.cwd()
+}
 
 /** 默认笔记本位置：工作区内（可写根里），不是 ~/.dsh */
-export const DEFAULT_NOTEBOOK = path.join(WORKSPACE, 'zdiary')
+export function defaultNotebook(workspace: string = processWorkspace()): string {
+  return path.join(workspace, 'zdiary')
+}
 
 /** `~` 展开；空值原样返回 */
 export function expandHome(p: string): string {
@@ -46,6 +52,6 @@ export function expandHome(p: string): string {
 }
 
 /** 相对路径按工作区解析（不是按进程 cwd —— 两者可能不是一回事） */
-export function resolveInWorkspace(p: string): string {
-  return path.isAbsolute(p) ? path.resolve(p) : path.resolve(WORKSPACE, p)
+export function resolveInWorkspace(p: string, workspace: string = processWorkspace()): string {
+  return path.isAbsolute(p) ? path.resolve(p) : path.resolve(workspace, p)
 }

@@ -9,7 +9,8 @@
  */
 import type { Config } from '../../config/store.ts'
 import { config } from '../../config/store.ts'
-import type { ToolsLike, ToolDefinitionLike, ContentBlockLike } from '../../lib/dsh.ts'
+import type { ToolsLike, ToolDefinitionLike, ContentBlockLike, ToolRunContextLike } from '../../lib/dsh.ts'
+import { processWorkspace } from '../../config/paths.ts'
 import { S, validateArgs } from '../../lib/tool.ts'
 import type { SchemaNode } from '../../lib/tool.ts'
 import { ensureNotebook } from '../../lib/notebook.ts'
@@ -80,16 +81,25 @@ function noteLine(n: NoteRecord, index: number): string {
   return `${head}\n   ${meta}${tagSuffix(n)}${lead}`
 }
 
+/** 一次工具调用的执行环境：取消信号 + 这次调用该用的工作区（会话 cwd，缺省进程 cwd） */
+interface ToolRunEnv {
+  signal?: AbortSignal
+  workspace: string
+}
+
+/** 从宿主上下文取工作区：由 app 注入（会话 cwd → 进程工作区兜底），测试可替换 */
+export type WorkspaceOf = (exec: ToolRunContextLike | undefined) => string
+
 interface ToolSpec {
   name: string
   description: string
   parameters: Record<string, unknown>
   output: { schema: Record<string, unknown> }
-  run: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
+  run: (args: Record<string, unknown>, env: ToolRunEnv) => Promise<unknown>
   render: (args: Record<string, unknown>, value: unknown) => ContentBlockLike[]
 }
 
-function def(spec: ToolSpec): ToolDefinitionLike {
+function def(spec: ToolSpec, workspaceOf: WorkspaceOf): ToolDefinitionLike {
   return {
     name: spec.name,
     description: spec.description,
@@ -99,7 +109,10 @@ function def(spec: ToolSpec): ToolDefinitionLike {
       const issues = validateArgs(spec.parameters, args)
       if (issues.length) throw new Error(`参数不合法：${issues.join('；')}`)
       try {
-        return await spec.run((args ?? {}) as Record<string, unknown>, exec?.signal)
+        return await spec.run((args ?? {}) as Record<string, unknown>, {
+          signal: exec?.signal,
+          workspace: workspaceOf(exec),
+        })
       } catch (err) {
         return fail(err)
       }
@@ -107,9 +120,10 @@ function def(spec: ToolSpec): ToolDefinitionLike {
   }
 }
 
-export function buildTools(): ToolDefinitionLike[] {
+export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()): ToolDefinitionLike[] {
+  const t = (spec: ToolSpec): ToolDefinitionLike => def(spec, workspaceOf)
   return [
-    def({
+    t({
       name: 'zk_search',
       description:
         '在 zk 知识库里搜索笔记（全文 / 标签 / 日期 / 断链 / 孤立笔记），返回标题、相对路径、标签、创建日与摘要。' +
@@ -144,8 +158,8 @@ export function buildTools(): ToolDefinitionLike[] {
           },
         }, ['notebook', 'count', 'notes']),
       },
-      async run(args) {
-        const cfg: Config = config()
+      async run(args, env) {
+        const cfg: Config = config(env.workspace)
         await ensureNotebook(cfg)
         const notes = await searchNotes(cfg, {
           query: args.query ? String(args.query) : undefined,
@@ -170,7 +184,7 @@ export function buildTools(): ToolDefinitionLike[] {
       },
     }),
 
-    def({
+    t({
       name: 'zk_query',
       description:
         '结构化检索记忆：按 type（daily/source/concept/entity/pattern）、status（active/superseded）、标签、目录、日期、断链、孤立过滤。' +
@@ -214,9 +228,9 @@ export function buildTools(): ToolDefinitionLike[] {
           },
         }, ['notebook', 'count', 'notes']),
       },
-      async run(args, signal) {
-        const cfg: Config = config()
-        await ensureNotebook(cfg, signal)
+      async run(args, env) {
+        const cfg: Config = config(env.workspace)
+        await ensureNotebook(cfg, env.signal)
         const includeArchived = args.include_archived === true
         const notes = await searchNotes(cfg, {
           query: args.query ? String(args.query) : undefined,
@@ -232,7 +246,7 @@ export function buildTools(): ToolDefinitionLike[] {
           includeArchived,
           limit: args.limit === undefined ? 10 : Number(args.limit),
           sort: args.sort ? String(args.sort) : 'created-desc',
-        }, signal)
+        }, env.signal)
         return {
           notebook: cfg.notebook,
           count: notes.length,
@@ -260,7 +274,7 @@ export function buildTools(): ToolDefinitionLike[] {
       },
     }),
 
-    def({
+    t({
       name: 'zk_read',
       description:
         '读一篇笔记的全文（或先按搜索词找到最相关的一篇再读）。路径是相对笔记本根目录的路径，如 notes/ab12.md。' +
@@ -287,13 +301,13 @@ export function buildTools(): ToolDefinitionLike[] {
           content: { type: 'string' },
         }, ['notebook', 'path', 'title', 'tags', 'created', 'modified', 'chars', 'truncated', 'content']),
       },
-      async run(args, signal) {
+      async run(args, env) {
         const p = args.path ? String(args.path) : ''
         const q = args.query ? String(args.query) : ''
         if (!p && !q) throw new ZkError('path 和 query 至少给一个')
-        const cfg = config()
+        const cfg = config(env.workspace)
         await ensureNotebook(cfg)
-        const doc: NoteDoc | null = p ? await readNote(cfg, p, signal) : await findNote(cfg, q, signal)
+        const doc: NoteDoc | null = p ? await readNote(cfg, p, env.signal) : await findNote(cfg, q, env.signal)
         if (!doc) throw new ZkError(`没找到匹配的笔记：${q}`, '换一个搜索词，或用 zk_search 先看看有哪些笔记')
         const limit = Math.min(200_000, Math.max(1000, Math.trunc(Number(args.maxChars ?? cfg.maxReadChars))))
         const truncated = doc.content.length > limit
@@ -318,7 +332,7 @@ export function buildTools(): ToolDefinitionLike[] {
       },
     }),
 
-    def({
+    t({
       name: 'zk_new',
       description:
         '新建一篇笔记（zk 负责生成文件名、套用模板、写入索引）。适合记下一个概念、决定、来源或想法；' +
@@ -349,9 +363,9 @@ export function buildTools(): ToolDefinitionLike[] {
           warnings: { type: 'array', items: { type: 'string' } },
         }, ['notebook', 'path', 'title', 'tags', 'links', 'warnings']),
       },
-      async run(args, signal) {
-        const cfg = config()
-        await ensureNotebook(cfg, signal)
+      async run(args, env) {
+        const cfg = config(env.workspace)
+        await ensureNotebook(cfg, env.signal)
         const tags = [...new Set([...(cfg.defaultTags ?? []), ...(Array.isArray(args.tags) ? args.tags.map(String) : [])])]
         const created = await createNote(cfg, {
           title: String(args.title),
@@ -360,12 +374,12 @@ export function buildTools(): ToolDefinitionLike[] {
           group: args.group ? String(args.group) : undefined,
           type: args.type ? String(args.type) : undefined,
           authority: args.authority ? String(args.authority) : undefined,
-        }, signal)
+        }, env.signal)
         const links: string[] = []
         const warnings: string[] = []
         for (const target of Array.isArray(args.links) ? args.links.map(String) : []) {
           try {
-            const r = await linkNotes(cfg, created.path, target, signal)
+            const r = await linkNotes(cfg, created.path, target, env.signal)
             links.push(r.link)
           } catch (err) {
             // 笔记已经建好了：链接失败只降级成告警，不把整次写入判失败
@@ -385,7 +399,7 @@ export function buildTools(): ToolDefinitionLike[] {
       },
     }),
 
-    def({
+    t({
       name: 'zk_daily',
       description:
         '打开（不存在就创建）某一天的日记，并可追加一条带时间的记录。日记放在设置里的 dailyDir，文件名就是日期。' +
@@ -406,10 +420,10 @@ export function buildTools(): ToolDefinitionLike[] {
           appended: { type: 'boolean' },
         }, ['notebook', 'path', 'created', 'appended']),
       },
-      async run(args, signal) {
-        const cfg = config()
-        await ensureNotebook(cfg, signal)
-        const daily = await ensureDailyNote(cfg, { date: args.date ? String(args.date) : undefined }, signal)
+      async run(args, env) {
+        const cfg = config(env.workspace)
+        await ensureNotebook(cfg, env.signal)
+        const daily = await ensureDailyNote(cfg, { date: args.date ? String(args.date) : undefined }, env.signal)
         const appended = Boolean(args.entry && String(args.entry).trim())
         if (appended) appendDaily(cfg, daily.path, String(args.entry), new Date())
         return { notebook: cfg.notebook, path: daily.path, created: daily.created, appended }
@@ -421,7 +435,7 @@ export function buildTools(): ToolDefinitionLike[] {
       },
     }),
 
-    def({
+    t({
       name: 'zk_append',
       description:
         '往一篇已有笔记末尾追加内容（自动补空行，可选先起一个二级标题）。适合补充证据、跟进结论、在会议记录里续写；' +
@@ -444,8 +458,8 @@ export function buildTools(): ToolDefinitionLike[] {
           bytes: { type: 'number' },
         }, ['notebook', 'path', 'appendedChars', 'bytes']),
       },
-      async run(args) {
-        const cfg = config()
+      async run(args, env) {
+        const cfg = config(env.workspace)
         await ensureNotebook(cfg)
         const r = appendToNote(cfg, String(args.path), String(args.text), {
           heading: args.heading ? String(args.heading) : undefined,
@@ -458,7 +472,7 @@ export function buildTools(): ToolDefinitionLike[] {
       },
     }),
 
-    def({
+    t({
       name: 'zk_link',
       description:
         '在两篇笔记之间建立 wiki 双链：把 [[目标]] 追加到来源笔记末尾（已有「Links」或「链接」小节就不再重复起标题；不保证插进该小节内部），已存在不重复添加。' +
@@ -481,10 +495,10 @@ export function buildTools(): ToolDefinitionLike[] {
           added: { type: 'boolean' },
         }, ['notebook', 'from', 'to', 'link', 'added']),
       },
-      async run(args, signal) {
-        const cfg = config()
-        await ensureNotebook(cfg, signal)
-        const r = await linkNotes(cfg, String(args.from), String(args.to), signal)
+      async run(args, env) {
+        const cfg = config(env.workspace)
+        await ensureNotebook(cfg, env.signal)
+        const r = await linkNotes(cfg, String(args.from), String(args.to), env.signal)
         return { notebook: cfg.notebook, from: r.from, to: r.to, link: r.link, added: r.added }
       },
       render(_args, value) {
@@ -493,7 +507,7 @@ export function buildTools(): ToolDefinitionLike[] {
       },
     }),
 
-    def({
+    t({
       name: 'zk_supersede',
       description:
         '废弃一篇笔记：frontmatter 标 superseded、写入替代它的笔记、把能精确匹配的 [[旧路径]] 入链改到归档路径、再把文件搬进 archive/（保留原相对路径；其它写法的入链列进 missingLinks）。' +
@@ -524,15 +538,15 @@ export function buildTools(): ToolDefinitionLike[] {
           missingLinks: { type: 'array', items: { type: 'string' } },
         }, ['notebook', 'path', 'archivePath', 'supersededBy', 'dryRun', 'performed', 'alreadySuperseded', 'rewrittenLinks', 'missingLinks']),
       },
-      async run(args, signal) {
-        const cfg = config()
-        await ensureNotebook(cfg, signal)
+      async run(args, env) {
+        const cfg = config(env.workspace)
+        await ensureNotebook(cfg, env.signal)
         const r = await supersedeNote(cfg, {
           path: String(args.path),
           by: args.by ? String(args.by) : undefined,
           // 缺省是预演：一句「更新一下 wiki」不该让全库漂移（计划 D7）
           dryRun: args.dry_run !== false,
-        }, signal)
+        }, env.signal)
         return {
           notebook: cfg.notebook,
           path: r.path,
@@ -569,7 +583,7 @@ export function buildTools(): ToolDefinitionLike[] {
       },
     }),
 
-    def({
+    t({
       name: 'zk_context',
       description:
         '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回。' +
@@ -591,9 +605,9 @@ export function buildTools(): ToolDefinitionLike[] {
           },
         }, ['text', 'words', 'budget', 'truncatedWords', 'files']),
       },
-      async run() {
+      async run(_args, env) {
         // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
-        return buildMemoryPayload(config())
+        return buildMemoryPayload(config(env.workspace))
       },
       render(_args, value) {
         const v = value as MemoryPayload
@@ -602,7 +616,7 @@ export function buildTools(): ToolDefinitionLike[] {
       },
     }),
 
-    def({
+    t({
       name: 'zk_lint',
       description:
         '给知识库做体检：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧（N 天没改）/ 重名标题，每类最多 50 条并给总数。' +
@@ -629,12 +643,12 @@ export function buildTools(): ToolDefinitionLike[] {
           duplicateTitles: LINT_DUPLICATE,
         }, ['notebook', 'notes', 'truncated', 'staleDays', 'orphans', 'brokenLinks', 'stale', 'tagless', 'missingBacklink', 'duplicateTitles']),
       },
-      async run(args, signal) {
-        const cfg = config()
-        await ensureNotebook(cfg, signal)
+      async run(args, env) {
+        const cfg = config(env.workspace)
+        await ensureNotebook(cfg, env.signal)
         return lintNotebook(cfg, {
           staleDays: args.stale_days === undefined ? undefined : Number(args.stale_days),
-        }, signal)
+        }, env.signal)
       },
       render(_args, value) {
         const v = value as LintResult
@@ -668,7 +682,7 @@ export function buildTools(): ToolDefinitionLike[] {
       },
     }),
 
-    def({
+    t({
       name: 'zk_dream',
       description:
         '整理晋升材料：最近 N 天新增的笔记（机械筛掉 authority=informal 与无标签的，其余作为候选）、' +
@@ -724,10 +738,10 @@ export function buildTools(): ToolDefinitionLike[] {
           },
         }, ['notebook', 'windowDays', 'since', 'truncated', 'counts', 'newNotes', 'rejected', 'topCited', 'dailyLooseEnds']),
       },
-      async run(args, signal) {
-        const cfg = config()
-        await ensureNotebook(cfg, signal)
-        return dreamNotebook(cfg, { days: args.days === undefined ? undefined : Number(args.days) }, signal)
+      async run(args, env) {
+        const cfg = config(env.workspace)
+        await ensureNotebook(cfg, env.signal)
+        return dreamNotebook(cfg, { days: args.days === undefined ? undefined : Number(args.days) }, env.signal)
       },
       render(_args, value) {
         const v = value as DreamResult
@@ -766,7 +780,7 @@ export function buildTools(): ToolDefinitionLike[] {
       },
     }),
 
-    def({
+    t({
       name: 'zk_stats',
       description: '看一眼知识库现状：笔记数、标签数、断链数、孤立笔记数、已归档（superseded）数。适合开始工作前了解上下文规模。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -781,10 +795,10 @@ export function buildTools(): ToolDefinitionLike[] {
           superseded: { type: 'number' },
         }, ['notebook', 'notes', 'tags', 'brokenLinks', 'orphans', 'archived', 'superseded']),
       },
-      async run(_args, signal) {
-        const cfg = config()
-        await ensureNotebook(cfg, signal)
-        const stats = await notebookStats(cfg, signal)
+      async run(_args, env) {
+        const cfg = config(env.workspace)
+        await ensureNotebook(cfg, env.signal)
+        const stats = await notebookStats(cfg, env.signal)
         return { notebook: cfg.notebook, ...stats }
       },
       render(_args, value) {
@@ -800,8 +814,8 @@ export function buildTools(): ToolDefinitionLike[] {
   ]
 }
 
-/** 注册全部工具，返回撤销函数 */
-export function registerZkTools(tools: ToolsLike): () => void {
-  const disposers = buildTools().map((definition) => tools.register(definition))
+/** 注册全部工具，返回撤销函数（workspaceOf 由 app 注入：会话 cwd 优先） */
+export function registerZkTools(tools: ToolsLike, workspaceOf?: WorkspaceOf): () => void {
+  const disposers = buildTools(workspaceOf).map((definition) => tools.register(definition))
   return () => { for (const dispose of disposers) { try { dispose() } catch { /* 已卸载 */ } } }
 }

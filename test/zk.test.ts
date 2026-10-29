@@ -26,6 +26,7 @@ const notebookLib = await import('../src/lib/notebook.ts')
 const lintLib = await import('../src/lib/lint.ts')
 const dreamLib = await import('../src/lib/dream.ts')
 const toolsFeature = await import('../src/features/zk-tools/feature.ts')
+const workspaceLib = await import('../src/lib/workspace.ts')
 const toolLib = await import('../src/lib/tool.ts')
 const fm = await import('../src/lib/frontmatter.ts')
 
@@ -158,6 +159,53 @@ describe('config', () => {
     const onDisk = JSON.parse(fs.readFileSync(paths.CFG_FILE, 'utf8')) as Record<string, unknown>
     expect(onDisk.structure).toBe('flat')
     expect(onDisk.memoryBudgetWords).toBe(300)
+  })
+})
+
+describe('工作区解析', () => {
+  test('默认笔记本按传入的工作区走；显式路径不受影响', () => {
+    const a = store.normalizeConfig({ notebooks: { default: '' }, active: 'default' }, '/tmp/ws-a')
+    expect(a.notebook).toBe('/tmp/ws-a/zdiary')
+    // 同一份配置，换工作区就是换笔记本（不重启、不落盘）
+    const b = store.normalizeConfig({ notebooks: { default: '' }, active: 'default' }, '/tmp/ws-b')
+    expect(b.notebook).toBe('/tmp/ws-b/zdiary')
+    // 显式绝对路径优先：工作区怎么变都不动
+    const fixed = store.normalizeConfig({ notebooks: { default: '/fixed/vault' }, active: 'default' }, '/tmp/ws-b')
+    expect(fixed.notebook).toBe('/fixed/vault')
+    // 显式相对路径：按传入的工作区解析
+    const rel = store.normalizeConfig({ notebooks: { default: 'kb' }, active: 'default' }, '/tmp/ws-b')
+    expect(rel.notebook).toBe('/tmp/ws-b/kb')
+  })
+
+  test('会话 cwd：exec.agent.id → sessions.get(id).header.cwd', () => {
+    const sessions = {
+      get: (id: string) => (id === 's1' ? { header: { cwd: '/work/project-a' } } : undefined),
+    }
+    expect(workspaceLib.sessionWorkspace({ agent: { id: 's1' } }, sessions)).toBe('/work/project-a')
+    expect(workspaceLib.sessionWorkspace({ agent: { id: 's2' } }, sessions)).toBeUndefined()
+    expect(workspaceLib.sessionWorkspace({}, sessions)).toBeUndefined()
+    expect(workspaceLib.sessionWorkspace({ agent: { id: 's1' } }, undefined)).toBeUndefined()
+    // 宿主会话服务抛错 / 会话没有 cwd：都退回 undefined（调用方用进程工作区）
+    expect(workspaceLib.sessionWorkspace({ agent: { id: 's1' } }, { get: () => { throw new Error('boom') } })).toBeUndefined()
+    expect(workspaceLib.sessionWorkspace({ agent: { id: 's1' } }, { get: () => ({ header: {} }) })).toBeUndefined()
+  })
+
+  test('工具按这次调用的工作区取笔记本（zk_context 不读进程工作区）', async () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-ws-'))
+    try {
+      fs.mkdirSync(path.join(ws, 'zdiary'), { recursive: true })
+      fs.writeFileSync(path.join(ws, 'zdiary', 'AGENTS.md'), '# 约定\n\n测试工作区的约定。\n')
+      store.writeConfig({ notebooks: { default: '' }, active: 'default' })
+      const defs = toolsFeature.buildTools((exec) =>
+        exec?.agent?.id === 'sess-1' ? ws : '/nonexistent-ws')
+      const tool = defs.find((d) => d.name === 'zk_context')
+      expect(tool).toBeDefined()
+      const value = await tool!.execute({}, { signal: AbortSignal.timeout(5_000), agent: { id: 'sess-1' } }) as { text: string }
+      expect(value.text).toContain('测试工作区的约定')
+    } finally {
+      store.writeConfig({ notebook, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
+      fs.rmSync(ws, { recursive: true, force: true })
+    }
   })
 })
 

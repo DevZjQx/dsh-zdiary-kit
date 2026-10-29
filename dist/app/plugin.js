@@ -1,9 +1,10 @@
 import { json } from '../lib/http.js';
-import { CFG_FILE } from '../config/paths.js';
+import { CFG_FILE, processWorkspace } from '../config/paths.js';
 import { config } from '../config/store.js';
 import { registerZkTools } from '../features/zk-tools/feature.js';
 import { registerSettings } from '../features/settings/feature.js';
 import { buildMemoryPayload } from '../lib/memory.js';
+import { sessionWorkspace } from '../lib/workspace.js';
 /** 系统提示里的段位：5000 是 TOOLS_SDK，9000 是交付物引用 —— 记忆落在两者之间的空档 */
 const MEMORY_SECTION_ORDER = 5200;
 export default {
@@ -105,10 +106,18 @@ export default {
             }
         }
         // ── 工具 ────────────────────────────────────────────────────────────
+        /**
+         * 这次工具调用该用哪个工作区：会话 cwd 优先（exec.agent.id → sessions.get(id).header.cwd），
+         * 拿不到会话就退回进程工作区。同一个宿主进程开多个工作区时，各自看各自的 <工作区>/zdiary。
+         */
+        const workspaceOf = (exec) => {
+            const sessions = service(ctx, 'sessions');
+            return sessionWorkspace(exec, sessions) ?? processWorkspace();
+        };
         const tools = service(ctx, 'tools');
         if (tools && typeof tools.register === 'function') {
             try {
-                disposers.push(registerZkTools(tools));
+                disposers.push(registerZkTools(tools, workspaceOf));
             }
             catch (err) {
                 try {

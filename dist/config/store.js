@@ -9,7 +9,7 @@
  * 磁盘上笔记本只有一个真相，就是 notebooks + active。
  * 老配置只有 `notebook`：读进来自动当成 `notebooks.default` 的路径（迁移见 normalizeConfig）。
  */
-import { CFG_FILE, DEFAULT_NOTEBOOK, expandHome, resolveInWorkspace } from './paths.js';
+import { CFG_FILE, defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from './paths.js';
 import { readJson, writeJson } from '../lib/json-file.js';
 /** 默认笔记本的名字（老配置迁移过来的那个也叫这个） */
 export const DEFAULT_NOTEBOOK_NAME = 'default';
@@ -22,7 +22,8 @@ export function isNotebookName(name) {
     return NOTEBOOK_NAME_RE.test(String(name ?? '').trim());
 }
 export const DEFAULTS = {
-    notebook: DEFAULT_NOTEBOOK,
+    // 派生值：normalizeConfig 按调用方工作区解析，这里只是占位（不参与落盘，也不单独使用）
+    notebook: '',
     notebooks: { [DEFAULT_NOTEBOOK_NAME]: '' },
     active: DEFAULT_NOTEBOOK_NAME,
     notesDir: 'notes',
@@ -76,12 +77,17 @@ function notebookMap(raw) {
     return out;
 }
 /** 笔记本路径：空 = 工作区里的默认位置；相对路径按工作区解析（不是进程 cwd） */
-function notebookPath(raw) {
+function notebookPath(raw, workspace) {
     const s = String(raw ?? '').trim();
-    return s ? resolveInWorkspace(expandHome(s)) : DEFAULT_NOTEBOOK;
+    return s ? resolveInWorkspace(expandHome(s), workspace) : defaultNotebook(workspace);
 }
-/** 任意输入 → 合法 Config（永不 throw：设置页传垃圾也只落一个安全值） */
-export function normalizeConfig(raw) {
+/**
+ * 任意输入 → 合法 Config（永不 throw：设置页传垃圾也只落一个安全值）。
+ *
+ * workspace 决定「空路径 / 相对路径」落在哪：工具调用传会话 cwd，其余场景默认进程工作区。
+ * 显式写死的绝对路径不受它影响 —— 显式配置优先。
+ */
+export function normalizeConfig(raw, workspace = processWorkspace()) {
     const src = (raw && typeof raw === 'object' ? raw : {});
     const notebooksRaw = notebookMap(src.notebooks);
     const legacy = String(src.notebook ?? '').trim();
@@ -95,10 +101,10 @@ export function normalizeConfig(raw) {
         : DEFAULT_NOTEBOOK_NAME in map ? DEFAULT_NOTEBOOK_NAME : (Object.keys(map)[0] ?? DEFAULT_NOTEBOOK_NAME);
     // `notebook` 是老式单笔记本字段：给了就以它为准，改的是**当前**笔记本的路径
     const notebookRaw = String(src.notebook ?? '').trim();
-    const notebooks = notebookRaw && notebookPath(notebookRaw) !== notebookPath(map[active])
+    const notebooks = notebookRaw && notebookPath(notebookRaw, workspace) !== notebookPath(map[active], workspace)
         ? { ...map, [active]: notebookRaw }
         : map;
-    const notebook = notebookPath(notebooks[active] ?? '');
+    const notebook = notebookPath(notebooks[active] ?? '', workspace);
     const version = String(src.zkVersion ?? '').trim().replace(/^v/i, '');
     const zkPathRaw = String(src.zkPath ?? '').trim();
     return {
@@ -114,7 +120,8 @@ export function normalizeConfig(raw) {
         structure: src.structure === 'layered' ? 'layered' : 'flat',
         archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
         zkVersion: /^\d+\.\d+\.\d+$/.test(version) ? version : DEFAULTS.zkVersion,
-        zkPath: zkPathRaw ? resolveInWorkspace(expandHome(zkPathRaw)) : '',
+        // zk 可执行文件是整台机器共享的，不跟着会话工作区漂 —— 相对路径按进程工作区解析
+        zkPath: zkPathRaw ? resolveInWorkspace(expandHome(zkPathRaw), processWorkspace()) : '',
     };
 }
 /** 落盘用：去掉派生的 notebook（磁盘上只有 notebooks + active 这一个真相） */
@@ -123,10 +130,13 @@ function toDisk(cfg) {
     delete out.notebook;
     return out;
 }
-/** 读配置（每次现读：设置页保存后工具下一句就看到新值，没有缓存要失效） */
-export function config() {
+/**
+ * 读配置（每次现读：设置页保存后工具下一句就看到新值，没有缓存要失效）。
+ * workspace 只在解析「空 / 相对」笔记本路径时用到：工具传会话 cwd，其余场景用进程工作区。
+ */
+export function config(workspace = processWorkspace()) {
     const raw = readJson(CFG_FILE, {});
-    const next = normalizeConfig(raw);
+    const next = normalizeConfig(raw, workspace);
     // 0.1.x 的配置没有 structure / archiveDir，0.2.x 的没有 notebooks / active：显式落盘默认值。
     // 这样以后翻默认值时，老 vault 的配置里已经有确定值，不会被顺手改掉（计划 §8）。
     if (Object.keys(raw).length > 0 && (!('structure' in raw) || !('notebooks' in raw))) {
@@ -141,15 +151,15 @@ export function config() {
  * 切到某个笔记本（只看不改：不动磁盘、不改配置）。
  * 名字不在 notebooks 里就按空路径算（= 工作区默认位置），调用方自己先校验。
  */
-export function selectNotebook(cfg, name) {
+export function selectNotebook(cfg, name, workspace = processWorkspace()) {
     const notebooks = { ...cfg.notebooks };
     if (!(name in notebooks))
         notebooks[name] = '';
-    return normalizeConfig({ ...toDisk(cfg), notebooks, active: name });
+    return normalizeConfig({ ...toDisk(cfg), notebooks, active: name }, workspace);
 }
 /** 合并写入（只写白名单键），返回归一化后的完整配置 */
-export function writeConfig(patch) {
-    const current = config();
+export function writeConfig(patch, workspace = processWorkspace()) {
+    const current = config(workspace);
     const merged = { ...toDisk(current) };
     for (const [k, v] of Object.entries(patch)) {
         if (CONFIG_KEYS.includes(k))
@@ -165,7 +175,7 @@ export function writeConfig(patch) {
     if ('notebook' in patch && !hasNotebooks)
         notebooks[active] = String(patch.notebook ?? '').trim();
     delete merged.notebook;
-    const next = normalizeConfig({ ...merged, notebooks, active });
+    const next = normalizeConfig({ ...merged, notebooks, active }, workspace);
     writeJson(CFG_FILE, toDisk(next));
     return next;
 }

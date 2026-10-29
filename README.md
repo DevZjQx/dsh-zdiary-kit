@@ -71,7 +71,7 @@ dsh plugin --profile desktop add "link:/path/to/dsh-zdiary-kit"
 | 分组 | 字段 | 说明 |
 |---|---|---|
 | 笔记本 | 当前笔记本（下拉） | 切换 = 改 `active`；`zk_*` 工具只认当前这一个 |
-| 笔记本 | 每个笔记本的路径 | 空 = `<工作区>/zdiary`（在工作区内，agent 能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本 |
+| 笔记本 | 每个笔记本的路径 | 空 = `<会话工作区>/zdiary`（在工作区内，agent 能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本 |
 | 目录与 group | 笔记子目录 / 日记子目录 | 默认 `notes` / `journal`（跟着当前笔记本走，不是每个笔记本各一套） |
 | 目录与 group | 日记 group 名 | 默认 `daily`，初始化时自动补配置 |
 | 目录与 group | 归档目录 | `supersede` 后搬到这里（保留原相对路径），默认 `archive` |
@@ -98,7 +98,7 @@ dsh plugin --profile desktop add "link:/path/to/dsh-zdiary-kit"
 }
 ```
 
-- `notebooks`：名字 → 路径。名字只接受字母、数字、`_` 与 `-`（1-32 字符）；路径为空就是 `<工作区>/zdiary`，相对路径按工作区解析。
+- `notebooks`：名字 → 路径。名字只接受字母、数字、`_` 与 `-`（1-32 字符）；路径为空就是 `<会话工作区>/zdiary`，相对路径按工作区解析。
 - `active`：当前笔记本的名字。名字不存在、非法时退回 `default`。
 - `notebook` 是**派生的**（`notebooks[active]` 解析后的绝对路径），只在内存里、不落盘 —— 磁盘上笔记本只有一个真相。
   老配置里那个单独的 `notebook` 字段读进来会自动变成 `notebooks.default`，不用手改。
@@ -235,8 +235,13 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   `file access denied under workspace-write mode`。要么把那个目录加进 `additionalWritableRoots`
   （只解决写），要么开会话到 `danger-full-access`。就算不放开，`zk_*` 工具照常能用 ——
   它们走插件自己的 `node:fs` 和 `zk` 子进程，不经这层策略。
-- **相对路径按工作区解析**，不是按进程 cwd：设置页里填 `zdiary` 就是 `<工作区>/zdiary`。
-  工作区的识别顺序是 `$DSH_WORKSPACE` → 进程 cwd。
+- **工作区按会话算**：`zk_*` 每次调用都从宿主拿这次会话的 cwd（`exec.agent.id` → `sessions.get(id).header.cwd`），
+  默认笔记本就是 `<会话工作区>/zdiary` —— 同一个宿主进程开多个工作区，各看各的，不用重启也不用改配置。
+- **显式配置优先**：笔记本写绝对路径就钉死；写相对路径（如 `zdiary`）则按上面那个工作区解析。
+- 拿不到会话上下文的调用（设置页、`zk-kit` 命令行、系统提示里的记忆注入）退回**进程工作区**：
+  `$DSH_WORKSPACE` → 进程 cwd（每次现读，不是启动时定死）。
+- 代价：注入到系统提示的 AGENTS / USER / MEMORY 走进程工作区，而工具按会话工作区 ——
+  多工作区共用宿主时，想让 agent 读**当前会话**那份记忆，用 `zk_context` 工具，别只依赖注入。
 
 ## 排错
 

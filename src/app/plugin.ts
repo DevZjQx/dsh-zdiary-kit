@@ -10,12 +10,14 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { json } from '../lib/http.ts'
-import { CFG_FILE } from '../config/paths.ts'
+import { CFG_FILE, processWorkspace } from '../config/paths.ts'
 import { config } from '../config/store.ts'
 import { registerZkTools } from '../features/zk-tools/feature.ts'
 import { registerSettings } from '../features/settings/feature.ts'
 import { buildMemoryPayload } from '../lib/memory.ts'
-import type { ConnectionLike, PluginContext, RouteHandler, SystemPromptLike, ToolsLike, WebServerLike } from '../lib/dsh.ts'
+import { sessionWorkspace } from '../lib/workspace.ts'
+import type { SessionsLike } from '../lib/workspace.ts'
+import type { ConnectionLike, PluginContext, RouteHandler, SystemPromptLike, ToolsLike, ToolRunContextLike, WebServerLike } from '../lib/dsh.ts'
 
 /** 系统提示里的段位：5000 是 TOOLS_SDK，9000 是交付物引用 —— 记忆落在两者之间的空档 */
 const MEMORY_SECTION_ORDER = 5200
@@ -102,10 +104,18 @@ export default {
     }
 
     // ── 工具 ────────────────────────────────────────────────────────────
+    /**
+     * 这次工具调用该用哪个工作区：会话 cwd 优先（exec.agent.id → sessions.get(id).header.cwd），
+     * 拿不到会话就退回进程工作区。同一个宿主进程开多个工作区时，各自看各自的 <工作区>/zdiary。
+     */
+    const workspaceOf = (exec: ToolRunContextLike | undefined): string => {
+      const sessions = service<SessionsLike>(ctx, 'sessions')
+      return sessionWorkspace(exec, sessions) ?? processWorkspace()
+    }
     const tools = service<ToolsLike>(ctx, 'tools')
     if (tools && typeof tools.register === 'function') {
       try {
-        disposers.push(registerZkTools(tools))
+        disposers.push(registerZkTools(tools, workspaceOf))
       } catch (err) {
         try { console.warn('[zdiary] 工具注册失败：' + (err instanceof Error ? err.message : String(err))) } catch { /* 无 console 也不该炸 */ }
       }
