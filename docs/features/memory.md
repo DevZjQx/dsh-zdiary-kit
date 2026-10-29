@@ -5,8 +5,10 @@
 
 **Owns.**
 - `lib/meta.ts`：meta 文件唯一清单（注入 3 份 / 排除 5 份），memory、zk、settings 共用
-- `lib/memory.ts`：读 `<vault>/AGENTS.md` / `USER.md` / `MEMORY.md` → 词数 → 机械截断 → `<system-reminder>` 框
-- `lib/agents-template.ts`：`AGENTS.md` 模板（layered 初始化时写入；约 150 词，因为它在预算里且永不截断）
+- `lib/memory.ts`：读 `<vault>/AGENTS.md` / `USER.md` / `MEMORY.md` → 词数 → 机械截断 → `<system-reminder>` 框；
+  另读 `DREAMS.md` 的「上次做梦」一行（不进正文、不计预算）
+- `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）
+- `lib/agents-template.ts`：`AGENTS.md` 模板（layered 初始化时写入；约 170 词，因为它在预算里且永不截断）
 - `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册 `zdiary:memory` 段（order 5200），`text` 是函数，每个 step 重新读文件；
   装配上下文带 `agent.id` 时按**会话工作区**解析笔记本（和 `zk_*` 工具同口径），裸装配才退回进程工作区
 - `zk_context` 工具：同一份 payload，给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用
@@ -37,3 +39,11 @@
 `AGENTS.md 占 120/200 词且不参与截断，留给 USER / MEMORY 的只有 80 词`；
 没截断时一个字都不加（不为诊断污染每步的载荷），AGENTS 自己超预算时也不加（「预算不足」那条已经点了名）。
 这条只写在 `buildMemoryPayload` 一处 —— 注入、`zk_context`、设置页、`doctor` 读的都是同一份载荷。
+
+**周节奏靠注入提醒，不装定时器。** 插件不跑 cron（计划 §11），但模型自己算「过了几天」不可靠，
+所以把日期算术机械化：`DREAMS.md` 里写一行 `上次做梦：YYYY-MM-DD`，`buildMemoryPayload` 每步读它，
+到期（≥ 7 天）才在载荷末尾加一句「该 zk_lint → zk_dream → 写 DREAMS.md 并更新这一行」。
+四种静默/降级：没有 `DREAMS.md` 就说「从未整理过」（**冷启动**：否则这套节奏对从没跑过 `zk_dream` 的库
+永远不生效）；有文件没日期行只说「无法判断」（不猜日期）；日期不合法同样只说明；
+**整段提醒只在根目录有 `AGENTS.md` 时出现** —— 没采用这套工作约定的库不该每步被催。
+这一行**不计入预算**、不参与截断，也不写进 `files` —— 它不是被注入的记忆，是给模型的一个机械提醒。

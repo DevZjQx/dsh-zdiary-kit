@@ -29,5 +29,6 @@ notes/{concepts,entities,patterns}/ 原子笔记 · archive/ 废弃笔记（不�
 
 ## 每周
 
+整理后把「上次做梦：YYYY-MM-DD」写进 DREAMS.md 开头；注入提示到期（或没这一行）再跑：
 zk_lint → zk_dream → 写 DREAMS.md（晋升/拒绝/待查）→ 人裁决后改 MEMORY.md。
 `;

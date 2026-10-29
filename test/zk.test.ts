@@ -320,6 +320,38 @@ describe('memory', () => {
     expect(p.words).toBeGreaterThan(50)
   })
 
+  test('做梦提醒：只认 AGENTS.md；没有它一个字都不加', () => {
+    const p = build({ 'USER.md': '中文回答。' })
+    expect(p.text).not.toContain('做梦')
+  })
+
+  test('做梦提醒：有 AGENTS.md 但没做过梦 → 提示先跑一次', () => {
+    const p = build({ 'AGENTS.md': 'rule' })
+    expect(p.text).toContain('从未整理过')
+    expect(p.text).toContain('zk_dream')
+  })
+
+  test('做梦提醒：未到期只报日期，到期才给动作', () => {
+    const day = (offset: number) => {
+      const d = new Date()
+      d.setDate(d.getDate() + offset)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    }
+    const fresh = build({ 'AGENTS.md': 'rule', 'DREAMS.md': `# 梦\n\n上次做梦：${day(-2)}\n` })
+    expect(fresh.text).toContain('未到 7 天')
+    expect(fresh.text).not.toContain('zk_dream')
+
+    const stale = build({ 'AGENTS.md': 'rule', 'DREAMS.md': `# 梦\n\n上次做梦：${day(-9)}\n` })
+    expect(stale.text).toContain('（9 天前）')
+    expect(stale.text).toContain('zk_dream')
+  })
+
+  test('做梦提醒：DREAMS.md 没标记就不猜，只说明无法判断', () => {
+    const p = build({ 'AGENTS.md': 'rule', 'DREAMS.md': '# 梦\n\n只有报告，没有日期行\n' })
+    expect(p.text).toContain('没有「上次做梦')
+    expect(p.text).not.toContain('zk_dream')
+  })
+
   test('有 systemPrompt 时注册 zdiary:memory；没有时安静跳过', async () => {
     const plugin = (await import('../src/app/plugin.ts')).default
     const sections: Array<{ name: string; order: number; text: string | (() => string) }> = []
@@ -777,6 +809,18 @@ describe('M3: 巡检与做梦', () => {
     expect(dreamLib.looseEndsOf(src)).toEqual(['补数据', '回邮件'])
     expect(dreamLib.looseEndsOf('## 未完成\n\n1. 甲\n')).toEqual(['1. 甲'])
     expect(dreamLib.looseEndsOf('# 没有小节\n正文')).toEqual([])
+  })
+
+  test('lastDreamDate：只认整齐的一行；daysSinceDream 按日历天算', () => {
+    expect(dreamLib.lastDreamDate('# 梦\n\n上次做梦：2026-10-22\n')).toBe('2026-10-22')
+    expect(dreamLib.lastDreamDate('- **上次做梦**：2026-10-22')).toBe('2026-10-22')
+    expect(dreamLib.lastDreamDate('上次做梦是在 2026-10-22 那天')).toBeNull()
+    expect(dreamLib.lastDreamDate('# 梦\n\n没有标记\n')).toBeNull()
+
+    const lateNight = new Date(2026, 9, 29, 23, 30)
+    expect(dreamLib.daysSinceDream('2026-10-22', lateNight)).toBe(7)
+    expect(dreamLib.daysSinceDream('2026-10-29', lateNight)).toBe(0)
+    expect(dreamLib.daysSinceDream('2026-1-1', lateNight)).toBeNull()
   })
 
   test('透传参数：会破坏不变量的 flag 被丢掉，查询条件保留', () => {

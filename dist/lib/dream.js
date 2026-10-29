@@ -16,6 +16,36 @@ export const MAX_ITEMS = 50;
 export const TOP_CITED = 10;
 /** `## Loose ends` / `## 未完成` / `## 待办` 都算（大小写不敏感，单复数都认） */
 const LOOSE_HEADING = /^##\s+(loose ends?|未完成|待办(?:事项)?)\s*$/i;
+/** 周节奏：AGENTS.md 的「每周」就按这个天数算。没有定时器，只在记忆注入里提醒到期 */
+export const DREAM_INTERVAL_DAYS = 7;
+/** DREAMS.md 的标记行：`上次做梦：2026-10-22`（列表符号 / 引用符 / 加粗都能容忍） */
+const DREAM_STAMP = /^\s*(?:[-*+>]\s*)?(?:\*\*)?上次做梦(?:\*\*)?\s*[：:]\s*(\d{4})-(\d{2})-(\d{2})\s*$/;
+/**
+ * 读 DREAMS.md 正文里的「上次做梦」日期（YYYY-MM-DD）。
+ * 只认整齐的一行：这段值是**人/agent 写的**，被夹在句子里时宁可当没有，也不猜。
+ */
+export function lastDreamDate(body) {
+    for (const line of String(body ?? '').split('\n')) {
+        const m = DREAM_STAMP.exec(line);
+        if (m)
+            return `${m[1]}-${m[2]}-${m[3]}`;
+    }
+    return null;
+}
+/**
+ * 距上次做梦几天。按**本地日历天**算（不是毫秒差 / 86400000 再取整 ——
+ * 夏时制会给出 6.958 天，floor 成 6，于是「满 7 天」永远差一天）。
+ */
+export function daysSinceDream(last, now = new Date()) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(last ?? '').trim());
+    if (!m)
+        return null;
+    const at = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    if (Number.isNaN(at.getTime()))
+        return null;
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return Math.round((today.getTime() - at.getTime()) / 86_400_000);
+}
 /**
  * 从日记正文里取 Loose ends 小节。
  * `- [x]` 是已完成，不收；`- [ ]` 与普通列表项都收（划掉的状态比格式重要）。
