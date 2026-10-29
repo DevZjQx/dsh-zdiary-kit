@@ -731,7 +731,6 @@ describe('M2: 结构化检索与废弃', () => {
     expect(replay.alreadySuperseded).toBe(true)
     expect(replay.performed).toBe(false)
     expect(replay.reason).toBe(reason)
-    expect(replay.performed).toBe(false)
   })
 
   it('supersede-reason：单行、带冒号/引号也能安全落盘并读回', async () => {
@@ -764,6 +763,7 @@ describe('M2: 结构化检索与废弃', () => {
     expect(hits[0].reason).toBe('数据源错了')
     expect(await zk.archivedSameTitle(m2, '没有这个标题')).toEqual([])
   })
+
   it('supersede 拒绝：替代者不存在 / 自己也是废弃的 / 目标不存在', async () => {
     const a = await note('待废弃甲', 'notes/concepts', '甲')
     const b = await note('待废弃乙', 'notes/concepts', '乙')
@@ -872,7 +872,10 @@ describe('M3: 巡检与做梦', () => {
   })
 
   it('dream：候选 / 机械拒绝 / daily 未完成 / 被引用排行', async () => {
+    await notebookLib.ensureNotebook(m3)
     const candidate = await note('可晋升概念', 'notes/concepts', '有标签的正文 #keep')
+    const source = await note('候选入链来源', 'notes/sources', '来源正文 #src')
+    await zk.linkNotes(m3, source.path, candidate.path)
     const tagless = await note('无标签笔记', 'notes/concepts', '正文一句标签都没有')
     const informal = await zk.createNote(m3, {
       title: '口头传闻',
@@ -890,6 +893,10 @@ describe('M3: 巡检与做梦', () => {
     const dream = await dreamLib.dreamNotebook(m3, { days: 7 })
     const candidates = dream.newNotes.map((n) => n.path)
     expect(candidates).toContain(candidate.path)
+    const hit = dream.newNotes.find((n) => n.path === candidate.path)
+    expect(hit?.lead).toContain('有标签的正文')
+    expect(hit?.cited).toBe(1)
+    expect(hit?.citedBy).toContain(source.path)
     expect(dream.rejected.map((r) => r.path)).toContain(informal.path)
     expect(dream.rejected.find((r) => r.path === informal.path)?.reason).toMatch(/informal/)
     expect(dream.rejected.map((r) => r.path)).toContain(tagless.path)

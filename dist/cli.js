@@ -169,7 +169,9 @@ function dreamReport(r) {
         lines.push('晋升候选：');
         for (const [i, n] of r.newNotes.slice(0, 10).entries()) {
             const tags = n.tags.length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : '';
-            lines.push(`  ${i + 1}. ${n.title || n.path}  [${n.type || '—'} · ${n.authority || '—'}]  ${n.path}${tags} · 被引 ${n.cited}`);
+            const lead = n.lead ? `\n     ${n.lead}` : '';
+            const citedBy = n.citedBy.length ? `\n     被引：${n.citedBy.join('、')}` : '';
+            lines.push(`  ${i + 1}. ${n.title || n.path}  [${n.type || '—'} · ${n.authority || '—'}]  ${n.path}${tags} · 被引 ${n.cited}${lead}${citedBy}`);
         }
         if (r.newNotes.length > 10)
             lines.push(`  …还有 ${r.newNotes.length - 10} 篇`);

@@ -691,7 +691,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
         t({
             name: 'zk_dream',
             description: '整理晋升材料：最近 N 天新增的笔记（机械筛掉 authority=informal 与无标签的，其余作为候选）、' +
-                'daily 里没划掉的 Loose ends、被引用最多的笔记。' +
+                'daily 里没划掉的 Loose ends、被引用最多的笔记。候选带正文摘要（lead）与入链来源（citedBy），方便重放上下文。' +
                 '只返回材料：写 MEMORY.md / DREAMS.md 由你按 AGENTS.md 决定，这个工具不写任何文件。',
             parameters: {
                 type: 'object',
@@ -722,8 +722,10 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             authority: { type: 'string' },
                             tags: { type: 'array', items: { type: 'string' } },
                             created: { type: 'string' },
+                            lead: { type: 'string' },
                             cited: { type: 'number' },
-                        }, ['title', 'path', 'type', 'authority', 'tags', 'created', 'cited']),
+                            citedBy: { type: 'array', items: { type: 'string' } },
+                        }, ['title', 'path', 'type', 'authority', 'tags', 'created', 'lead', 'cited', 'citedBy']),
                     },
                     rejected: {
                         type: 'array',
@@ -759,9 +761,11 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     lines.push('晋升候选：');
                     for (const [i, n] of v.newNotes.slice(0, 10).entries()) {
                         const badges = [n.type || '—', n.authority || '—'].join(' · ');
+                        const lead = n.lead ? '\n     ' + n.lead : '';
+                        const citedBy = n.citedBy.length ? '\n     被引：' + n.citedBy.join('、') : '';
                         lines.push('  ' + (i + 1) + '. ' + (n.title || n.path) + '  [' + badges + ']  ' + n.path +
                             (n.tags.length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : '') +
-                            ' · 被引 ' + n.cited);
+                            ' · 被引 ' + n.cited + lead + citedBy);
                     }
                     if (v.newNotes.length > 10)
                         lines.push('  …还有 ' + (v.newNotes.length - 10) + ' 篇');

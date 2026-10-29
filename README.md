@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 0.4.1
+# dsh-zdiary-kit 0.5.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -20,7 +20,7 @@
 | `zk_supersede` | 废弃过时结论：标 `superseded` + 写 `reason` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演 |
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）；宿主支持注入时每轮已自动带进系统提示 |
 | `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 缺反链 / 陈旧 / 重名标题 / 记忆链接失效，每类最多 50 条；只报告不改写 |
-| `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签）、daily 未完成项、被引最多；只报告 |
+| `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、daily 未完成项、被引最多；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded） |
 
 写笔记前 agent 会先 `zk_search` 查重；flat 笔记本的 `zk_new` 还会按标题再查一次，重复直接报错。

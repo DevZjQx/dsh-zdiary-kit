@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { allNotes, graphEdges, localDate, MAX_SCAN } from './zk.js';
+import { parseFrontmatter } from './frontmatter.js';
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
 export const MAX_ITEMS = 50;
 /** topCited 只取前几名：给 agent 一个「本周被反复引用」的提示，不是排行榜 */
@@ -85,6 +86,39 @@ function isUnder(rel, dir) {
     const d = dir.replace(/\/+$/, '');
     return rel === d || rel.startsWith(d + '/');
 }
+/**
+ * 机械摘要：frontmatter 之后、第一个正文段落，压空白后最多 200 字。
+ * 为什么不用 NoteRecord.lead：zk 的 lead 是笔记首行（通常是标题行），当摘要没有信息量。
+ * 读失败就退回 lead（哪怕是标题行），不让 dream 因为一篇坏文件整批失败。
+ */
+function excerptOf(cfg, note) {
+    let body = '';
+    try {
+        const abs = note.absPath || path.join(cfg.notebook, note.path);
+        body = parseFrontmatter(fs.readFileSync(abs, 'utf8')).body;
+    }
+    catch {
+        return note.lead;
+    }
+    const parts = [];
+    for (const raw of body.split('\n')) {
+        const line = raw.trim();
+        if (!line) {
+            if (parts.length)
+                break;
+            continue;
+        }
+        if (/^#{1,6}\s/.test(line)) {
+            if (parts.length)
+                break;
+            continue;
+        }
+        parts.push(line);
+        if (parts.join(' ').length >= 200)
+            break;
+    }
+    return parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 200) || note.lead;
+}
 export async function dreamNotebook(cfg, opts = {}, signal) {
     const windowDays = Math.min(365, Math.max(1, Math.trunc(opts.days ?? 7)));
     const now = opts.now ?? new Date();
@@ -92,13 +126,17 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
     // 顺序跑：两个 zk 进程同时补索引会撞 SQLite 写锁（lint 里同样处理）
     const notes = await allNotes(cfg, {}, signal);
     const edges = await graphEdges(cfg, signal);
+    // 入链来源按目标分组：既算「被引几次」，也给 dream 一份上下文（谁在引它）
     const inbound = new Map();
     for (const edge of edges) {
         if (edge.sourcePath === edge.targetPath)
             continue;
-        inbound.set(edge.targetPath, (inbound.get(edge.targetPath) ?? 0) + 1);
+        const sources = inbound.get(edge.targetPath) ?? [];
+        if (!sources.includes(edge.sourcePath))
+            sources.push(edge.sourcePath);
+        inbound.set(edge.targetPath, sources);
     }
-    const citedOf = (n) => inbound.get(n.path) ?? 0;
+    const citedOf = (n) => inbound.get(n.path)?.length ?? 0;
     const windowNotes = notes
         .filter((n) => {
         const at = Date.parse(n.created);
@@ -123,7 +161,9 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
             authority: note.authority,
             tags: note.tags,
             created: localDate(note.created),
+            lead: excerptOf(cfg, note),
             cited: citedOf(note),
+            citedBy: (inbound.get(note.path) ?? []).slice(0, 5),
         });
     }
     const dailyLooseEnds = [];

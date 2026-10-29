@@ -531,3 +531,13 @@ supersede 只记「哪条替代了哪条」，不记「为什么废」。错误�
   判断「是不是同一个错误」仍然是 agent 的活。
 - `parseFrontmatter` 对双引号值改走 JSON 解析：`\"` 与 `\n` 读回来才是原字符。
 - 测试 86 pass；`bun run check` / `bun run smoke` 全绿。
+
+## 17. v0.5.0：dream 的可重放材料
+
+Dream-RSI 的教训是「把过去压缩成结论再注入」不如让 agent 重放材料。dream 不再只给候选标题：
+
+- `newNotes` 增加 `lead`（frontmatter 之后第一段正文，压空白后 ≤200 字；不是 zk 的标题行）
+  与 `citedBy`（入链来源前 5 条）；`cited` 计数保留。
+- 一次 `zk graph` 同时算计数与来源，不按笔记逐条跑；读失败退回 `NoteRecord.lead`。
+- 仍然只读：晋升判断、写 MEMORY.md / DREAMS.md 还是 agent 的活。
+- 测试 86 pass；`bun run check` / `bun run smoke` 全绿。
