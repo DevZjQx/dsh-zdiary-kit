@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 0.4.0
+# dsh-zdiary-kit 0.4.1
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -13,11 +13,11 @@
 | `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要 |
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active） |
 | `zk_read` | 读一篇全文（按路径，或先按词找最相关的一篇）；超长会截断并标注 |
-| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带标签与双链；flat 下按标题查重，重复直接报错；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 一律拒写（写进去会被排除出索引，等于静默消失） |
+| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带标签与双链；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 一律拒写（写进去会被排除出索引，等于静默消失） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题） |
 | `zk_daily` | 打开/创建某天的日记，并追加一条 `## HH:MM` 记录 |
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题） |
-| `zk_supersede` | 废弃过时结论：标 `superseded` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演 |
+| `zk_supersede` | 废弃过时结论：标 `superseded` + 写 `reason` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演 |
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）；宿主支持注入时每轮已自动带进系统提示 |
 | `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 缺反链 / 陈旧 / 重名标题 / 记忆链接失效，每类最多 50 条；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签）、daily 未完成项、被引最多；只报告 |
@@ -275,6 +275,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | `Read` / `Edit` 笔记本报 `file access denied under workspace-write mode` | 笔记本被指到了工作区外。改用 `zk_*` 工具（不经这层策略），或把目录加进 `additionalWritableRoots`，或开会话到 `danger-full-access` |
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「补建 *名* 的目录」，别手改配置去将就磁盘 |
 | 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |
+| 新建时提示「归档里有同名旧结论」 | 允许复用标题，但先 `zk_read` 归档那篇，确认不是同一个错误；插件只警告、不拦 |
 | 往 `raw/` 写笔记报「只读」 | `raw/` 是原始材料：写进去的笔记会被排除出索引，表现成「写了但搜不到」；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` 直接拒绝 | 结论写到 `notes/`；原文留在原位，用 `zk_read raw/xxx.md` 或直接读文件对照 |
 | `config set notebook=…` 报「派生值」 | `notebook` 是 `notebooks[active]` 解析后的派生值、不落盘也不可写：改路径用 `zk-kit notebooks add 名 路径`，切换用 `use` |
 

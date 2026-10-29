@@ -16,7 +16,7 @@ import type { SchemaNode } from '../../lib/tool.ts'
 import { ensureNotebook } from '../../lib/notebook.ts'
 import {
   searchNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily,
-  linkNotes, withTags, notebookStats, supersedeNote, localDate as dateOnly, ZkError,
+  linkNotes, withTags, notebookStats, supersedeNote, archivedSameTitle, localDate as dateOnly, ZkError,
 } from '../../lib/zk.ts'
 import type { NoteRecord, NoteDoc, SupersedeResult } from '../../lib/zk.ts'
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
@@ -370,6 +370,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       description:
         '新建一篇笔记（zk 负责生成文件名、套用模板、写入索引）。适合记下一个概念、决定、来源或想法；' +
         '写前先 zk_search 查重。标题重复会直接报错（flat 按标题查重，layered 同目录同名 slug 也会被 zk 拒绝）。' +
+        '归档里有同名旧结论不会拦，但会放进 archived（带 supersede-reason）：先读它，别把同一个错误结论重新提出来。' +
         'type / authority 只有 layered 模板会写进 frontmatter。tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。',
       parameters: {
         type: 'object',
@@ -393,8 +394,16 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           title: { type: 'string' },
           tags: { type: 'array', items: { type: 'string' } },
           links: { type: 'array', items: { type: 'string' } },
+          archived: {
+            type: 'array',
+            items: objSchema({
+              path: { type: 'string' },
+              title: { type: 'string' },
+              reason: { type: 'string' },
+            }, ['path', 'title', 'reason']),
+          },
           warnings: { type: 'array', items: { type: 'string' } },
-        }, ['notebook', 'path', 'title', 'tags', 'links', 'warnings']),
+        }, ['notebook', 'path', 'title', 'tags', 'links', 'archived', 'warnings']),
       },
       async run(args, env) {
         const cfg = config(env.workspace)
@@ -419,13 +428,23 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             warnings.push(`${target}：${err instanceof Error ? err.message : String(err)}`)
           }
         }
-        return { notebook: cfg.notebook, path: created.path, title: created.title, tags, links, warnings }
+        // 归档同名只是提醒：zk_new 的查重本来就不含 archive，允许复用标题 —— 但要把废弃原因一起交出来
+        const archived = await archivedSameTitle(cfg, created.title, env.signal)
+        return { notebook: cfg.notebook, path: created.path, title: created.title, tags, links, archived, warnings }
       },
       render(_args, value) {
-        const v = value as { notebook: string; path: string; title: string; tags: string[]; links: string[]; warnings: string[] }
+        const v = value as {
+          notebook: string; path: string; title: string; tags: string[]; links: string[]
+          archived: Array<{ path: string; title: string; reason: string }>; warnings: string[]
+        }
         const lines = [`已记下「${v.title}」→ ${v.path}`]
         if (v.tags.length) lines.push('标签：' + v.tags.map((t) => '#' + t).join(' '))
         if (v.links.length) lines.push('双链：' + v.links.join(' '))
+        if (v.archived.length) {
+          lines.push('⚠️ 归档里有同名旧结论：' + v.archived.map((h) =>
+            h.path + (h.reason ? `（废弃原因：${h.reason}）` : '（没有记录废弃原因）')).join('；') +
+            ' —— 先读它，确认不是同一个结论再复用标题')
+        }
         if (v.warnings.length) lines.push('⚠️ 链接没建成：' + v.warnings.join('；'))
         lines.push('笔记本：' + v.notebook)
         return text(lines.join('\n'))
@@ -544,12 +563,14 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       name: 'zk_supersede',
       description:
         '废弃一篇笔记：frontmatter 标 superseded、写入替代它的笔记、把能精确匹配的 [[旧路径]] 入链改到归档路径、再把文件搬进 archive/（保留原相对路径；其它写法的入链列进 missingLinks）。' +
-        '默认 dry_run: true，只返回受影响清单；确认后传 dry_run: false 才真改。结论变了（不是删掉，是过时）时用它。',
+        '默认 dry_run: true，只返回受影响清单；确认后传 dry_run: false 才真改。结论变了（不是删掉，是过时）时用它。' +
+        'reason 会写进归档 frontmatter 的 supersede-reason：下次有人建同名笔记时会被带出来，防止同一个错误结论被重新提出。',
       parameters: {
         type: 'object',
         properties: {
           path: S.str('要废弃的笔记（相对路径）'),
           by: S.str('替代它的笔记（相对路径或标题）；不给 = 只废弃、没有接班人'),
+          reason: S.str('为什么废弃（一句话、单行；写进归档 frontmatter，≤200 字）'),
           dry_run: S.bool('true（默认）= 只出清单不改文件；false = 真的执行'),
         },
         required: ['path'],
@@ -561,6 +582,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           path: { type: 'string' },
           archivePath: { type: 'string' },
           supersededBy: { type: 'string' },
+          reason: { type: 'string' },
           dryRun: { type: 'boolean' },
           performed: { type: 'boolean' },
           alreadySuperseded: { type: 'boolean' },
@@ -569,7 +591,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             items: objSchema({ path: { type: 'string' }, replaced: { type: 'number' } }, ['path', 'replaced']),
           },
           missingLinks: { type: 'array', items: { type: 'string' } },
-        }, ['notebook', 'path', 'archivePath', 'supersededBy', 'dryRun', 'performed', 'alreadySuperseded', 'rewrittenLinks', 'missingLinks']),
+        }, ['notebook', 'path', 'archivePath', 'supersededBy', 'reason', 'dryRun', 'performed', 'alreadySuperseded', 'rewrittenLinks', 'missingLinks']),
       },
       async run(args, env) {
         const cfg = config(env.workspace)
@@ -577,6 +599,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const r = await supersedeNote(cfg, {
           path: String(args.path),
           by: args.by ? String(args.by) : undefined,
+          reason: args.reason ? String(args.reason) : undefined,
           // 缺省是预演：一句「更新一下 wiki」不该让全库漂移（计划 D7）
           dryRun: args.dry_run !== false,
         }, env.signal)
@@ -585,6 +608,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           path: r.path,
           archivePath: r.archivePath,
           supersededBy: r.supersededBy ?? '',
+          reason: r.reason ?? '',
           dryRun: r.dryRun,
           performed: r.performed,
           alreadySuperseded: r.alreadySuperseded,
@@ -594,7 +618,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       },
       render(_args, value) {
         const v = value as SupersedeResult & { notebook: string; supersededBy: string }
-        if (v.alreadySuperseded) return text(`「${v.path}」已经是 superseded，本次什么都没改。`)
+        if (v.alreadySuperseded) {
+          return text(`「${v.path}」已经是 superseded，本次什么都没改。` +
+            (v.reason ? `\n废弃原因：${v.reason}` : ''))
+        }
         const lines: string[] = []
         if (v.dryRun) {
           lines.push(`预演（没有动任何文件）：${v.path} → ${v.archivePath}`)
@@ -602,6 +629,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           lines.push(`已归档：${v.path} → ${v.archivePath}`)
         }
         if (v.supersededBy) lines.push(`接班人：${v.supersededBy}`)
+        if (v.reason) lines.push(`${v.dryRun ? '将记录' : '已记录'}废弃原因：${v.reason}`)
         if (v.rewrittenLinks.length) {
           lines.push(`${v.dryRun ? '将重写' : '已重写'} ${v.rewrittenLinks.length} 篇笔记的入链：`)
           for (const item of v.rewrittenLinks) lines.push(`  · ${item.path}（${item.replaced} 处）`)

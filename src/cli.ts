@@ -13,7 +13,7 @@ import { installZk } from './lib/install.ts'
 import {
   resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
   appendDaily, linkNotes, notebookStats, indexNotebook, withTags, hasNotebook, localDate, ZkError,
-  allNotes, parseErrorWarnings,
+  allNotes, parseErrorWarnings, archivedSameTitle,
 } from './lib/zk.ts'
 import type { NoteRecord } from './lib/zk.ts'
 import { formatMemoryLinks, lintNotebook } from './lib/lint.ts'
@@ -292,7 +292,11 @@ async function main(): Promise<void> {
         content: withTags(str(flags.body), tags),
         dir: str(flags.dir) || cfg.notesDir,
       })
-      print(json ? { ...created, tags } : `已创建 ${created.path}${tags.length ? ' · ' + tags.map((t) => '#' + t).join(' ') : ''}`, json)
+      const archived = await archivedSameTitle(cfg, created.title)
+      print(json ? { ...created, tags, archived } : `已创建 ${created.path}${tags.length ? ' · ' + tags.map((t) => '#' + t).join(' ') : ''}`, json)
+      for (const hit of archived) {
+        console.error(`⚠️ 归档里有同名旧结论：${hit.path}${hit.reason ? `（废弃原因：${hit.reason}）` : '（没有记录废弃原因）'} —— 先读它，确认不是同一个结论再复用标题`)
+      }
       return
     }
 

@@ -40,6 +40,15 @@ export function localDate(iso) {
 function normalizeTitle(title) {
     return String(title ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
+/** 废弃原因最多这么长：frontmatter 是给人看的审计线，不是自由文本容器 */
+const MAX_SUPERSEDE_REASON = 200;
+/** 一句话、单行；换行会弄坏 frontmatter，超长机械截断（不判断内容） */
+function normalizeReason(input) {
+    const one = String(input ?? '').replace(/\s+/g, ' ').trim();
+    if (!one)
+        return null;
+    return one.length > MAX_SUPERSEDE_REASON ? one.slice(0, MAX_SUPERSEDE_REASON - 1) + '…' : one;
+}
 export function managedBin() {
     return path.join(BIN_DIR, process.platform === 'win32' ? 'zk.exe' : 'zk');
 }
@@ -522,6 +531,33 @@ export async function createNote(cfg, input, signal) {
     }
     return { path: relPathOf(cfg, abs), absPath: abs, title };
 }
+/**
+ * 归档里同名的旧结论 —— 机械查重，不判断「是不是同一个错误」。
+ *
+ * zk_new 的标题查重只看活笔记，旧结论被 supersede 后标题就空出来了。允许复用，
+ * 但要把 supersede-reason 一起带出来：重新提出同样的错误结论，通常从复用这个标题开始。
+ * 查不到 / zk 跑不起来都返回空数组：这是提醒，不是写入前的硬门槛。
+ */
+export async function archivedSameTitle(cfg, title, signal) {
+    const key = normalizeTitle(title);
+    if (!key || !hasNotebook(cfg))
+        return [];
+    let notes;
+    try {
+        notes = await allNotes(cfg, { includeArchived: true }, signal);
+    }
+    catch {
+        return [];
+    }
+    return notes
+        .filter((n) => n.path === cfg.archiveDir || n.path.startsWith(`${cfg.archiveDir}/`))
+        .filter((n) => normalizeTitle(n.title) === key)
+        .map((n) => ({
+        path: n.path,
+        title: n.title,
+        reason: String(n.metadata['supersede-reason'] ?? '').trim(),
+    }));
+}
 /** 往一篇笔记末尾追加（自动补空行；可选先写一个二级标题） */
 export function appendToNote(cfg, p, text, opts = {}) {
     const abs = absPathOf(cfg, p);
@@ -680,6 +716,7 @@ async function inboundSources(cfg, rel, signal) {
  */
 export async function supersedeNote(cfg, opts, signal) {
     const dryRun = opts.dryRun !== false;
+    const reason = normalizeReason(opts.reason);
     const abs = absPathOf(cfg, opts.path);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile())
         throw new ZkError(`笔记不存在：${opts.path}`);
@@ -696,6 +733,7 @@ export async function supersedeNote(cfg, opts, signal) {
             path: rel,
             archivePath: inArchive ? rel : `${cfg.archiveDir}/${rel}`,
             supersededBy: fields['superseded-by'] ?? null,
+            reason: fields['supersede-reason'] ?? null,
             rewrittenLinks: [],
             missingLinks: [],
         };
@@ -751,10 +789,14 @@ export async function supersedeNote(cfg, opts, signal) {
             fs.writeFileSync(sourceAbs, text.split(`[[${oldStem}]]`).join(`[[${newStem}]]`), 'utf8');
     }
     if (!dryRun) {
-        fs.writeFileSync(abs, setFrontmatter(content, {
+        const patch = {
             status: 'superseded',
             'superseded-by': byStem ? `[[${byStem}]]` : undefined,
-        }), 'utf8');
+        };
+        // JSON.stringify = 合法的 YAML 双引号标量：原因里带冒号也不会把 frontmatter 写坏
+        if (reason)
+            patch['supersede-reason'] = JSON.stringify(reason);
+        fs.writeFileSync(abs, setFrontmatter(content, patch), 'utf8');
         fs.mkdirSync(path.dirname(archiveAbs), { recursive: true });
         fs.renameSync(abs, archiveAbs);
     }
@@ -765,6 +807,7 @@ export async function supersedeNote(cfg, opts, signal) {
         path: rel,
         archivePath,
         supersededBy: byStem ? `[[${byStem}]]` : null,
+        reason,
         rewrittenLinks,
         missingLinks,
     };

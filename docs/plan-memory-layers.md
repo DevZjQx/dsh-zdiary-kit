@@ -519,3 +519,15 @@ v0.4.0 把「读哪段」下移给 agent，插件只负责让被丢的内容仍�
 - 不改：截断顺序（MEMORY 尾 → USER 尾 → 首段）、AGENTS 永不截断、词数口径。
 - 测试 83 pass（新增：目录内容与上限、`truncatedWords` 只算正文、目录计入预算、
   `zk_read MEMORY.md` 真能取回、目录标题同样转义）；`bun run check` / `bun run smoke` 全绿。
+
+## 16. v0.4.1：废弃原因 + 同名旧结论预警
+
+supersede 只记「哪条替代了哪条」，不记「为什么废」。错误前提最容易以「标题复用」的方式回来：
+`zk_new` 的查重只看活笔记，旧结论一归档，标题就空出来了。v0.4.1 只补机械记录与提醒（D5 不变）：
+
+- `zk_supersede` 新增可选 `reason`：单行、≤200 字、YAML 双引号落盘到 `supersede-reason`；
+  `dry_run` 也回显，重放返回已有值。
+- `zk_new` / `zk-kit new`：归档里同名时返回 `archived`（路径 + 原因）并警告，不拦。
+  判断「是不是同一个错误」仍然是 agent 的活。
+- `parseFrontmatter` 对双引号值改走 JSON 解析：`\"` 与 `\n` 读回来才是原字符。
+- 测试 86 pass；`bun run check` / `bun run smoke` 全绿。

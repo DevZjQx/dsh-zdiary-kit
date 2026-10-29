@@ -31,9 +31,11 @@ export function parseFrontmatter(content: string): { fields: FrontmatterFields; 
 
 function stripQuotes(raw: string): string {
   const v = raw.trim()
-  if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
-    return v.slice(1, -1)
+  // 双引号走 JSON：这样 \" 与 \n 这类转义读回来才是原字符，而不是带反斜杠的字面量
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+    try { return String(JSON.parse(v)) } catch { return v.slice(1, -1) }
   }
+  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1)
   return v
 }
 

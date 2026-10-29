@@ -91,6 +91,16 @@ function normalizeTitle(title: string): string {
   return String(title ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
 }
 
+/** 废弃原因最多这么长：frontmatter 是给人看的审计线，不是自由文本容器 */
+const MAX_SUPERSEDE_REASON = 200
+
+/** 一句话、单行；换行会弄坏 frontmatter，超长机械截断（不判断内容） */
+function normalizeReason(input?: string): string | null {
+  const one = String(input ?? '').replace(/\s+/g, ' ').trim()
+  if (!one) return null
+  return one.length > MAX_SUPERSEDE_REASON ? one.slice(0, MAX_SUPERSEDE_REASON - 1) + '…' : one
+}
+
 export function managedBin(): string {
   return path.join(BIN_DIR, process.platform === 'win32' ? 'zk.exe' : 'zk')
 }
@@ -609,6 +619,39 @@ export async function createNote(
   return { path: relPathOf(cfg, abs), absPath: abs, title }
 }
 
+export interface ArchivedTitleHit {
+  path: string
+  title: string
+  /** supersede 时写下的原因；老笔记没写过就是空串 */
+  reason: string
+}
+
+/**
+ * 归档里同名的旧结论 —— 机械查重，不判断「是不是同一个错误」。
+ *
+ * zk_new 的标题查重只看活笔记，旧结论被 supersede 后标题就空出来了。允许复用，
+ * 但要把 supersede-reason 一起带出来：重新提出同样的错误结论，通常从复用这个标题开始。
+ * 查不到 / zk 跑不起来都返回空数组：这是提醒，不是写入前的硬门槛。
+ */
+export async function archivedSameTitle(
+  cfg: Config,
+  title: string,
+  signal?: AbortSignal,
+): Promise<ArchivedTitleHit[]> {
+  const key = normalizeTitle(title)
+  if (!key || !hasNotebook(cfg)) return []
+  let notes: NoteRecord[]
+  try { notes = await allNotes(cfg, { includeArchived: true }, signal) } catch { return [] }
+  return notes
+    .filter((n) => n.path === cfg.archiveDir || n.path.startsWith(`${cfg.archiveDir}/`))
+    .filter((n) => normalizeTitle(n.title) === key)
+    .map((n) => ({
+      path: n.path,
+      title: n.title,
+      reason: String(n.metadata['supersede-reason'] ?? '').trim(),
+    }))
+}
+
 export interface AppendResult {
   path: string
   appendedChars: number
@@ -800,6 +843,8 @@ export interface SupersedeOptions {
   path: string
   /** 替代它的笔记（相对路径或标题）；不给 = 只是废弃，没有接班人 */
   by?: string
+  /** 为什么废弃（一句话；写进归档 frontmatter 的 supersede-reason，查重时会带出来） */
+  reason?: string
   /** 默认 true：只出清单，不动文件 */
   dryRun?: boolean
 }
@@ -818,6 +863,8 @@ export interface SupersedeResult {
   /** 归档后的相对路径（保留原相对路径，见计划 §3 D4） */
   archivePath: string
   supersededBy: string | null
+  /** 规范化后的废弃原因（单行、≤200 字）；没给就是 null */
+  reason: string | null
   /** 被重写入链的来源笔记 */
   rewrittenLinks: SupersedeRewrite[]
   /** 图里有入链、但正文里找不到 `[[旧路径]]` 字面量（手写了别的写法）—— 需要人看 */
@@ -839,6 +886,7 @@ export async function supersedeNote(
   signal?: AbortSignal,
 ): Promise<SupersedeResult> {
   const dryRun = opts.dryRun !== false
+  const reason = normalizeReason(opts.reason)
   const abs = absPathOf(cfg, opts.path)
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new ZkError(`笔记不存在：${opts.path}`)
   assertWritablePath(cfg, abs)
@@ -856,6 +904,7 @@ export async function supersedeNote(
       path: rel,
       archivePath: inArchive ? rel : `${cfg.archiveDir}/${rel}`,
       supersededBy: fields['superseded-by'] ?? null,
+      reason: fields['supersede-reason'] ?? null,
       rewrittenLinks: [],
       missingLinks: [],
     }
@@ -907,10 +956,13 @@ export async function supersedeNote(
   }
 
   if (!dryRun) {
-    fs.writeFileSync(abs, setFrontmatter(content, {
+    const patch: Record<string, string | undefined> = {
       status: 'superseded',
       'superseded-by': byStem ? `[[${byStem}]]` : undefined,
-    }), 'utf8')
+    }
+    // JSON.stringify = 合法的 YAML 双引号标量：原因里带冒号也不会把 frontmatter 写坏
+    if (reason) patch['supersede-reason'] = JSON.stringify(reason)
+    fs.writeFileSync(abs, setFrontmatter(content, patch), 'utf8')
     fs.mkdirSync(path.dirname(archiveAbs), { recursive: true })
     fs.renameSync(abs, archiveAbs)
   }
@@ -922,6 +974,7 @@ export async function supersedeNote(
     path: rel,
     archivePath,
     supersededBy: byStem ? `[[${byStem}]]` : null,
+    reason,
     rewrittenLinks,
     missingLinks,
   }

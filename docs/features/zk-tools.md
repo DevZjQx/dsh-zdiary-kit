@@ -39,6 +39,13 @@ layered 同目录同名靠 `{{slug title}}` 文件名拦住，不同目录允许
 `superseded`（归档区扫 frontmatter + 非归档区里手工标了 status 的笔记）—— 归档区被排除在索引查询之外，
 不直接看文件就统计不到。
 `zk_supersede` 默认 `dry_run: true`：一句「更新一下 wiki」不该让全库漂移。
+`reason` 会做单行规范化（≤200 字）并以 YAML 双引号标量写进归档的 `supersede-reason`：带冒号或引号也不会写坏
+frontmatter；预演也回显，重放返回已记录的原因。双引号值读回来走 JSON 解析（`\"`、`\n` 还原成原字符），
+YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号」—— 与改动前同行为，只是不再尝试解码。
+`zk_new` 不拦归档同名（归档本来就不参与标题查重），但会把 `archived`（路径 + 废弃原因）放进输出并警告 ——
+允许复用标题，但先读旧结论。「是不是同一个错误」仍然由 agent 判断，插件只负责把材料摆出来。
+代价是每次 `zk_new` 多一次全库 `zk list --include-archived`（扫描上限 1 万篇，按比例放大）——
+用一次读换一条「不会静默复用的错误结论」；zk 跑不起来时返回空数组，提醒降级、写入不受影响。
 `zk_read` 的"没找到"走 throw（isError），不返回 `found:false` —— 模型看到错误比看到空字段更容易改对。
 `zk_read` 也能读根目录 meta 文件（`MEMORY.md` / `USER.md`）：注入截断时留下的目录就是让 agent 用这个取回原文。
 `zk_context` 的 `files[].originalWords`（截断前词数）与 `tocWords`（目录占的词数）只用于解释预算，不改变注入内容。

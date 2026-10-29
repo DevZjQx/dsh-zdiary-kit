@@ -690,17 +690,20 @@ describe('M2: 结构化检索与废弃', () => {
     expect(fs.readFileSync(source.absPath, 'utf8')).toContain('[[notes/concepts/')
 
     // ── 预演 ──
-    const dry = await zk.supersedeNote(m2, { path: oldNote.path, by: newNote.path })
+    const reason = '实测新值覆盖旧值'
+    const dry = await zk.supersedeNote(m2, { path: oldNote.path, by: newNote.path, reason })
     expect(dry.dryRun).toBe(true)
     expect(dry.performed).toBe(false)
     expect(dry.archivePath).toBe(`archive/${oldNote.path}`)
     expect(dry.rewrittenLinks.map((r) => r.path).sort()).toEqual([newNote.path, source.path].sort())
     expect(fs.existsSync(oldNote.absPath)).toBe(true)
     expect(fs.readFileSync(oldNote.absPath, 'utf8')).toContain('status: active')
+    expect(fs.readFileSync(oldNote.absPath, 'utf8')).not.toContain('supersede-reason')
+    expect(dry.reason).toBe(reason)
     expect(fs.readFileSync(source.absPath, 'utf8')).toContain('[[notes/concepts/')
 
     // ── 执行 ──
-    const done = await zk.supersedeNote(m2, { path: oldNote.path, by: newNote.path, dryRun: false })
+    const done = await zk.supersedeNote(m2, { path: oldNote.path, by: newNote.path, reason, dryRun: false })
     expect(done.performed).toBe(true)
     expect(fs.existsSync(oldNote.absPath)).toBe(false)
     const archivedAbs = path.join(dir, done.archivePath)
@@ -708,6 +711,8 @@ describe('M2: 结构化检索与废弃', () => {
     const archived = fs.readFileSync(archivedAbs, 'utf8')
     expect(archived).toContain('status: superseded')
     expect(archived).toContain('superseded-by: [[')
+    expect(done.reason).toBe(reason)
+    expect(archived).toContain(`supersede-reason: "${reason}"`)
     expect(archived).toContain('这是要被推翻的结论。')
     expect(fs.readFileSync(newNote.absPath, 'utf8')).toContain('[[archive/notes/concepts/')
     expect(fs.readFileSync(source.absPath, 'utf8')).toContain('[[archive/notes/concepts/')
@@ -725,8 +730,40 @@ describe('M2: 结构化检索与废弃', () => {
     const replay = await zk.supersedeNote(m2, { path: done.archivePath, by: newNote.path, dryRun: false })
     expect(replay.alreadySuperseded).toBe(true)
     expect(replay.performed).toBe(false)
+    expect(replay.reason).toBe(reason)
+    expect(replay.performed).toBe(false)
   })
 
+  it('supersede-reason：单行、带冒号/引号也能安全落盘并读回', async () => {
+    await notebookLib.ensureNotebook(m2)
+    const a = await note('待废冒号甲', 'notes/concepts', '甲')
+    const b = await note('替代冒号甲', 'notes/concepts', '乙')
+    const reason = '旧值：\n已被 "新数据" 推翻'
+    const r = await zk.supersedeNote(m2, { path: a.path, by: b.path, reason, dryRun: false })
+    expect(r.reason).toBe('旧值： 已被 "新数据" 推翻')
+
+    const text = fs.readFileSync(path.join(dir, r.archivePath), 'utf8')
+    expect(text).toContain('supersede-reason: "旧值： 已被 \\"新数据\\" 推翻"')
+    // 双引号标量走 JSON：读回来是原字符，不是带反斜杠的字面量
+    expect(fm.parseFrontmatter(text).fields['supersede-reason']).toBe('旧值： 已被 "新数据" 推翻')
+
+    const again = await zk.supersedeNote(m2, { path: r.archivePath, dryRun: false })
+    expect(again.alreadySuperseded).toBe(true)
+    expect(again.reason).toBe('旧值： 已被 "新数据" 推翻')
+  })
+
+  it('归档同名：能带出废弃原因（供 zk_new 提醒）', async () => {
+    await notebookLib.ensureNotebook(m2)
+    const oldNote = await note('同名旧结论甲', 'notes/concepts', '旧')
+    const newNote = await note('同名新结论甲', 'notes/concepts', '新')
+    await zk.supersedeNote(m2, { path: oldNote.path, by: newNote.path, reason: '数据源错了', dryRun: false })
+
+    const hits = await zk.archivedSameTitle(m2, '同名旧结论甲')
+    expect(hits).toHaveLength(1)
+    expect(hits[0].path).toBe(`archive/${oldNote.path}`)
+    expect(hits[0].reason).toBe('数据源错了')
+    expect(await zk.archivedSameTitle(m2, '没有这个标题')).toEqual([])
+  })
   it('supersede 拒绝：替代者不存在 / 自己也是废弃的 / 目标不存在', async () => {
     const a = await note('待废弃甲', 'notes/concepts', '甲')
     const b = await note('待废弃乙', 'notes/concepts', '乙')
@@ -1088,6 +1125,27 @@ describe('tools', () => {
     expect(read.output.render({}, long)[0].text).toContain('笔记')
   })
 
+  it('zk_new：归档同名会提醒并带出原因，但不拦', async () => {
+    const defs = toolsFeature.buildTools()
+    const registry = new Map(defs.map((d) => [d.name, d]))
+    const call = async (name: string, args: unknown) => {
+      const d = registry.get(name)
+      if (!d) throw new Error('missing ' + name)
+      return await d.execute(args, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
+    }
+
+    const old = await call('zk_new', { title: '工具归档同名旧' })
+    const next = await call('zk_new', { title: '工具归档同名新' })
+    const sup = await call('zk_supersede', { path: old.path, by: next.path, reason: '旧口径作废', dry_run: false })
+    expect(sup.reason).toBe('旧口径作废')
+    expect(registry.get('zk_supersede')!.output.render({}, sup)[0].text).toContain('已记录废弃原因：旧口径作废')
+
+    const again = await call('zk_new', { title: '工具归档同名旧' })
+    const archived = again.archived as Array<{ path: string; reason: string }>
+    expect(archived).toHaveLength(1)
+    expect(archived[0].reason).toBe('旧口径作废')
+    expect(registry.get('zk_new')!.output.render({}, again)[0].text).toContain('归档里有同名旧结论')
+  })
   it('zk_read 能读根目录 MEMORY.md（注入目录的回读路径真的可用）', async () => {
     fs.writeFileSync(path.join(notebook, 'MEMORY.md'), '# 记忆\n\nMEMORY-READ-TOKEN\n')
     const defs = toolsFeature.buildTools()
