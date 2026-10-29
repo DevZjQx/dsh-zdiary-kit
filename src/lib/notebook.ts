@@ -126,11 +126,19 @@ function dailyGroup(cfg: Config): GroupSpec {
   }
 }
 
+/** type → 目录名的复数（entity 不规则，不能直接加 s） */
+const PLURAL_DIR: Record<string, string> = {
+  source: 'sources',
+  concept: 'concepts',
+  entity: 'entities',
+  pattern: 'patterns',
+}
+
 function layeredGroups(cfg: Config): GroupSpec[] {
   const base = cfg.notesDir
   const named = (kind: string, template: string, authority: string): GroupSpec => ({
     name: kind,
-    paths: [`${base}/${kind}s`],
+    paths: [`${base}/${PLURAL_DIR[kind]}`],
     template,
     filename: '{{slug title}}',
     extra: { type: kind, authority },
@@ -152,10 +160,7 @@ export function structureDirs(cfg: Config): string[] {
     rels.push(
       'raw',
       'inbox',
-      `${cfg.notesDir}/sources`,
-      `${cfg.notesDir}/concepts`,
-      `${cfg.notesDir}/entities`,
-      `${cfg.notesDir}/patterns`,
+      ...Object.values(PLURAL_DIR).map((dir) => `${cfg.notesDir}/${dir}`),
       cfg.archiveDir,
     )
   }

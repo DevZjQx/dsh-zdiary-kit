@@ -94,11 +94,18 @@ function dailyGroup(cfg) {
         comment: 'dsh-zdiary-kit：日记笔记组（一天一篇，文件名就是日期）',
     };
 }
+/** type → 目录名的复数（entity 不规则，不能直接加 s） */
+const PLURAL_DIR = {
+    source: 'sources',
+    concept: 'concepts',
+    entity: 'entities',
+    pattern: 'patterns',
+};
 function layeredGroups(cfg) {
     const base = cfg.notesDir;
     const named = (kind, template, authority) => ({
         name: kind,
-        paths: [`${base}/${kind}s`],
+        paths: [`${base}/${PLURAL_DIR[kind]}`],
         template,
         filename: '{{slug title}}',
         extra: { type: kind, authority },
@@ -116,7 +123,7 @@ function layeredGroups(cfg) {
 export function structureDirs(cfg) {
     const rels = [cfg.notesDir, cfg.dailyDir];
     if (cfg.structure === 'layered') {
-        rels.push('raw', 'inbox', `${cfg.notesDir}/sources`, `${cfg.notesDir}/concepts`, `${cfg.notesDir}/entities`, `${cfg.notesDir}/patterns`, cfg.archiveDir);
+        rels.push('raw', 'inbox', ...Object.values(PLURAL_DIR).map((dir) => `${cfg.notesDir}/${dir}`), cfg.archiveDir);
     }
     return [...new Set(rels)];
 }

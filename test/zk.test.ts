@@ -447,6 +447,9 @@ describe('structure: layered', () => {
     }
     const toml = fs.readFileSync(path.join(layeredDir, '.zk', 'config.toml'), 'utf8')
     for (const group of ['daily', 'source', 'concept', 'entity', 'pattern']) expect(toml).toContain(`[group."${group}"]`)
+    // group 的 paths 必须跟实际建的目录逐字对上（entity → entities，不是 entitys）
+    for (const dir of ['sources', 'concepts', 'entities', 'patterns']) expect(toml).toContain(`paths = ["notes/${dir}"]`)
+    expect(toml).not.toContain('notes/entitys')
     expect(toml).toContain('filename = \'{{slug title}}\'')
     expect(toml).toContain('type = "concept"')
 
