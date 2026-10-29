@@ -58,8 +58,8 @@ window.__ModuleLoader__?.load({
         const FIELDS = [
             { group: '目录与 group', key: 'notesDir', label: '笔记子目录', hint: '普通笔记放哪（相对笔记本），默认 notes —— 所有笔记本共用' },
             { group: '目录与 group', key: 'dailyDir', label: '日记子目录', hint: '日记放哪（相对笔记本），默认 journal；文件名由日期模板生成 —— 所有笔记本共用' },
-            { group: '目录与 group', key: 'dailyGroup', label: '日记 group 名', hint: 'zk 配置里的 [group."…"]，默认 daily —— 初始化时会自动补上' },
-            { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；改动后点「按配置补建目录」' },
+            { group: '目录与 group', key: 'dailyGroup', label: '日记 group 名', hint: 'zk 配置里的 [group."…"]，默认 daily —— 初始化时会自动补上；所有笔记本共用' },
+            { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；所有笔记本共用，改动后点「初始化 / 补建」' },
             { group: '记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 300（中文按 2 字 1 词）。超了先丢 MEMORY 尾部整段，并回显截断了多少' },
             { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
             { group: '写入', key: 'maxReadChars', label: 'zk_read 单次上限（字符）', hint: '默认 20000；超了会截断并明确告知模型' },
@@ -67,6 +67,13 @@ window.__ModuleLoader__?.load({
             { group: 'zk', key: 'zkVersion', label: '内置 zk 版本', hint: '「安装内置 zk」下载的版本，默认 0.15.7；改完点安装即升级' },
         ];
         const SOURCE = { config: '设置里的路径', env: '$ZK_BIN', path: 'PATH', managed: '插件内置' };
+        // 分组标题直接标出作用范围：只有「笔记本」这一组跟着当前笔记本走，其余都是全局的。
+        const GROUP_LABELS = {
+            '目录与 group': '目录与 group · 全局（所有笔记本共用）',
+            '记忆': '记忆 · 全局（所有笔记本共用）',
+            '写入': '写入 · 全局（所有笔记本共用）',
+            'zk': 'zk · 全局（整台机器共用）',
+        };
         function Section() {
             const [cfg, setCfg] = useState(null);
             const [tagsText, setTagsText] = useState('');
@@ -120,7 +127,7 @@ window.__ModuleLoader__?.load({
                     '  raw/ · inbox/ · notes/{sources,concepts,entities,patterns}/ · archive/\n' +
                     '  daily.md / source.md / entry.md 三套模板 · 根目录 AGENTS.md\n\n' +
                     '**不会**移动、改写或删除任何已有笔记。\n\n' +
-                    '保存后需要点「按配置补建目录」才会真正建出来。继续？'))
+                    '保存后点底部的「补建 … 的目录」才会真正建出来。继续？'))
                     return;
                 setBusy('save');
                 setErr('');
@@ -213,6 +220,10 @@ window.__ModuleLoader__?.load({
             const setNotebookStructure = (name, value) => patchEntry(name, { structure: value });
             // 删掉的是当前那个就把 active 挪到剩下的第一个 —— 否则归一化会自己挑，界面和落盘就不一致了
             const removeNotebook = (name) => {
+                if (!window.confirm(`从配置里移除笔记本「${name}」？\n\n` +
+                    '只删这条配置：磁盘上的目录和笔记一个字都不会动，之后还能用「新增」加回来。\n' +
+                    '要点「保存」才会真正落盘；不保存就刷新会原样恢复。继续？'))
+                    return;
                 const rest = { ...nbMap };
                 delete rest[name];
                 const first = Object.keys(rest)[0] || 'default';
@@ -271,17 +282,29 @@ window.__ModuleLoader__?.load({
                 ? ''
                 : `记忆 ${memory.words}/${memory.budget} 词（${memory.files.filter((f) => f.present).map((f) => f.name).join(' + ') || '三份都空'}）` +
                     (memory.truncatedWords > 0 ? ` · 已截断 ${memory.truncatedWords} 词` : '');
-            // 结构以配置为准：磁盘不一致只告警 + 给按钮，不自动建、不自动删
+            // 结构以配置为准：磁盘不一致只告警，不自动建、不自动删
             const structureWarn = !structure || !snap?.notebook.exists ? '' : !structure.ready
                 ? `结构是 ${structure.mode}，但缺目录：${structure.missing.join('、')}`
                 : structure.agents.required && !structure.agents.present
                     ? '结构是 layered，但根目录缺 AGENTS.md（agent 的工作约定与注入内容）'
                     : '';
+            // 底部只留一个按钮：没建过就叫「初始化」，缺东西就叫「补建」，都带上当前笔记本名。
+            // 用已保存的 active 而不是 cfg.active —— 按钮执行的是服务端已落盘的那份配置。
+            const savedActive = snap?.config?.active || cfg.active;
+            const needsBuild = !!snap?.notebook.exists && !!structure &&
+                (!structure.ready || (structure.agents.required && !structure.agents.present));
+            const initLabel = !snap?.notebook.exists
+                ? `初始化笔记本 ${savedActive}`
+                : needsBuild
+                    ? `补建 ${savedActive} 的目录`
+                    : `初始化 / 补建 ${savedActive}`;
             return h('div', { className: 'zdk' }, h('h3', { className: 'zdk-title' }, '知识库（zk）'), h('p', { className: 'zdk-intro' }, '把你的 zk 笔记本接进 DSH：agent 用 zk_* 工具搜索、读写笔记与日记，双链交给 zk 索引。' +
                 '没装 zk 就让插件装一个 —— 第一次调用工具时会自动建好笔记本，不需要先来这里点任何按钮。'), statusLine ? h('div', { className: 'zdk-hint' }, '📚 ' + statusLine) : null, memoryLine ? h('div', { className: 'zdk-hint' }, '🧠 ' + memoryLine) : null, structureWarn
-                ? h('div', { className: 'zdk-err' }, '⚠️ ' + structureWarn + ' ', h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('init', 'init'), disabled: !!busy }, busy === 'init' ? '补建中…' : '按配置补建目录'))
-                : null, h('div', null, h('div', { className: 'zdk-group' }, '笔记本'), h('div', { className: 'zdk-row' }, h('div', null, h('div', { className: 'zdk-label' }, '当前笔记本'), h('div', { className: 'zdk-hint' }, 'agent 的 zk_* 工具只用这一个。路径与结构是每个笔记本自己的；笔记/日记子目录、归档目录、注入预算是全局的。\n' +
-                '切换保存后会自动建好目标笔记本（幂等，不动已有笔记）。' +
+                ? h('div', { className: 'zdk-err' }, '⚠️ ' + structureWarn + ' —— 点底部「' + initLabel + '」')
+                : null, h('div', null, h('div', { className: 'zdk-group' }, '笔记本 · 每个笔记本自己的路径与结构'), h('div', { className: 'zdk-row' }, h('div', null, h('div', { className: 'zdk-label' }, '当前笔记本'), h('div', { className: 'zdk-hint' }, 'agent 的 zk_* 工具只用这一个。路径与结构是每个笔记本自己的；笔记/日记子目录、归档目录、注入预算是全局的。\n' +
+                '切换保存后会自动建好目标笔记本（幂等，不动已有笔记）。\n' +
+                '空 / 相对路径按「会话工作区」解析：agent 在哪个会话调用，就落在那个工作区。' +
+                (snap?.workspace ? '\n本页工作区（插件进程）：' + snap.workspace : '') +
                 (snap?.notebook?.path ? '\n解析后：' + snap.notebook.path : ''))), h('select', {
                 ...input,
                 value: cfg.active || 'default',
@@ -297,7 +320,7 @@ window.__ModuleLoader__?.load({
                 style: { minWidth: '0', width: '110px' },
                 value: entryOf(name).structure || 'flat',
                 onChange: (e) => setNotebookStructure(name, e.target.value),
-            }, h('option', { value: 'flat' }, 'flat'), h('option', { value: 'layered' }, 'layered')), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => removeNotebook(name), disabled: nbNames.length <= 1 || !!busy }, '删除')))), h('div', { className: 'zdk-row' }, h('div', null, h('div', { className: 'zdk-label' }, '新增笔记本'), h('div', { className: 'zdk-hint' }, '名字只接受字母、数字、_ 与 -（1-32 字符）；路径空着就是 <工作区>/zdiary，结构跟当前笔记本一致。改完点「保存」')), h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, h('input', { ...input, style: { minWidth: '0', width: '110px' }, placeholder: '名字', value: nbName, onChange: (e) => setNbName(e.target.value) }), h('input', { ...input, style: { minWidth: '0', width: '190px' }, placeholder: '路径', value: nbPath, onChange: (e) => setNbPath(e.target.value) }), h('button', { className: 'zdk-btn zdk-btn2', onClick: addNotebook, disabled: !nbName.trim() || !!busy }, '新增')))), ...groups.map((g) => h('div', { key: g }, h('div', { className: 'zdk-group' }, g), h('div', null, FIELDS.filter((f) => f.group === g).map((f) => h('div', { className: 'zdk-row', key: f.key }, h('div', null, h('div', { className: 'zdk-label' }, f.label), h('div', { className: 'zdk-hint' }, f.hint)), control(f)))))), h('div', { className: 'zdk-actions' }, h('button', { className: 'zdk-btn', onClick: save, disabled: !!busy }, busy === 'save' ? '保存中…' : '保存'), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('init', 'init'), disabled: !!busy }, busy === 'init' ? '初始化中…' : '初始化笔记本'), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('index', 'index'), disabled: !!busy }, busy === 'index' ? '索引进…' : '重建索引'), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('install', 'install'), disabled: !!busy }, busy === 'install' ? '下载中…' : '安装内置 zk'), h('button', { className: 'zdk-btn zdk-btn2', onClick: selftest, disabled: !!busy }, busy === 'selftest' ? '自检中…' : '自检'), h('button', { className: 'zdk-btn zdk-btn2', onClick: load, disabled: !!busy }, '刷新'), dirty ? h('span', { style: { marginLeft: '10px', color: '#ffb020', fontSize: '13px', alignSelf: 'center' } }, '● 有改动还没保存') : null), okMsg ? h('div', { className: 'zdk-ok' }, okMsg) : null, err ? h('div', { className: 'zdk-err' }, err) : null, out ? h('div', { className: 'zdk-out' }, out) : null, snap?.countsError ? h('div', { className: 'zdk-err' }, '计数失败：' + snap.countsError) : null, h('div', { className: 'zdk-hint' }, `配置：${snap?.configPath || '~/.dsh/zdiary/zdiary.config.json'}\n` +
+            }, h('option', { value: 'flat' }, 'flat'), h('option', { value: 'layered' }, 'layered')), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => removeNotebook(name), disabled: nbNames.length <= 1 || !!busy }, '删除')))), h('div', { className: 'zdk-row' }, h('div', null, h('div', { className: 'zdk-label' }, '新增笔记本'), h('div', { className: 'zdk-hint' }, '名字只接受字母、数字、_ 与 -（1-32 字符）；路径空着就是 <工作区>/zdiary，结构跟当前笔记本一致。改完点「保存」')), h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, h('input', { ...input, style: { minWidth: '0', width: '110px' }, placeholder: '名字', value: nbName, onChange: (e) => setNbName(e.target.value) }), h('input', { ...input, style: { minWidth: '0', width: '190px' }, placeholder: '路径', value: nbPath, onChange: (e) => setNbPath(e.target.value) }), h('button', { className: 'zdk-btn zdk-btn2', onClick: addNotebook, disabled: !nbName.trim() || !!busy }, '新增')))), ...groups.map((g) => h('div', { key: g }, h('div', { className: 'zdk-group' }, GROUP_LABELS[g] || g), h('div', null, FIELDS.filter((f) => f.group === g).map((f) => h('div', { className: 'zdk-row', key: f.key }, h('div', null, h('div', { className: 'zdk-label' }, f.label), h('div', { className: 'zdk-hint' }, f.hint)), control(f)))))), h('div', { className: 'zdk-actions' }, h('button', { className: 'zdk-btn', onClick: save, disabled: !!busy }, busy === 'save' ? '保存中…' : '保存'), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('init', 'init'), disabled: !!busy }, busy === 'init' ? '处理中…' : initLabel), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('index', 'index'), disabled: !!busy }, busy === 'index' ? '索引进…' : '重建索引'), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('install', 'install'), disabled: !!busy }, busy === 'install' ? '下载中…' : '安装内置 zk'), h('button', { className: 'zdk-btn zdk-btn2', onClick: selftest, disabled: !!busy }, busy === 'selftest' ? '自检中…' : '自检'), h('button', { className: 'zdk-btn zdk-btn2', onClick: load, disabled: !!busy }, '刷新'), dirty ? h('span', { style: { marginLeft: '10px', color: '#ffb020', fontSize: '13px', alignSelf: 'center' } }, '● 有改动还没保存') : null), okMsg ? h('div', { className: 'zdk-ok' }, okMsg) : null, err ? h('div', { className: 'zdk-err' }, err) : null, out ? h('div', { className: 'zdk-out' }, out) : null, snap?.countsError ? h('div', { className: 'zdk-err' }, '计数失败：' + snap.countsError) : null, h('div', { className: 'zdk-hint' }, `配置：${snap?.configPath || '~/.dsh/zdiary/zdiary.config.json'}\n` +
                 '工具的用法：zk_search 查 → zk_read 读 → zk_new 新建 → zk_daily 写日记 → zk_link 连双链；zk_stats 看规模。'));
         }
         function apply(ctx) {

@@ -73,7 +73,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 | 分组 | 字段 | 说明 |
 |---|---|---|
 | 笔记本 | 当前笔记本（下拉） | 切换 = 改 `active`；`zk_*` 工具只认当前这一个。切换保存后自动建好目标笔记本（幂等，不动已有笔记） |
-| 笔记本 | 每个笔记本一行：路径 + 结构 | 路径空 = `<会话工作区>/zdiary`（在工作区内，agent 能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本。结构（`flat` / `layered`）是**每个笔记本自己的**，行里直接选 |
+| 笔记本 | 每个笔记本一行：路径 + 结构 | 路径空 = `<会话工作区>/zdiary`（在工作区内，agent 能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本。结构（`flat` / `layered`）是**每个笔记本自己的**，行里直接选。**删除只移除配置，磁盘目录与笔记保留** |
 | 目录与 group | 笔记子目录 / 日记子目录 | 默认 `notes` / `journal`（全局共用，不按笔记本分开） |
 | 目录与 group | 日记 group 名 | 默认 `daily`，初始化时自动补配置 |
 | 目录与 group | 归档目录 | `supersede` 后搬到这里（保留原相对路径），默认 `archive` |
@@ -81,8 +81,9 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 | 写入 | 默认标签 / zk_read 上限 | 新笔记自动带标签；单次读取字符上限 |
 | zk | zk 路径 / 内置版本 | 路径空 = 自动找；版本默认 0.15.7 |
 
-按钮：**保存** · **初始化笔记本** · **重建索引** · **安装内置 zk** · **自检** · **刷新**；
-结构不一致时（配置是 `layered` 但缺 `raw/` 之类）状态行下面会出现 **按配置补建目录**。
+按钮：**保存** · **初始化 / 补建（按钮上带当前笔记本名）** · **重建索引** · **安装内置 zk** · **自检** · **刷新**；
+同一个按钮随状态换字：没建过叫「初始化笔记本 *名*」，缺目录 / 缺 `AGENTS.md` 叫「补建 *名* 的目录」。
+分组标题直接标了作用范围：**笔记本**那组是每个笔记本自己的，其余分组都是全局（所有笔记本共用）。
 字段是先改在本地、点保存才落盘 —— 不点保存 = 什么都没发生；保存后工具下一次调用就用新值（配置每次现读）。
 
 ## 多个笔记本
@@ -111,11 +112,13 @@ zk-kit notebooks                     # 列出所有笔记本（* 是当前那个
 zk-kit notebooks add work work-zdiary
 zk-kit notebooks use work            # 切换并自动建好目标笔记本（幂等）
 zk-kit notebooks
-zk-kit notebooks remove work         # 删掉（至少留一个；删的是当前那个就自动切到剩下的第一个）
+zk-kit notebooks remove work         # 从配置移除（只删配置，磁盘目录与笔记保留；至少留一个；删的是当前那个就自动切到剩下的第一个）
 zk-kit notebooks
 ```
 
 设置页里改「当前笔记本」下拉、改路径 / 结构、新增 / 删除，最后点 **保存** 落盘；命令行 `zk-kit notebooks …` 改的是同一份配置。
+删除笔记本只是从配置里移除条目（设置页会先确认）：磁盘上的目录与笔记原样保留，加回同名条目就能继续用。
+空 / 相对路径按**会话工作区**解析：设置页显示的是**插件进程工作区**下的解析结果，agent 在别的会话里调用时可能落在它自己的工作区 —— 要固定位置就写绝对路径。
 **切换即就绪**：`use`（和设置页保存时切换）会顺手把目标笔记本建好 —— `ensureNotebook` 幂等，缺了才补，不动已有笔记；
 改路径 / 新增**不**自动建目录（防手滑把库建到打错的路径上），切过去再建。
 新笔记本的结构跟当前那个一致；要改某个笔记本的结构，切到它再 `zk-kit config set structure=layered`（或用设置页那一行的下拉）。
@@ -153,7 +156,7 @@ template = "daily.md"
 
 给某个笔记本选 `layered`：设置页笔记本那一行的结构下拉，或切到它后 `zk-kit config set structure=layered`
 （等价于改 `~/.dsh/zdiary/zdiary.config.json` 里**那个条目**的 `structure` —— 结构是每个笔记本自己的），
-再点 **按配置补建目录**（或 `zk-kit init`）会补出：
+再点 **初始化 / 补建**（或 `zk-kit init`）会补出：
 
 ```
 <notebook>/
@@ -175,8 +178,8 @@ template = "daily.md"
 切回 `flat` 同理：只改配置，已建出来的 `raw/` `archive/` 不会被删 —— 所以切换是「随时可逆」的，代价只是目录留在那里。
 `zk-kit config set` 会把被归一化改掉的值回显出来（例如 `structure=xyz` → 实际 `flat`），不会"命令成功但没生效"。
 注意：从 flat 升级时旧的 `daily.md` 已存在，因此不会自动换成带 Events / Observations / Loose ends 的 layered 日记模板；
-想要三节模板，先备份并删掉 `<notebook>/.zk/templates/daily.md`，再点「按配置补建目录」。
-设置页的结构**以配置为准**：配置是 `layered` 但磁盘缺目录时只显示告警与补建按钮，不自动建、不自动删。`raw/` `inbox/` `archive/`
+想要三节模板，先备份并删掉 `<notebook>/.zk/templates/daily.md`，再点「初始化 / 补建」。
+设置页的结构**以配置为准**：配置是 `layered` 但磁盘缺目录时只显示告警（底部按钮会变成「补建 *名* 的目录」），不自动建、不自动删。`raw/` `inbox/` `archive/`
 与根目录的 `AGENTS.md` / `MEMORY.md` / `USER.md` / `DREAMS.md` / `INDEX.md` 不进检索与笔记 / 标签 / 断链 / 孤立统计；
 `archive/` 的归档数由 `zk_stats` 单独统计（`archived` / `superseded`）。`-x` 传绝对路径：它是相对 cwd 解析的，传相对名在换工作目录后会静默失效。
 
@@ -256,14 +259,14 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 |---|---|
 | 工具列表里没有 `zk_*` | 宿主没有 `tools` 服务（或插件没启用）；看 DSH 日志里的 `[zdiary]` 行 |
 | 「找不到 zk 可执行文件」 | 没装也没点「安装内置 zk」；或填了错的「zk 路径」 |
-| 「这个目录还不是 zk 笔记本」 | 笔记本目录配错了，点「初始化笔记本」 |
+| 「这个目录还不是 zk 笔记本」 | 笔记本目录配错了，点「初始化 / 补建」 |
 | 设置页 404 | `cordis.patch.yml` 里的 `name:` 与安装后的包名不一致 |
 | 设置页 503 | 宿主没有 `connection` 服务，信任栅栏按 fail-closed 拒绝（工具不受影响） |
 | 安装 zk 报「解包失败」 | 系统没有 `tar`；手动解包后把 `zk` 放进 `~/.dsh/zdiary/bin` |
 | 搜索结果不全 | 索引落后：点「重建索引」（`zk index`），或确认文件没被 `.zk/config.toml` 的 `exclude` 排除 |
 | 自检报「✗ 长期记忆：N/预算 词」 | AGENTS + USER + MEMORY 写太长：先压缩，或在设置页调高「注入预算」（超预算时注入会先丢 MEMORY 尾部整段） |
 | `Read` / `Edit` 笔记本报 `file access denied under workspace-write mode` | 笔记本被指到了工作区外。改用 `zk_*` 工具（不经这层策略），或把目录加进 `additionalWritableRoots`，或开会话到 `danger-full-access` |
-| 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「按配置补建目录」，别手改配置去将就磁盘 |
+| 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「补建 *名* 的目录」，别手改配置去将就磁盘 |
 | 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |
 | `config set notebook=…` 报「派生值」 | `notebook` 是 `notebooks[active]` 解析后的派生值、不落盘也不可写：改路径用 `zk-kit notebooks add 名 路径`，切换用 `use` |
 

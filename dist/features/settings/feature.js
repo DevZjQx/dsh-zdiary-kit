@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { json, readBody } from '../../lib/http.js';
-import { CFG_FILE } from '../../config/paths.js';
+import { CFG_FILE, processWorkspace } from '../../config/paths.js';
 import { config, writeConfig } from '../../config/store.js';
 import { ensureNotebook, structureStatus } from '../../lib/notebook.js';
 import { buildMemoryPayload } from '../../lib/memory.js';
@@ -55,6 +55,8 @@ async function snapshot(cfg) {
     }
     return {
         zk,
+        // 本页解析空 / 相对路径用的是插件进程工作区；agent 工具按各自会话工作区，可能不是同一个目录
+        workspace: processWorkspace(),
         notebook: { path: cfg.notebook, exists },
         structure,
         memory,
@@ -104,20 +106,20 @@ export function registerSettings({ route, isTrusted }) {
             }
             catch (err) {
                 initFailed = true;
-                warn.push('已切换笔记本，但自动初始化失败：' + (err instanceof Error ? err.message : String(err)) + ' —— 点「初始化笔记本」重试');
+                warn.push('已切换笔记本，但自动初始化失败：' + (err instanceof Error ? err.message : String(err)) + ' —— 点「初始化 / 补建」重试');
             }
         }
         if (next.zkPath && !fs.existsSync(next.zkPath))
             warn.push('zk 路径不存在：' + next.zkPath);
         const exists = hasNotebook(next);
         if (!exists && !initFailed)
-            warn.push('这个目录还不是 zk 笔记本 —— 点「初始化笔记本」创建');
+            warn.push('这个目录还不是 zk 笔记本 —— 点「初始化 / 补建」创建');
         const st = structureStatus(next);
         if (exists && st.missing.length) {
-            warn.push(`结构是 ${st.mode}，但还缺目录：${st.missing.join('、')} —— 点「按配置补建目录」`);
+            warn.push(`结构是 ${st.mode}，但还缺目录：${st.missing.join('、')} —— 点「初始化 / 补建」`);
         }
         if (exists && st.agents.required && !st.agents.present) {
-            warn.push('layered 结构缺 AGENTS.md —— 点「按配置补建目录」写入模板');
+            warn.push('layered 结构缺 AGENTS.md —— 点「初始化 / 补建」写入模板');
         }
         json(res, 200, { ok: true, config: next, configPath: CFG_FILE, warn: warn.length ? warn.join('；') : null, ...(await snapshot(next)) });
     });
@@ -130,7 +132,7 @@ export function registerSettings({ route, isTrusted }) {
         const cfg = config();
         json(res, 200, { ok: true, config: cfg, ...(await snapshot(cfg)) });
     });
-    // ── 初始化笔记本（幂等）──
+    // ── 初始化 / 补建（幂等，同一个 POST /init）──
     route(`${P}/init`, async (req, res) => {
         if (!requireTrusted(req, res))
             return;
@@ -210,13 +212,13 @@ export function registerSettings({ route, isTrusted }) {
         items.push({
             name: '笔记本',
             ok: exists,
-            detail: exists ? cfg.notebook : `没有 .zk/config.toml —— 点「初始化笔记本」（${cfg.notebook}）`,
+            detail: exists ? cfg.notebook : `没有 .zk/config.toml —— 点「初始化 / 补建」（${cfg.notebook}）`,
         });
         const templateFile = path.join(cfg.notebook, '.zk', 'templates', 'daily.md');
         items.push({
             name: '日记模板',
             ok: fs.existsSync(templateFile),
-            detail: fs.existsSync(templateFile) ? templateFile : '缺 .zk/templates/daily.md，点「初始化笔记本」补上',
+            detail: fs.existsSync(templateFile) ? templateFile : '缺 .zk/templates/daily.md，点「初始化 / 补建」补上',
         });
         let groupOk = false;
         try {
@@ -229,7 +231,7 @@ export function registerSettings({ route, isTrusted }) {
         items.push({
             name: `日记 group（${cfg.dailyGroup}）`,
             ok: groupOk,
-            detail: groupOk ? `group."${cfg.dailyGroup}" → ${cfg.dailyDir}/` : '配置里没有这个 group，点「初始化笔记本」补上',
+            detail: groupOk ? `group."${cfg.dailyGroup}" → ${cfg.dailyDir}/` : '配置里没有这个 group，点「初始化 / 补建」补上',
         });
         const st = structureStatus(cfg);
         items.push({
@@ -239,9 +241,9 @@ export function registerSettings({ route, isTrusted }) {
                 ? '笔记本还没建，先初始化'
                 : st.ready
                     ? st.agents.required
-                        ? (st.agents.present ? `${st.dirs.length} 个目录齐全 · AGENTS.md 就绪` : '目录齐全，缺 AGENTS.md —— 点「按配置补建目录」')
+                        ? (st.agents.present ? `${st.dirs.length} 个目录齐全 · AGENTS.md 就绪` : '目录齐全，缺 AGENTS.md —— 点「初始化 / 补建」')
                         : `${st.dirs.length} 个目录齐全`
-                    : `缺目录：${st.missing.join('、')} —— 点「按配置补建目录」`,
+                    : `缺目录：${st.missing.join('、')} —— 点「初始化 / 补建」`,
         });
         try {
             const payload = buildMemoryPayload(cfg);

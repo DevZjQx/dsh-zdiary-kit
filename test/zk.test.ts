@@ -1165,9 +1165,12 @@ describe('cli: zk-kit notebooks', () => {
 
       const removed = run('notebooks', 'remove', 'work')
       expect(removed.status).toBe(0)
+      expect(removed.stdout ?? '').toContain('磁盘目录与笔记保留')
       // 删掉的是当前那个 → 自动切回剩下的（剩下的本来就就绪，不再建一遍）
       expect(store.config().active).toBe('default')
       expect(store.config().notebooks).toEqual({ default: { path: notebook, structure: 'flat' } })
+      // 只删配置：磁盘上的目录与笔记一个字不动
+      expect(fs.existsSync(path.join(work, '.zk', 'config.toml'))).toBe(true)
     } finally {
       fs.writeFileSync(paths.CFG_FILE, before)
       fs.rmSync(work, { recursive: true, force: true })
