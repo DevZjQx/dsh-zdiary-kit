@@ -201,7 +201,8 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 ## 开发
 
 - 源码全是 `.ts`；宿主半边用 `tsc` 编到 `dist/`（普通 ESM，DSH 用 Node 加载）；
-  浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉。
+  浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉，并检查没有顶层声明
+  （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
   `bun run smoke`（加载 dist：跑一遍 12 个工具 + 发 6 条 HTTP 请求，并检查输出 schema 在 DSH 支持的子集内）·
   `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）

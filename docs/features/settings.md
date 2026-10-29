@@ -35,4 +35,7 @@ Config schema（schemastery）并走宿主配置编辑器，而本插件的配�
 
 **Exceptions.** `client.ts` 必须单文件零 import（`__ModuleLoader__` 当普通脚本加载，只提供 `require("react")`），
 因此它不 import 本包任何模块；两侧靠 API 路径 + 配置键对齐。`dist/.../client.js` 由 `scripts/postbuild.ts`
-删掉 tsc 补的 `export {}`。
+删掉 tsc 补的 `export {}`，并检查**没有顶层声明**：DSH 把多个插件的 `client.js` 拼进同一个 combo 脚本
+（`/plugins/??a/client.js,b/client.js`）当普通脚本跑，顶层 `const loader = window.__ModuleLoader__` 这种写法
+会和其他插件撞名，整个 combo 报 `Identifier 'loader' has already been declared`，本插件直接不激活。
+所以顶层只写表达式语句（`window.__ModuleLoader__.load({...})`），要局部变量就包 IIFE。
