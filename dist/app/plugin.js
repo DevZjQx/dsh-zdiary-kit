@@ -11,6 +11,26 @@ export default {
     inject: ['tools'],
     apply(ctx) {
         const disposers = [];
+        /**
+         * 读宿主服务（webServer / connection / systemPrompt 都不在 inject 里）。
+         * 直接访问 ctx.webServer 这种未声明依赖的属性，cordis 的 reflect 代理会抛
+         * 「cannot get property "x" without inject」；ctx.get() 不会抛，但也可能返回 undefined。
+         * 两者都兜住：拿不到就是 undefined —— 插件照常跑工具，只是少一块功能。
+         */
+        function service(host, name) {
+            try {
+                const got = host.get(name);
+                if (got !== undefined && got !== null)
+                    return got;
+            }
+            catch { /* 宿主对 get 也挑剔 → 退回属性访问 */ }
+            try {
+                return host[name];
+            }
+            catch {
+                return undefined;
+            }
+        }
         // ── 信任栅栏 ─────────────────────────────────────────────────────────
         function isLoopbackReq(req) {
             const host = String(req.headers?.host ?? '').toLowerCase();
@@ -18,7 +38,7 @@ export default {
             return h === '127.0.0.1' || h === 'localhost' || h === '[::1]' || h === '::1';
         }
         function connection() {
-            return ctx.get('connection') || ctx.connection;
+            return service(ctx, 'connection');
         }
         function isTrustedReq(req) {
             if (isLoopbackReq(req))
@@ -85,7 +105,7 @@ export default {
             }
         }
         // ── 工具 ────────────────────────────────────────────────────────────
-        const tools = ctx.get('tools') ?? ctx.tools;
+        const tools = service(ctx, 'tools');
         if (tools && typeof tools.register === 'function') {
             try {
                 disposers.push(registerZkTools(tools));
@@ -115,7 +135,7 @@ export default {
             }
         }
         function registerMemory(host) {
-            const prompt = host.get('systemPrompt') ?? host.systemPrompt;
+            const prompt = service(host, 'systemPrompt');
             if (!prompt || typeof prompt.section !== 'function')
                 return;
             host.effect(() => prompt.section({ name: 'zdiary:memory', order: MEMORY_SECTION_ORDER, text: memoryText }));
@@ -124,7 +144,7 @@ export default {
             }
             catch { /* ignore */ }
         }
-        if (ctx.get('systemPrompt') ?? ctx.systemPrompt) {
+        if (service(ctx, 'systemPrompt')) {
             try {
                 registerMemory(ctx);
             }
@@ -143,8 +163,15 @@ export default {
             catch { /* ignore */ }
         }
         // ── 设置页路由（没有 webServer 就不挂，headless profile 也照常跑工具）──
-        const webServer = ctx.get('webServer') ?? ctx.webServer;
-        if (webServer && typeof webServer.register === 'function') {
+        function mountRoutes(host) {
+            const webServer = service(host, 'webServer');
+            if (!webServer || typeof webServer.register !== 'function') {
+                try {
+                    console.warn('[zdiary] 没有 webServer：跳过设置页路由（zk_* 工具不受影响）');
+                }
+                catch { /* ignore */ }
+                return;
+            }
             const route = (pathname, handler) => {
                 disposers.push(webServer.register({
                     kind: 'exact',
@@ -166,6 +193,10 @@ export default {
             };
             try {
                 registerSettings({ route, isTrusted: isTrustedReq });
+                try {
+                    console.log('[zdiary] 设置页路由已挂载：/dsh-zdiary-kit/api/*');
+                }
+                catch { /* ignore */ }
             }
             catch (err) {
                 try {
@@ -173,6 +204,16 @@ export default {
                 }
                 catch { /* ignore */ }
             }
+        }
+        // webServer 是后加载的服务：apply 跑的时候它可能还没上线，用 cordis 的子 fiber 等它
+        if (service(ctx, 'webServer')) {
+            mountRoutes(ctx);
+        }
+        else if (typeof ctx.inject === 'function') {
+            try {
+                ctx.inject(['webServer'], mountRoutes);
+            }
+            catch { /* ignore */ }
         }
         else {
             try {

@@ -26,6 +26,24 @@ export default {
   apply(ctx: PluginContext): void {
     const disposers: Array<() => void> = []
 
+    /**
+     * 读宿主服务（webServer / connection / systemPrompt 都不在 inject 里）。
+     * 直接访问 ctx.webServer 这种未声明依赖的属性，cordis 的 reflect 代理会抛
+     * 「cannot get property "x" without inject」；ctx.get() 不会抛，但也可能返回 undefined。
+     * 两者都兜住：拿不到就是 undefined —— 插件照常跑工具，只是少一块功能。
+     */
+    function service<T>(host: PluginContext, name: string): T | undefined {
+      try {
+        const got = host.get<T>(name)
+        if (got !== undefined && got !== null) return got
+      } catch { /* 宿主对 get 也挑剔 → 退回属性访问 */ }
+      try {
+        return (host as unknown as Record<string, unknown>)[name] as T | undefined
+      } catch {
+        return undefined
+      }
+    }
+
     // ── 信任栅栏 ─────────────────────────────────────────────────────────
     function isLoopbackReq(req: IncomingMessage): boolean {
       const host = String(req.headers?.host ?? '').toLowerCase()
@@ -33,7 +51,7 @@ export default {
       return h === '127.0.0.1' || h === 'localhost' || h === '[::1]' || h === '::1'
     }
     function connection(): ConnectionLike | undefined {
-      return ctx.get<ConnectionLike>('connection') || ctx.connection
+      return service<ConnectionLike>(ctx, 'connection')
     }
     function isTrustedReq(req: IncomingMessage): boolean {
       if (isLoopbackReq(req)) return true
@@ -84,7 +102,7 @@ export default {
     }
 
     // ── 工具 ────────────────────────────────────────────────────────────
-    const tools = ctx.get<ToolsLike>('tools') ?? ctx.tools
+    const tools = service<ToolsLike>(ctx, 'tools')
     if (tools && typeof tools.register === 'function') {
       try {
         disposers.push(registerZkTools(tools))
@@ -106,12 +124,12 @@ export default {
       }
     }
     function registerMemory(host: PluginContext): void {
-      const prompt = host.get<SystemPromptLike>('systemPrompt') ?? host.systemPrompt
+      const prompt = service<SystemPromptLike>(host, 'systemPrompt')
       if (!prompt || typeof prompt.section !== 'function') return
       host.effect(() => prompt.section({ name: 'zdiary:memory', order: MEMORY_SECTION_ORDER, text: memoryText }))
       try { console.log('[zdiary] 记忆注入已挂载：AGENTS.md / USER.md / MEMORY.md → 系统提示') } catch { /* ignore */ }
     }
-    if (ctx.get<SystemPromptLike>('systemPrompt') ?? ctx.systemPrompt) {
+    if (service<SystemPromptLike>(ctx, 'systemPrompt')) {
       try {
         registerMemory(ctx)
       } catch (err) {
@@ -123,8 +141,12 @@ export default {
     }
 
     // ── 设置页路由（没有 webServer 就不挂，headless profile 也照常跑工具）──
-    const webServer = ctx.get<WebServerLike>('webServer') ?? ctx.webServer
-    if (webServer && typeof webServer.register === 'function') {
+    function mountRoutes(host: PluginContext): void {
+      const webServer = service<WebServerLike>(host, 'webServer')
+      if (!webServer || typeof webServer.register !== 'function') {
+        try { console.warn('[zdiary] 没有 webServer：跳过设置页路由（zk_* 工具不受影响）') } catch { /* ignore */ }
+        return
+      }
       const route = (pathname: string, handler: RouteHandler): void => {
         disposers.push(webServer.register({
           kind: 'exact',
@@ -141,9 +163,16 @@ export default {
       }
       try {
         registerSettings({ route, isTrusted: isTrustedReq })
+        try { console.log('[zdiary] 设置页路由已挂载：/dsh-zdiary-kit/api/*') } catch { /* ignore */ }
       } catch (err) {
         try { console.warn('[zdiary] 设置路由注册失败：' + (err instanceof Error ? err.message : String(err))) } catch { /* ignore */ }
       }
+    }
+    // webServer 是后加载的服务：apply 跑的时候它可能还没上线，用 cordis 的子 fiber 等它
+    if (service<WebServerLike>(ctx, 'webServer')) {
+      mountRoutes(ctx)
+    } else if (typeof ctx.inject === 'function') {
+      try { ctx.inject(['webServer'], mountRoutes) } catch { /* ignore */ }
     } else {
       try { console.warn('[zdiary] 没有 webServer：跳过设置页路由（zk_* 工具不受影响）') } catch { /* ignore */ }
     }
