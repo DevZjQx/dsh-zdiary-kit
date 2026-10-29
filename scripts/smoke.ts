@@ -160,6 +160,18 @@ console.log('[POST /init] 幂等 =', JSON.stringify(init.result))
 const indexed = await postJson('/index')
 console.log('[POST /index] 计数 =', JSON.stringify(indexed.counts))
 
+// ── 多笔记本：notebooks + active 是真相，notebook 是派生的 ──────────────────
+const alt = path.join(home, 'alt')
+const two = await postJson('/settings', { config: { notebooks: { default: notebook, alt }, active: 'alt' } })
+if ((two.config as { active: string }).active !== 'alt') throw new Error('切换笔记本没落盘')
+if ((two.notebook as { path: string }).path !== alt) throw new Error('快照没跟着 active 换：' + JSON.stringify(two.notebook))
+// 设置页整份发回来时 notebook 是上一次的旧值：以 notebooks 为准，否则刚改的路径会被改回去
+const kept = await postJson('/settings', { config: { notebooks: { default: notebook, alt: alt + '2' }, notebook, active: 'alt' } })
+if ((kept.notebook as { path: string }).path !== alt + '2') throw new Error('派生的 notebook 覆盖了 notebooks')
+console.log('[POST /settings] 多笔记本 → active =', (two.config as { active: string }).active, '· 切换后快照 =', (two.notebook as { path: string }).path)
+// 切回默认笔记本：后面的 layered 补建仍在原来那个库上
+await postJson('/settings', { config: { notebooks: { default: notebook }, active: 'default' } })
+
 // 切到 layered：保存立刻生效（快照已变），但目录不会自己长出来 —— 必须显式补建
 const switched = await postJson('/settings', { config: { structure: 'layered' } })
 if ((switched.config as { structure: string }).structure !== 'layered') throw new Error('结构模式没落盘')

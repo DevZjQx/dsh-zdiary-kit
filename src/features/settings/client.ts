@@ -28,6 +28,9 @@ interface ModuleLoader {
 
 interface ZkConfig {
   notebook: string
+  /** 名字 → 路径（空串 = <工作区>/zdiary）；notebook 是当前那个解析后的绝对路径（派生值） */
+  notebooks: Record<string, string>
+  active: string
   notesDir: string
   dailyDir: string
   dailyGroup: string
@@ -124,11 +127,10 @@ interface Field {
     })()
 
     const FIELDS: Field[] = [
-      { group: '笔记本', key: 'notebook', label: '笔记本目录', hint: 'zk 笔记本的根目录（含 .zk/）。空着 = <工作区>/zdiary（放工作区内，agent 才能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本' },
-      { group: '笔记本', key: 'notesDir', label: '笔记子目录', hint: '普通笔记放哪（相对笔记本），默认 notes' },
-      { group: '笔记本', key: 'dailyDir', label: '日记子目录', hint: '日记放哪（相对笔记本），默认 journal；文件名由日期模板生成' },
-      { group: '笔记本', key: 'dailyGroup', label: '日记 group 名', hint: 'zk 配置里的 [group."…"]，默认 daily —— 初始化时会自动补上' },
-      { group: '笔记本', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；改动后点「按配置补建目录」' },
+      { group: '目录与 group', key: 'notesDir', label: '笔记子目录', hint: '普通笔记放哪（相对笔记本），默认 notes' },
+      { group: '目录与 group', key: 'dailyDir', label: '日记子目录', hint: '日记放哪（相对笔记本），默认 journal；文件名由日期模板生成' },
+      { group: '目录与 group', key: 'dailyGroup', label: '日记 group 名', hint: 'zk 配置里的 [group."…"]，默认 daily —— 初始化时会自动补上' },
+      { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；改动后点「按配置补建目录」' },
       {
         group: '结构与记忆',
         key: 'structure',
@@ -158,6 +160,8 @@ interface Field {
       const [err, setErr] = useState('')
       const [okMsg, setOkMsg] = useState('')
       const [out, setOut] = useState('')
+      const [nbName, setNbName] = useState('')
+      const [nbPath, setNbPath] = useState('')
 
       const applySnap = useCallback((d: Snapshot) => {
         setSnap(d)
@@ -251,6 +255,28 @@ interface Field {
         finally { setBusy('') }
       }, [])
 
+      const nbMap = (cfg && cfg.notebooks) || {}
+      const nbNames = Object.keys(nbMap)
+      const setNotebookPath = (name: string, value: string) =>
+        setCfg((s) => (s ? { ...s, notebooks: { ...(s.notebooks || {}), [name]: value } } : s))
+      // 删掉的是当前那个就把 active 挪到剩下的第一个 —— 否则归一化会自己挑，界面和落盘就不一致了
+      const removeNotebook = (name: string) => {
+        const rest = { ...nbMap }
+        delete rest[name]
+        const first = Object.keys(rest)[0] || 'default'
+        setCfg((s) => (s ? { ...s, notebooks: rest, active: s.active === name ? first : s.active } : s))
+      }
+      const addNotebook = () => {
+        const name = String(nbName || '').trim()
+        if (!name) return
+        if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) { setErr('笔记本名字只接受字母、数字、_ 与 -（1-32 字符）'); return }
+        if (nbMap[name] !== undefined) { setErr('已经有同名笔记本：' + name); return }
+        setErr('')
+        setCfg((s) => (s ? { ...s, notebooks: { ...(s.notebooks || {}), [name]: String(nbPath || '').trim() } } : s))
+        setNbName('')
+        setNbPath('')
+      }
+
       if (!cfg) {
         return h('div', { className: 'zdk' },
           h('h3', { className: 'zdk-title' }, '知识库（zk）'),
@@ -310,6 +336,43 @@ interface Field {
             h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('init', 'init'), disabled: !!busy },
               busy === 'init' ? '补建中…' : '按配置补建目录'))
           : null,
+
+        h('div', null,
+          h('div', { className: 'zdk-group' }, '笔记本'),
+          h('div', { className: 'zdk-row' },
+            h('div', null,
+              h('div', { className: 'zdk-label' }, '当前笔记本'),
+              h('div', { className: 'zdk-hint' },
+                'agent 的 zk_* 工具只用这一个。子目录、结构模式、归档目录是全局的，跟着当前笔记本走。' +
+                (snap?.notebook?.path ? '\n解析后：' + snap.notebook.path : ''))),
+            h('select', {
+              ...input,
+              value: cfg.active || 'default',
+              onChange: (e: { target: { value: string } }) => setCfg((s) => (s ? { ...s, active: e.target.value } : s)),
+            },
+              ...nbNames.map((name) => h('option', { key: name, value: name }, name)))),
+          ...nbNames.map((name, i) =>
+            h('div', { className: 'zdk-row', key: 'nb-' + name },
+              h('div', null,
+                h('div', { className: 'zdk-label' }, name === cfg.active ? name + '（当前）' : name),
+                h('div', { className: 'zdk-hint' },
+                  i === 0 ? 'zk 笔记本的根目录（含 .zk/）。空 = <工作区>/zdiary；相对路径按工作区解析；也可以指向任何已有 zk 笔记本' : '')),
+              h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+                h('input', {
+                  ...input,
+                  value: nbMap[name] || '',
+                  placeholder: '空 = <工作区>/zdiary',
+                  onChange: (e: { target: { value: string } }) => setNotebookPath(name, e.target.value),
+                }),
+                h('button', { className: 'zdk-btn zdk-btn2', onClick: () => removeNotebook(name), disabled: nbNames.length <= 1 || !!busy }, '删除')))),
+          h('div', { className: 'zdk-row' },
+            h('div', null,
+              h('div', { className: 'zdk-label' }, '新增笔记本'),
+              h('div', { className: 'zdk-hint' }, '名字只接受字母、数字、_ 与 -（1-32 字符）；路径空着就是 <工作区>/zdiary。改完点「保存」')),
+            h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+              h('input', { ...input, style: { minWidth: '0', width: '110px' }, placeholder: '名字', value: nbName, onChange: (e: { target: { value: string } }) => setNbName(e.target.value) }),
+              h('input', { ...input, style: { minWidth: '0', width: '190px' }, placeholder: '路径', value: nbPath, onChange: (e: { target: { value: string } }) => setNbPath(e.target.value) }),
+              h('button', { className: 'zdk-btn zdk-btn2', onClick: addNotebook, disabled: !nbName.trim() || !!busy }, '新增')))),
 
         ...groups.map((g) => h('div', { key: g },
           h('div', { className: 'zdk-group' }, g),

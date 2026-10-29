@@ -78,6 +78,77 @@ describe('config', () => {
     expect((c as unknown as Record<string, unknown>).nonsense).toBeUndefined()
   })
 
+  test('老配置只有 notebook：读进来就是 notebooks.default', () => {
+    const c = store.normalizeConfig({ notebook: '/legacy/vault' })
+    expect(c.notebooks).toEqual({ default: '/legacy/vault' })
+    expect(c.active).toBe('default')
+    expect(c.notebook).toBe('/legacy/vault')
+  })
+
+  test('多笔记本：active 决定 notebook，路径各自解析', () => {
+    const c = store.normalizeConfig({ notebooks: { default: '~/a', work: 'b' }, active: 'work' })
+    expect(c.active).toBe('work')
+    expect(c.notebook).toBe(path.join(home, 'b'))
+    expect(store.normalizeConfig({ notebooks: { default: '~/a', work: 'b' } }).notebook).toBe(path.join(os.homedir(), 'a'))
+    // 空表 / 非法名字 / 未知 active：都不炸，退回一个能用的笔记本
+    expect(store.normalizeConfig({ notebooks: {} }).notebooks).toEqual({ default: '' })
+    const junk = store.normalizeConfig({ notebooks: { 'bad name': '/x', ok: '/y' }, active: 'nope' })
+    expect(Object.keys(junk.notebooks)).toEqual(['ok'])
+    expect(junk.active).toBe('ok')
+  })
+
+  test('selectNotebook：只换 notebook / active，别人的路径不动', () => {
+    const c = store.normalizeConfig({ notebooks: { default: '/a', work: '/w' }, active: 'default' })
+    const work = store.selectNotebook(c, 'work')
+    expect(work.notebook).toBe('/w')
+    expect(work.active).toBe('work')
+    expect(work.notebooks).toEqual({ default: '/a', work: '/w' })
+    expect(store.selectNotebook(c, 'default').notebook).toBe('/a')
+  })
+
+  test('writeConfig：notebooks 整体替换、active 切换、notebook 改的是当前那个', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    try {
+      store.writeConfig({ notebooks: { default: '/a', work: '/w' }, active: 'work' })
+      expect(store.config().active).toBe('work')
+      expect(store.config().notebook).toBe('/w')
+
+      // 只给 notebook（config set notebook=…）：改的是当前笔记本（work）的路径
+      store.writeConfig({ notebook: '/w2' })
+      const c = store.config()
+      expect(c.notebooks).toEqual({ default: '/a', work: '/w2' })
+      expect(c.notebook).toBe('/w2')
+
+      // 设置页整份发回来：notebooks 是真相，那个派生的 notebook 是旧值，不能让它把刚改的路径改回去
+      store.writeConfig({ notebooks: { default: '/a', work: '/w3' }, notebook: '/w2', active: 'work' })
+      expect(store.config().notebooks.work).toBe('/w3')
+      expect(store.config().notebook).toBe('/w3')
+
+      // 派生值不落盘：磁盘上只有 notebooks + active
+      const onDisk = JSON.parse(fs.readFileSync(paths.CFG_FILE, 'utf8')) as Record<string, unknown>
+      expect('notebook' in onDisk).toBe(false)
+      expect(onDisk.notebooks).toEqual({ default: '/a', work: '/w3' })
+      expect(onDisk.active).toBe('work')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+    }
+  })
+
+  test('老配置缺 notebooks：读一次就把 notebooks / active 写回', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    try {
+      fs.writeFileSync(paths.CFG_FILE, JSON.stringify({ notebook: '/legacy', structure: 'flat' }))
+      expect(store.config().notebooks).toEqual({ default: '/legacy' })
+      const onDisk = JSON.parse(fs.readFileSync(paths.CFG_FILE, 'utf8')) as Record<string, unknown>
+      expect(onDisk.notebooks).toEqual({ default: '/legacy' })
+      expect(onDisk.active).toBe('default')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+    }
+  })
+
   test('老配置缺 structure：读一次就把默认值显式写回', async () => {
     const paths = await import('../src/config/paths.ts')
     fs.writeFileSync(paths.CFG_FILE, JSON.stringify({ notebook, zkPath: zkBin, defaultTags: ['default'] }))
@@ -883,6 +954,65 @@ describe('cli: zk-kit config', () => {
       expect(r.stderr ?? '').toContain('归一化')
       expect(r.stderr ?? '').toContain('"xyz" → 实际 "flat"')
       expect(store.config().structure).toBe('flat')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+    }
+  })
+})
+
+describe('cli: zk-kit notebooks', () => {
+  const cli = path.resolve(import.meta.dir, '..', 'src', 'cli.ts')
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, [cli, ...args], { env: process.env, encoding: 'utf8', timeout: 30_000 })
+
+  test('add → use → list → remove，全程不炸且状态对得上', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const work = path.join(home, 'nb-work')
+    try {
+      const added = run('notebooks', 'add', 'work', work)
+      expect(added.status).toBe(0)
+      expect((added.stdout ?? '')).toContain(work)
+      // add 不切换：当前还是 default
+      expect(store.config().active).toBe('default')
+      expect(store.config().notebooks.work).toBe(work)
+
+      const used = run('notebooks', 'use', 'work')
+      expect(used.status).toBe(0)
+      expect((used.stdout ?? '')).toContain('当前笔记本 → work')
+      expect(store.config().notebook).toBe(work)
+
+      const listed = run('notebooks')
+      expect(listed.status).toBe(0)
+      expect(listed.stdout ?? '').toContain('* work')
+      expect(listed.stdout ?? '').toContain('default')
+
+      const removed = run('notebooks', 'remove', 'work')
+      expect(removed.status).toBe(0)
+      // 删掉的是当前那个 → 自动切回剩下的
+      expect(store.config().active).toBe('default')
+      expect(store.config().notebooks).toEqual({ default: notebook })
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+    }
+  })
+
+  test('坏输入：非法名字 / 不存在 / 删最后一个', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    try {
+      const bad = run('notebooks', 'add', 'bad!', '/x')
+      expect(bad.status).not.toBe(0)
+      expect(bad.stderr ?? '').toContain('名字不合法')
+
+      const missing = run('notebooks', 'use', 'nope')
+      expect(missing.status).not.toBe(0)
+      expect(missing.stderr ?? '').toContain('没有这个笔记本')
+
+      const last = run('notebooks', 'remove', 'default')
+      expect(last.status).not.toBe(0)
+      expect(last.stderr ?? '').toContain('至少要留一个笔记本')
+      expect(store.config().notebooks).toEqual({ default: notebook })
     } finally {
       fs.writeFileSync(paths.CFG_FILE, before)
     }

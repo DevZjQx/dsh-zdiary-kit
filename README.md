@@ -70,10 +70,11 @@ dsh plugin --profile desktop add "link:/path/to/dsh-zdiary-kit"
 
 | 分组 | 字段 | 说明 |
 |---|---|---|
-| 笔记本 | 笔记本目录 | 空 = `<工作区>/zdiary`（在工作区内，agent 能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本 |
-| 笔记本 | 笔记子目录 / 日记子目录 | 默认 `notes` / `journal` |
-| 笔记本 | 日记 group 名 | 默认 `daily`，初始化时自动补配置 |
-| 笔记本 | 归档目录 | `supersede` 后搬到这里（保留原相对路径），默认 `archive` |
+| 笔记本 | 当前笔记本（下拉） | 切换 = 改 `active`；`zk_*` 工具只认当前这一个 |
+| 笔记本 | 每个笔记本的路径 | 空 = `<工作区>/zdiary`（在工作区内，agent 能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本 |
+| 目录与 group | 笔记子目录 / 日记子目录 | 默认 `notes` / `journal`（跟着当前笔记本走，不是每个笔记本各一套） |
+| 目录与 group | 日记 group 名 | 默认 `daily`，初始化时自动补配置 |
+| 目录与 group | 归档目录 | `supersede` 后搬到这里（保留原相对路径），默认 `archive` |
 | 结构与记忆 | 结构模式 | `flat`（默认，notes/ + 日记）/ `layered`（raw → notes/* → MEMORY.md）—— 切换只建目录与模板，不搬笔记，切换前会弹窗说明 |
 | 结构与记忆 | 注入预算（词） | AGENTS + USER + MEMORY 的合计上限，默认 300（中文按 2 字 1 词） |
 | 写入 | 默认标签 / zk_read 上限 | 新笔记自动带标签；单次读取字符上限 |
@@ -82,6 +83,38 @@ dsh plugin --profile desktop add "link:/path/to/dsh-zdiary-kit"
 按钮：**保存** · **初始化笔记本** · **重建索引** · **安装内置 zk** · **自检** · **刷新**；
 结构不一致时（配置是 `layered` 但缺 `raw/` 之类）状态行下面会出现 **按配置补建目录**。
 字段是先改在本地、点保存才落盘 —— 不点保存 = 什么都没发生；保存后工具下一次调用就用新值（配置每次现读）。
+
+## 多个笔记本
+
+配置里可以放好几个笔记本，任意时刻只有 `active` 指向的那个生效（`zk_*` 工具、设置页的计数与自检都只看它）：
+
+```json
+{
+  "notebooks": {
+    "default": "",
+    "work": "~/work/zdiary"
+  },
+  "active": "work"
+}
+```
+
+- `notebooks`：名字 → 路径。名字只接受字母、数字、`_` 与 `-`（1-32 字符）；路径为空就是 `<工作区>/zdiary`，相对路径按工作区解析。
+- `active`：当前笔记本的名字。名字不存在、非法时退回 `default`。
+- `notebook` 是**派生的**（`notebooks[active]` 解析后的绝对路径），只在内存里、不落盘 —— 磁盘上笔记本只有一个真相。
+  老配置里那个单独的 `notebook` 字段读进来会自动变成 `notebooks.default`，不用手改。
+- **共享的是全局项**：笔记 / 日记子目录、`daily` group、结构模式、归档目录、注入预算 —— 这些不按笔记本分开。
+
+```bash
+zk-kit notebooks                     # 列出所有笔记本（* 是当前那个）
+zk-kit notebooks add work ~/work-zdiary
+zk-kit notebooks use work            # 切换（只改 active，不建目录）
+zk-kit notebooks
+zk-kit notebooks remove work         # 删掉（至少留一个；删的是当前那个就自动切到剩下的第一个）
+zk-kit notebooks
+```
+
+设置页里改「当前笔记本」下拉、改路径、新增 / 删除，最后点 **保存** 落盘；命令行 `zk-kit notebooks …` 改的是同一份配置。
+切换过去发现「还不是 zk 笔记本」时跑一次 `zk-kit init`（设置页的「初始化笔记本」）就会在那个目录里建库 —— 每个笔记本各自一份 `.zk/`。
 
 ## 笔记本长什么样
 
@@ -219,6 +252,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 自检报「✗ 长期记忆：N/预算 词」 | AGENTS + USER + MEMORY 写太长：先压缩，或在设置页调高「注入预算」（超预算时注入会先丢 MEMORY 尾部整段） |
 | `Read` / `Edit` 笔记本报 `file access denied under workspace-write mode` | 笔记本被指到了工作区外。改用 `zk_*` 工具（不经这层策略），或把目录加进 `additionalWritableRoots`，或开会话到 `danger-full-access` |
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「按配置补建目录」，别手改配置去将就磁盘 |
+| 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |
 
 ## 开发
 
