@@ -764,7 +764,8 @@ export interface SupersedeResult {
  *
  * 为什么必须重写入链（Z11）：双链是路径式的，文件一 move 全部入链即断。
  * 顺序：先改入链（指向将来的归档路径）→ 再改自己的 frontmatter → 最后 rename；
- * 每一步都可重放：第二次调用看到 status 已是 superseded 就直接返回。
+ * 正常路径下可重放：第二次调用看到 status 已是 superseded 就直接返回。
+ * 例外：frontmatter 已写、rename 失败时，重试会直接返回，需要人工把文件搬进 archive/。
  * 索引不用手动重建（Z11：zk 下次运行时自己追平），但调用方不要在同一次里依赖旧 targetId。
  */
 export async function supersedeNote(

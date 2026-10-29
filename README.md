@@ -56,14 +56,15 @@ dsh plugin --profile desktop add "link:/path/to/dsh-zdiary-kit"
 
 ## 第一次用
 
-什么都不用点：
+装好 zk 的前提下，什么都不用点：
 
 1. agent 第一次调 `zk_new` / `zk_daily` / `zk_search`，插件先 `ensureNotebook`——
    建目录 → `zk init` → 写 `.zk/templates/daily.md` → 往 `config.toml` 补 `[group."daily"]`；
 2. 如果本机没有 zk，工具会明确告诉你「找不到 zk 可执行文件」，此时去设置页点
    **安装内置 zk**（从 GitHub 官方 release 下 `zk-v<版本>-<平台>.tar.gz`，解到 `~/.dsh/zdiary/bin`，
    装完真跑一次 `zk --version` 才算成功）；
-3. 点 **自检** 看七项：zk、笔记本、日记模板、日记 group、结构、长期记忆、索引 —— 每项都真跑，不做样子。
+3. 点 **自检** 看七项：zk、笔记本、日记模板、日记 group、结构、长期记忆、索引。
+   zk / 索引会真起进程，笔记本 / 模板 / group / 结构直接读磁盘与配置，长期记忆会重算一遍载荷。
 
 ## 设置页里有什么
 

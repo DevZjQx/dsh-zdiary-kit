@@ -3,7 +3,7 @@
 **Purpose.** 让主人看得见、管得住：zk 在哪、笔记本在哪、有多少笔记、怎么重建、怎么装。
 
 **Owns.** 六条路由（全部 `/dsh-zdiary-kit/api/*`）：
-- `GET/POST /settings`：读写配置（白名单 + 归一化在 `config/store`），返回快照与告警
+- `GET/POST /settings`：读写配置（白名单 + 归一化在 `config/store`）；GET 返回快照，POST 返回快照与 `warn`
 - `GET /status`：zk 位置/版本/来源、笔记本是否存在、笔记/标签/断链/孤立计数
 - `POST /init`：`ensureNotebook`（幂等；layered 时一并写 `AGENTS.md`）
 - `POST /index`：`zk index`

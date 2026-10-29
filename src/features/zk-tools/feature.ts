@@ -2,7 +2,7 @@
  * zk 工具（feature 的公共入口）：12 个模型可调用的工具，全部经 lib/zk.ts。
  *
  * 设计要点：
- *   · 每个工具进来先 ensureNotebook —— 第一次调用就自动建好笔记本，用户不用先点设置页；
+ *   · 除 zk_context（只读 meta 文件，不依赖 zk）外，每个工具进来先 ensureNotebook —— 第一次调用就自动建好笔记本，用户不用先点设置页；
  *   · 参数在 execute 里手动校验（DSH 对裸注册的工具不做输入校验）；
  *   · output.schema 只用 DSH 支持的子集（type/properties/required/items/enum + 注释）；
  *   · render 是纯函数：模型看到人话，程序拿到结构化值。
