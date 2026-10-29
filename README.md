@@ -38,8 +38,8 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 
 ```bash
 # 1) 装插件（本地目录 / 发布后的包名都行；仓库带 dist，装的时候不编译）
-dsh plugin --profile desktop add "link:/path/to/dsh-zdiary-kit"
-# 发布后：dsh plugin --profile desktop add dsh-zdiary-kit
+dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
+# 发布后：dsh plugin --profile web add dsh-zdiary-kit
 
 # 2) 重启一次 DSH（bundle 层要重启才组装）
 ```
@@ -302,7 +302,7 @@ src/
 ## 卸载
 
 ```bash
-dsh plugin --profile desktop remove dsh-zdiary-kit
+dsh plugin --profile web remove dsh-zdiary-kit
 rm -rf ~/.dsh/zdiary          # 内置 zk + 配置；笔记本在工作区里（<工作区>/zdiary），要删自己来
 ```
 
