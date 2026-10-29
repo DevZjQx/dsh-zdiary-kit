@@ -136,8 +136,8 @@ const getJson = async (p: string) => {
   if (!res.ok || body.ok === false) throw new Error(`GET ${p} 失败：${JSON.stringify(body)}`)
   return body
 }
-const postJson = async (p: string) => {
-  const res = await fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+const postJson = async (p: string, payload: unknown = {}) => {
+  const res = await fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
   const body = await res.json() as Record<string, unknown>
   if (!res.ok || body.ok === false) throw new Error(`POST ${p} 失败：${JSON.stringify(body)}`)
   return body
@@ -145,7 +145,11 @@ const postJson = async (p: string) => {
 
 const settings = await getJson('/settings')
 if (!settings.config || (settings.zk as { found: boolean }).found !== true) throw new Error('settings 快照不对')
-console.log('\n[GET /settings] zk =', JSON.stringify(settings.zk), '笔记数 =', JSON.stringify(settings.counts))
+const structure0 = settings.structure as { mode: string; ready: boolean; missing: string[] }
+if (structure0.mode !== 'flat' || !structure0.ready) throw new Error('settings 快照里的结构状态不对：' + JSON.stringify(structure0))
+const memory0 = settings.memory as { budget: number; words: number }
+if (memory0.budget !== 300 || memory0.words <= 0) throw new Error('settings 快照里的记忆预算不对：' + JSON.stringify(memory0))
+console.log('\n[GET /settings] zk =', JSON.stringify(settings.zk), '笔记数 =', JSON.stringify(settings.counts), '结构 =', structure0.mode, '记忆 =', memory0.words + '/' + memory0.budget)
 
 const status = await getJson('/status')
 console.log('[GET /status] notebook.exists =', (status.notebook as { exists: boolean }).exists)
@@ -155,6 +159,27 @@ console.log('[POST /init] 幂等 =', JSON.stringify(init.result))
 
 const indexed = await postJson('/index')
 console.log('[POST /index] 计数 =', JSON.stringify(indexed.counts))
+
+// 切到 layered：保存立刻生效（快照已变），但目录不会自己长出来 —— 必须显式补建
+const switched = await postJson('/settings', { config: { structure: 'layered' } })
+if ((switched.config as { structure: string }).structure !== 'layered') throw new Error('结构模式没落盘')
+const pending = switched.structure as { mode: string; ready: boolean; missing: string[] }
+if (pending.ready || pending.missing.length === 0) throw new Error('只保存配置不该自动建目录：' + JSON.stringify(pending))
+console.log('[POST /settings] 切 layered → 待补建', pending.missing.join('、'))
+
+const filled = await postJson('/init')
+const filledResult = filled.result as { dirsCreated: string[]; agentsWritten: boolean }
+if (!filledResult.dirsCreated.includes('raw')) throw new Error('补建没有建 raw/：' + JSON.stringify(filledResult))
+// 这个 vault 开头就自己写了 AGENTS.md：补建必须保留它（既不覆盖，也不重复写模板）
+if (fs.readFileSync(path.join(notebook, 'AGENTS.md'), 'utf8') !== '# 约定\n\n先查重再写。\n') {
+  throw new Error('补建覆盖了用户自己的 AGENTS.md')
+}
+if (filledResult.agentsWritten) throw new Error('AGENTS.md 已存在却又写了一遍模板')
+if (!fs.existsSync(path.join(notebook, String(created.path)))) throw new Error('补建把已有笔记搬走了：' + created.path)
+const after = await getJson('/settings')
+const structure1 = after.structure as { mode: string; ready: boolean; agents: { present: boolean } }
+if (!structure1.ready || !structure1.agents.present) throw new Error('补建后结构不一致：' + JSON.stringify(structure1))
+console.log('[POST /init] layered 补建 =', JSON.stringify(filledResult.dirsCreated))
 
 // 跨站写请求必须被拒（信任栅栏 + Origin 核对）
 const csrf = await fetch(base + '/init', {

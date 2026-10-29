@@ -16,7 +16,10 @@ import { json, readBody } from '../../lib/http.ts'
 import { CFG_FILE } from '../../config/paths.ts'
 import { config, writeConfig } from '../../config/store.ts'
 import type { Config } from '../../config/store.ts'
-import { ensureNotebook } from '../../lib/notebook.ts'
+import { ensureNotebook, structureStatus } from '../../lib/notebook.ts'
+import type { StructureStatus } from '../../lib/notebook.ts'
+import { buildMemoryPayload } from '../../lib/memory.ts'
+import type { MemoryPayload } from '../../lib/memory.ts'
 import { installZk } from '../../lib/install.ts'
 import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.ts'
 import type { ZkLocation } from '../../lib/zk.ts'
@@ -52,7 +55,7 @@ async function zkStatus(cfg: Config): Promise<ZkStatus> {
 async function snapshot(cfg: Config) {
   const zk = await zkStatus(cfg)
   const exists = hasNotebook(cfg)
-  let counts: { notes: number; tags: number; brokenLinks: number; orphans: number } | null = null
+  let counts: { notes: number; tags: number; brokenLinks: number; orphans: number; archived: number; superseded: number } | null = null
   let countsError: string | null = null
   if (exists && zk.found) {
     try {
@@ -61,9 +64,18 @@ async function snapshot(cfg: Config) {
       countsError = err instanceof Error ? err.message : String(err)
     }
   }
+  // 结构一致性只做检查：以配置为准，磁盘不一致就如实说缺哪个目录（不自动建、不自动删）
+  const structure: StructureStatus = structureStatus(cfg)
+  let memory: Pick<MemoryPayload, 'words' | 'budget' | 'truncatedWords' | 'files'> | null = null
+  try {
+    const payload = buildMemoryPayload(cfg)
+    memory = { words: payload.words, budget: payload.budget, truncatedWords: payload.truncatedWords, files: payload.files }
+  } catch { memory = null }
   return {
     zk,
     notebook: { path: cfg.notebook, exists },
+    structure,
+    memory,
     dailyTemplate: fs.existsSync(path.join(cfg.notebook, '.zk', 'templates', 'daily.md')),
     counts,
     countsError,
@@ -99,6 +111,13 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
     if (next.zkPath && !fs.existsSync(next.zkPath)) warn.push('zk 路径不存在：' + next.zkPath)
     const exists = hasNotebook(next)
     if (!exists) warn.push('这个目录还不是 zk 笔记本 —— 点「初始化笔记本」创建')
+    const st = structureStatus(next)
+    if (exists && st.missing.length) {
+      warn.push(`结构是 ${st.mode}，但还缺目录：${st.missing.join('、')} —— 点「按配置补建目录」`)
+    }
+    if (exists && st.agents.required && !st.agents.present) {
+      warn.push('layered 结构缺 AGENTS.md —— 点「按配置补建目录」写入模板')
+    }
     json(res, 200, { ok: true, config: next, configPath: CFG_FILE, warn: warn.length ? warn.join('；') : null, ...(await snapshot(next)) })
   })
 
@@ -195,10 +214,43 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
       detail: groupOk ? `group."${cfg.dailyGroup}" → ${cfg.dailyDir}/` : '配置里没有这个 group，点「初始化笔记本」补上',
     })
 
+    const st = structureStatus(cfg)
+    items.push({
+      name: `结构（${st.mode}）`,
+      ok: !exists || (st.ready && (!st.agents.required || st.agents.present)),
+      detail: !exists
+        ? '笔记本还没建，先初始化'
+        : st.ready
+          ? st.agents.required
+            ? (st.agents.present ? `${st.dirs.length} 个目录齐全 · AGENTS.md 就绪` : '目录齐全，缺 AGENTS.md —— 点「按配置补建目录」')
+            : `${st.dirs.length} 个目录齐全`
+          : `缺目录：${st.missing.join('、')} —— 点「按配置补建目录」`,
+    })
+
+    try {
+      const payload = buildMemoryPayload(cfg)
+      const present = payload.files.filter((f) => f.present)
+      items.push({
+        name: '长期记忆',
+        // 三份都空不算错：flat 老 vault 本来就可能没启用记忆；只有超预算才是 ✗
+        ok: payload.words <= payload.budget,
+        detail: present.length === 0
+          ? '未启用：根目录没有 AGENTS.md / USER.md / MEMORY.md（layered 初始化会写一份 AGENTS.md 模板）'
+          : `${payload.words}/${payload.budget} 词 · ${present.map((f) => f.name).join(' + ')}` +
+            (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : ''),
+      })
+    } catch (err) {
+      items.push({ name: '长期记忆', ok: false, detail: err instanceof Error ? err.message : String(err) })
+    }
+
     if (zk.found && exists) {
       try {
         const stats = await notebookStats(cfg)
-        items.push({ name: '索引', ok: true, detail: `${stats.notes} 篇笔记 / ${stats.tags} 个标签` })
+        items.push({
+          name: '索引',
+          ok: true,
+          detail: `${stats.notes} 篇笔记 / ${stats.tags} 个标签 / 归档 ${stats.archived}（superseded ${stats.superseded}）`,
+        })
       } catch (err) {
         items.push({ name: '索引', ok: false, detail: err instanceof Error ? err.message : String(err) })
       }

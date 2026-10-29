@@ -13,6 +13,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import { zk } from './zk.ts'
+import { AGENTS_TEMPLATE } from './agents-template.ts'
+
+export { AGENTS_TEMPLATE } from './agents-template.ts'
 
 export interface EnsureResult {
   notebook: string
@@ -25,6 +28,8 @@ export interface EnsureResult {
   templatesWritten: string[]
   /** 本次追加的 group 名 */
   groupsAdded: string[]
+  /** 本次写了根目录的 AGENTS.md（layered 才写；已存在的不覆盖） */
+  agentsWritten: boolean
 }
 
 export const DAILY_TEMPLATE = `# {{format-date now "%Y-%m-%d"}}
@@ -140,6 +145,49 @@ function layeredGroups(cfg: Config): GroupSpec[] {
   ]
 }
 
+/** 当前结构需要的目录（相对笔记本；flat 只有笔记与日记两个） */
+export function structureDirs(cfg: Config): string[] {
+  const rels = [cfg.notesDir, cfg.dailyDir]
+  if (cfg.structure === 'layered') {
+    rels.push(
+      'raw',
+      'inbox',
+      `${cfg.notesDir}/sources`,
+      `${cfg.notesDir}/concepts`,
+      `${cfg.notesDir}/entities`,
+      `${cfg.notesDir}/patterns`,
+      cfg.archiveDir,
+    )
+  }
+  return [...new Set(rels)]
+}
+
+export interface StructureStatus {
+  /** 配置里的结构模式（权威值：磁盘只用来显示「与配置不一致」） */
+  mode: Config['structure']
+  dirs: string[]
+  /** 配置要求但磁盘上没有的目录 */
+  missing: string[]
+  ready: boolean
+  /** layered 才要求有 AGENTS.md；flat 下 present 恒为 true（不要求） */
+  agents: { path: string; required: boolean; present: boolean }
+}
+
+/** 结构一致性检查：只报告，不建目录、不改配置（设置页据此显示告警） */
+export function structureStatus(cfg: Config): StructureStatus {
+  const dirs = structureDirs(cfg)
+  const missing = dirs.filter((rel) => !fs.existsSync(path.join(cfg.notebook, rel)))
+  const agentsPath = path.join(cfg.notebook, 'AGENTS.md')
+  const required = cfg.structure === 'layered'
+  return {
+    mode: cfg.structure,
+    dirs,
+    missing,
+    ready: missing.length === 0,
+    agents: { path: agentsPath, required, present: required ? fs.existsSync(agentsPath) : true },
+  }
+}
+
 function hasGroup(configToml: string, group: string): boolean {
   const escaped = group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   return new RegExp(`^\\[group\\."?${escaped}"?\\]`, 'm').test(configToml)
@@ -173,20 +221,8 @@ function ensureTemplates(cfg: Config, files: Record<string, string>): string[] {
 export async function ensureNotebook(cfg: Config, signal?: AbortSignal): Promise<EnsureResult> {
   const layered = cfg.structure === 'layered'
 
-  const rels = [cfg.notesDir, cfg.dailyDir]
-  if (layered) {
-    rels.push(
-      'raw',
-      'inbox',
-      `${cfg.notesDir}/sources`,
-      `${cfg.notesDir}/concepts`,
-      `${cfg.notesDir}/entities`,
-      `${cfg.notesDir}/patterns`,
-      cfg.archiveDir,
-    )
-  }
   fs.mkdirSync(cfg.notebook, { recursive: true })
-  const dirsCreated = ensureDirs(cfg, rels)
+  const dirsCreated = ensureDirs(cfg, structureDirs(cfg))
 
   const configFile = path.join(cfg.notebook, '.zk', 'config.toml')
   let initialized = false
@@ -202,6 +238,15 @@ export async function ensureNotebook(cfg: Config, signal?: AbortSignal): Promise
       'entry.md': ENTRY_TEMPLATE,
     })
     : ensureTemplates(cfg, { 'daily.md': DAILY_TEMPLATE })
+
+  // AGENTS.md 是 layered 的工作契约（检索词归宿 / 中文打 tags / 不会被宿主自动加载）。
+  // flat 不写：0.1.0 的 vault 升级过来必须一个文件都不多（M0 的回归承诺）。
+  const agentsFile = path.join(cfg.notebook, 'AGENTS.md')
+  let agentsWritten = false
+  if (layered && !fs.existsSync(agentsFile)) {
+    fs.writeFileSync(agentsFile, AGENTS_TEMPLATE, 'utf8')
+    agentsWritten = true
+  }
 
   const groups = layered ? layeredGroups(cfg) : [dailyGroup(cfg)]
   let configText = fs.readFileSync(configFile, 'utf8')
@@ -222,5 +267,6 @@ export async function ensureNotebook(cfg: Config, signal?: AbortSignal): Promise
     dirsCreated,
     templatesWritten,
     groupsAdded,
+    agentsWritten,
   }
 }

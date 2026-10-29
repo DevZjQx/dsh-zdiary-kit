@@ -5,7 +5,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from './config/store.ts'
-import { ensureNotebook } from './lib/notebook.ts'
+import { ensureNotebook, structureStatus } from './lib/notebook.ts'
+import { buildMemoryPayload } from './lib/memory.ts'
 import { installZk } from './lib/install.ts'
 import {
   resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
@@ -140,6 +141,24 @@ async function doctor(): Promise<boolean> {
     group = new RegExp(`^\\[group\\."?${cfg.dailyGroup}"?\\]`, 'm').test(fs.readFileSync(path.join(cfg.notebook, '.zk', 'config.toml'), 'utf8'))
   } catch { group = false }
   rows.push(`${group ? '✓' : '✗'} 日记 group：${cfg.dailyGroup} → ${cfg.dailyDir}/`)
+
+  const st = structureStatus(cfg)
+  const structureOk = st.ready && (!st.agents.required || st.agents.present)
+  rows.push(
+    `${structureOk ? '✓' : '✗'} 结构：${st.mode} · ` +
+    (st.ready ? `${st.dirs.length} 个目录齐全` : `缺 ${st.missing.join('、')}（跑 zk-kit init）`) +
+    (st.agents.required ? (st.agents.present ? ' · AGENTS.md 就绪' : ' · 缺 AGENTS.md（跑 zk-kit init）') : ''),
+  )
+
+  const payload = buildMemoryPayload(cfg)
+  const present = payload.files.filter((f) => f.present)
+  rows.push(
+    present.length === 0
+      ? '✓ 记忆：暂未启用（根目录没有 AGENTS.md / USER.md / MEMORY.md）'
+      : `${payload.words <= payload.budget ? '✓' : '✗'} 记忆：${payload.words}/${payload.budget} 词（${present.map((f) => f.name).join(' + ')}）` +
+        (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : ''),
+  )
+
   if (zk && exists) {
     try {
       const s = await notebookStats(cfg)
@@ -175,7 +194,9 @@ async function main(): Promise<void> {
 
     case 'init': {
       const r = await ensureNotebook(cfg)
-      print(json ? r : `笔记本 ${r.notebook}\n初始化：${r.initialized ? '是' : '已是笔记本'} · 日记 group：${r.configPatched ? '已补齐' : '已存在'} · 日记模板：${r.templateWritten ? '已写入' : '已存在'}`, json)
+      print(json ? r : `笔记本 ${r.notebook}（结构 ${cfg.structure}）\n` +
+        `初始化：${r.initialized ? '是' : '已是笔记本'} · 目录：${r.dirsCreated.length ? '新建 ' + r.dirsCreated.join('、') : '已齐全'}\n` +
+        `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')}`, json)
       return
     }
 

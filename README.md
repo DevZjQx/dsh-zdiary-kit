@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 0.1.0
+# dsh-zdiary-kit 0.2.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件自己装 zk（官方 release，一条命令）、自己建笔记本（zk init + 日记模板 + 日记 group），
@@ -21,14 +21,15 @@
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）；宿主支持注入时每轮已自动带进系统提示 |
 | `zk_lint` | 体检：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧 / 重名标题，每类最多 50 条；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签）、daily 未完成项、被引最多；只报告 |
-| `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立笔记 |
+| `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded） |
 
 写笔记前 agent 会先 `zk_search` 查重；双链用相对路径（zk 的 `link-format = "wiki"` 认这个），
 所以 `--broken-links` 不会因为「按标题链接」而误报。
 
 **长期记忆**：笔记本根目录放 `AGENTS.md`（工作约定）、`USER.md`（偏好）、`MEMORY.md`（精炼记忆），
-插件会在每个 step 把它们注入系统提示（默认预算 300 词，超了先丢 MEMORY 的尾部整段，并明确告诉你截了多少）。
-DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不会**读笔记本根目录，所以别指望宿主帮你加载。
+插件会在每个 step 把它们注入系统提示（预算默认 300 词，设置页「结构与记忆 → 注入预算」可改；
+超了先丢 MEMORY 的尾部整段，并明确告诉你截了多少、以及是不是 AGENTS 吃掉了大半预算）。
+DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不会**读笔记本根目录，所以别指望宿主帮你加载 —— 是插件自己读、自己注入。
 
 维护用 `zk_lint`（结构体检）和 `zk_dream`（晋升候选 / 拒绝原因 / 未完成项）：两个工具都**只读**，
 写 `MEMORY.md` / `DREAMS.md` 由 agent 按 `AGENTS.md` 自己决定 —— 机械活留在插件，语义判断留在可审计的地方。
@@ -62,7 +63,7 @@ dsh plugin --profile desktop add "link:/path/to/dsh-zdiary-kit"
 2. 如果本机没有 zk，工具会明确告诉你「找不到 zk 可执行文件」，此时去设置页点
    **安装内置 zk**（从 GitHub 官方 release 下 `zk-v<版本>-<平台>.tar.gz`，解到 `~/.dsh/zdiary/bin`，
    装完真跑一次 `zk --version` 才算成功）；
-3. 点 **自检** 看五项：zk、笔记本、日记模板、日记 group、索引 —— 每项都真跑，不做样子。
+3. 点 **自检** 看七项：zk、笔记本、日记模板、日记 group、结构、长期记忆、索引 —— 每项都真跑，不做样子。
 
 ## 设置页里有什么
 
@@ -71,11 +72,15 @@ dsh plugin --profile desktop add "link:/path/to/dsh-zdiary-kit"
 | 笔记本 | 笔记本目录 | 空 = `~/.dsh/zdiary/notebook`；也可以指向任何已有 zk 笔记本 |
 | 笔记本 | 笔记子目录 / 日记子目录 | 默认 `notes` / `journal` |
 | 笔记本 | 日记 group 名 | 默认 `daily`，初始化时自动补配置 |
+| 笔记本 | 归档目录 | `supersede` 后搬到这里（保留原相对路径），默认 `archive` |
+| 结构与记忆 | 结构模式 | `flat`（默认，notes/ + 日记）/ `layered`（raw → notes/* → MEMORY.md）—— 切换只建目录与模板，不搬笔记，切换前会弹窗说明 |
+| 结构与记忆 | 注入预算（词） | AGENTS + USER + MEMORY 的合计上限，默认 300（中文按 2 字 1 词） |
 | 写入 | 默认标签 / zk_read 上限 | 新笔记自动带标签；单次读取字符上限 |
 | zk | zk 路径 / 内置版本 | 路径空 = 自动找；版本默认 0.15.7 |
 
-按钮：**保存** · **初始化笔记本** · **重建索引** · **安装内置 zk** · **自检** · **刷新**。
-字段是先改在本地、点保存才落盘 —— 不点保存 = 什么都没发生。
+按钮：**保存** · **初始化笔记本** · **重建索引** · **安装内置 zk** · **自检** · **刷新**；
+结构不一致时（配置是 `layered` 但缺 `raw/` 之类）状态行下面会出现 **按配置补建目录**。
+字段是先改在本地、点保存才落盘 —— 不点保存 = 什么都没发生；保存后工具下一次调用就用新值（配置每次现读）。
 
 ## 笔记本长什么样
 
@@ -108,13 +113,14 @@ template = "daily.md"
 
 ### 分层结构（可选）
 
-配置里把 `structure` 设成 `layered`（设置页开关在 M4，现在直接改
-`~/.dsh/zdiary/zdiary.config.json`），下次 `ensureNotebook` 会补出：
+设置页「结构与记忆 → 结构模式」选 `layered` 并保存（也可以直接改
+`~/.dsh/zdiary/zdiary.config.json` 的 `structure`），点 **按配置补建目录**（或 `zk-kit init`）会补出：
 
 ```
 <notebook>/
 ├── raw/            # 原始材料，只读
 ├── inbox/          # 还没想好归属的碎片
+├── AGENTS.md       # 工作约定（模板由插件写入；agent 每轮读它，DSH 不会自动加载）
 ├── notes/
 │   ├── sources/
 │   ├── concepts/
@@ -124,8 +130,10 @@ template = "daily.md"
 ```
 
 外加 `source.md` / `entry.md` 两套模板与 source / concept / entity / pattern 四个 group
-（`entry.md` 三处共用，`type` 与 `authority` 由 `[group.X.extra]` 注入）。
-**只建目录与模板，不搬已有笔记**；已存在的模板不覆盖。`raw/` `inbox/` `archive/`
+（`entry.md` 三处共用，`type` 与 `authority` 由 `[group.X.extra]` 注入），
+以及根目录一份 **`AGENTS.md` 模板**（检索词归宿、中文必须打 tags、"插件不保证宿主自动加载本文件"三件事都写在里面）。
+**只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` 一律不覆盖。
+设置页的结构**以配置为准**：配置是 `layered` 但磁盘缺目录时只显示告警与补建按钮，不自动建、不自动删。`raw/` `inbox/` `archive/`
 与根目录的 `AGENTS.md` / `MEMORY.md` / `USER.md` / `DREAMS.md` / `INDEX.md` 一律不进检索与统计
 （`-x` 传绝对路径：它是相对 cwd 解析的，传相对名在换工作目录后会静默失效）。
 
@@ -142,23 +150,33 @@ template = "daily.md"
 
 ## 命令行（人也能用）
 
+装好插件后命令叫 `zk-kit`（包里声明了 `bin`）；从源码跑就把 `zk-kit` 换成 `bun src/cli.ts`。
+下面这一块是**可跑清单**：`bun run docs` 会在临时 vault 上逐条真跑（`bun run smoke` 也会带上），
+拼错子命令、漏必填参数、引用不存在的路径都会当场变红。
+
 ```bash
-bun src/cli.ts doctor                    # 自检（= 设置页的自检）
-bun src/cli.ts install                   # 装内置 zk
-bun src/cli.ts init                      # 建库 / 补齐模板与 group
-bun src/cli.ts new --title "标题" --body "正文" --tags a,b
-bun src/cli.ts search "关键词" --tags a --since "last week" --limit 5
-bun src/cli.ts read notes/f2sj.md
-bun src/cli.ts daily --entry "今天……"
-bun src/cli.ts link notes/a.md "某篇标题"
-bun src/cli.ts lint --stale-days 90      # 体检（只读）
-bun src/cli.ts dream --days 7            # 晋升材料（只读）
-bun src/cli.ts query -- -t 项目 --limit 5  # 透传 zk list：--notebook-dir / --format / -x 会被替换掉
-bun src/cli.ts index
+zk-kit init                          # 建库 / 补齐目录、模板、group、AGENTS.md（幂等）
+zk-kit new --title "示例笔记" --body "正文" --tags demo
+zk-kit search --tags demo --limit 5
+zk-kit daily --entry "今天把 zk-kit 跑了一遍"
+zk-kit lint --stale-days 90          # 体检（只读）
+zk-kit dream --days 7                # 晋升材料（只读）
+zk-kit query -- -t demo --limit 5    # 透传 zk list：--notebook-dir / --format / -x 会被替换掉
+zk-kit index
+zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group / 结构 / 记忆 / 索引
 ```
 
-加 `--json` 输出结构化结果。装好插件后也可以直接用 `node <插件目录>/dist/cli.js …`
-（包里声明了 `bin: zk-kit`）。
+按路径用的子命令（`<…>` 要换成真实路径，所以不放进可跑清单）：
+
+| 子命令 | 用法 |
+|---|---|
+| 读 | `zk-kit read notes/f2sj.md`，或 `zk-kit read --query 搜索词`；`--max-chars` 可调 |
+| 续写 | `zk-kit append notes/f2sj.md --text "追一段" --heading 后续` |
+| 双链 | `zk-kit link notes/a.md "某篇标题"` |
+| 指定目录 | `zk-kit new --title 标题 --dir notes/concepts --type concept` |
+| 装 zk | `zk-kit install 0.15.7`（下载约 10 MB → `~/.dsh/zdiary/bin`，不在可跑清单里） |
+
+加 `--json` 输出结构化结果。装好插件后也可以直接用 `node <插件目录>/dist/cli.js …`。
 
 ## 权限
 
@@ -177,13 +195,16 @@ bun src/cli.ts index
 | 设置页 503 | 宿主没有 `connection` 服务，信任栅栏按 fail-closed 拒绝（工具不受影响） |
 | 安装 zk 报「解包失败」 | 系统没有 `tar`；手动解包后把 `zk` 放进 `~/.dsh/zdiary/bin` |
 | 搜索结果不全 | 索引落后：点「重建索引」（`zk index`），或确认文件没被 `.zk/config.toml` 的 `exclude` 排除 |
+| 自检报「✗ 记忆：超预算」 | AGENTS + USER + MEMORY 写太长：先压缩，或在设置页调高「注入预算」（超预算时注入会先丢 MEMORY 尾部整段） |
+| 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「按配置补建目录」，别手改配置去将就磁盘 |
 
 ## 开发
 
 - 源码全是 `.ts`；宿主半边用 `tsc` 编到 `dist/`（普通 ESM，DSH 用 Node 加载）；
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：跑一遍 12 个工具 + 发 6 条 HTTP 请求，并检查输出 schema 在 DSH 支持的子集内）
+  `bun run smoke`（加载 dist：跑一遍 12 个工具 + 发 6 条 HTTP 请求，并检查输出 schema 在 DSH 支持的子集内）·
+  `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
 - `dist/` 随仓库提交：`dsh plugin add github:…` 不会触发安装时构建（pnpm 默认禁止 git 依赖跑构建脚本）。
@@ -197,6 +218,7 @@ src/
 ├── lib/
 │   ├── zk.ts                     # zk 唯一的调用面：解析二进制、list/new/append/link/daily/graph、路径守卫
 │   ├── frontmatter.ts            # 只改 status / superseded-by 这类标量，其余行原样保留
+│   ├── meta.ts                   # meta 文件清单（注入 3 份 / 排除 5 份，一个真相）
 │   ├── lint.ts / dream.ts        # 巡检与做梦：只报告，绝不写文件
 │   ├── notebook.ts               # 自举：zk init + 日记模板 + group 配置（幂等）
 │   ├── install.ts / platform.ts  # 内置 zk：平台映射、下载、解包、验证

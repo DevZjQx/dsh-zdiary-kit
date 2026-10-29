@@ -125,6 +125,25 @@ describe('memory', () => {
     expect(p.words).toBeLessThanOrEqual(50)
   })
 
+  test('截断归因：AGENTS 吃掉大半预算时点名，预算宽裕时一个字都不加', () => {
+    const memoryBody = ['## 一', 'x '.repeat(40), '## 二', 'y '.repeat(40), '## 三', 'z '.repeat(40)].join('\n')
+    const tight = build({ 'AGENTS.md': 'rule '.repeat(120), 'MEMORY.md': memoryBody }, 200)
+    expect(tight.truncatedWords).toBeGreaterThan(0)
+    expect(tight.words).toBeLessThanOrEqual(200)
+    expect(tight.text).toContain('AGENTS.md 占 120/200 词')
+    expect(tight.text).toContain('留给 USER / MEMORY 的只有 80 词')
+
+    // 没截断 = 不加：别让正常的载荷每步都多这几句
+    const roomy = build({ 'AGENTS.md': 'rule '.repeat(10), 'MEMORY.md': '## 一\nx x' }, 200)
+    expect(roomy.truncatedWords).toBe(0)
+    expect(roomy.text).not.toContain('AGENTS.md 占')
+
+    // AGENTS 自己就超预算：走「预算不足」那条，不重复点名
+    const over = build({ 'AGENTS.md': 'rule '.repeat(220), 'MEMORY.md': '## 一\nx x' }, 200)
+    expect(over.text).toContain('AGENTS.md 为硬规则')
+    expect(over.text).not.toContain('且不参与截断')
+  })
+
   test('AGENTS.md 是硬规则：单独超预算也不截断，只告警', () => {
     const rules = 'rule '.repeat(80) + 'LAST-RULE'
     const p = build({ 'AGENTS.md': rules, 'MEMORY.md': '## 记忆\n' + 'x '.repeat(20) }, 50)
@@ -689,3 +708,95 @@ describe('tools', () => {
     expect(read.output.render({}, long)[0].text).toContain('笔记')
   })
 })
+
+describe('M4: 结构设置与记忆预算', () => {
+  const m4dir = path.join(home, 'nb-m4')
+  const m4 = store.normalizeConfig({ notebook: m4dir, zkPath: zkBin, structure: 'layered' })
+  const agentsFile = path.join(m4dir, 'AGENTS.md')
+
+  it('layered 初始化写 AGENTS.md：含三件事，已有内容绝不覆盖', async () => {
+    const first = await notebookLib.ensureNotebook(m4)
+    expect(first.agentsWritten).toBe(true)
+    const body = fs.readFileSync(agentsFile, 'utf8')
+    // 三件必须写清的事（计划 §4 M4）
+    expect(body).toContain('tags')
+    expect(body).toMatch(/中文.*tags|tags.*中文/)
+    expect(body).toContain('不会')
+    expect(body).toContain('MEMORY.md')
+
+    fs.writeFileSync(agentsFile, '# 我自己写的\n\n不覆盖我。\n')
+    const again = await notebookLib.ensureNotebook(m4)
+    expect(again.agentsWritten).toBe(false)
+    expect(fs.readFileSync(agentsFile, 'utf8')).toBe('# 我自己写的\n\n不覆盖我。\n')
+  })
+
+  it('structureStatus 只报告：缺目录 / 缺 AGENTS.md 时 ready=false，不自己补', () => {
+    fs.rmSync(path.join(m4dir, 'raw'), { recursive: true, force: true })
+    fs.rmSync(agentsFile, { force: true })
+    const st = notebookLib.structureStatus(m4)
+    expect(st.mode).toBe('layered')
+    expect(st.ready).toBe(false)
+    expect(st.missing).toEqual(['raw'])
+    expect(st.agents.required).toBe(true)
+    expect(st.agents.present).toBe(false)
+    // 只报告 = 检查本身不建目录
+    expect(fs.existsSync(path.join(m4dir, 'raw'))).toBe(false)
+
+    // flat 不要求 AGENTS.md
+    const flat = notebookLib.structureStatus(store.normalizeConfig({ notebook: m4dir, structure: 'flat' }))
+    expect(flat.mode).toBe('flat')
+    expect(flat.agents.required).toBe(false)
+  })
+
+  it('按配置补建：缺什么补什么，补完 ready', async () => {
+    const r = await notebookLib.ensureNotebook(m4)
+    expect(r.dirsCreated).toEqual(['raw'])
+    expect(r.agentsWritten).toBe(true)
+    const st = notebookLib.structureStatus(m4)
+    expect(st.ready).toBe(true)
+    expect(st.agents.present).toBe(true)
+  })
+
+  it('设置写入后立刻生效：structure / memoryBudgetWords / archiveDir', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    try {
+      store.writeConfig({ structure: 'layered', memoryBudgetWords: 180, archiveDir: 'attic' })
+      const next = store.config()
+      expect(next.structure).toBe('layered')
+      expect(next.memoryBudgetWords).toBe(180)
+      expect(next.archiveDir).toBe('attic')
+      // 预算真的进注入：180 词上限
+      expect(memory.buildMemoryPayload(next).budget).toBe(180)
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+    }
+  })
+
+  it('zk_append 拒写 meta 文件', async () => {
+    fs.writeFileSync(path.join(m4dir, 'MEMORY.md'), '# 记忆\n\n一条。\n')
+    expect(() => zk.appendToNote(m4, 'AGENTS.md', '追加')).toThrow(/meta/)
+    expect(() => zk.appendToNote(m4, 'MEMORY.md', '追加')).toThrow(/meta/)
+    expect(() => zk.appendToNote(m4, 'DREAMS.md', '追加')).toThrow(/笔记不存在|meta/)
+    const created = await zk.createNote(m4, { title: '可追加的普通笔记', dir: 'notes/concepts', content: '正文' })
+    expect(zk.appendToNote(m4, created.path, '追加一段').appendedChars).toBe(4)
+    // 子目录里的同名文件是普通笔记，不算 meta
+    const nested = await zk.createNote(m4, { title: 'notes 下的 AGENTS', dir: 'notes/concepts', content: '正文' })
+    expect(() => zk.appendToNote(m4, nested.path, '可以')).not.toThrow()
+  })
+
+  it('zk_stats 报 archived / superseded', async () => {
+    const target = await zk.createNote(m4, { title: '会被废弃的结论', dir: 'notes/concepts', content: '旧结论' })
+    const r = await zk.supersedeNote(m4, { path: target.path, dryRun: false })
+    expect(r.performed).toBe(true)
+    const stats = await zk.notebookStats(m4)
+    expect(stats.archived).toBe(1)
+    expect(stats.superseded).toBe(1)
+    const defs = toolsFeature.buildTools()
+    const statTool = defs.find((d) => d.name === 'zk_stats')!
+    const line = statTool.output.render({}, { ...stats, notebook: m4dir })[0].text
+    expect(line).toContain('归档 1')
+    expect(line).toContain('superseded 1')
+  })
+})
+

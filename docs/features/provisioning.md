@@ -11,10 +11,13 @@
 
 | | 目录 | 模板 | group |
 |---|---|---|---|
-| `flat`（默认，与 0.1.0 逐字节一致） | `notes/` `journal/` | `daily.md` | 1 个（daily） |
-| `layered` | 加 `raw/` `inbox/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） |
+| `flat`（默认，与 0.1.0 逐字节一致） | `notes/` `journal/` | `daily.md` | 1 个（daily） | 无 |
+| `layered` | 加 `raw/` `inbox/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） | 根目录 `AGENTS.md` |
 
-切到 `layered` **只建目录与模板，不搬已有笔记**；已存在的模板不覆盖（用户可能改过），只在缺失时写。
+切到 `layered` **只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` 不覆盖（用户可能改过），只在缺失时写。
+`AGENTS.md` 只在 `layered` 写：flat 是从 0.1.0 升级来的 vault，不能因为升级多出一个文件（M0 的逐字节回归）。
+模板 `AGENTS_TEMPLATE` 在 `lib/agents-template.ts`，正文控制在 150 词左右 —— 它属于注入预算且**永不截断**，
+写长了 USER / MEMORY 就没位置（这条是被 `bun run docs` 里 `zk-kit doctor` 的预算告警逼出来的）。
 `entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入（Z10）；
 所有模板必须含 `{{content}}`，否则 stdin 的正文会被丢（Z9）。
 
@@ -24,8 +27,10 @@
 **Depends on.** `lib/exec`（`tar` 与 `zk`）、`config/paths`（`BIN_DIR` / `CACHE_DIR`）、`config/store`（版本、目录名）。
 
 **Public surface.** `installZk(version)`、`zkAsset(version)`、`ensureNotebook(cfg)`、`DAILY_TEMPLATE` / `DAILY_TEMPLATE_LAYERED`、
-`SOURCE_TEMPLATE`、`ENTRY_TEMPLATE`。`ensureNotebook` 返回 `dirsCreated` / `templatesWritten` / `groupsAdded`，
-设置页据此显示「本次真正做了什么」（第二次调用三者都是空数组）。
+`SOURCE_TEMPLATE`、`ENTRY_TEMPLATE`、`AGENTS_TEMPLATE`；`structureDirs(cfg)` / `structureStatus(cfg)`（只报告，不建不改）。
+`ensureNotebook` 返回 `dirsCreated` / `templatesWritten` / `groupsAdded` / `agentsWritten`，
+设置页据此显示「本次真正做了什么」（第二次调用四者都是空的）。
+`structureStatus` 是设置页「按配置补建目录」的依据：「配置为准，磁盘只用来显示缺什么」，它自己不建目录。
 
 **Rejected.** 随包分发二进制 —— 拒绝：三平台 × 两架构 × 10 MB，仓库和 npm 都受不了，且发布新版本要重打包。
 用 npm 的 `zk` 包 —— 不存在官方包。写一个 tar.gz 解压器 —— 拒绝：系统 tar（Linux/macOS/Win10+）就够，

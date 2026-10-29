@@ -13,6 +13,7 @@ import { BIN_DIR } from '../config/paths.ts'
 import type { Config } from '../config/store.ts'
 import { ExecError, findOnPath, run } from './exec.ts'
 import { parseFrontmatter, setFrontmatter } from './frontmatter.ts'
+import { isMetaPath, META_NAMES } from './meta.ts'
 
 export class ZkError extends Error {
   readonly hint: string | undefined
@@ -228,9 +229,9 @@ function parseList(stdout: string): Record<string, unknown>[] {
  *     所以一律拼成绝对路径，否则换台机器/换个工作目录排除就静默失效。
  */
 export function excludedNames(cfg: Config, opts: { includeArchived?: boolean } = {}): string[] {
-  const rels = ['raw', 'inbox']
+  const rels: string[] = ['raw', 'inbox']
   if (!opts.includeArchived) rels.push(cfg.archiveDir)
-  rels.push('AGENTS.md', 'MEMORY.md', 'USER.md', 'DREAMS.md', 'INDEX.md')
+  rels.push(...META_NAMES)
   return rels.map((rel) => path.join(cfg.notebook, rel))
 }
 
@@ -540,6 +541,11 @@ export function appendToNote(
 ): AppendResult {
   const abs = absPathOf(cfg, p)
   if (!fs.existsSync(abs)) throw new ZkError(`笔记不存在：${p}`)
+  // meta 文件是人的工作面：追加会把它变成流水账，也让「记忆被谁改的」失去审计线索
+  if (isMetaPath(relPathOf(cfg, abs))) {
+    throw new ZkError(`${relPathOf(cfg, abs)} 是 meta 文件，不能用 zk_append 追加`,
+      'AGENTS / USER / MEMORY / DREAMS / INDEX 请直接编辑（整篇重写，git diff 可审）')
+  }
   const body = String(text ?? '').trim()
   if (!body) throw new ZkError('追加内容不能为空')
   const current = fs.readFileSync(abs, 'utf8')
@@ -643,6 +649,28 @@ export interface NotebookStats {
   tags: number
   brokenLinks: number
   orphans: number
+  /** archive/ 下的笔记文件数（磁盘为准：supersede 会把文件搬进去） */
+  archived: number
+  /** frontmatter status: superseded 的笔记数（含已归档的，以及手工标了但没搬的） */
+  superseded: number
+}
+
+/** archive/ 下的全部 .md（磁盘扫描：归档区被排除在索引查询之外，只能直接看文件） */
+function archivedFiles(cfg: Config): string[] {
+  const root = path.resolve(cfg.notebook, cfg.archiveDir)
+  const out: string[] = []
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) }
+    catch { return }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(abs)
+      else if (entry.isFile() && /\.md$/i.test(entry.name)) out.push(abs)
+    }
+  }
+  walk(root)
+  return out
 }
 
 export async function notebookStats(cfg: Config, signal?: AbortSignal): Promise<NotebookStats> {
@@ -651,11 +679,18 @@ export async function notebookStats(cfg: Config, signal?: AbortSignal): Promise<
     const out = await zk(cfg, ['list', '--quiet', '--no-pager', '--format', '{{path}}', ...exclude, ...args], { signal })
     return out.split('\n').filter((l) => l.trim()).length
   }
-  const [notes, brokenLinks, orphans] = await Promise.all([
+  const [notes, brokenLinks, orphans, live] = await Promise.all([
     count([]),
     count(['--broken-links']),
     count(['--orphan']),
+    // 非归档区里被手工标成 superseded 的笔记（正常流程会搬进 archive，这里兜手滑）
+    allNotes(cfg, {}, signal).catch(() => [] as NoteRecord[]),
   ])
+  const archived = archivedFiles(cfg)
+  const superseded = archived.filter((abs) => {
+    try { return parseFrontmatter(fs.readFileSync(abs, 'utf8')).fields.status === 'superseded' }
+    catch { return false }
+  }).length + live.filter((n) => n.status === 'superseded').length
   let tags = 0
   try {
     const raw = await zk(cfg, ['tag', 'list', '--quiet', '--format', 'json'], { signal })
@@ -663,7 +698,7 @@ export async function notebookStats(cfg: Config, signal?: AbortSignal): Promise<
     const end = raw.lastIndexOf(']')
     tags = start >= 0 && end > start ? (JSON.parse(raw.slice(start, end + 1)) as unknown[]).length : 0
   } catch { tags = 0 }
-  return { notes, tags, brokenLinks, orphans }
+  return { notes, tags, brokenLinks, orphans, archived: archived.length, superseded }
 }
 
 export async function indexNotebook(cfg: Config, signal?: AbortSignal): Promise<void> {

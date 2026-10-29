@@ -27,6 +27,11 @@
 所以带这两个过滤时会先按 `--limit 200` 多取再截断 —— 否则「前 10 条里没有 active」会被误读成「没有结果」。
 `status` 缺省按 `active` 算：0.1.0 的老笔记没有 frontmatter，不这样兜，flat vault 上一条都查不出来。
 `zk_new` 撞名直接报错（`zk new` 遇到同名文件是 exit 0 + 不写内容，Z8），不自动加后缀。
+`zk_append` 拒写根目录的 meta 文件（AGENTS / USER / MEMORY / DREAMS / INDEX）：追加会把记忆变成流水账，
+也让「这条记忆是谁改的」失去审计线索；子目录里的同名文件是普通笔记，照常可写。
+`zk_stats` 除笔记 / 标签 / 断链 / 孤立外，还给 `archived`（archive/ 下的文件数，磁盘扫）与
+`superseded`（归档区扫 frontmatter + 非归档区里手工标了 status 的笔记）—— 归档区被排除在索引查询之外，
+不直接看文件就统计不到。
 `zk_supersede` 默认 `dry_run: true`：一句「更新一下 wiki」不该让全库漂移。
 `zk_read` 的"没找到"走 throw（isError），不返回 `found:false` —— 模型看到错误比看到空字段更容易改对。
 

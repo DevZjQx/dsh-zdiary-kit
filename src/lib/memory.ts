@@ -8,15 +8,20 @@
  *     最后各自只留首段；AGENTS.md 是硬规则，永不截断（单独超预算时只告警）；
  *   · 中文按「1 词 / 2 字」计 —— 空白切分在中文上严重低估，300 词会变成装饰。
  *
+ * 另有一条可观测性约定（D6 的补完）：截断不只回显「截了多少」，还要能解释「谁吃掉的」——
+ * 否则用户只看到 MEMORY 常年不生效，排查会跑去怀疑注入没挂载（见 notice 里的 AGENTS 归因）。
+ *
  * 读文件失败一律当作「没有这份文件」：老 vault 没有这些文件也能照常工作。
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
+import { MEMORY_META_FILES } from './meta.ts'
+import type { MetaName } from './meta.ts'
 
-/** vault 根目录下、按优先级排列的三份 meta 文件 */
-export const META_FILES = ['AGENTS.md', 'USER.md', 'MEMORY.md'] as const
-export type MetaName = typeof META_FILES[number]
+/** vault 根目录下、按优先级排列的三份 meta 文件（定义在 lib/meta.ts，这里只挂个本地名） */
+export const META_FILES = MEMORY_META_FILES
+export type { MetaName }
 
 export interface MemoryFileInfo {
   name: MetaName
@@ -131,6 +136,12 @@ export function buildMemoryPayload(cfg: Config): MemoryPayload {
   if (bodies.length > 0) {
     const notes: string[] = []
     if (truncatedWords > 0) notes.push(`已截断 ${truncatedWords} 词`)
+    // 归因：AGENTS 不参与截断，占掉大半预算时得点名 —— 否则「记忆为什么总是不生效」无从查起。
+    // 只在「确实截断了、且总载荷没超」时说：总载荷都超了的话，下面的「预算不足」已经点了 AGENTS 的名。
+    const agentsWords = words.get('AGENTS.md') ?? 0
+    if (truncatedWords > 0 && finalWords <= budget && agentsWords * 2 > budget) {
+      notes.push(`AGENTS.md 占 ${agentsWords}/${budget} 词且不参与截断，留给 USER / MEMORY 的只有 ${Math.max(0, budget - agentsWords)} 词`)
+    }
     if (finalWords > budget) {
       notes.push(`预算不足：内容 ${finalWords} 词，超出 ${budget} 词；AGENTS.md 为硬规则，不截断`)
     }

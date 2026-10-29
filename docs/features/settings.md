@@ -5,14 +5,19 @@
 **Owns.** 六条路由（全部 `/dsh-zdiary-kit/api/*`）：
 - `GET/POST /settings`：读写配置（白名单 + 归一化在 `config/store`），返回快照与告警
 - `GET /status`：zk 位置/版本/来源、笔记本是否存在、笔记/标签/断链/孤立计数
-- `POST /init`：`ensureNotebook`（幂等）
+- `POST /init`：`ensureNotebook`（幂等；layered 时一并写 `AGENTS.md`）
 - `POST /index`：`zk index`
 - `POST /install`：内置 zk（下载 → 解包 → `--version` 验证）
-- `GET /selftest`：五项真检查（zk、笔记本、模板、group、索引）
+- `GET /selftest`：七项真检查（zk、笔记本、模板、group、结构、长期记忆、索引）
 
-浏览器半边 `client.ts`：声明式字段清单 `FIELDS`、状态行、动作按钮、输出面板。
+快照（`GET /settings`、`GET /status`、写操作的回包）除了配置与计数，还带两块**诊断**：
+`structure`（配置的模式、缺哪些目录、`AGENTS.md` 在不在）与 `memory`（三份 meta 的词数 / 预算 / 截断量）。
+两者都是纯读：结构不一致只显示告警 + 「按配置补建目录」（= `POST /init`），**不自动建、不自动删、不改配置**。
 
-**Does not own.** 工具的注册与执行；zk 命令的正确性；模板与 group 的写入（`lib/notebook`）。
+浏览器半边 `client.ts`：声明式字段清单 `FIELDS`（支持 `kind: 'select'`，结构模式用下拉，枚举值不接受手打）、
+状态行、动作按钮、输出面板。`flat → layered` 保存前弹窗明确写「只建目录与模板，不搬已有笔记」。
+
+**Does not own.** 工具的注册与执行；zk 命令的正确性；模板 / group / `AGENTS.md` 的写入与结构检查（`lib/notebook`）。
 「字段加在哪」：labels/hints 加在 `client.ts` 的 `FIELDS`，键加在 `config/store.ts` 的 `DEFAULTS` ——
 白名单直接取 `DEFAULTS` 的键，不存在第三处。
 

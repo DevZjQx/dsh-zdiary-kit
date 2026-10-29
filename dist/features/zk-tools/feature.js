@@ -377,7 +377,7 @@ export function buildTools() {
         def({
             name: 'zk_append',
             description: '往一篇已有笔记末尾追加内容（自动补空行，可选先起一个二级标题）。适合补充证据、跟进结论、在会议记录里续写；' +
-                '整篇重写请用编辑器，别用这个工具。',
+                '整篇重写请用编辑器，别用这个工具。根目录的 AGENTS / USER / MEMORY / DREAMS / INDEX 是 meta 文件，会被拒绝。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -719,7 +719,7 @@ export function buildTools() {
         }),
         def({
             name: 'zk_stats',
-            description: '看一眼知识库现状：笔记数、标签数、断链数、孤立笔记数。适合开始工作前了解上下文规模。',
+            description: '看一眼知识库现状：笔记数、标签数、断链数、孤立笔记数、已归档（superseded）数。适合开始工作前了解上下文规模。',
             parameters: { type: 'object', properties: {}, additionalProperties: false },
             output: {
                 schema: objSchema({
@@ -728,7 +728,9 @@ export function buildTools() {
                     tags: { type: 'number' },
                     brokenLinks: { type: 'number' },
                     orphans: { type: 'number' },
-                }, ['notebook', 'notes', 'tags', 'brokenLinks', 'orphans']),
+                    archived: { type: 'number' },
+                    superseded: { type: 'number' },
+                }, ['notebook', 'notes', 'tags', 'brokenLinks', 'orphans', 'archived', 'superseded']),
             },
             async run(_args, signal) {
                 const cfg = config();
@@ -739,7 +741,7 @@ export function buildTools() {
             render(_args, value) {
                 const v = value;
                 return text(`笔记本 ${v.notebook}\n` +
-                    `笔记 ${v.notes} 篇 · 标签 ${v.tags} 个 · 断链 ${v.brokenLinks} 篇 · 孤立 ${v.orphans} 篇`);
+                    `笔记 ${v.notes} 篇 · 标签 ${v.tags} 个 · 断链 ${v.brokenLinks} 篇 · 孤立 ${v.orphans} 篇 · 归档 ${v.archived} 篇（superseded ${v.superseded}）`);
             },
         }),
     ];
