@@ -1,0 +1,431 @@
+# 计划：记忆分层 v0.2（从「日记本」到「agent 自己维护的记忆」）
+
+**状态**：实施中（2026-10-29 评审定稿；同日完成 M0、M1、M2，M3 待开工）。评审结论见 §10。基线版本 0.1.0（7 个 `zk_*` 工具 + 设置页 + 内置 zk）。
+**目标**：让 zdiary 支撑 A-MEM 式「编译而非检索」的知识库——原始材料 → 原子笔记 → 精炼记忆（MEMORY.md），
+agent 负责日常 upkeep，人每周审 30 分钟。不用向量库。
+**不在本计划内**：重新设计 zk；自动跑 cron 做梦；多用户 / 同步；任何形式的向量或 embedding。
+
+**实施进度**
+
+| 里程碑 | 状态 | 落点 |
+|---|---|---|
+| M0 结构自举 + 统一排除 | ✅ 2026-10-29 | `structure` / `archiveDir`、layered 目录与三套模板、`excludedNames()` |
+| M1 上下文注入 | ✅ 2026-10-29（端到端待验） | `lib/memory.ts`、`zdiary:memory` 段（order 5200）、`zk_context` |
+| M2 记忆读写 | ✅ 2026-10-29 | `zk_query` / `zk_supersede`、`NoteRecord.metadata`、撞名报错、`lib/frontmatter.ts` |
+| M3 巡检与做梦 | 待开工 | `zk_lint` / `zk_dream` / `zk-kit` 子命令 |
+| M4 设置页与文档 | 待开工 | 结构模式、注入预算、归档目录、`docs/features/memory.md`（已先建） |
+
+当前测试：`bun run test` 34 pass / 0 fail（zk 0.15.7）；`bun run smoke` 通过。
+
+---
+
+## 1. 已确认的 zk 事实（实测 zk 0.15.7，2026-10-29）
+
+这 12 条是整个计划的地基，全部在本机用临时 vault 复现过。**实施时任何一条被推翻，都要回来改本文件。**
+
+| # | 事实 | 影响 | 对策 |
+|---|---|---|---|
+| Z1 | 配置只认 `<vault>/.zk/config.toml`，模板只认 `.zk/templates/` | 根目录 `config.toml` / `_templates/` 全部无效 | 自举时写进 `.zk/`；文档里不出现 `_templates/` |
+| Z2 | `--group` 只选配置，**不改创建目录**：`zk new --group daily` 把笔记建在 vault 根 | 日记层会整个空掉 | 创建时永远显式传目录（`zk new <dir>`），group 用 `paths` 自动匹配 |
+| Z3 | filter 是**位置参数**：`zk list stale`；`--filter` 不存在 | 文档里的 `--filter` 全废 | filter 只在人类终端用；工具侧直接拼 flag |
+| Z4 | `-x` 按**路径前缀**匹配、含子孙（`-x notes` 与 `-x notes/concepts` 都生效），但 glob 无效（`-x 'archive/**'` 会漏）；且 `-x` 是**相对 cwd** 解析的，不是相对 `--notebook-dir` | 排除会静默失效，孤儿/陈旧检查全库化；插件在任意 cwd 下跑，相对名会时灵时不灵 | 一律传**绝对路径**（`path.join(cfg.notebook, name)`），不传 glob；2026-10-29 实测：cwd 不同，`-x AGENTS.md` 在另一个目录下命中不到 |
+| Z5 | `--match` 不索引 frontmatter（`keywords: [...]` 命中 0） | A-MEM 的 keywords 字段对检索无用 | frontmatter 只做 `metadata` 供 agent 判断；要检索的词必须出现在正文 |
+| Z6 | `--format json` 把 frontmatter 原样放进 `metadata` | status/type/authority 可被工具层过滤 | `NoteRecord` 增加 `metadata`，过滤在 JS 里做 |
+| Z7 | 根目录的 `AGENTS.md` / `MEMORY.md` 会被当普通笔记索引，`-m` 能命中 | agent 搜「SQLite」会搜到 MEMORY.md 本身 | 工具侧固定排除 meta 文件（`-x`），见 §7 |
+| Z8 | `zk new` 遇到已存在文件：exit 0、**内容不写**、只回显路径 | 同名笔记会静默丢失内容（只有配了 slug 文件名的 group 才可能同名，见 Z10） | `createNote` 前后比对，撞名直接报错 |
+| Z9 | 模板里没有 `{{content}}` 时，stdin 的正文被丢弃 | 草案里的模板都没写 `{{content}}`，照抄会集体丢正文 | 所有模板必须含 `{{content}}`（M0 的断言） |
+| Z10 | `zk init` 生成的 `[note] filename` 默认是 `{{id}}`（随机 4 字符，实测 `0tup.md`），不是 slug；`{{slug title}}` 对中文出拼音（实测「中文 标题 测试」→ `zhong-wen-biao-ti-ce-shi`）；`[group.X.note] filename` 按目录匹配也会生效，不必传 `-g` | 不显式配文件名，笔记就是随机名，撞名（Z8）永远不会发生 | layered 的每个 group 都写 `filename = "{{slug title}}"`；flat 保持 `{{id}}`（与 0.1.0 逐字节一致）；标题留在 frontmatter 与 H1 |
+| Z11 | 双链是**路径式**：`zk_link` 写的是 `[[notes/concepts/slug]]`（相对笔记本、去扩展名），不是 `[[标题]]`；外部 rename 后索引会被 CLI 自动追平（实测 0.15.7 小 vault，无需手动 `zk index`） | 笔记一 move，全部入链即断，`--broken-links` 全库爆 | supersede 必须重写入链；不要指望「按标题解析」免掉这步，也别指望 reindex 能修断链 |
+| Z12 | `--match` 用的 FTS5 unicode61 不切中文，中文整句命中 0；工具层靠「0 命中退回 `-M re`」兜底 | 中文正文召回**不完整且静默**——有部分命中时不会退回正则 | 中文笔记必须打 tags；正文匹配只算 best-effort，不能当唯一检索路径 |
+
+补充两条实测细节：
+- `[group.X.extra] type = "entity"` + 模板 `type: {{extra.type}}` 可用 → concept / entity / pattern 三类共用一套 `entry` 模板。
+- 别名是 `$SHELL -c "zk ..."` 执行，依赖 PATH；agent 走 `zk_*` 工具直连二进制（按 config → env → PATH → managed 解析），不经过别名，所以**别名对 agent 无意义**，只服务人手敲。
+
+M2 期间新确认的三条（2026-10-29）：
+- `zk new --extra key=value` 可用，且 CLI 的 extra 优先于 `[group.X.extra]`（实测 `authority` 被覆盖成 `informal`）。
+- `zk graph --format json` 的 `links[]` 带 `sourcePath` / `targetPath`（笔记本相对）与 `snippetStart/End`，可直接定位入链；但 **`targetId` 会随重索引变化**（同一篇从 1 变成 4），所以不能在两次调用之间缓存 id，按路径比对。
+- `zk graph --link-to X` 并**不**只返回「链接到 X 的笔记」：X 自己的出链也在结果里，`notes` 与 `links` 都不过滤。要么自己按 `targetPath` 过滤，要么别用这个 flag。
+
+---
+
+## 2. 目标形态
+
+```
+<vault>/
+├── .zk/{config.toml, notebook.db, templates/}   # zk 私有，插件只追加 group
+├── AGENTS.md      # 运行手册（人写、agent 读）
+├── MEMORY.md      # 精炼长期记忆（agent 写、人审，预算内）
+├── USER.md        # 稳定偏好（人写）
+├── DREAMS.md      # 巡检/做梦报告（agent 追加，人裁决）
+├── INDEX.md       # 总索引（>150 条才建，纯文本不生成双链）
+├── raw/           # 原始材料，只读，永不改名/删除
+├── inbox/         # 隔离区：还没想好归属的碎片
+├── daily/<date>.md        # 日记层（cfg.dailyDir）
+├── notes/{sources,concepts,entities,patterns}/
+└── archive/       # superseded 的笔记搬到这里（不删）
+```
+
+**数据流**（agent 的三个动作 + 人的一个动作）：
+
+```
+raw/ ──ingest──► notes/sources ──link──► notes/{concepts,entities,patterns} ──dream──► MEMORY.md
+daily/ ────────────────────────────────┘                        │
+                                                                 ▼
+archive/ ◄── supersede ◄── lint ◄────────────────────────── DREAMS.md（人审）
+```
+
+---
+
+## 3. 关键决策（含被拒方案）
+
+**D1. 结构模式并存，默认不变形。**
+新增配置 `structure: "flat" | "layered"`（默认 `flat`，与 0.1.0 行为完全一致）。`layered` 才建 `raw/inbox/notes/*/archive`
+与 3 套模板（daily / source / entry，覆盖 5 个 group）。理由：已有用户的 vault 不能被升级悄悄改结构；新建用户想要分层就一次选好。
+被拒：直接把默认改成 layered —— 会在老 vault 里造出一堆空目录和没人用的模板；等 layered 被真实 vault 跑过一个周期再翻默认，A→B 只是改默认值，B→A 要动用户数据，成本不对称。
+
+**v0.3 翻转条件**（三条全满足才翻，缺一条不翻）：
+1. 一个 minor 周期内，layered vault 连续跑满 4 周；
+2. `zk_lint` 无新增结构类告警（断链 / 孤儿不因 layered 上升）；
+3. archive / supersede 相关 0 bug。
+
+设置页的结构模式**以配置为准**：`ensureNotebook` 按配置建目录，磁盘状态只用来显示「与配置不一致」。反过来（以目录为准）会把用户删掉 `raw/` 变成一次自举博弈 —— 设置页显示 flat、配置仍是 layered、下次 `ensureNotebook` 又把目录建回来。翻默认的安全性改由 §8 的迁移保证：0.2.0 读到老配置时把 `structure` **显式写成 `flat`**，所以「缺省 = flat」只对首次创建生效。
+
+**D2. 排除逻辑放工具层，不写进 config.toml。**
+`[note]` 和 `[filter]` 这些表在 `zk init` 生成的默认配置里已经存在，再追加一次是重复 TOML table，
+不同解析器行为不一致。插件所有查询统一由 `lib/zk.ts` 拼 `-x`（传路径/文件名，见 Z4），
+人类终端用 `zk-kit` 子命令，不用记 flag。
+被拒：往 config.toml 里塞 `exclude` —— 为了省几个字符，换来一个「用户手改后整份配置解析失败」的隐患。
+
+**D3. frontmatter 用 zk 原生 `date` 键，不用 `created`。**
+默认 `creation-date-key` 就是 `date`，改键名要配 `[format.markdown.frontmatter]` 并重建索引。
+被拒：沿用草案的 `created` —— 多一处配置依赖，收益为零。
+
+**D4. supersede = frontmatter 标记 + 搬进 archive/。**
+`status: superseded` 是给人和 agent 看的记录，但 zk 不能按它排除查询（`--tag` 不能取反）。
+所以同时把文件 `fs.rename` 到 `archive/`，查询统一 `-x archive`。git 里历史完整，
+不构成"物理删除"。
+实现约束（Z11 决定，不是可选项）：改 status → `zk graph --format json` 取反链 → 重写入链 → move，
+每步幂等可重放，`dry_run` 一次输出全部受影响路径。文件系统与 SQLite 无法真原子，所以要求是「单次工具调用 + 可重放」。
+索引不用显式重建（Z11 实测会自动追平）；大 vault 上仍可补一次 `zk index` 当保险，但它不是正确性前提。
+archive 内**保留原相对路径**（`archive/notes/concepts/x.md`），否则不同子目录的同名 slug 会在 archive 撞名。
+查询默认不含 archive，但保留 `include_archived` 逃生口，否则 `superseded-by` 校验与复查旧结论都会失败。
+被拒：只改 frontmatter —— 废弃笔记会永远混在检索结果里，agent 会反复引用死结论。
+
+**D5. 插件只做机械活，语义判断留给 agent。**
+`zk_lint` 只返回清单（孤儿/断链/陈旧/重名/无标签），不改任何笔记；`zk_dream` 只返回候选与评分材料
+（本周新增、被引用次数、daily 未完成项），**不写 MEMORY.md**。写 MEMORY.md、写 DREAMS.md 由 agent 按 AGENTS.md 执行。
+理由：插件做语义判断 = 把不可审计的逻辑塞进代码；agent 做 = 每次都有 DREAMS.md 和 git diff 可查。
+
+**D6. 注入预算 300 词（可配），不是 500。**
+预算按**总载荷**算（AGENTS + USER + MEMORY），不是只卡 MEMORY.md —— 只卡一份的话，AGENTS.md 写长一点预算就形同虚设。
+500 词 ≈ 700–800 token，每会话注入偏重；预算是硬约束，宁小勿大。超预算时注入侧截断并提示
+"需要先压缩"，而不是让模型自己数。300→500 只需重新晋升，500→300 要驱逐已写入内容，成本同样不对称。
+
+实现口径：
+- 预算 = 设置项 `memoryBudgetWords`，默认 300，不写死；
+- 超限丢弃顺序**纯机械，不做相关性判断**（那正是 D5 禁止插件做的事）：截 MEMORY 尾部（按 `##` 整段丢）→ 仍超限再截 USER 末尾整段 → **永不截 AGENTS 的硬规则**。都超限就保留 AGENTS + 两份文件的首段并告警；
+- 中文按「1 词 / 2 字」计。现有 `words` 是空白切分（`noteFromDisk`），中文严重低估，300 这个词数在中文 vault 上会变成装饰；
+- 截断必须回显「已截断 N 词」——这条提示本身就是「该调晋升门槛」的信号，没有它预算不可观测。
+
+**D7. 一切"批量改"都先出清单。**
+`zk_supersede` 默认 `dry_run: true`，返回受影响路径；要真改必须显式 `dry_run: false`。
+`zk_dream` / `zk_lint` 只读，没有 dry_run 参数——不给只读工具留"看起来能写"的开关。
+被拒：直接改 —— 一句 "update the wiki" 就能让全库漂移，这是实践者最常见的翻车方式。
+
+---
+
+## 4. 分期
+
+### M0 基座：结构自举 + 统一排除
+
+范围
+- `Config` 增加 `structure`、`memoryBudgetWords`（默认 300，管 AGENTS+USER+MEMORY 的**注入总载荷**；CJK 按 1 词/2 字计）、`archiveDir`（默认 `archive`）。
+- `ensureNotebook` 支持 layered：建目录、写 3 套模板（`daily` / `source` / 共用的 `entry`，concept / entity / pattern 都走 entry）、
+  追加 `[group."<name>"]` 段（只追加 group，不碰其它表）。
+- 模板一律含 `{{content}}`；`type` 由 `[group.X.extra]` 注入。
+- 工具侧统一排除见 §7（单个常量，别在 M0 再抄一份）。
+
+产出 / 验收
+- 集成测试：临时目录跑两次 `ensureNotebook(layered)` → 目录与模板齐全、第二次零改动。
+- 断言：每个模板都含 `{{content}}`；用模板建的笔记 frontmatter 有 `type/title/date` 且正文在。
+- 断言：`zk list` 结果里没有 `.zk/templates/*`、没有 meta 文件。
+- flat 模式下行为与 0.1.0 逐字节一致（回归）。跑 `bun run test`：它自己解析 zk，且 skip > 0 直接失败（见 `scripts/test.ts`）。
+
+风险：`[group.X.extra]` 若在旧 zk 版本不支持，退化为每个 type 各一份模板（5 个 group 各一，内容相同，只差 `type` 字面量）。
+
+**实现状态（2026-10-29）**：已落地 —— `structure` / `archiveDir` 进配置（老配置首次读取时把默认值写回文件）；
+layered 建 7 个目录 + 3 套模板 + 5 个 group；`excludedNames()` 一个常量被检索与统计共用（绝对路径）。
+`bun run test` 24 pass（flat 无回归、layered 模板带 `type/title/date` 且正文在、meta 与 raw 不进检索/统计）。
+
+### M1 上下文注入（spike 已完成：能注入）
+
+**Spike 结论（2026-10-29，读 dsh `v0.2.2-alpha.2` 源码）：能注入。**
+
+| 通道 | 出处 | 语义 | 用途 |
+|---|---|---|---|
+| `ctx.systemPrompt.section({ name, order, text })` | `packages/core/system-prompt` | `text` 可以是函数，每次 `assemble()`（每个 step 一次）重新求值；进系统提示，**不写会话历史** | **M1 首选**：三份 meta 每步重读，天然没有重复注入问题 |
+| `agent/pre-step` 瀑布 + 自建 `source.kind` 的 user 消息 | `packages/context/agent-instructions`、`time-context` | 消息进历史，可回放/压缩；`MessageSourceMap` 是 merge-extensible，第三方可自报 kind | 需要「记忆出现在第几轮」可审计时 |
+| `ctx.inject(['systemPrompt'], cb)` | `vendor/cordis` | service 就绪后回调；宿主没挂 system-prompt 时回调不跑，插件其余部分不受影响 | 挂载方式（别靠加载顺序） |
+
+补充事实：
+- 外部贡献可以用任意有限 `order`（内置段位 −1000…10200，见 `SECTION_ORDERS`），不必占仓库保留位。
+- `systemPrompt/change` 事件存在，注册/销毁会触发重装配；配置变更时重注册即可，不必自己缓存。
+- 记忆走 `section()` 而不是 `context()`：`context()` 的条目会被 `suppressRuntimeContext` 关掉（除非 `required: true`），
+  多一个开关就多一种「记忆静默消失」的可能；`section()` 没有这个开关。
+
+**AGENTS.md 不会被自动加载（对 vault 而言）。** DSH 内置 `dsh-agent-instructions`（`dsh-base` 默认挂载，每条链 65536 字节）只加载两条链：
+用户级 `$DSH_HOME/AGENTS.md` → `~/.agents/AGENTS.md`；项目级从「项目根（默认以 `.git` 为标记）」到「会话 cwd」逐层的 `AGENTS.md` / `CLAUDE.md`
+（外加 `.local` 覆盖）。vault 根目录不在会话 cwd 的祖先链上时完全不加载；vault 不是 git 仓库时「项目根」还会落到 vault 之外。
+→ 三份 meta 由插件自己读、自己注入；宿主自动加载只当额外福利。`zk_context` 仍然做，服务「注入不可用的宿主 + 人手动看」。
+
+**尚未端到端验证**：以上是源码层证据。真实 DSH 会话里「首轮就能引用 MEMORY.md」还要装好插件跑一次，才算 M1 验收通过。
+
+范围（按结论收敛）
+- 注入：`ctx.inject(['systemPrompt'], …)` → `section({ name: 'zdiary:memory', order: 5200, text: () => payload() })`；
+  payload 读 `AGENTS.md` + `MEMORY.md` + `USER.md`，按 `memoryBudgetWords` 截断；文件缺失或为空 → 返回空串（不是 `undefined`）。
+- 宿主没有 `systemPrompt` → 只有 `zk_context`。两者共用同一个 payload 渲染函数，不写两份。
+- `/zk brief` 斜杠命令降级为可选，不进验收（与本次 spike 无关，不承诺宿主支持）。
+- meta 文件位置：仍在 vault 根；文档不许写「DSH 会自动加载 AGENTS.md」。
+
+产出 / 验收
+- 新建会话问"我们上次为什么选 SQLite？"，模型第一轮就能引用 MEMORY.md 里的条目。
+- 断言：payload 在 `MEMORY.md` 缺失时返回空串、不抛错；超预算时按 D6 的机械顺序截断并带「已截断 N 词」。
+- 断言：`systemPrompt` service 不存在时插件照常 apply，`zk_*` 工具全部可用。
+
+风险：注入通道本身已确认存在；剩余风险是「模型看到了但没用」——属于提示词问题，不是可行性问题。
+
+**实现状态（2026-10-29）**：已落地 —— `lib/memory.ts`（词数 / 机械截断 / `<system-reminder>` 框 / 转义）、
+`app/plugin.ts` 的 `ctx.inject(['systemPrompt'])` 注册（order 5200，`text` 为函数）、`zk_context` 工具（不 `ensureNotebook`）。
+测试覆盖：中文词数、三份缺文件、顺序、超预算截断回显、AGENTS 不截断、注册与无 service 降级。**端到端（真实 DSH 会话首轮引用）未验证。**
+
+### M2 记忆读写（工具层）
+
+范围
+- `NoteRecord` 增加 `metadata`（来自 Z6）、`status`、`type`、`authority`。
+- `zk_new` 增加 `type` / `authority` / `dir` / `group`（实现上 type/authority 走 `--extra key=value`，模板读 `{{extra.*}}`）；撞名检测（Z8）。
+- 新工具 `zk_query`：结构化检索（query / tags / dirs / since / until / type / status / orphan / brokenLinks / sort / limit / include_archived），
+  status/type 在 JS 层过滤（Z6）。
+- 新工具 `zk_supersede`：改 `status` + 写 `superseded-by` + 重写入链 + 搬进 archive（保留原相对路径）；默认 dry_run，索引按 Z11 不用手动重建。
+  `superseded-by` 指向的是**搬走后的新路径**，写之前先确认目标 note 处于 active。
+- 新工具 `zk_context`：读三个根文件（M1 的回退，也给人用）。
+- `zk_link` 增加"目标必须存在"检查（现在已通过 findNote 间接保证，改成显式报错更清楚）。
+
+产出 / 验收
+- 测试（layered）：同一标题建两次 → 第二次明确报错，第一篇内容不变。
+- 测试：supersede 后，`zk_query({status:'active'})` 查不到它，`archive/` 里能找到，git status 显示 rename。
+- 测试：supersede 前后 `zk_lint.brokenLinks` 计数不增加（入链在同一调用里被重写）。
+- 测试：排除清单生效（meta 文件与 `raw/inbox/archive` 不出现在 `zk_query` 结果里）。
+
+**实现状态（2026-10-29）**：已落地。落点与实现口径：
+- `NoteRecord` 增加 `metadata/status/type/authority`（`toRecord` 直取 Z6 的 `metadata`；`noteFromDisk` 用 `lib/frontmatter.ts` 解析，老笔记也能读出 status）。
+- `zk_new` 增加 `type` / `authority` / `group`（`--extra`），撞名用「建前目录快照 + 建后比对 basename」判定，命中即 `ZkError`；`zk_new` 不再返回警告而是当场失败。
+- `zk_query`：`status` / `type` 在 JS 层过滤；带这两个过滤时先 `--limit 200` 多取再截断（否则「前 10 条里没有 active」会假空）。
+  **`status` 缺省按 `active` 算** —— 0.1.0 的老笔记没有 frontmatter，不兜的话 flat vault 查 `status: active` 一条都返回不了。
+- `zk_supersede`：`dry_run` 默认 true；顺序 = 重写能精确匹配的入链 → 改 frontmatter（`status: superseded` + `superseded-by`）→ `rename` 进 `archive/` 原相对路径；
+  入链来自一次 `zk graph`（按 `targetPath` 比对，不用 `targetId`）；写法不是 `[[旧路径]]` 的入链不猜，进 `missingLinks` 交给人；已 superseded 直接返回、重放幂等。
+- `zk_link` 目标不存在时附「最像的 3 篇」提示。
+- 测试新增 9 条（frontmatter 4 + M2 5），25 → 34 pass；smoke 增加到 10 个工具。
+
+### M3 巡检与做梦（只报告）
+
+范围
+- 新工具 `zk_lint`：一次返回 `{orphans, brokenLinks, stale, tagless, duplicateTitles, missingBacklink}`，每项最多 50 条 + 总数。
+- 新工具 `zk_dream`：输入窗口（默认 7 天），返回
+  `{ newNotes, dailyLooseEnds, topCited, rejected: [{path, reason}] }`；被引用次数用 `zk graph --format json` 一次算完（实测顶层就有 `links` 边数组，含 `sourceId/targetId`，不用解析正文）。
+- `zk-kit` CLI 增加 `lint` / `dream` / `query`，人类终端不用拼 zk flag。
+  `zk-kit query -- <zk list 任意参数>` 支持透传，但**禁/覆盖**会破坏不变量的参数：`--notebook-dir`、`--format`、`--exclude / -x`（由 zk-kit 注入），否则「统一排除」被一条透传绕过。
+
+产出 / 验收
+- 在一个 200 条笔记的合成 vault 上，`zk_lint` 在 3 秒内返回（不能对每条笔记跑一次 zk）。
+- `zk_dream` 的输出能被 agent 直接改写成 DREAMS.md 的三栏格式（晋升/拒绝/flag）。
+- 断言：两个工具都不写任何笔记（dry-run 语义由工具保证，不是靠提示词）。
+
+### M4 设置页与文档
+
+范围
+- 设置页新增：结构模式（flat/layered）、注入预算（词，管三份 meta 的总载荷）、归档目录；layered 未初始化时给"一键初始化分层结构"按钮。
+- 危险操作二次确认：切 flat→layered 只建目录不搬文件，弹窗里明确说这句。
+- `docs/features/memory.md`（Purpose/Owns/Rejected 体例）、README 增加"记忆分层"一节、AGENTS.md 模板随插件分发。
+  AGENTS.md 模板必须写清三件事：检索词归宿规则（值得检索 → tags 或正文；不值得 → 不存在）、
+  中文笔记必须打 tags（Z12：中文正文召回不完整）、以及"插件不保证自动加载本文件"（M1 结论回填）。
+
+产出 / 验收
+- 设置页保存 → 下一次工具调用立刻生效（沿用现在"每次现读配置"的做法）。
+- 设置页的结构模式读配置；与磁盘不一致时（例如 `structure: layered` 但没有 `raw/`）显示告警 + 「按配置补建目录」按钮，**不自动改配置、不自动删目录**。
+- 文档里每个命令都能在临时 vault 上跑通（docs 里的代码块进 smoke 脚本）。
+
+---
+
+## 5. 工具清单（v0.2 结束时）
+
+| 工具 | 状态 | 说明 |
+|---|---|---|
+| `zk_search` | 改 ✅ | 加 `type/status` 过滤；结果带 metadata；固定排除 meta 文件 |
+| `zk_read` | 改 ✅ | 支持读 meta 文件（按路径直读，绕过索引） |
+| `zk_new` | 改 ✅ | 加 `type/authority/group`；撞名报错；模板必含 content |
+| `zk_append` | 微调 | 拒写 meta 文件（AGENTS/MEMORY/USER/DREAMS/INDEX）—— 未做，留到 M4 |
+| `zk_daily` | 不变 | 继续用 `ensureDailyNote` 的目录快照判断新建 |
+| `zk_link` | 微调 ✅ | 目标不存在时给出候选建议 |
+| `zk_stats` | 改 | 增加 `superseded/archived` 计数 —— 未做，留到 M4 |
+| `zk_query` | 新 ✅ | 结构化检索，agent 的主查询入口 |
+| `zk_context` | ✅ 已完成 | 读 AGENTS/MEMORY/USER，按预算截断（与注入共用 payload） |
+| `zk_lint` | 新 | 只报告，不改写 |
+| `zk_dream` | 新 | 只报告，不改写 |
+| `zk_supersede` | 新 ✅ | 默认 dry_run，改状态 + 重写入链 + 归档 |
+
+> M0/M1/M2 已落地的部分：`zk_search` / `zk_stats` 带统一排除（`excludedNames`，绝对路径）；
+> `zk_context` 已上线；`zk_read` 已能直接读 meta 文件（不进索引，走磁盘）；
+> `zk_query` / `zk_supersede` 已上线；`zk_new` 已带 type/authority 与撞名检测。`zk_lint` / `zk_dream` 仍待 M3。
+
+---
+
+## 6. 模板与配置契约
+
+`entry.md`（concept / entity / pattern 共用；`type` 由 group extra 给，source 另有自己的模板以保留 Key claims / Quotes）：
+
+```markdown
+---
+type: {{extra.type}}
+title: {{title}}
+date: {{format-date now "%Y-%m-%d"}}
+status: active
+authority: {{extra.authority}}
+tags: []
+---
+
+# {{title}}
+
+## Summary
+
+## Content
+
+{{content}}
+
+## Links
+```
+
+`zk_link` 认 `## Links` 与 `## 链接` 两种小节标题，新写入一律用 `## Links`；旧笔记沿用已有小节，不追加第二个。
+
+`authority` 的层级：group 只给默认值，具体来源的评级由 `zk_new` 传 `--extra authority=informal` 覆盖（CLI 的 extra 优先于 `[group.X.extra]`，实测可用）。
+
+`format-date` 吃的是 strftime 格式（`%Y-%m-%d`），不是 Go 的 `2006-01-02`——写错会原样输出 `2006-01-02`，日期过滤全废（实测）。
+
+`daily.md`：在 0.1.0 版本基础上加三节 `Events / Observations / Loose ends`，保留 `{{content}}`。
+
+group 声明（只追加新表，不动已有表）：
+
+```toml
+[group."concept"]
+paths = ["notes/concepts"]
+[group."concept".note]
+template = "entry.md"
+filename = "{{slug title}}"
+[group."concept".extra]
+type = "concept"
+authority = "expert"
+```
+
+5 个 group（daily / source / concept / entity / pattern）都按这个形状追加，差别只有 `paths`、`template` 与 `extra`；
+`authority` 默认值：source / entity = `official`，concept / pattern = `expert`（`zk_new` 可覆盖）；
+`filename` 一律 `{{slug title}}`，只有 daily 用日期模板（Z10：不写这行，笔记就是随机 id）。
+
+**实现落点（2026-10-29）**：模板常量在 `lib/notebook.ts`（`DAILY_TEMPLATE_LAYERED` / `SOURCE_TEMPLATE` / `ENTRY_TEMPLATE`），
+`ensureNotebook` 只在文件缺失时写入（用户改过的不覆盖）；5 个 group 由同一个 `groupSection()` 生成，只追加缺失的。
+测试断言：三套模板都含 `{{content}}`；`entry.md` 建出的笔记带 `type/title/date` 且正文在；第二次调用 `dirsCreated` / `templatesWritten` / `groupsAdded` 全空。
+
+---
+
+## 7. frontmatter 数据契约
+
+| 字段 | 谁写 | 谁读 | 取值 |
+|---|---|---|---|
+| `type` | 模板/group | `zk_query` 过滤、agent | daily / source / concept / entity / pattern |
+| `date` | 模板 | zk 自带 `--created-*`（默认日期键） | YYYY-MM-DD |
+| `status` | 模板（`active`）/ `zk_supersede`（`superseded`） | `zk_query` 在 JS 层过滤（Z6） | active / superseded；**缺省视为 active**（0.1.0 老笔记没有该字段） |
+| `authority` | group extra 给默认值，`zk_new` 可覆盖 | `zk_dream` 拒绝规则 | official / expert / informal |
+| `superseded-by` | `zk_supersede` | 人、agent | `[[path]]` |
+| `tags` | zk（唯一可查询维度） | `zk_search --tag` | 短横线小写 |
+
+固定排除清单（所有查询都带）：`raw`, `inbox`, `cfg.archiveDir`, `AGENTS.md`, `MEMORY.md`, `USER.md`, `DREAMS.md`, `INDEX.md`。
+工具层只放**一个常量**（`lib/zk.ts` 的 `excludedNames`），所有查询路径共用；一律传绝对路径（Z4：`-x` 相对 cwd 解析），不传 glob。
+
+检索词的归宿规则（写进 AGENTS.md）：
+- 值得检索 → 写进 `tags` 或正文；
+- 不值得检索 → 不存在；
+- 中文笔记**必须**打 tags —— Z12 下中文正文召回不完整，只靠正文会得到"这条笔记不存在"的假阴性，然后新建重复笔记；
+- 这个故障最难排查，因为它看起来像正常工作流，所以不给 `keywords` 留任何位置。
+
+meta 文件放根目录的理由：AGENTS.md 在根目录是给人和其他工具（Codex 等）看的约定；但 **DSH 不会自动加载 vault 根目录的 AGENTS.md**
+（M1 结论：只认项目根→cwd 链与用户级两份），所以根目录只剩「人和别的工具能看见」这点价值，读路径一律走插件自己读。
+
+---
+
+## 8. 迁移与兼容
+
+- 0.1.0 → 0.2.0：默认 `flat`。读老配置时 `structure` 缺省按 flat 处理，并**立刻把 `flat` 写回配置文件**（连同 `memoryBudgetWords: 300`、`archiveDir: "archive"`）。这样配置始终是权威值：v0.3 翻默认时老 vault 一个字段都不会变，「缺省」只服务首次创建。
+  （2026-10-29 已实现：`config()` 读时补写；测试断言 `structure` 真的落盘。）
+- 切到 layered：只建目录与模板；**绝不移动已有笔记**（`notes/` 下的老笔记留在原地，仍然可搜可读）。
+- 不做"按 `type` 自动归类"：0.1.0 的老笔记没有 `type`（模板到 v0.2 才带），自动归类对它们无处安放，最后还是人兜底。
+  遇到时再挪本身就是一次再评估，质量比批量搬运高。`zk-kit triage`（只列无 `type` 笔记并建议去向）属计划外，未排期。
+- 文件命名会混排：0.1.0 的 flat 笔记是 `{{id}}`（随机，如 `0tup.md`），layered 之后新笔记是拼音 slug。老笔记**不重命名**——改名会断入链（Z11），收益只是好看。
+- `config.toml`：只追加不存在的 `[group.*]`；已有同名 group 一字不动（沿用 0.1.0 的幂等断言）。`[note]` 表不动，slug 命名靠 group 级 `filename`。
+- 用户手改过模板：已存在的模板文件不覆盖，只报"跳过"（与 0.1.0 的 `templateWritten` 语义一致）。
+
+---
+
+## 9. 风险登记
+
+| 风险 | 概率 | 影响 | 缓解 |
+|---|---|---|---|
+| M1 注入机制不存在 | ~~中~~ 已排除 | 记忆层自动化打折 | 2026-10-29 源码确认可注入（§4 M1）；`zk_context` 仍保留，服务没有 `systemPrompt` 的宿主 |
+| 模型不遵守"先查重再写" | 高 | 重复笔记 | `zk_new` 内部查重并返回"疑似重复"，不靠提示词 |
+| MEMORY.md 被模型当成普通笔记改写 | 中 | 记忆污染 | meta 文件排除出检索；`zk_append` 拒写 meta 文件（MEMORY.md 的写入由 agent 按 AGENTS.md 直接改文件，走 git diff 可审） |
+| 200 条后上下文吃紧 | 高 | 检索变慢变糊 | `zk_query` 强制 `limit`，默认返回摘要而非全文；INDEX.md 在 150 条时提示生成 |
+| 中文长标题 slug 撞名 | 中 | Z8 丢内容 | 撞名即报错，让人改标题；不自动加后缀 |
+| 人和 agent 用不同 zk 版本索引同一个 notebook.db | 中 | schema 漂移、索引损坏 | `zk-kit doctor` 显示 zk 来源与版本；文档写明以 `doctor` 看到的为准 |
+| 集成测试因 zk 缺失静默 skip，被当成回归通过 | ~~高~~ 已缓解 | 假绿，M0 的「逐字节一致」无法证明 | `bun run test` 先解析 zk，末尾断言 `skip = 0`；直接 `bun test` 无 zk 会留一条红的（2026-10-29 落地） |
+
+---
+
+## 10. 已定结论（2026-10-29 评审）
+
+细节都在对应节里，这里只做索引。
+
+| # | 结论 | 落点 |
+|---|---|---|
+| 1 | `structure` 默认 flat，设置页手动切；v0.3 满足翻转条件后再翻 | §3 D1 |
+| 2 | 注入预算 300 词做成设置项，管三份 meta 的总载荷 | §3 D6、§4 M0 |
+| 3 | superseded 搬进 archive/（保留原相对路径），同一次调用里重写入链 | §3 D4、§4 M2 |
+| 4 | `keywords` 删掉，检索词写进 tags 或正文；中文必须打 tags | §7、§6 |
+| 5 | M1 回退 = `zk_context` + `/zk brief` 一起做，验收 ≥10 次首轮机会 | §4 M1 |
+| 6 | 人终端走 `zk-kit`，`query` 支持透传但禁破坏不变量的参数 | §4 M3 |
+| 7 | meta 文件放 vault 根；是否自动加载由 M1 结论决定，不预先承诺 | §4 M1、§7 |
+| 8 | 不给老笔记做自动归类 | §8 |
+| 9 | 注入截断纯机械（MEMORY 尾 → USER 尾），不判断相关性 | §3 D6 |
+| 10 | 结构模式以配置为准；迁移时显式落盘 `structure`，目录不符只告警 | §3 D1、§8 |
+
+---
+
+## 11. 明确不做
+
+- 向量库 / embedding / 语义检索（全文 + agent 判断已经够用）
+- 插件内跑 cron 或后台做梦（应由人/外部调度触发）
+- 插件替人做语义判断（矛盾裁决、晋升决定）
+- 自动改写/批量重构用户已有笔记
+- `[alias]` 写进 config（对 agent 无用，对人有 `zk-kit`）
+
+---
+
+## 12. 完成定义
+
+**基线先看一眼**：`bun run test` 现在 34 pass / 0 fail（zk 0.15.7）。测试入口 `scripts/test.ts` 先按插件顺序解析 zk，再跑 `bun test`，
+**出现 skip 即失败**；直接 `bun test` 且没有 zk 时会留一条红的（`zk 不可用`），不会被误读成全绿。
+
+- [x] layered vault 一条命令建好，模板全部生效，`zk list` 干净（无模板、无 meta 文件）—— 2026-10-29
+- [x] layered 下同一标题重复创建会报错而不是静默丢内容（flat 是随机 id 文件名，不会撞名）—— 2026-10-29
+- [x] supersede 后原笔记在 archive/（保留原相对路径），检索不再命中，git 显示 rename，断链计数不增加 —— 2026-10-29
+- [ ] 新会话第一轮能引用 MEMORY.md（注入通道已落地，**端到端待真机验证**）
+- [ ] `zk_lint` / `zk_dream` 只读，200 条笔记 3 秒内返回
+- [x] 现有测试全绿（34 pass，含不依赖 zk 的配置与注入测试；flat 模式无回归）—— 2026-10-29
+- [ ] README / docs/features/memory.md / AGENTS.md 模板 三处口径一致（前两处已更新，AGENTS.md 模板待 M4 随插件分发）
