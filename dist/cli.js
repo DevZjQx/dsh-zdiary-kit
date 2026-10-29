@@ -4,7 +4,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { config } from './config/store.js';
+import { config, writeConfig, CONFIG_KEYS } from './config/store.js';
+import { CFG_FILE } from './config/paths.js';
 import { ensureNotebook, structureStatus } from './lib/notebook.js';
 import { buildMemoryPayload } from './lib/memory.js';
 import { installZk } from './lib/install.js';
@@ -26,6 +27,8 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit dream [--days 7]             晋升材料：窗口新增 / daily 未完成 / 被引最多（只读）
   zk-kit query [-- <zk list 参数>]     透传 zk list（--notebook-dir / --format / -x 会被替换掉）
   zk-kit index                        重建索引
+  zk-kit config [get [键]]             看配置（不传键 = 全量；未知键报错）
+  zk-kit config set 键=值 [键=值 …]     改配置（只落盘，不建目录 —— 切结构后要跑 zk-kit init）
 
 除 doctor / help 外，其余子命令加 --json 输出结构化结果。`;
 function parse(argv) {
@@ -62,6 +65,11 @@ const list = (v) => str(v).split(/[,，]/).map((s) => s.trim()).filter(Boolean);
 const print = (value, asJson) => {
     console.log(asJson || typeof value !== 'string' ? JSON.stringify(value, null, 2) : value);
 };
+/** 配置值给人看：数组摊平，其它照原样（`print` 会把非字符串 JSON 化） */
+const fmtValue = (v) => (Array.isArray(v) ? (v.length ? v.join(', ') : '[]') : String(v));
+const KEYS = CONFIG_KEYS;
+const isKey = (k) => KEYS.includes(k);
+const USAGE_CONFIG = `用法：zk-kit config [get [键]] | zk-kit config set 键=值 [键=值 …]（键：${KEYS.join(' / ')}）`;
 function noteList(notes) {
     if (!notes.length)
         return '没有匹配的笔记';
@@ -279,6 +287,60 @@ async function main() {
             await indexNotebook(cfg);
             print(json ? { ok: true } : '✓ 索引已重建', json);
             return;
+        }
+        case 'config': {
+            const sub = pos[0] ?? 'get';
+            if (sub === 'get') {
+                const key = pos[1] ?? '';
+                if (!key) {
+                    const lines = KEYS.map((k) => `${k} = ${fmtValue(cfg[k])}`);
+                    lines.push('', `配置：${CFG_FILE}`);
+                    print(json ? cfg : lines.join('\n'), json);
+                    return;
+                }
+                if (!isKey(key))
+                    throw new ZkError(`没有配置项 ${key} —— ${USAGE_CONFIG}`);
+                print(json ? { [key]: cfg[key] } : fmtValue(cfg[key]), json);
+                return;
+            }
+            if (sub === 'set') {
+                const patch = {};
+                for (const item of pos.slice(1)) {
+                    const at = item.indexOf('=');
+                    const key = at > 0 ? item.slice(0, at) : '';
+                    if (!key || !isKey(key))
+                        throw new ZkError(USAGE_CONFIG);
+                    patch[key] = item.slice(at + 1);
+                }
+                if (!Object.keys(patch).length)
+                    throw new ZkError(USAGE_CONFIG);
+                const next = writeConfig(patch);
+                const touched = Object.keys(patch).filter(isKey);
+                console.log(touched.map((k) => `${k} = ${fmtValue(next[k])}`).join('\n'));
+                // 归一化会把不合法值悄悄换成安全值（例：structure=xyz → flat），不回显就等于命令"成功了但没生效"
+                const normalized = touched.filter((k) => fmtValue(next[k]) !== String(patch[k]).trim());
+                if (normalized.length) {
+                    console.error('⚠️ 归一化：' + normalized.map((k) => `${k} 写入 "${String(patch[k])}" → 实际 "${fmtValue(next[k])}"`).join('；'));
+                }
+                // 与设置页同一套告警：只保存配置不自动建目录，切结构后要显式 init
+                const warn = [];
+                if (next.zkPath && !fs.existsSync(next.zkPath))
+                    warn.push('zk 路径不存在：' + next.zkPath);
+                if (!hasNotebook(next)) {
+                    warn.push('这个目录还不是 zk 笔记本 —— 跑 zk-kit init');
+                }
+                else {
+                    const st = structureStatus(next);
+                    if (st.missing.length)
+                        warn.push(`结构是 ${st.mode}，但还缺目录：${st.missing.join('、')} —— 跑 zk-kit init`);
+                    if (st.agents.required && !st.agents.present)
+                        warn.push('layered 结构缺 AGENTS.md —— 跑 zk-kit init');
+                }
+                for (const line of warn)
+                    console.error('⚠️ ' + line);
+                return;
+            }
+            throw new ZkError(USAGE_CONFIG);
         }
         case 'help':
         case '--help':

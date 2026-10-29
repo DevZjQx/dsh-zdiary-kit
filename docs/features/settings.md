@@ -17,6 +17,9 @@
 浏览器半边 `client.ts`：声明式字段清单 `FIELDS`（支持 `kind: 'select'`，结构模式用下拉，枚举值不接受手打）、
 状态行、动作按钮、输出面板。`flat → layered` 保存前弹窗明确写「只建目录与模板，不搬已有笔记」。
 
+命令行 `zk-kit config get|set` 读写的是同一份配置、同一套归一化与告警口径（**都只改配置不建目录**），
+只是没有浏览器：改完要自己跑 `zk-kit init`（对应设置页的「按配置补建目录」）。
+
 **Does not own.** 工具的注册与执行；zk 命令的正确性；模板 / group / `AGENTS.md` 的写入与结构检查（`lib/notebook`）。
 「字段加在哪」：labels/hints 加在 `client.ts` 的 `FIELDS`，键加在 `config/store.ts` 的 `DEFAULTS` ——
 白名单直接取 `DEFAULTS` 的键，不存在第三处。

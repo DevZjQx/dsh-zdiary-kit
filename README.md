@@ -114,8 +114,8 @@ template = "daily.md"
 
 ### 分层结构（可选）
 
-设置页「结构与记忆 → 结构模式」选 `layered` 并保存（也可以直接改
-`~/.dsh/zdiary/zdiary.config.json` 的 `structure`），点 **按配置补建目录**（或 `zk-kit init`）会补出：
+设置页「结构与记忆 → 结构模式」选 `layered` 并保存，或直接 `zk-kit config set structure=layered`
+（等价于改 `~/.dsh/zdiary/zdiary.config.json` 的 `structure`），再点 **按配置补建目录**（或 `zk-kit init`）会补出：
 
 ```
 <notebook>/
@@ -134,6 +134,8 @@ template = "daily.md"
 （`entry.md` 三处共用，`type` 与 `authority` 由 `[group.X.extra]` 注入），
 以及根目录一份 **`AGENTS.md` 模板**（检索词归宿、中文必须打 tags、"插件不保证宿主自动加载本文件"三件事都写在里面）。
 **只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` 一律不覆盖。
+切回 `flat` 同理：只改配置，已建出来的 `raw/` `archive/` 不会被删 —— 所以切换是「随时可逆」的，代价只是目录留在那里。
+`zk-kit config set` 会把被归一化改掉的值回显出来（例如 `structure=xyz` → 实际 `flat`），不会"命令成功但没生效"。
 注意：从 flat 升级时旧的 `daily.md` 已存在，因此不会自动换成带 Events / Observations / Loose ends 的 layered 日记模板；
 想要三节模板，先备份并删掉 `<notebook>/.zk/templates/daily.md`，再点「按配置补建目录」。
 设置页的结构**以配置为准**：配置是 `layered` 但磁盘缺目录时只显示告警与补建按钮，不自动建、不自动删。`raw/` `inbox/` `archive/`
@@ -166,6 +168,8 @@ zk-kit lint --stale-days 90          # 体检（只读）
 zk-kit dream --days 7                # 晋升材料（只读）
 zk-kit query -- -t demo --limit 5    # 透传 zk list：--notebook-dir / --format / -x 会被替换掉
 zk-kit index
+zk-kit config get structure          # 看一个配置项（不传键 = 全量）
+zk-kit config set structure=layered  # 只落盘配置，不建目录 —— 目录要 zk-kit init 补
 zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group / 结构 / 记忆 / 索引
 ```
 
@@ -179,7 +183,9 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 指定目录 | `zk-kit new --title 标题 --dir notes/concepts`（layered 下 type 由目录所属 group 决定） |
 | 装 zk | `zk-kit install 0.15.7`（下载约 10 MB → `~/.dsh/zdiary/bin`，不在可跑清单里） |
 
-除 `doctor` / `help` 外，其余子命令加 `--json` 输出结构化结果。装好插件后也可以直接用 `node <插件目录>/dist/cli.js …`。
+除 `doctor` / `help` / `config set` 外，其余子命令加 `--json` 输出结构化结果。
+`config set` 只认白名单键，值会被同一份归一化处理（`structure=xyz` 落盘成 `flat` 并回显），
+与设置页共用一套告警口径 —— 两者都**只改配置不建目录**。装好插件后也可以直接用 `node <插件目录>/dist/cli.js …`。
 
 ## 权限
 

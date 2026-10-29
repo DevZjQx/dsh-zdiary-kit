@@ -9,6 +9,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-test-'))
 process.env.DSH_HOME = home
@@ -833,6 +834,58 @@ describe('M4: 结构设置与记忆预算', () => {
     const line = statTool.output.render({}, { ...stats, notebook: m4dir })[0].text
     expect(line).toContain('归档 1')
     expect(line).toContain('superseded 1')
+  })
+})
+
+describe('cli: zk-kit config', () => {
+  const cli = path.resolve(import.meta.dir, '..', 'src', 'cli.ts')
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, [cli, ...args], { env: process.env, encoding: 'utf8', timeout: 30_000 })
+
+  it('config get 读一个键；未知键报错并列出合法键', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const got = run('config', 'get', 'structure')
+    expect(got.status).toBe(0)
+    expect((got.stdout ?? '').trim()).toBe(store.config().structure)
+    expect(paths.CFG_FILE.length).toBeGreaterThan(0)
+
+    const bad = run('config', 'get', 'nonsense')
+    expect(bad.status).not.toBe(0)
+    expect(bad.stderr ?? '').toContain('没有配置项 nonsense')
+    expect(bad.stderr ?? '').toContain('structure')
+  })
+
+  it('config set 只落盘：切到 layered 不建任何目录', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-cli-'))
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    try {
+      store.writeConfig({ notebook: dir, zkPath: zkBin, structure: 'flat' })
+      const r = run('config', 'set', 'structure=layered')
+      expect(r.status).toBe(0)
+      expect((r.stdout ?? '').trim()).toBe('structure = layered')
+      expect(store.config().structure).toBe('layered')
+      // 无缝切换的前提：改配置不碰磁盘，目录要等 zk-kit init
+      expect(fs.existsSync(path.join(dir, 'raw'))).toBe(false)
+      expect(fs.existsSync(path.join(dir, 'notes'))).toBe(false)
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('归一化改了值要回显：structure=xyz 落盘成 flat 并告警', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    try {
+      const r = run('config', 'set', 'structure=xyz')
+      expect(r.status).toBe(0)
+      expect(r.stderr ?? '').toContain('归一化')
+      expect(r.stderr ?? '').toContain('"xyz" → 实际 "flat"')
+      expect(store.config().structure).toBe('flat')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+    }
   })
 })
 
