@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 0.2.0
+# dsh-zdiary-kit 0.3.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -27,7 +27,7 @@
 双链用相对路径（zk 的 `link-format = "wiki"` 认这个），所以 `--broken-links` 不会因为「按标题链接」而误报。
 
 **长期记忆**：笔记本根目录放 `AGENTS.md`（工作约定）、`USER.md`（偏好）、`MEMORY.md`（精炼记忆），
-插件会在每个 step 把它们注入系统提示（预算默认 300 词，设置页「结构与记忆 → 注入预算」可改；
+插件会在每个 step 把它们注入系统提示（预算默认 300 词，设置页「记忆 → 注入预算」可改；
 超了先丢 MEMORY 的尾部整段，并明确告诉你截了多少、以及是不是 AGENTS 吃掉了大半预算）。
 DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不会**读笔记本根目录，所以别指望宿主帮你加载 —— 是插件自己读、自己注入。
 
@@ -70,13 +70,12 @@ dsh plugin --profile desktop add "link:/path/to/dsh-zdiary-kit"
 
 | 分组 | 字段 | 说明 |
 |---|---|---|
-| 笔记本 | 当前笔记本（下拉） | 切换 = 改 `active`；`zk_*` 工具只认当前这一个 |
-| 笔记本 | 每个笔记本的路径 | 空 = `<会话工作区>/zdiary`（在工作区内，agent 能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本 |
-| 目录与 group | 笔记子目录 / 日记子目录 | 默认 `notes` / `journal`（跟着当前笔记本走，不是每个笔记本各一套） |
+| 笔记本 | 当前笔记本（下拉） | 切换 = 改 `active`；`zk_*` 工具只认当前这一个。切换保存后自动建好目标笔记本（幂等，不动已有笔记） |
+| 笔记本 | 每个笔记本一行：路径 + 结构 | 路径空 = `<会话工作区>/zdiary`（在工作区内，agent 能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本。结构（`flat` / `layered`）是**每个笔记本自己的**，行里直接选 |
+| 目录与 group | 笔记子目录 / 日记子目录 | 默认 `notes` / `journal`（全局共用，不按笔记本分开） |
 | 目录与 group | 日记 group 名 | 默认 `daily`，初始化时自动补配置 |
 | 目录与 group | 归档目录 | `supersede` 后搬到这里（保留原相对路径），默认 `archive` |
-| 结构与记忆 | 结构模式 | `flat`（默认，notes/ + 日记）/ `layered`（raw → notes/* → MEMORY.md）—— 切换只建目录与模板，不搬笔记，切换前会弹窗说明 |
-| 结构与记忆 | 注入预算（词） | AGENTS + USER + MEMORY 的合计上限，默认 300（中文按 2 字 1 词） |
+| 记忆 | 注入预算（词） | AGENTS + USER + MEMORY 的合计上限，默认 300（中文按 2 字 1 词） |
 | 写入 | 默认标签 / zk_read 上限 | 新笔记自动带标签；单次读取字符上限 |
 | zk | zk 路径 / 内置版本 | 路径空 = 自动找；版本默认 0.15.7 |
 
@@ -91,30 +90,33 @@ dsh plugin --profile desktop add "link:/path/to/dsh-zdiary-kit"
 ```json
 {
   "notebooks": {
-    "default": "",
-    "work": "~/work/zdiary"
+    "default": { "path": "", "structure": "flat" },
+    "work": { "path": "~/work/zdiary", "structure": "layered" }
   },
   "active": "work"
 }
 ```
 
-- `notebooks`：名字 → 路径。名字只接受字母、数字、`_` 与 `-`（1-32 字符）；路径为空就是 `<会话工作区>/zdiary`，相对路径按工作区解析。
+- `notebooks`：名字 → `{path, structure}`。名字只接受字母、数字、`_` 与 `-`（1-32 字符）；路径为空就是 `<会话工作区>/zdiary`，相对路径按工作区解析。老写法（名字 → 裸路径字符串）照常读，结构继承全局缺省。
+- **路径与结构都是笔记本自己的属性**：`work` 可以是 layered 而 `default` 还是 flat，互不牵连。
 - `active`：当前笔记本的名字。名字不存在、非法时退回 `default`。
-- `notebook` 是**派生的**（`notebooks[active]` 解析后的绝对路径），只在内存里、不落盘 —— 磁盘上笔记本只有一个真相。
-  老配置里那个单独的 `notebook` 字段读进来会自动变成 `notebooks.default`，不用手改。
-- **共享的是全局项**：笔记 / 日记子目录、`daily` group、结构模式、归档目录、注入预算 —— 这些不按笔记本分开。
+- `notebook` 与 `structure` 是**派生的**（`notebooks[active]` 解析后的绝对路径 / 该条目的结构），只在内存里、不落盘也不可写 —— 磁盘上笔记本只有一个真相，就是 `notebooks` + `active`。
+  老配置里那个单独的 `notebook` 字段（和全局 `structure`）读进来会**一次性**迁进 `notebooks.default`，之后不再互相覆盖。
+- **共享的是全局项**：笔记 / 日记子目录、`daily` group、归档目录、注入预算 —— 这些不按笔记本分开。
 
 ```bash
-zk-kit notebooks                     # 列出所有笔记本（* 是当前那个）
-zk-kit notebooks add work ~/work-zdiary
-zk-kit notebooks use work            # 切换（只改 active，不建目录）
+zk-kit notebooks                     # 列出所有笔记本（* 是当前那个；[flat/layered] 是各自的结构）
+zk-kit notebooks add work work-zdiary
+zk-kit notebooks use work            # 切换并自动建好目标笔记本（幂等）
 zk-kit notebooks
 zk-kit notebooks remove work         # 删掉（至少留一个；删的是当前那个就自动切到剩下的第一个）
 zk-kit notebooks
 ```
 
-设置页里改「当前笔记本」下拉、改路径、新增 / 删除，最后点 **保存** 落盘；命令行 `zk-kit notebooks …` 改的是同一份配置。
-切换过去发现「还不是 zk 笔记本」时跑一次 `zk-kit init`（设置页的「初始化笔记本」）就会在那个目录里建库 —— 每个笔记本各自一份 `.zk/`。
+设置页里改「当前笔记本」下拉、改路径 / 结构、新增 / 删除，最后点 **保存** 落盘；命令行 `zk-kit notebooks …` 改的是同一份配置。
+**切换即就绪**：`use`（和设置页保存时切换）会顺手把目标笔记本建好 —— `ensureNotebook` 幂等，缺了才补，不动已有笔记；
+改路径 / 新增**不**自动建目录（防手滑把库建到打错的路径上），切过去再建。
+新笔记本的结构跟当前那个一致；要改某个笔记本的结构，切到它再 `zk-kit config set structure=layered`（或用设置页那一行的下拉）。
 
 ## 笔记本长什么样
 
@@ -147,8 +149,9 @@ template = "daily.md"
 
 ### 分层结构（可选）
 
-设置页「结构与记忆 → 结构模式」选 `layered` 并保存，或直接 `zk-kit config set structure=layered`
-（等价于改 `~/.dsh/zdiary/zdiary.config.json` 的 `structure`），再点 **按配置补建目录**（或 `zk-kit init`）会补出：
+给某个笔记本选 `layered`：设置页笔记本那一行的结构下拉，或切到它后 `zk-kit config set structure=layered`
+（等价于改 `~/.dsh/zdiary/zdiary.config.json` 里**那个条目**的 `structure` —— 结构是每个笔记本自己的），
+再点 **按配置补建目录**（或 `zk-kit init`）会补出：
 
 ```
 <notebook>/
@@ -218,7 +221,9 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 
 除 `doctor` / `help` / `config set` 外，其余子命令加 `--json` 输出结构化结果。
 `config set` 只认白名单键，值会被同一份归一化处理（`structure=xyz` 落盘成 `flat` 并回显），
-与设置页共用一套告警口径 —— 两者都**只改配置不建目录**。装好插件后也可以直接用 `node <插件目录>/dist/cli.js …`。
+与设置页共用一套告警口径 —— 两者都**只改配置不建目录**；`structure` 改的是**当前笔记本**的结构。
+派生键不接受单键赋值：`notebook=…`（纯派生）与 `notebooks=…`（整体映射）会直接报错并指路 `zk-kit notebooks …`。
+装好插件后也可以直接用 `node <插件目录>/dist/cli.js …`。
 
 ## 权限
 
@@ -237,11 +242,11 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   它们走插件自己的 `node:fs` 和 `zk` 子进程，不经这层策略。
 - **工作区按会话算**：`zk_*` 每次调用都从宿主拿这次会话的 cwd（`exec.agent.id` → `sessions.get(id).header.cwd`），
   默认笔记本就是 `<会话工作区>/zdiary` —— 同一个宿主进程开多个工作区，各看各的，不用重启也不用改配置。
+- **注入与工具同口径**：系统提示里的 AGENTS / USER / MEMORY 也按会话工作区解析（装配上下文带 agent 时），
+  记忆注入和 `zk_*` 看的永远是同一份；不带 agent 的裸装配（预览之类）才退回进程工作区。
 - **显式配置优先**：笔记本写绝对路径就钉死；写相对路径（如 `zdiary`）则按上面那个工作区解析。
-- 拿不到会话上下文的调用（设置页、`zk-kit` 命令行、系统提示里的记忆注入）退回**进程工作区**：
+- 拿不到会话上下文的调用（设置页、`zk-kit` 命令行）退回**进程工作区**：
   `$DSH_WORKSPACE` → 进程 cwd（每次现读，不是启动时定死）。
-- 代价：注入到系统提示的 AGENTS / USER / MEMORY 走进程工作区，而工具按会话工作区 ——
-  多工作区共用宿主时，想让 agent 读**当前会话**那份记忆，用 `zk_context` 工具，别只依赖注入。
 
 ## 排错
 
@@ -258,6 +263,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | `Read` / `Edit` 笔记本报 `file access denied under workspace-write mode` | 笔记本被指到了工作区外。改用 `zk_*` 工具（不经这层策略），或把目录加进 `additionalWritableRoots`，或开会话到 `danger-full-access` |
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「按配置补建目录」，别手改配置去将就磁盘 |
 | 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |
+| `config set notebook=…` 报「派生值」 | `notebook` 是 `notebooks[active]` 解析后的派生值、不落盘也不可写：改路径用 `zk-kit notebooks add 名 路径`，切换用 `use` |
 
 ## 开发
 

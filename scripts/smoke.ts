@@ -25,7 +25,7 @@ process.env.DSH_HOME = home
 const notebook = path.join(home, 'notebook')
 
 const { writeConfig } = await import('../dist/config/store.js')
-writeConfig({ notebook, zkPath: zkBin })
+writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin })
 fs.mkdirSync(notebook, { recursive: true })
 fs.writeFileSync(path.join(notebook, 'AGENTS.md'), '# 约定\n\n先查重再写。\n')
 
@@ -160,15 +160,20 @@ console.log('[POST /init] 幂等 =', JSON.stringify(init.result))
 const indexed = await postJson('/index')
 console.log('[POST /index] 计数 =', JSON.stringify(indexed.counts))
 
-// ── 多笔记本：notebooks + active 是真相，notebook 是派生的 ──────────────────
+// ── 多笔记本：notebooks + active 是真相，notebook / structure 是派生的 ──────────
 const alt = path.join(home, 'alt')
 const two = await postJson('/settings', { config: { notebooks: { default: notebook, alt }, active: 'alt' } })
 if ((two.config as { active: string }).active !== 'alt') throw new Error('切换笔记本没落盘')
 if ((two.notebook as { path: string }).path !== alt) throw new Error('快照没跟着 active 换：' + JSON.stringify(two.notebook))
-// 设置页整份发回来时 notebook 是上一次的旧值：以 notebooks 为准，否则刚改的路径会被改回去
+// 切换即就绪：切过去的瞬间目标笔记本就该建好（ensureNotebook 幂等，不用再点初始化）
+if ((two.notebook as { exists: boolean }).exists !== true) throw new Error('切换后没有自动建好目标笔记本')
+// 设置页整份发回来时 notebook / structure 是上一次的旧值：它们是纯派生键，谁也盖不过 notebooks
 const kept = await postJson('/settings', { config: { notebooks: { default: notebook, alt: alt + '2' }, notebook, active: 'alt' } })
 if ((kept.notebook as { path: string }).path !== alt + '2') throw new Error('派生的 notebook 覆盖了 notebooks')
-console.log('[POST /settings] 多笔记本 → active =', (two.config as { active: string }).active, '· 切换后快照 =', (two.notebook as { path: string }).path)
+// 结构跟着笔记本走：active 的条目是什么结构，config.structure 就是什么
+const perNb = await postJson('/settings', { config: { notebooks: { default: { path: notebook, structure: 'flat' }, alt: { path: alt + '2', structure: 'layered' } }, active: 'alt' } })
+if ((perNb.config as { structure: string }).structure !== 'layered') throw new Error('结构没跟着 active 条目走：' + JSON.stringify(perNb.config))
+console.log('[POST /settings] 多笔记本 → active =', (two.config as { active: string }).active, '· 切换后快照 =', (two.notebook as { path: string }).path, '· 切换即就绪 ✓ · 每笔记本结构 ✓')
 // 切回默认笔记本：后面的 layered 补建仍在原来那个库上
 await postJson('/settings', { config: { notebooks: { default: notebook }, active: 'default' } })
 

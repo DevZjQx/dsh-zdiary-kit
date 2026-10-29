@@ -35,12 +35,12 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit dream [--days 7]             晋升材料：窗口新增 / daily 未完成 / 被引最多（只读）
   zk-kit query [-- <zk list 参数>]     透传 zk list（--notebook-dir / --format / -x 会被替换掉）
   zk-kit index                        重建索引
-  zk-kit notebooks                    列出所有笔记本（* 是当前那个）
-  zk-kit notebooks add 名 路径         加一个笔记本（路径空 = <工作区>/zdiary）
-  zk-kit notebooks use 名              切换当前笔记本
-  zk-kit notebooks remove 名           删掉一个笔记本（至少留一个）
+  zk-kit notebooks                    列出所有笔记本（* 是当前那个；[flat/layered] 是各自的结构）
+  zk-kit notebooks add 名 路径         加一个笔记本（路径空 = <工作区>/zdiary；结构跟当前笔记本一致）
+  zk-kit notebooks use 名              切换当前笔记本（自动建好目标笔记本，幂等）
+  zk-kit notebooks remove 名           删掉一个笔记本（至少留一个；删的是当前那个就自动切到剩下的第一个）
   zk-kit config [get [键]]             看配置（不传键 = 全量；未知键报错）
-  zk-kit config set 键=值 [键=值 …]     改配置（只落盘，不建目录 —— 切结构后要跑 zk-kit init）
+  zk-kit config set 键=值 [键=值 …]     改配置（只落盘，不建目录；structure 改的是当前笔记本，切完跑 zk-kit init）
 
 除 doctor / help 外，其余子命令加 --json 输出结构化结果。`
 
@@ -71,12 +71,18 @@ const print = (value: unknown, asJson: boolean): void => {
   console.log(asJson || typeof value !== 'string' ? JSON.stringify(value, null, 2) : value)
 }
 
-/** 配置值给人看：数组摊平、笔记本表摊成 名=路径，其它照原样（`print` 会把非字符串 JSON 化） */
+/** 配置值给人看：数组摊平、笔记本表摊成 名=路径 [结构]，其它照原样（`print` 会把非字符串 JSON 化） */
 const fmtValue = (v: unknown): string => {
   if (Array.isArray(v)) return v.length ? v.join(', ') : '[]'
   if (v && typeof v === 'object') {
     return Object.entries(v as Record<string, unknown>)
-      .map(([k, val]) => `${k}=${String(val ?? '') || '(默认)'}`)
+      .map(([k, val]) => {
+        const entry = val as { path?: unknown; structure?: unknown } | null
+        if (entry && typeof entry === 'object' && 'path' in entry) {
+          return `${k}=${String(entry.path ?? '') || '(默认)'} [${String(entry.structure ?? '')}]`
+        }
+        return `${k}=${String(val ?? '') || '(默认)'}`
+      })
       .join(', ')
   }
   return String(v)
@@ -87,7 +93,7 @@ const isKey = (k: string): k is keyof Config => KEYS.includes(k as keyof Config)
 const USAGE_CONFIG = `用法：zk-kit config [get [键]] | zk-kit config set 键=值 [键=值 …]（键：${KEYS.join(' / ')}）`
 const USAGE_NOTEBOOKS = '用法：zk-kit notebooks [add 名 路径 | use 名 | remove 名]'
 
-/** 列出笔记本：解析后的路径 + 是不是 zk 笔记本（换笔记本就是换 active，目录结构那些是全局的） */
+/** 列出笔记本：解析后的路径 + 各自的结构 + 是不是 zk 笔记本（换笔记本就是换 active，子目录那些是全局的） */
 function notebookList(cfg: Config): string {
   const names = Object.keys(cfg.notebooks)
   const width = Math.max(7, ...names.map((n) => n.length))
@@ -95,9 +101,23 @@ function notebookList(cfg: Config): string {
   for (const name of names) {
     const target = selectNotebook(cfg, name)
     const mark = name === cfg.active ? '*' : ' '
-    lines.push(`${mark} ${name.padEnd(width)}  ${target.notebook}${hasNotebook(target) ? '' : '（不是 zk 笔记本 —— 跑 zk-kit init）'}`)
+    lines.push(`${mark} ${name.padEnd(width)}  ${target.notebook} [${target.structure}]${hasNotebook(target) ? '' : '（不是 zk 笔记本 —— 跑 zk-kit init）'}`)
   }
   return lines.join('\n')
+}
+
+/**
+ * 切换后自动建好目标笔记本（ensureNotebook 幂等，缺了才补）。
+ * 失败只告警不改退出码 —— 切换本身已经落盘；返回值拼进人看的那行输出。
+ */
+async function autoInit(next: Config): Promise<string> {
+  try {
+    const r = await ensureNotebook(next)
+    return r.initialized ? '（已自动建好）' : ''
+  } catch (err) {
+    console.error(`⚠️ 自动初始化失败：${err instanceof Error ? err.message : String(err)} —— 跑 zk-kit init 重试`)
+    return ''
+  }
 }
 
 /** 名字不存在时的报错：顺手把现有的列出来（打错名字不用再跑一次 list） */
@@ -334,7 +354,7 @@ async function main(): Promise<void> {
       if (sub === 'list') {
         const items = Object.keys(cfg.notebooks).map((name) => {
           const target = selectNotebook(cfg, name)
-          return { name, path: target.notebook, initialized: hasNotebook(target) }
+          return { name, path: target.notebook, structure: target.structure, initialized: hasNotebook(target) }
         })
         print(json ? { active: cfg.active, notebooks: items } : notebookList(cfg), json)
         return
@@ -345,19 +365,21 @@ async function main(): Promise<void> {
         if (!isNotebookName(name)) {
           throw new ZkError(`笔记本名字不合法：${name || '（空）'}（只接受字母、数字、_ 与 -，1-32 字符）\n${USAGE_NOTEBOOKS}`)
         }
-        const next = writeConfig({ notebooks: { ...cfg.notebooks, [name]: p } })
+        // 新笔记本结构跟当前那个一致（以前结构是全局的，这就是它的迁移语义）
+        const next = writeConfig({ notebooks: { ...cfg.notebooks, [name]: { path: p, structure: cfg.structure } } })
         const target = selectNotebook(next, name)
-        if (!hasNotebook(target)) console.error(`⚠️ ${target.notebook} 还不是 zk 笔记本 —— 跑 zk-kit init`)
+        if (!hasNotebook(target)) console.error(`⚠️ ${target.notebook} 还不是 zk 笔记本 —— 切过去（zk-kit notebooks use ${name}）会自动建好`)
         const tail = next.active === name ? '' : `（当前还是 ${next.active}）`
-        print(json ? { name, notebook: target.notebook } : `已新增笔记本 ${name} → ${target.notebook}${tail}`, json)
+        print(json ? { name, notebook: target.notebook, structure: target.structure } : `已新增笔记本 ${name} → ${target.notebook}（结构 ${target.structure}）${tail}`, json)
         return
       }
       if (sub === 'use') {
         const name = pos[1] ?? ''
         if (!(name in cfg.notebooks)) throw missingNotebook(name, cfg)
         const next = writeConfig({ active: name })
-        if (!hasNotebook(next)) console.error(`⚠️ ${next.notebook} 还不是 zk 笔记本 —— 跑 zk-kit init`)
-        print(json ? { active: next.active, notebook: next.notebook } : `当前笔记本 → ${next.active}（${next.notebook}）`, json)
+        // 切换即就绪：ensureNotebook 幂等，缺了才补；失败只告警（配置已经落盘）
+        const tail = await autoInit(next)
+        print(json ? { active: next.active, notebook: next.notebook } : `当前笔记本 → ${next.active}（${next.notebook}）${tail}`, json)
         return
       }
       if (sub === 'remove') {
@@ -368,9 +390,11 @@ async function main(): Promise<void> {
         const rest = Object.keys(map)
         if (!rest.length) throw new ZkError('至少要留一个笔记本')
         const patch: Record<string, unknown> = { notebooks: map }
-        if (cfg.active === name) patch.active = rest[0]
+        const switched = cfg.active === name
+        if (switched) patch.active = rest[0]
         const next = writeConfig(patch)
-        print(json ? { removed: name, active: next.active } : `已删除笔记本 ${name}（当前 ${next.active}）`, json)
+        const tail = switched ? await autoInit(next) : ''
+        print(json ? { removed: name, active: next.active } : `已删除笔记本 ${name}（当前 ${next.active}）${tail}`, json)
         return
       }
       throw new ZkError(USAGE_NOTEBOOKS)
@@ -395,7 +419,15 @@ async function main(): Promise<void> {
         for (const item of pos.slice(1)) {
           const at = item.indexOf('=')
           const key = at > 0 ? item.slice(0, at) : ''
-          if (!key || !isKey(key)) throw new ZkError(USAGE_CONFIG)
+          if (!key) throw new ZkError(USAGE_CONFIG)
+          // 派生键有专门语义，单键赋值只会造出第二种真相 —— 直接拦下并指路
+          if (key === 'notebook') {
+            throw new ZkError('notebook 是派生值（= notebooks[active] 解析后），不落盘也不可写 —— 改路径：zk-kit notebooks add 名 路径；切换：zk-kit notebooks use 名')
+          }
+          if (key === 'notebooks') {
+            throw new ZkError('notebooks 是整体映射，不接受单键赋值 —— 用 zk-kit notebooks add / use / remove 管理')
+          }
+          if (!isKey(key)) throw new ZkError(USAGE_CONFIG)
           patch[key] = item.slice(at + 1)
         }
         if (!Object.keys(patch).length) throw new ZkError(USAGE_CONFIG)

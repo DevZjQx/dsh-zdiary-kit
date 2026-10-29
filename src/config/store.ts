@@ -4,21 +4,37 @@
  * 只有一个配置文件：~/.dsh/zdiary/zdiary.config.json。
  * 设置页通过 keys 白名单合并 —— 加字段只改这里，不存在第二处。
  *
- * 多笔记本：`notebooks` 是「名字 → 路径」，`active` 是当前那个的名字；
- * `notebook` 是**派生的**（= notebooks[active] 解析后的绝对路径），只在内存里，不落盘 ——
- * 磁盘上笔记本只有一个真相，就是 notebooks + active。
- * 老配置只有 `notebook`：读进来自动当成 `notebooks.default` 的路径（迁移见 normalizeConfig）。
+ * 多笔记本：`notebooks` 是「名字 → {path, structure}」，`active` 是当前那个的名字。
+ * 路径与结构都是**笔记本自己的属性**，跟着条目落盘；派生值只有两个，都不落盘、都不可写：
+ *   · `notebook` = notebooks[active].path 解析后的绝对路径；
+ *   · `structure` = notebooks[active].structure（当前笔记本的结构模式）。
+ * 磁盘上笔记本只有一个真相，就是 notebooks + active —— 没有第二个能盖过它的键。
+ * 老配置只有 `notebook`（或 structure 是全局键）：读进来一次性迁进 `notebooks.default`，
+ * 之后就不再有双向合并 —— notebooks 存在时，散落的 `notebook` 顶层键只当没看见。
  */
 import { CFG_FILE, defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from './paths.ts'
 import { readJson, writeJson } from '../lib/json-file.ts'
 
+/** 结构模式：flat = 只有 notes/ + 日记；layered = raw/inbox/notes 分类目录/archive + 三套模板 */
+export type Structure = 'flat' | 'layered'
+
+/** 一个笔记本 = 一条记录：路径 + 它自己的结构模式 */
+export interface NotebookEntry {
+  /** 路径（未解析：空 = <工作区>/zdiary，相对路径按工作区解析） */
+  path: string
+  /** 这个笔记本的结构模式（目录长什么样是库的属性，不是用户的） */
+  structure: Structure
+}
+
 export interface Config {
-  /** 当前笔记本根目录（= notebooks[active] 解析后；派生，不落盘） */
+  /** 当前笔记本根目录（= notebooks[active].path 解析后；派生，不落盘、不可写） */
   notebook: string
-  /** 全部笔记本：名字 → 路径（空串 = <工作区>/zdiary） */
-  notebooks: Record<string, string>
+  /** 全部笔记本：名字 → 记录 */
+  notebooks: Record<string, NotebookEntry>
   /** 当前笔记本的名字（notebooks 的键） */
   active: string
+  /** 当前笔记本的结构（= notebooks[active].structure；派生视图，落盘在条目里） */
+  structure: Structure
   /** 普通笔记放哪个子目录（相对笔记本） */
   notesDir: string
   /** 日记放哪个子目录（相对笔记本） */
@@ -31,8 +47,6 @@ export interface Config {
   maxReadChars: number
   /** 注入预算（词）：AGENTS.md + USER.md + MEMORY.md 的总载荷，中文按 2 字 1 词 */
   memoryBudgetWords: number
-  /** 结构模式：flat = 只有 notes/ + 日记；layered = raw/inbox/notes 分类目录/archive + 三套模板 */
-  structure: 'flat' | 'layered'
   /** 归档目录（supersede 后的笔记搬到这里，保留原相对路径） */
   archiveDir: string
   /** 内置 zk 的版本（安装/升级用，不带 v） */
@@ -47,6 +61,8 @@ export const DEFAULT_NOTEBOOK_NAME = 'default'
 const NOTEBOOK_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/
 /** 上限 50 个：再多就是填错了，别让配置无限长 */
 const MAX_NOTEBOOKS = 50
+/** 落盘与 patch 里的派生键：notebook 纯派生、structure 有专门语义、notebooks 整体替换 —— 都不走通用合并 */
+const DERIVED_KEYS = new Set(['notebook', 'structure', 'notebooks'])
 
 /** 名字合法吗（add / use 前先问，别让非法键进 JSON） */
 export function isNotebookName(name: string): boolean {
@@ -54,17 +70,17 @@ export function isNotebookName(name: string): boolean {
 }
 
 export const DEFAULTS: Config = {
-  // 派生值：normalizeConfig 按调用方工作区解析，这里只是占位（不参与落盘，也不单独使用）
+  // 两个派生值：normalizeConfig 算出来，这里只是占位（不参与落盘，也不单独使用）
   notebook: '',
-  notebooks: { [DEFAULT_NOTEBOOK_NAME]: '' },
+  notebooks: { [DEFAULT_NOTEBOOK_NAME]: { path: '', structure: 'flat' } },
   active: DEFAULT_NOTEBOOK_NAME,
+  structure: 'flat',
   notesDir: 'notes',
   dailyDir: 'journal',
   dailyGroup: 'daily',
   defaultTags: [],
   maxReadChars: 20_000,
   memoryBudgetWords: 300,
-  structure: 'flat',
   archiveDir: 'archive',
   zkVersion: '0.15.7',
   zkPath: '',
@@ -95,14 +111,31 @@ function tags(raw: unknown): string[] {
   return out
 }
 
-/** 名字 → 路径；非法名字与非法值直接丢掉（不 throw） */
-function notebookMap(raw: unknown): Record<string, string> {
-  const out: Record<string, string> = {}
+/** 结构值：只认 flat / layered，其它一律退回 fallback（structure=xyz → flat，回显里会点名） */
+function structureOf(raw: unknown, fallback: Structure): Structure {
+  return raw === 'layered' ? 'layered' : raw === 'flat' ? 'flat' : fallback
+}
+
+/** 一条笔记本记录：新写法 {path, structure}，老写法裸路径字符串也认（structure 继承 fallback） */
+function entryOf(value: unknown, fallback: Structure): NotebookEntry {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const v = value as Record<string, unknown>
+    return { path: String(v.path ?? '').trim(), structure: structureOf(v.structure, fallback) }
+  }
+  return { path: String(value ?? '').trim(), structure: fallback }
+}
+
+/**
+ * 名字 → 记录；非法名字与非法值直接丢掉（不 throw）。
+ * 条目没写 structure 时沿用同名旧记录的，再退 base —— 整体替换时不悄悄改别人的结构。
+ */
+function notebookEntries(raw: unknown, prev: Record<string, NotebookEntry>, base: Structure): Record<string, NotebookEntry> {
+  const out: Record<string, NotebookEntry> = {}
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     const name = String(key ?? '').trim()
     if (!NOTEBOOK_NAME_RE.test(name)) continue
-    out[name] = String(value ?? '').trim()
+    out[name] = entryOf(value, prev[name]?.structure ?? base)
     if (Object.keys(out).length >= MAX_NOTEBOOKS) break
   }
   return out
@@ -122,46 +155,46 @@ function notebookPath(raw: unknown, workspace: string): string {
  */
 export function normalizeConfig(raw: unknown, workspace: string = processWorkspace()): Config {
   const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
-  const notebooksRaw = notebookMap(src.notebooks)
-  const legacy = String(src.notebook ?? '').trim()
-  // 老配置（只有 notebook）→ 那就是 default 的路径；全新配置 → default 留空，走「工作区内」的默认
-  const map = Object.keys(notebooksRaw).length > 0
-    ? notebooksRaw
-    : { [DEFAULT_NOTEBOOK_NAME]: legacy }
+  // 老配置里的全局 structure：只当「条目缺省」的 fallback 用；条目自己的 structure 优先
+  const base = structureOf(src.structure, 'flat')
+  let notebooks = notebookEntries(src.notebooks, {}, base)
+  // 老配置只有 notebook：读进来就是 notebooks.default 的路径（一次性迁移）。
+  // notebooks 已存在时顶层 notebook 是历史残留 —— 一个字都不听它（磁盘上笔记本只有一个真相）。
+  if (Object.keys(notebooks).length === 0) {
+    notebooks = { [DEFAULT_NOTEBOOK_NAME]: entryOf(String(src.notebook ?? ''), base) }
+  }
   const activeRaw = String(src.active ?? '').trim()
-  const active = activeRaw && NOTEBOOK_NAME_RE.test(activeRaw) && activeRaw in map
+  const active = activeRaw && NOTEBOOK_NAME_RE.test(activeRaw) && activeRaw in notebooks
     ? activeRaw
-    : DEFAULT_NOTEBOOK_NAME in map ? DEFAULT_NOTEBOOK_NAME : (Object.keys(map)[0] ?? DEFAULT_NOTEBOOK_NAME)
-  // `notebook` 是老式单笔记本字段：给了就以它为准，改的是**当前**笔记本的路径
-  const notebookRaw = String(src.notebook ?? '').trim()
-  const notebooks = notebookRaw && notebookPath(notebookRaw, workspace) !== notebookPath(map[active], workspace)
-    ? { ...map, [active]: notebookRaw }
-    : map
-  const notebook = notebookPath(notebooks[active] ?? '', workspace)
-  const version = String(src.zkVersion ?? '').trim().replace(/^v/i, '')
-  const zkPathRaw = String(src.zkPath ?? '').trim()
+    : DEFAULT_NOTEBOOK_NAME in notebooks ? DEFAULT_NOTEBOOK_NAME : (Object.keys(notebooks)[0] ?? DEFAULT_NOTEBOOK_NAME)
+  const entry = notebooks[active] ?? { path: '', structure: 'flat' as Structure }
   return {
-    notebook,
+    notebook: notebookPath(entry.path, workspace),
     notebooks,
     active,
+    structure: entry.structure,
     notesDir: relativeDir(src.notesDir, DEFAULTS.notesDir),
     dailyDir: relativeDir(src.dailyDir, DEFAULTS.dailyDir),
     dailyGroup: /^[A-Za-z0-9_-]{1,32}$/.test(String(src.dailyGroup ?? '')) ? String(src.dailyGroup) : DEFAULTS.dailyGroup,
     defaultTags: tags(src.defaultTags),
     maxReadChars: clamp(Number(src.maxReadChars), 1000, 200_000, DEFAULTS.maxReadChars),
     memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
-    structure: src.structure === 'layered' ? 'layered' : 'flat',
     archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
-    zkVersion: /^\d+\.\d+\.\d+$/.test(version) ? version : DEFAULTS.zkVersion,
+    zkVersion: /^\d+\.\d+\.\d+$/.test(String(src.zkVersion ?? '').trim().replace(/^v/i, ''))
+      ? String(src.zkVersion).trim().replace(/^v/i, '')
+      : DEFAULTS.zkVersion,
     // zk 可执行文件是整台机器共享的，不跟着会话工作区漂 —— 相对路径按进程工作区解析
-    zkPath: zkPathRaw ? resolveInWorkspace(expandHome(zkPathRaw), processWorkspace()) : '',
+    zkPath: String(src.zkPath ?? '').trim()
+      ? resolveInWorkspace(expandHome(String(src.zkPath).trim()), processWorkspace())
+      : '',
   }
 }
 
-/** 落盘用：去掉派生的 notebook（磁盘上只有 notebooks + active 这一个真相） */
+/** 落盘用：去掉派生的 notebook / structure（磁盘上只有 notebooks + active 这一个真相） */
 function toDisk(cfg: Config): Record<string, unknown> {
   const out: Record<string, unknown> = { ...cfg }
   delete out.notebook
+  delete out.structure
   return out
 }
 
@@ -172,9 +205,13 @@ function toDisk(cfg: Config): Record<string, unknown> {
 export function config(workspace: string = processWorkspace()): Config {
   const raw = readJson<Record<string, unknown>>(CFG_FILE, {})
   const next = normalizeConfig(raw, workspace)
-  // 0.1.x 的配置没有 structure / archiveDir，0.2.x 的没有 notebooks / active：显式落盘默认值。
-  // 这样以后翻默认值时，老 vault 的配置里已经有确定值，不会被顺手改掉（计划 §8）。
-  if (Object.keys(raw).length > 0 && (!('structure' in raw) || !('notebooks' in raw))) {
+  // 一次性迁移：老形状（没有 notebooks / 顶层还留着 notebook 或 structure / 条目还是裸字符串）
+  // 读进来就写回新形状。这样以后翻默认值时，老 vault 的配置里已经有确定值（计划 §8）。
+  const legacy = !('notebooks' in raw)
+    || ('structure' in raw)
+    || ('notebook' in raw)
+    || Object.values((raw.notebooks ?? {}) as Record<string, unknown>).some((v) => typeof v === 'string')
+  if (Object.keys(raw).length > 0 && legacy) {
     try { writeJson(CFG_FILE, toDisk(next)) } catch { /* 只读环境：下次再补 */ }
   }
   return next
@@ -186,26 +223,37 @@ export function config(workspace: string = processWorkspace()): Config {
  */
 export function selectNotebook(cfg: Config, name: string, workspace: string = processWorkspace()): Config {
   const notebooks = { ...cfg.notebooks }
-  if (!(name in notebooks)) notebooks[name] = ''
+  if (!(name in notebooks)) notebooks[name] = { path: '', structure: cfg.structure }
   return normalizeConfig({ ...toDisk(cfg), notebooks, active: name }, workspace)
 }
 
-/** 合并写入（只写白名单键），返回归一化后的完整配置 */
+/**
+ * 合并写入（只写白名单键），返回归一化后的完整配置。
+ *
+ * 三个派生键各有专门语义，不走通用合并：
+ *   · `notebooks`：**整体替换**（删掉某个笔记本就是传回不含它的完整 map）。
+ *     同时给了别的派生键也以它为准 —— 设置页整份发回来时那些是上一次的旧值。
+ *   · `structure`：只在没给 notebooks 时生效，改的是**当前笔记本**的结构。
+ *   · `notebook`：纯派生，patch 里出现直接忽略（改路径用 notebooks；CLI 会拦下并提示）。
+ */
 export function writeConfig(patch: Record<string, unknown>, workspace: string = processWorkspace()): Config {
   const current = config(workspace)
   const merged: Record<string, unknown> = { ...toDisk(current) }
   for (const [k, v] of Object.entries(patch)) {
+    if (DERIVED_KEYS.has(k)) continue
     if ((CONFIG_KEYS as ReadonlyArray<string>).includes(k)) merged[k] = v
   }
-  // notebooks 是**整体替换**：删掉某个笔记本就是传回不含它的完整 map（局部合并删不掉东西）
-  const hasNotebooks = 'notebooks' in patch
-  const notebooks = hasNotebooks ? notebookMap(patch.notebooks) : { ...current.notebooks }
+  // 不是对象就当没给（垃圾输入不许把整个笔记本表清空）
+  const hasNotebooks = !!patch.notebooks && typeof patch.notebooks === 'object' && !Array.isArray(patch.notebooks)
   const activeRaw = String(merged.active ?? current.active ?? '').trim()
   const active = NOTEBOOK_NAME_RE.test(activeRaw) ? activeRaw : current.active
-  // notebook 是派生的：只写它 = 改当前笔记本的路径（`config set notebook=…`、老客户端）。
-  // 同时给了 notebooks 就以 notebooks 为准 —— 设置页整份发回来时那个 notebook 是上一次的旧值，听它的会把刚改的路径改回去。
-  if ('notebook' in patch && !hasNotebooks) notebooks[active] = String(patch.notebook ?? '').trim()
-  delete merged.notebook
+  const notebooks = hasNotebooks
+    ? notebookEntries(patch.notebooks, current.notebooks, 'flat')
+    : { ...current.notebooks }
+  if (!hasNotebooks && 'structure' in patch) {
+    const entry = notebooks[active] ?? { path: '', structure: 'flat' as Structure }
+    notebooks[active] = { ...entry, structure: structureOf(patch.structure, 'flat') }
+  }
   const next = normalizeConfig({ ...merged, notebooks, active }, workspace)
   writeJson(CFG_FILE, toDisk(next))
   return next

@@ -46,11 +46,20 @@ export interface ConnectionLike {
   requestRejection?(req: IncomingMessage): unknown
 }
 
+/**
+ * system-prompt 的装配上下文（AssembleContext 的最小可用子集）。
+ * 真身还有 scope / signal；dsh-agent 用声明合并追加了 agent ——
+ * 裸装配（预览之类）不带这些字段，提供方必须容忍缺席。
+ */
+export interface AssemblyContextLike {
+  agent?: { id?: string }
+}
+
 export interface SystemPromptSectionLike {
   name: string
   order: number
-  /** 函数形式每个 step 重新求值（宿主在每次 assemble 时调用） */
-  text: string | (() => string)
+  /** 静态文本，或每步装配时用当时的上下文求值的函数（ctx 可能整个缺席） */
+  text: string | ((ctx?: AssemblyContextLike) => string)
 }
 
 /** 系统提示注册表（dsh-system-prompt 提供；headless 宿主可能没有） */

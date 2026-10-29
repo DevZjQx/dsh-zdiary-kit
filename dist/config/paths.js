@@ -24,9 +24,9 @@ export const CACHE_DIR = path.join(WORK_DIR, 'cache');
 /**
  * 进程级工作区兜底：$DSH_WORKSPACE → 进程 cwd（每次现读）。
  *
- * 真正该用的是「调用方会话的工作区」：工具执行时由宿主的 session cwd 传进来
- * （见 lib/workspace.ts）。这里是拿不到会话时的退路 —— 设置页、CLI、记忆注入
- * 没有会话上下文，用的就是它。
+ * 真正该用的是「调用方会话的工作区」：工具执行与提示词装配都由宿主把 agent.id 传进来，
+ * 再反查 session cwd（见 lib/workspace.ts）。这里是拿不到会话时的退路 ——
+ * 设置页、CLI、以及不带 agent 的裸装配，用的就是它。
  */
 export function processWorkspace() {
     const env = String(process.env.DSH_WORKSPACE ?? '').trim();

@@ -28,12 +28,14 @@ if (!hasZk) {
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-docs-'))
 process.env.DSH_HOME = home
+// 文档里的相对笔记本路径按工作区解析：钉在临时目录里，别让示例命令在仓库 / 家目录里建库
+process.env.DSH_WORKSPACE = home
 const notebook = path.join(home, 'notebook')
 
 // 配置读写在 src 里（同一份 TS）；被跑的命令走 dist，两边指向同一个 CFG_FILE
 const { writeConfig } = await import('../src/config/store.ts')
 // 用 layered：init 会连带建目录、三套模板、五个 group 与 AGENTS.md —— 文档命令的覆盖面最大
-writeConfig({ notebook, zkPath: zkBin, structure: 'layered' })
+writeConfig({ notebooks: { default: { path: notebook, structure: 'layered' } }, zkPath: zkBin })
 
 const cli = path.join(root, 'dist/cli.js')
 const docsRoot = path.join(root, 'docs', 'features')

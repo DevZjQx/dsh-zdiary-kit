@@ -30,7 +30,7 @@ const workspaceLib = await import('../src/lib/workspace.ts')
 const toolLib = await import('../src/lib/tool.ts')
 const fm = await import('../src/lib/frontmatter.ts')
 
-store.writeConfig({ notebook, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
+store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
 
 const available = (await zk.versionOf(zkBin)) !== null
@@ -81,9 +81,32 @@ describe('config', () => {
 
   test('老配置只有 notebook：读进来就是 notebooks.default', () => {
     const c = store.normalizeConfig({ notebook: '/legacy/vault' })
-    expect(c.notebooks).toEqual({ default: '/legacy/vault' })
+    expect(c.notebooks).toEqual({ default: { path: '/legacy/vault', structure: 'flat' } })
     expect(c.active).toBe('default')
     expect(c.notebook).toBe('/legacy/vault')
+  })
+
+  test('notebooks 存在时顶层 notebook 被无视：迁移是单向的，不再互相覆盖', () => {
+    const c = store.normalizeConfig({ notebooks: { default: { path: '/new/vault' } }, notebook: '/old/vault' })
+    expect(c.notebooks.default.path).toBe('/new/vault')
+    expect(c.notebook).toBe('/new/vault')
+  })
+
+  test('老配置的全局 structure 是条目缺省；条目自己的优先', () => {
+    const inherited = store.normalizeConfig({ notebooks: { a: '/a', b: { path: '/b' } }, structure: 'layered' })
+    expect(inherited.notebooks.a.structure).toBe('layered')
+    expect(inherited.notebooks.b.structure).toBe('layered')
+    const own = store.normalizeConfig({ notebooks: { a: '/a', b: { path: '/b', structure: 'flat' } }, structure: 'layered' })
+    expect(own.notebooks.a.structure).toBe('layered')
+    expect(own.notebooks.b.structure).toBe('flat')
+  })
+
+  test('结构跟着笔记本走：派生 structure 看 active，切到谁就是谁的', () => {
+    const c = store.normalizeConfig({ notebooks: { a: { path: '/a', structure: 'flat' }, b: { path: '/b', structure: 'layered' } }, active: 'b' })
+    expect(c.structure).toBe('layered')
+    const back = store.selectNotebook(c, 'a')
+    expect(back.structure).toBe('flat')
+    expect(back.notebook).toBe('/a')
   })
 
   test('多笔记本：active 决定 notebook，路径各自解析', () => {
@@ -92,7 +115,7 @@ describe('config', () => {
     expect(c.notebook).toBe(path.join(home, 'b'))
     expect(store.normalizeConfig({ notebooks: { default: '~/a', work: 'b' } }).notebook).toBe(path.join(os.homedir(), 'a'))
     // 空表 / 非法名字 / 未知 active：都不炸，退回一个能用的笔记本
-    expect(store.normalizeConfig({ notebooks: {} }).notebooks).toEqual({ default: '' })
+    expect(store.normalizeConfig({ notebooks: {} }).notebooks).toEqual({ default: { path: '', structure: 'flat' } })
     const junk = store.normalizeConfig({ notebooks: { 'bad name': '/x', ok: '/y' }, active: 'nope' })
     expect(Object.keys(junk.notebooks)).toEqual(['ok'])
     expect(junk.active).toBe('ok')
@@ -103,33 +126,45 @@ describe('config', () => {
     const work = store.selectNotebook(c, 'work')
     expect(work.notebook).toBe('/w')
     expect(work.active).toBe('work')
-    expect(work.notebooks).toEqual({ default: '/a', work: '/w' })
+    expect(work.notebooks).toEqual({ default: { path: '/a', structure: 'flat' }, work: { path: '/w', structure: 'flat' } })
     expect(store.selectNotebook(c, 'default').notebook).toBe('/a')
   })
 
-  test('writeConfig：notebooks 整体替换、active 切换、notebook 改的是当前那个', async () => {
+  test('writeConfig：notebooks 整体替换、active 切换、派生键谁也盖不过 map', async () => {
     const paths = await import('../src/config/paths.ts')
     const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
     try {
-      store.writeConfig({ notebooks: { default: '/a', work: '/w' }, active: 'work' })
+      store.writeConfig({ notebooks: { default: { path: '/a', structure: 'flat' }, work: { path: '/w', structure: 'layered' } }, active: 'work' })
       expect(store.config().active).toBe('work')
       expect(store.config().notebook).toBe('/w')
+      expect(store.config().structure).toBe('layered')
 
-      // 只给 notebook（config set notebook=…）：改的是当前笔记本（work）的路径
+      // 单写 notebook 是纯派生键：直接忽略（改路径用 notebooks）
       store.writeConfig({ notebook: '/w2' })
-      const c = store.config()
-      expect(c.notebooks).toEqual({ default: '/a', work: '/w2' })
-      expect(c.notebook).toBe('/w2')
+      expect(store.config().notebooks.work.path).toBe('/w')
+      expect(store.config().notebook).toBe('/w')
 
-      // 设置页整份发回来：notebooks 是真相，那个派生的 notebook 是旧值，不能让它把刚改的路径改回去
-      store.writeConfig({ notebooks: { default: '/a', work: '/w3' }, notebook: '/w2', active: 'work' })
-      expect(store.config().notebooks.work).toBe('/w3')
+      // 单写 structure = 只改当前笔记本的结构
+      store.writeConfig({ structure: 'flat' })
+      expect(store.config().notebooks.work.structure).toBe('flat')
+      expect(store.config().notebooks.default.structure).toBe('flat')
+
+      // 设置页整份发回来：notebooks 是真相，派生的 notebook / structure 是旧值，不能让它们捣乱
+      store.writeConfig({ notebooks: { default: { path: '/a' }, work: { path: '/w3', structure: 'layered' } }, notebook: '/w2', structure: 'flat', active: 'work' })
+      expect(store.config().notebooks.work.path).toBe('/w3')
+      expect(store.config().notebooks.work.structure).toBe('layered')
       expect(store.config().notebook).toBe('/w3')
+
+      // 条目没写 structure：沿用同名旧条目的，不悄悄改别人的
+      store.writeConfig({ notebooks: { default: '/a', work: '/w4' } })
+      expect(store.config().notebooks.work.structure).toBe('layered')
+      expect(store.config().notebooks.default.structure).toBe('flat')
 
       // 派生值不落盘：磁盘上只有 notebooks + active
       const onDisk = JSON.parse(fs.readFileSync(paths.CFG_FILE, 'utf8')) as Record<string, unknown>
       expect('notebook' in onDisk).toBe(false)
-      expect(onDisk.notebooks).toEqual({ default: '/a', work: '/w3' })
+      expect('structure' in onDisk).toBe(false)
+      expect(onDisk.notebooks).toEqual({ default: { path: '/a', structure: 'flat' }, work: { path: '/w4', structure: 'layered' } })
       expect(onDisk.active).toBe('work')
     } finally {
       fs.writeFileSync(paths.CFG_FILE, before)
@@ -141,10 +176,13 @@ describe('config', () => {
     const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
     try {
       fs.writeFileSync(paths.CFG_FILE, JSON.stringify({ notebook: '/legacy', structure: 'flat' }))
-      expect(store.config().notebooks).toEqual({ default: '/legacy' })
+      expect(store.config().notebooks).toEqual({ default: { path: '/legacy', structure: 'flat' } })
       const onDisk = JSON.parse(fs.readFileSync(paths.CFG_FILE, 'utf8')) as Record<string, unknown>
-      expect(onDisk.notebooks).toEqual({ default: '/legacy' })
+      expect(onDisk.notebooks).toEqual({ default: { path: '/legacy', structure: 'flat' } })
       expect(onDisk.active).toBe('default')
+      // 迁移后顶层不再留旧键 —— 结构已经搬进条目
+      expect('notebook' in onDisk).toBe(false)
+      expect('structure' in onDisk).toBe(false)
     } finally {
       fs.writeFileSync(paths.CFG_FILE, before)
     }
@@ -157,7 +195,9 @@ describe('config', () => {
     expect(c.structure).toBe('flat')
     expect(c.archiveDir).toBe('archive')
     const onDisk = JSON.parse(fs.readFileSync(paths.CFG_FILE, 'utf8')) as Record<string, unknown>
-    expect(onDisk.structure).toBe('flat')
+    // 结构落在条目里；其余默认值照旧显式落盘（以后翻默认值不牵连老 vault）
+    expect(onDisk.notebooks).toEqual({ default: { path: notebook, structure: 'flat' } })
+    expect('structure' in onDisk).toBe(false)
     expect(onDisk.memoryBudgetWords).toBe(300)
   })
 })
@@ -203,7 +243,7 @@ describe('工作区解析', () => {
       const value = await tool!.execute({}, { signal: AbortSignal.timeout(5_000), agent: { id: 'sess-1' } }) as { text: string }
       expect(value.text).toContain('测试工作区的约定')
     } finally {
-      store.writeConfig({ notebook, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
+      store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
       fs.rmSync(ws, { recursive: true, force: true })
     }
   })
@@ -296,6 +336,36 @@ describe('memory', () => {
 
     const bare = { get: () => undefined, effect: (fn: () => undefined | (() => void)) => { fn() } }
     expect(() => plugin.apply(bare as never)).not.toThrow()
+  })
+
+  test('注入按会话工作区取记忆（装配上下文带 agent）；裸调用退回进程工作区', async () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-inject-'))
+    // 空路径才按工作区解析：把 default 重置成空，结束后还原
+    store.writeConfig({ notebooks: { default: '' }, active: 'default' })
+    try {
+      fs.mkdirSync(path.join(ws, 'zdiary'), { recursive: true })
+      fs.writeFileSync(path.join(ws, 'zdiary', 'AGENTS.md'), '# 约定\n\n会话工作区的注入记忆。\n')
+      const plugin = (await import('../src/app/plugin.ts')).default
+      const sections: Array<{ name: string; text: string | ((ctx?: { agent?: { id?: string } }) => string) }> = []
+      const fake = {
+        get: (name: string) => {
+          if (name === 'systemPrompt') return { section: (s: typeof sections[number]) => { sections.push(s); return () => undefined } }
+          if (name === 'sessions') return { get: (id: string) => (id === 'sess-ws' ? { header: { cwd: ws } } : undefined) }
+          return undefined
+        },
+        effect: (fn: () => undefined | (() => void)) => { fn() },
+      }
+      plugin.apply(fake as never)
+      const text = sections[0].text as (ctx?: { agent?: { id?: string } }) => string
+      // 和 zk_* 工具同一口径：agent.id → sessions.get(id).header.cwd
+      expect(text({ agent: { id: 'sess-ws' } })).toContain('会话工作区的注入记忆')
+      expect(text({ agent: { id: 'nope' } })).not.toContain('会话工作区的注入记忆')
+      // 裸装配（不带 agent）容忍字段缺席，退回进程工作区
+      expect(typeof text()).toBe('string')
+    } finally {
+      store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
+      fs.rmSync(ws, { recursive: true, force: true })
+    }
   })
 })
 
@@ -979,7 +1049,7 @@ describe('cli: zk-kit config', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-cli-'))
     const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
     try {
-      store.writeConfig({ notebook: dir, zkPath: zkBin, structure: 'flat' })
+      store.writeConfig({ notebooks: { default: { path: dir, structure: 'flat' } }, zkPath: zkBin, structure: 'flat' })
       const r = run('config', 'set', 'structure=layered')
       expect(r.status).toBe(0)
       expect((r.stdout ?? '').trim()).toBe('structure = layered')
@@ -1006,6 +1076,16 @@ describe('cli: zk-kit config', () => {
       fs.writeFileSync(paths.CFG_FILE, before)
     }
   })
+
+  it('config set notebook / notebooks 被拦下并指路（派生键不接受单键赋值）', async () => {
+    const nb = run('config', 'set', 'notebook=/x')
+    expect(nb.status).not.toBe(0)
+    expect(nb.stderr ?? '').toContain('派生值')
+    expect(nb.stderr ?? '').toContain('zk-kit notebooks')
+    const nbs = run('config', 'set', 'notebooks=x')
+    expect(nbs.status).not.toBe(0)
+    expect(nbs.stderr ?? '').toContain('整体映射')
+  })
 })
 
 describe('cli: zk-kit notebooks', () => {
@@ -1013,7 +1093,7 @@ describe('cli: zk-kit notebooks', () => {
   const run = (...args: string[]) =>
     spawnSync(process.execPath, [cli, ...args], { env: process.env, encoding: 'utf8', timeout: 30_000 })
 
-  test('add → use → list → remove，全程不炸且状态对得上', async () => {
+  test('add → use → list → remove，全程不炸且状态对得上（use 自动建好）', async () => {
     const paths = await import('../src/config/paths.ts')
     const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
     const work = path.join(home, 'nb-work')
@@ -1021,27 +1101,53 @@ describe('cli: zk-kit notebooks', () => {
       const added = run('notebooks', 'add', 'work', work)
       expect(added.status).toBe(0)
       expect((added.stdout ?? '')).toContain(work)
-      // add 不切换：当前还是 default
+      // add 不切换：当前还是 default；结构跟当前笔记本一致
       expect(store.config().active).toBe('default')
-      expect(store.config().notebooks.work).toBe(work)
+      expect(store.config().notebooks.work).toEqual({ path: work, structure: 'flat' })
 
+      // 切换即就绪：use 顺手把目标笔记本建好，不用再跑 init
       const used = run('notebooks', 'use', 'work')
       expect(used.status).toBe(0)
       expect((used.stdout ?? '')).toContain('当前笔记本 → work')
+      expect((used.stdout ?? '')).toContain('已自动建好')
       expect(store.config().notebook).toBe(work)
+      expect(fs.existsSync(path.join(work, '.zk', 'config.toml'))).toBe(true)
 
       const listed = run('notebooks')
       expect(listed.status).toBe(0)
       expect(listed.stdout ?? '').toContain('* work')
       expect(listed.stdout ?? '').toContain('default')
+      expect(listed.stdout ?? '').toContain('[flat]')
 
       const removed = run('notebooks', 'remove', 'work')
       expect(removed.status).toBe(0)
-      // 删掉的是当前那个 → 自动切回剩下的
+      // 删掉的是当前那个 → 自动切回剩下的（剩下的本来就就绪，不再建一遍）
       expect(store.config().active).toBe('default')
-      expect(store.config().notebooks).toEqual({ default: notebook })
+      expect(store.config().notebooks).toEqual({ default: { path: notebook, structure: 'flat' } })
     } finally {
       fs.writeFileSync(paths.CFG_FILE, before)
+      fs.rmSync(work, { recursive: true, force: true })
+    }
+  })
+
+  test('结构跟着笔记本走：use 切到谁，config structure 就是谁的', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const work = path.join(home, 'nb-work-structure')
+    try {
+      run('notebooks', 'add', 'work', work)
+      run('notebooks', 'use', 'work')
+      const set = run('config', 'set', 'structure=layered')
+      expect(set.status).toBe(0)
+      expect(store.config().structure).toBe('layered')
+      expect(store.config().notebooks.work.structure).toBe('layered')
+      // 切回去：default 还是 flat，work 的 layered 不受影响
+      run('notebooks', 'use', 'default')
+      expect(store.config().structure).toBe('flat')
+      expect(store.config().notebooks.work.structure).toBe('layered')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+      fs.rmSync(work, { recursive: true, force: true })
     }
   })
 
@@ -1060,7 +1166,7 @@ describe('cli: zk-kit notebooks', () => {
       const last = run('notebooks', 'remove', 'default')
       expect(last.status).not.toBe(0)
       expect(last.stderr ?? '').toContain('至少要留一个笔记本')
-      expect(store.config().notebooks).toEqual({ default: notebook })
+      expect(store.config().notebooks).toEqual({ default: { path: notebook, structure: 'flat' } })
     } finally {
       fs.writeFileSync(paths.CFG_FILE, before)
     }

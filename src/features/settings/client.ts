@@ -26,10 +26,12 @@ interface ModuleLoader {
   load(spec: { id: string; factory: (require: (name: string) => ReactLike) => unknown }): void
 }
 
+interface NotebookEntry { path: string; structure: string }
 interface ZkConfig {
+  /** 当前笔记本解析后的绝对路径（派生值，不落盘、不可写） */
   notebook: string
-  /** 名字 → 路径（空串 = <工作区>/zdiary）；notebook 是当前那个解析后的绝对路径（派生值） */
-  notebooks: Record<string, string>
+  /** 名字 → {path, structure}；路径与结构都是每个笔记本自己的 */
+  notebooks: Record<string, NotebookEntry>
   active: string
   notesDir: string
   dailyDir: string
@@ -37,6 +39,7 @@ interface ZkConfig {
   defaultTags: string[]
   maxReadChars: number
   memoryBudgetWords: number
+  /** 当前笔记本的结构（= notebooks[active].structure；派生视图，落在条目里） */
   structure: string
   archiveDir: string
   zkVersion: string
@@ -79,9 +82,6 @@ interface Field {
   key: keyof ZkConfig | 'defaultTagsText'
   label: string
   hint: string
-  /** select 只在结构模式上用（枚举值必须来自这里，不能让人手打） */
-  kind?: 'text' | 'select'
-  options?: Array<{ value: string; label: string }>
 }
 
 ;(window as unknown as { __ModuleLoader__?: ModuleLoader }).__ModuleLoader__?.load({
@@ -127,22 +127,11 @@ interface Field {
     })()
 
     const FIELDS: Field[] = [
-      { group: '目录与 group', key: 'notesDir', label: '笔记子目录', hint: '普通笔记放哪（相对笔记本），默认 notes' },
-      { group: '目录与 group', key: 'dailyDir', label: '日记子目录', hint: '日记放哪（相对笔记本），默认 journal；文件名由日期模板生成' },
+      { group: '目录与 group', key: 'notesDir', label: '笔记子目录', hint: '普通笔记放哪（相对笔记本），默认 notes —— 所有笔记本共用' },
+      { group: '目录与 group', key: 'dailyDir', label: '日记子目录', hint: '日记放哪（相对笔记本），默认 journal；文件名由日期模板生成 —— 所有笔记本共用' },
       { group: '目录与 group', key: 'dailyGroup', label: '日记 group 名', hint: 'zk 配置里的 [group."…"]，默认 daily —— 初始化时会自动补上' },
       { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；改动后点「按配置补建目录」' },
-      {
-        group: '结构与记忆',
-        key: 'structure',
-        label: '结构模式',
-        hint: 'flat = 只有 notes/ 与日记（默认，与 0.1.0 一致）；layered = 加 raw/ inbox/ notes 分类目录/ archive/ 与三套模板。\n切换只建目录与模板，不搬已有笔记；保存后点「按配置补建目录」',
-        kind: 'select',
-        options: [
-          { value: 'flat', label: 'flat（简单：notes/ + 日记）' },
-          { value: 'layered', label: 'layered（分层：raw → notes/* → MEMORY.md）' },
-        ],
-      },
-      { group: '结构与记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 300（中文按 2 字 1 词）。超了先丢 MEMORY 尾部整段，并回显截断了多少' },
+      { group: '记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 300（中文按 2 字 1 词）。超了先丢 MEMORY 尾部整段，并回显截断了多少' },
       { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
       { group: '写入', key: 'maxReadChars', label: 'zk_read 单次上限（字符）', hint: '默认 20000；超了会截断并明确告知模型' },
       { group: 'zk', key: 'zkPath', label: 'zk 路径（可空）', hint: '空 = 自动找：配置 → $ZK_BIN → PATH → 插件内置（~/.dsh/zdiary/bin）' },
@@ -186,8 +175,14 @@ interface Field {
 
       const save = useCallback(async () => {
         if (!cfg) return
-        // flat → layered 是单向的结构变化：明确说「只建目录不搬文件」，别让人以为笔记会被整理
-        const switching = snap?.structure?.mode === 'flat' && cfg.structure === 'layered'
+        // flat → layered 是单向的结构变化：明确说「只建目录不搬文件」，别让人以为笔记会被整理。
+        // 结构是每个笔记本自己的，逐条对比基线；新加的笔记本没有旧笔记可搬，不打扰。
+        let switching = false
+        try {
+          const prev = JSON.parse(saved) as ZkConfig
+          switching = Object.keys(cfg.notebooks || {}).some((n) =>
+            prev.notebooks?.[n]?.structure === 'flat' && cfg.notebooks?.[n]?.structure === 'layered')
+        } catch { /* 基线坏了就当没切 */ }
         if (switching && !window.confirm(
           '切到 layered 只会新建目录与模板：\n' +
           '  raw/ · inbox/ · notes/{sources,concepts,entities,patterns}/ · archive/\n' +
@@ -214,7 +209,7 @@ interface Field {
           setOkMsg('✓ 已保存' + (d.warn ? '\n⚠️ ' + d.warn : ''))
         } catch (e) { setErr(String((e as Error).message || e)) }
         finally { setBusy('') }
-      }, [cfg, tagsText, applySnap])
+      }, [cfg, tagsText, saved, applySnap])
 
       const action = useCallback(async (name: string, path: string) => {
         setBusy(name); setErr(''); setOkMsg(''); setOut('')
@@ -257,8 +252,11 @@ interface Field {
 
       const nbMap = (cfg && cfg.notebooks) || {}
       const nbNames = Object.keys(nbMap)
-      const setNotebookPath = (name: string, value: string) =>
-        setCfg((s) => (s ? { ...s, notebooks: { ...(s.notebooks || {}), [name]: value } } : s))
+      const entryOf = (name: string): NotebookEntry => nbMap[name] || { path: '', structure: 'flat' }
+      const patchEntry = (name: string, patch: Partial<NotebookEntry>) =>
+        setCfg((s) => (s ? { ...s, notebooks: { ...(s.notebooks || {}), [name]: { ...entryOf(name), ...patch } } } : s))
+      const setNotebookPath = (name: string, value: string) => patchEntry(name, { path: value })
+      const setNotebookStructure = (name: string, value: string) => patchEntry(name, { structure: value })
       // 删掉的是当前那个就把 active 挪到剩下的第一个 —— 否则归一化会自己挑，界面和落盘就不一致了
       const removeNotebook = (name: string) => {
         const rest = { ...nbMap }
@@ -272,7 +270,14 @@ interface Field {
         if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) { setErr('笔记本名字只接受字母、数字、_ 与 -（1-32 字符）'); return }
         if (nbMap[name] !== undefined) { setErr('已经有同名笔记本：' + name); return }
         setErr('')
-        setCfg((s) => (s ? { ...s, notebooks: { ...(s.notebooks || {}), [name]: String(nbPath || '').trim() } } : s))
+        // 新笔记本结构跟当前那个一致（以前结构是全局的，这就是它的迁移语义）
+        setCfg((s) => (s ? {
+          ...s,
+          notebooks: {
+            ...(s.notebooks || {}),
+            [name]: { path: String(nbPath || '').trim(), structure: s.notebooks?.[s.active]?.structure || 'flat' },
+          },
+        } : s))
         setNbName('')
         setNbPath('')
       }
@@ -288,17 +293,13 @@ interface Field {
       const up = (key: string, value: string) => setCfg((s) => (s ? { ...s, [key]: value } as ZkConfig : s))
       const groups = [...new Set(FIELDS.map((f) => f.group))]
 
-      /** 一个字段 → 控件（结构模式是 select：枚举值不接受手打） */
+      /** 一个字段 → 文本控件（枚举值在笔记本行的结构下拉里，不走字段清单） */
       const control = (f: Field) => {
         const value = f.key === 'defaultTagsText'
           ? tagsText
           : String((cfg as unknown as Record<string, unknown>)[f.key] ?? '')
         const onChange = (e: { target: { value: string } }) =>
           f.key === 'defaultTagsText' ? setTagsText(e.target.value) : up(f.key, e.target.value)
-        if (f.kind === 'select') {
-          return h('select', { ...input, value, onChange },
-            ...(f.options || []).map((o) => h('option', { key: o.value, value: o.value }, o.label)))
-        }
         return h('input', { ...input, value, onChange })
       }
 
@@ -343,7 +344,8 @@ interface Field {
             h('div', null,
               h('div', { className: 'zdk-label' }, '当前笔记本'),
               h('div', { className: 'zdk-hint' },
-                'agent 的 zk_* 工具只用这一个。子目录、结构模式、归档目录是全局的，跟着当前笔记本走。' +
+                'agent 的 zk_* 工具只用这一个。路径与结构是每个笔记本自己的；笔记/日记子目录、归档目录、注入预算是全局的。\n' +
+                '切换保存后会自动建好目标笔记本（幂等，不动已有笔记）。' +
                 (snap?.notebook?.path ? '\n解析后：' + snap.notebook.path : ''))),
             h('select', {
               ...input,
@@ -356,19 +358,28 @@ interface Field {
               h('div', null,
                 h('div', { className: 'zdk-label' }, name === cfg.active ? name + '（当前）' : name),
                 h('div', { className: 'zdk-hint' },
-                  i === 0 ? 'zk 笔记本的根目录（含 .zk/）。空 = <工作区>/zdiary；相对路径按工作区解析；也可以指向任何已有 zk 笔记本' : '')),
+                  (i === 0 ? 'zk 笔记本的根目录（含 .zk/）。空 = <工作区>/zdiary；相对路径按工作区解析；也可以指向任何已有 zk 笔记本。\n' : '') +
+                  '结构跟着这个笔记本走：flat = notes/ + 日记；layered = 分层目录 + 三套模板。切到 layered 只建目录，不搬笔记')),
               h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
                 h('input', {
                   ...input,
-                  value: nbMap[name] || '',
+                  value: entryOf(name).path || '',
                   placeholder: '空 = <工作区>/zdiary',
                   onChange: (e: { target: { value: string } }) => setNotebookPath(name, e.target.value),
                 }),
+                h('select', {
+                  ...input,
+                  style: { minWidth: '0', width: '110px' },
+                  value: entryOf(name).structure || 'flat',
+                  onChange: (e: { target: { value: string } }) => setNotebookStructure(name, e.target.value),
+                },
+                  h('option', { value: 'flat' }, 'flat'),
+                  h('option', { value: 'layered' }, 'layered')),
                 h('button', { className: 'zdk-btn zdk-btn2', onClick: () => removeNotebook(name), disabled: nbNames.length <= 1 || !!busy }, '删除')))),
           h('div', { className: 'zdk-row' },
             h('div', null,
               h('div', { className: 'zdk-label' }, '新增笔记本'),
-              h('div', { className: 'zdk-hint' }, '名字只接受字母、数字、_ 与 -（1-32 字符）；路径空着就是 <工作区>/zdiary。改完点「保存」')),
+              h('div', { className: 'zdk-hint' }, '名字只接受字母、数字、_ 与 -（1-32 字符）；路径空着就是 <工作区>/zdiary，结构跟当前笔记本一致。改完点「保存」')),
             h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
               h('input', { ...input, style: { minWidth: '0', width: '110px' }, placeholder: '名字', value: nbName, onChange: (e: { target: { value: string } }) => setNbName(e.target.value) }),
               h('input', { ...input, style: { minWidth: '0', width: '190px' }, placeholder: '路径', value: nbPath, onChange: (e: { target: { value: string } }) => setNbPath(e.target.value) }),

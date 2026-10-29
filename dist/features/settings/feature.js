@@ -92,12 +92,25 @@ export function registerSettings({ route, isTrusted }) {
             return;
         }
         const incoming = body.config && typeof body.config === 'object' ? body.config : body;
+        const before = config();
         const next = writeConfig(incoming);
         const warn = [];
+        // 切换即就绪：active 变了就顺手建好目标笔记本（ensureNotebook 幂等）；
+        // 失败只进 warn —— 保存本身已生效。改路径不算切换，不在这里建目录（防手滑）。
+        let initFailed = false;
+        if (next.active !== before.active) {
+            try {
+                await ensureNotebook(next);
+            }
+            catch (err) {
+                initFailed = true;
+                warn.push('已切换笔记本，但自动初始化失败：' + (err instanceof Error ? err.message : String(err)) + ' —— 点「初始化笔记本」重试');
+            }
+        }
         if (next.zkPath && !fs.existsSync(next.zkPath))
             warn.push('zk 路径不存在：' + next.zkPath);
         const exists = hasNotebook(next);
-        if (!exists)
+        if (!exists && !initFailed)
             warn.push('这个目录还不是 zk 笔记本 —— 点「初始化笔记本」创建');
         const st = structureStatus(next);
         if (exists && st.missing.length) {

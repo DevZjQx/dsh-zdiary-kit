@@ -7,9 +7,10 @@
 - `lib/meta.ts`：meta 文件唯一清单（注入 3 份 / 排除 5 份），memory、zk、settings 共用
 - `lib/memory.ts`：读 `<vault>/AGENTS.md` / `USER.md` / `MEMORY.md` → 词数 → 机械截断 → `<system-reminder>` 框
 - `lib/agents-template.ts`：`AGENTS.md` 模板（layered 初始化时写入；约 150 词，因为它在预算里且永不截断）
-- `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册 `zdiary:memory` 段（order 5200），`text` 是函数，每个 step 重新读文件
+- `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册 `zdiary:memory` 段（order 5200），`text` 是函数，每个 step 重新读文件；
+  装配上下文带 `agent.id` 时按**会话工作区**解析笔记本（和 `zk_*` 工具同口径），裸装配才退回进程工作区
 - `zk_context` 工具：同一份 payload，给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用
-- 设置页「结构与记忆」：结构模式、注入预算；「笔记本」：归档目录。快照里带 `memory.words/budget/truncatedWords` 状态行
+- 设置页「记忆」：注入预算；「目录与 group」：归档目录。快照里带 `memory.words/budget/truncatedWords` 状态行
 
 **Does not own.** MEMORY.md 写什么（agent 按 AGENTS.md 直接改文件，git diff 可审）；
 哪些记忆该晋升（语义判断是 agent 的活，插件只做机械截断）；`MEMORY.md` 的写入路径 ——

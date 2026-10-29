@@ -7,7 +7,7 @@
 - `lib/install.ts`：下载（`ZK_DOWNLOAD_BASE` 可换镜像）→ 系统 `tar` 解包 → `chmod 755` → `zk --version` 验证
 - `lib/notebook.ts`：`ensureNotebook` = 建目录 → `zk init`（缺 `.zk/config.toml` 时）→ 写模板 → 追加 group
 
-两种结构（`Config.structure`），默认 `flat`：
+两种结构（每个笔记本自己的 `Config.structure`，落在 `notebooks` 条目里），默认 `flat`：
 
 | | 目录 | 模板 | group | AGENTS.md |
 |---|---|---|---|---|
@@ -33,6 +33,8 @@
 `ensureNotebook` 返回 `dirsCreated` / `templatesWritten` / `groupsAdded` / `agentsWritten`，
 设置页据此显示「本次真正做了什么」（第二次调用四者都是空的）。
 `structureStatus` 是设置页「按配置补建目录」的依据：「配置为准，磁盘只用来显示缺什么」，它自己不建目录。
+切换笔记本（`zk-kit notebooks use`、`remove` 的自动切换、设置页保存时换 `active`）会顺手 `ensureNotebook` ——
+幂等所以放心调，切过去即就绪；改路径与新增**不**自动建目录（防手滑把库建到打错的路径上）。
 
 **Rejected.** 随包分发二进制 —— 拒绝：三平台 × 两架构 × 10 MB，仓库和 npm 都受不了，且发布新版本要重打包。
 用 npm 的 `zk` 包 —— 不存在官方包。写一个 tar.gz 解压器 —— 拒绝：系统 tar（Linux/macOS/Win10+）就够，
