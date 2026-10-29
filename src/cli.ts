@@ -34,7 +34,7 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit query [-- <zk list 参数>]     透传 zk list（--notebook-dir / --format / -x 会被替换掉）
   zk-kit index                        重建索引
 
-任何时候加 --json 输出结构化结果。`
+除 doctor / help 外，其余子命令加 --json 输出结构化结果。`
 
 interface Parsed {
   pos: string[]

@@ -9,7 +9,7 @@
 - `lib/agents-template.ts`：`AGENTS.md` 模板（layered 初始化时写入；约 150 词，因为它在预算里且永不截断）
 - `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册 `zdiary:memory` 段（order 5200），`text` 是函数，每个 step 重新读文件
 - `zk_context` 工具：同一份 payload，给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用
-- 设置页「结构与记忆」：结构模式、注入预算、归档目录；快照里带 `memory.words/budget/truncatedWords` 状态行
+- 设置页「结构与记忆」：结构模式、注入预算；「笔记本」：归档目录。快照里带 `memory.words/budget/truncatedWords` 状态行
 
 **Does not own.** MEMORY.md 写什么（agent 按 AGENTS.md 直接改文件，git diff 可审）；
 哪些记忆该晋升（语义判断是 agent 的活，插件只做机械截断）；`MEMORY.md` 的写入路径 ——

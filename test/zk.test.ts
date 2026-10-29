@@ -242,7 +242,7 @@ describe('structure: layered', () => {
     const created = await zk.createNote(layered, {
       title: '分层概念笔记',
       dir: 'notes/concepts',
-      content: '这条正文必须落进 {{content}} 的位置。',
+      content: '这条正文必须落进 {{content}} 的位置。 #visible',
     })
     const raw = fs.readFileSync(created.absPath, 'utf8')
     expect(raw).toContain('type: concept')
@@ -252,8 +252,9 @@ describe('structure: layered', () => {
   })
 
   it('meta 文件与 raw/inbox/archive 不进入检索与统计', async () => {
-    fs.writeFileSync(path.join(layeredDir, 'AGENTS.md'), '# 约定\n\nUNIQUE-META-TOKEN\n')
-    fs.writeFileSync(path.join(layeredDir, 'raw', 'clip.md'), '# 素材\n\nUNIQUE-RAW-TOKEN\n')
+    fs.writeFileSync(path.join(layeredDir, 'AGENTS.md'), '# 约定\n\nUNIQUE-META-TOKEN #metaonly\n')
+    fs.writeFileSync(path.join(layeredDir, 'raw', 'clip.md'), '# 素材\n\nUNIQUE-RAW-TOKEN #rawtag\n')
+    fs.writeFileSync(path.join(layeredDir, 'archive', 'old.md'), '# 旧结论\n\n#archivetag\n')
     await zk.indexNotebook(layered)
     const meta = await zk.searchNotes(layered, { query: 'UNIQUE-META-TOKEN' })
     const raw = await zk.searchNotes(layered, { query: 'UNIQUE-RAW-TOKEN' })
@@ -261,6 +262,7 @@ describe('structure: layered', () => {
     expect(raw.length).toBe(0)
     const stats = await zk.notebookStats(layered)
     expect(stats.notes).toBe(1) // 只有 notes/concepts 里那篇
+    expect(stats.tags).toBe(1) // raw / meta / archive 的标签不参与统计
     const all = await zk.searchNotes(layered, { limit: 50 })
     expect(all.some((n) => n.path.startsWith('.zk/'))).toBe(false)
   })
@@ -285,6 +287,13 @@ describe('notes', () => {
     expect(doc.title).toBe('卡片盒笔记法')
     expect(doc.content).toContain('双链')
     expect(doc.chars).toBeGreaterThan(10)
+  })
+
+  it('flat 模式同名标题也直接报错（不依赖随机文件名撞名）', async () => {
+    const first = await zk.createNote(cfg, { title: 'flat 同名标题', content: '第一次的正文' })
+    await expect(zk.createNote(cfg, { title: 'flat 同名标题', content: '第二次的正文' })).rejects.toThrow(/同名笔记已存在/)
+    expect(fs.readFileSync(first.absPath, 'utf8')).toContain('第一次的正文')
+    expect(fs.readFileSync(first.absPath, 'utf8')).not.toContain('第二次的正文')
   })
 
   it('标签过滤与日期过滤', async () => {
@@ -706,6 +715,25 @@ describe('tools', () => {
     expect(Array.isArray(dream.rejected)).toBe(true)
     const stats = await call('zk_stats', {})
     expect(Number(stats.notes)).toBeGreaterThan(3)
+  })
+
+  it('zk_query 单独传 include_archived 也能查回 superseded 归档', async () => {
+    const defs = toolsFeature.buildTools()
+    const registry = new Map(defs.map((d) => [d.name, d]))
+    const call = async (name: string, args: unknown) => {
+      const d = registry.get(name)
+      if (!d) throw new Error('missing ' + name)
+      return await d.execute(args, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
+    }
+
+    const old = await call('zk_new', { title: '归档查询旧结论', body: '旧正文' })
+    const next = await call('zk_new', { title: '归档查询新结论', body: '新正文' })
+    await call('zk_supersede', { path: old.path, by: next.path, dry_run: false })
+
+    const found = await call('zk_query', { include_archived: true, limit: 50 })
+    const paths = (found.notes as Array<{ path: string }>).map((n) => n.path)
+    expect(paths).toContain(`archive/${String(old.path)}`)
+    expect(paths).toContain(String(next.path))
   })
 
   it('zk_read 截断会明确告诉模型', async () => {

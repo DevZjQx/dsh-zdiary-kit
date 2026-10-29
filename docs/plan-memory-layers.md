@@ -15,7 +15,7 @@ agent 负责日常 upkeep，人每周审 30 分钟。不用向量库。
 | M3 巡检与做梦 | ✅ 2026-10-29 | `lib/lint.ts` / `lib/dream.ts`、`zk_lint` / `zk_dream`、`zk-kit lint|dream|query` |
 | M4 设置页与文档 | ✅ 2026-10-29 | 设置页结构/预算/归档 + 补建按钮、`AGENTS_TEMPLATE`、`zk_append` 拒写 meta、`zk_stats` 归档计数、`scripts/docs.ts` |
 
-当前测试：`bun run test` 48 pass / 0 fail（zk 0.15.7）；`bun run smoke` 通过（12 个工具 + 7 项自检）；
+当前测试：`bun run test` 52 pass / 0 fail（zk 0.15.7）；`bun run smoke` 通过（12 个工具 + 7 项自检）；
 `bun run docs` 把 README 里 9 条 `zk-kit` 命令在临时 vault 上真跑通。
 
 ---
@@ -33,10 +33,10 @@ agent 负责日常 upkeep，人每周审 30 分钟。不用向量库。
 | Z5 | `--match` 不索引 frontmatter（`keywords: [...]` 命中 0） | A-MEM 的 keywords 字段对检索无用 | frontmatter 只做 `metadata` 供 agent 判断；要检索的词必须出现在正文 |
 | Z6 | `--format json` 把 frontmatter 原样放进 `metadata` | status/type/authority 可被工具层过滤 | `NoteRecord` 增加 `metadata`，过滤在 JS 里做 |
 | Z7 | 根目录的 `AGENTS.md` / `MEMORY.md` 会被当普通笔记索引，`-m` 能命中 | agent 搜「SQLite」会搜到 MEMORY.md 本身 | 工具侧固定排除 meta 文件（`-x`），见 §7 |
-| Z8 | `zk new` 遇到已存在文件：exit 0、**内容不写**、只回显路径 | 同名笔记会静默丢失内容（只有配了 slug 文件名的 group 才可能同名，见 Z10） | `createNote` 前后比对，撞名直接报错 |
+| Z8 | `zk new` 遇到已存在文件：exit 0、**内容不写**、只回显路径 | 文件名撞名会静默丢失内容；flat 的随机文件名不会撞，但标题重复会绕过它 | 标题查重（flat）+ 建前目录快照，撞名直接报错 |
 | Z9 | 模板里没有 `{{content}}` 时，stdin 的正文被丢弃 | 草案里的模板都没写 `{{content}}`，照抄会集体丢正文 | 所有模板必须含 `{{content}}`（M0 的断言） |
-| Z10 | `zk init` 生成的 `[note] filename` 默认是 `{{id}}`（随机 4 字符，实测 `0tup.md`），不是 slug；`{{slug title}}` 对中文出拼音（实测「中文 标题 测试」→ `zhong-wen-biao-ti-ce-shi`）；`[group.X.note] filename` 按目录匹配也会生效，不必传 `-g` | 不显式配文件名，笔记就是随机名，撞名（Z8）永远不会发生 | layered 的每个 group 都写 `filename = "{{slug title}}"`；flat 保持 `{{id}}`（与 0.1.0 逐字节一致）；标题留在 frontmatter 与 H1 |
-| Z11 | 双链是**路径式**：`zk_link` 写的是 `[[notes/concepts/slug]]`（相对笔记本、去扩展名），不是 `[[标题]]`；外部 rename 后索引会被 CLI 自动追平（实测 0.15.7 小 vault，无需手动 `zk index`） | 笔记一 move，全部入链即断，`--broken-links` 全库爆 | supersede 必须重写入链；不要指望「按标题解析」免掉这步，也别指望 reindex 能修断链 |
+| Z10 | `zk init` 生成的 `[note] filename` 默认是 `{{id}}`（随机 4 字符，实测 `0tup.md`），不是 slug；`{{slug title}}` 对中文出拼音（实测「中文 标题 测试」→ `zhong-wen-biao-ti-ce-shi`）；`[group.X.note] filename` 按目录匹配也会生效，不必传 `-g` | 不显式配文件名，笔记就是随机名，文件名撞名（Z8）不会发生 | layered 的每个 group 都写 `filename = "{{slug title}}"`；flat 保持 `{{id}}`（与 0.1.0 逐字节一致），标题重复由 `createNote` 按标题查重兜住 |
+| Z11 | 双链是**路径式**：`zk_link` 写的是 `[[notes/concepts/slug]]`（相对笔记本、去扩展名），不是 `[[标题]]`；外部 rename 后索引会被 CLI 自动追平（实测 0.15.7 小 vault，无需手动 `zk index`） | 笔记一 move，路径式入链可能断（不要依赖 zk 按 stem 解析），`--broken-links` 会报出来 | supersede 重写能精确匹配的入链，其它写法列 `missingLinks`；不要指望 reindex 能修断链 |
 | Z12 | `--match` 用的 FTS5 unicode61 不切中文，中文整句命中 0；工具层靠「0 命中退回 `-M re`」兜底 | 中文正文召回**不完整且静默**——有部分命中时不会退回正则 | 中文笔记必须打 tags；正文匹配只算 best-effort，不能当唯一检索路径 |
 
 补充两条实测细节：
@@ -107,10 +107,10 @@ archive/ ◄── supersede ◄── lint ◄───────────
 所以同时把文件 `fs.rename` 到 `archive/`，查询统一 `-x archive`。git 里历史完整，
 不构成"物理删除"。
 实现约束（Z11 决定，不是可选项）：改 status → `zk graph --format json` 取反链 → 重写入链 → move，
-每步幂等可重放，`dry_run` 一次输出全部受影响路径。文件系统与 SQLite 无法真原子，所以要求是「单次工具调用 + 可重放」。
+每步幂等可重放（例外：frontmatter 已写、`rename` 失败时，重试会走 `alreadySuperseded`，需要人工把文件搬进 archive/），`dry_run` 一次输出全部受影响路径。文件系统与 SQLite 无法真原子，所以要求是「单次工具调用 + 可重放」。
 索引不用显式重建（Z11 实测会自动追平）；大 vault 上仍可补一次 `zk index` 当保险，但它不是正确性前提。
 archive 内**保留原相对路径**（`archive/notes/concepts/x.md`），否则不同子目录的同名 slug 会在 archive 撞名。
-查询默认不含 archive，但保留 `include_archived` 逃生口，否则 `superseded-by` 校验与复查旧结论都会失败。
+查询默认不含 archive，但保留 `include_archived` 逃生口（单独传它时不再默认卡 `active`），否则 `superseded-by` 校验与复查旧结论都会失败。
 被拒：只改 frontmatter —— 废弃笔记会永远混在检索结果里，agent 会反复引用死结论。
 
 **D5. 插件只做机械活，语义判断留给 agent。**
@@ -220,11 +220,11 @@ layered 建 7 个目录 + 3 套模板 + 5 个 group；`excludedNames()` 一个�
 
 **实现状态（2026-10-29）**：已落地。落点与实现口径：
 - `NoteRecord` 增加 `metadata/status/type/authority`（`toRecord` 直取 Z6 的 `metadata`；`noteFromDisk` 用 `lib/frontmatter.ts` 解析，老笔记也能读出 status）。
-- `zk_new` 增加 `type` / `authority` / `group`（`--extra`），撞名用「建前目录快照 + 建后比对 basename」判定，命中即 `ZkError`；`zk_new` 不再返回警告而是当场失败。
+- `zk_new` 增加 `type` / `authority` / `group`（`--extra`）；撞名用「建前标题查重（flat）+ 目录快照 + 建后比对 basename」判定，命中即 `ZkError`；`zk_new` 不再返回警告而是当场失败。
 - `zk_query`：`status` / `type` 在 JS 层过滤；带这两个过滤时先 `--limit 200` 多取再截断（否则「前 10 条里没有 active」会假空）。
-  **`status` 缺省按 `active` 算** —— 0.1.0 的老笔记没有 frontmatter，不兜的话 flat vault 查 `status: active` 一条都返回不了。
+  **`status` 缺省按 `active` 算**（`include_archived: true` 且未显式给 status 是例外）—— 0.1.0 的老笔记没有 frontmatter，不兜的话 flat vault 查 `status: active` 一条都返回不了。
 - `zk_supersede`：`dry_run` 默认 true；顺序 = 重写能精确匹配的入链 → 改 frontmatter（`status: superseded` + `superseded-by`）→ `rename` 进 `archive/` 原相对路径；
-  入链来自一次 `zk graph`（按 `targetPath` 比对，不用 `targetId`）；写法不是 `[[旧路径]]` 的入链不猜，进 `missingLinks` 交给人；已 superseded 直接返回、重放幂等。
+  入链来自一次 `zk graph`（按 `targetPath` 比对，不用 `targetId`）；写法不是 `[[旧路径]]` 的入链不猜，进 `missingLinks` 交给人；已 superseded 直接返回、正常路径重放幂等（rename 失败见 D4）。
 - `zk_link` 目标不存在时附「最像的 3 篇」提示。
 - 测试新增 9 条（frontmatter 4 + M2 5），25 → 34 pass；smoke 增加到 10 个工具。
 
@@ -349,7 +349,7 @@ tags: []
 ## Links
 ```
 
-`zk_link` 认 `## Links` 与 `## 链接` 两种小节标题，新写入一律用 `## Links`；旧笔记沿用已有小节，不追加第二个。
+`zk_link` 认 `## Links` 与 `## 链接` 两种小节标题，新写入一律用 `## Links`；链接追加在文末，已有小节时不再重复起标题（不保证插进该小节内部）。
 
 `authority` 的层级：group 只给默认值，具体来源的评级由 `zk_new` 传 `--extra authority=informal` 覆盖（CLI 的 extra 优先于 `[group.X.extra]`，实测可用）。
 
@@ -423,7 +423,7 @@ meta 文件放根目录的理由：AGENTS.md 在根目录是给人和其他工�
 | 风险 | 概率 | 影响 | 缓解 |
 |---|---|---|---|
 | M1 注入机制不存在 | ~~中~~ 已排除 | 记忆层自动化打折 | 2026-10-29 源码确认可注入（§4 M1）；`zk_context` 仍保留，服务没有 `systemPrompt` 的宿主 |
-| 模型不遵守"先查重再写" | 高 | 重复笔记 | `zk_new` 内部查重并返回"疑似重复"，不靠提示词 |
+| 模型不遵守"先查重再写" | 高 | 重复笔记 | `zk_new` 在 flat 下按标题查重并直接报错，不靠提示词 |
 | MEMORY.md 被模型当成普通笔记改写 | 中 | 记忆污染 | meta 文件排除出检索；`zk_append` 拒写 meta 文件（MEMORY.md 的写入由 agent 按 AGENTS.md 直接改文件，走 git diff 可审） |
 | 200 条后上下文吃紧 | 高 | 检索变慢变糊 | `zk_query` 强制 `limit`，默认返回摘要而非全文；INDEX.md 在 150 条时提示生成 |
 | 中文长标题 slug 撞名 | 中 | Z8 丢内容 | 撞名即报错，让人改标题；不自动加后缀 |
@@ -463,15 +463,15 @@ meta 文件放根目录的理由：AGENTS.md 在根目录是给人和其他工�
 
 ## 12. 完成定义
 
-**基线先看一眼**：`bun run test` 现在 48 pass / 0 fail（zk 0.15.7）。测试入口 `scripts/test.ts` 先按插件顺序解析 zk，再跑 `bun test`，
+**基线先看一眼**：`bun run test` 现在 52 pass / 0 fail（zk 0.15.7）。测试入口 `scripts/test.ts` 先按插件顺序解析 zk，再跑 `bun test`，
 **出现 skip 即失败**；直接 `bun test` 且没有 zk 时会留一条红的（`zk 不可用`），不会被误读成全绿。
 
 - [x] layered vault 一条命令建好，模板全部生效，`zk list` 干净（无模板、无 meta 文件）—— 2026-10-29
-- [x] layered 下同一标题重复创建会报错而不是静默丢内容（flat 是随机 id 文件名，不会撞名）—— 2026-10-29
+- [x] 同一标题重复创建会报错而不是静默丢内容（layered 靠 slug 文件名，flat 靠 `createNote` 的标题查重）—— 2026-10-29
 - [x] supersede 后原笔记在 archive/（保留原相对路径），检索不再命中，git 显示 rename，断链计数不增加 —— 2026-10-29
 - [ ] 新会话第一轮能引用 MEMORY.md（注入通道已落地，**端到端待真机验证**）
 - [x] `zk_lint` / `zk_dream` 只读，200 条笔记 3 秒内返回 —— 2026-10-29（实测 200 条约 0.9 秒；只读由逐字节快照比对证明）
-- [x] 现有测试全绿（48 pass，含不依赖 zk 的配置 / 注入 / 结构测试；flat 模式无回归）—— 2026-10-29
+- [x] 现有测试全绿（52 pass，含不依赖 zk 的配置 / 注入 / 结构测试；flat 模式无回归）—— 2026-10-29
 - [x] README / docs/features/memory.md / AGENTS.md 模板 三处口径一致 —— 2026-10-29（模板三条规则与两处文档逐条对应）
 - [x] 设置页切 flat → layered 只建目录与模板：弹窗明说、补建要再点一次，`zk-kit doctor` 的预算行证明模板没吃掉全部预算 —— 2026-10-29
 - [x] 文档命令可跑：`bun run docs` 在临时 vault 上跑通 README 全部 9 条 `zk-kit` 命令 —— 2026-10-29

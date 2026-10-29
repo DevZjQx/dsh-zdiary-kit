@@ -9,12 +9,14 @@
 
 两种结构（`Config.structure`），默认 `flat`：
 
-| | 目录 | 模板 | group |
-|---|---|---|---|
+| | 目录 | 模板 | group | AGENTS.md |
+|---|---|---|---|---|
 | `flat`（默认，与 0.1.0 逐字节一致） | `notes/` `journal/` | `daily.md` | 1 个（daily） | 无 |
 | `layered` | 加 `raw/` `inbox/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） | 根目录 `AGENTS.md` |
 
 切到 `layered` **只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` 不覆盖（用户可能改过），只在缺失时写。
+因此从 flat 升级时旧 `daily.md` 会保留（没有 Events / Observations / Loose ends 三节）；想要 layered 日记模板，
+先备份并删掉 `<notebook>/.zk/templates/daily.md`，再重跑 `zk-kit init` 或点「按配置补建目录」。
 `AGENTS.md` 只在 `layered` 写：flat 是从 0.1.0 升级来的 vault，不能因为升级多出一个文件（M0 的逐字节回归）。
 模板 `AGENTS_TEMPLATE` 在 `lib/agents-template.ts`，正文控制在 150 词左右 —— 它属于注入预算且**永不截断**，
 写长了 USER / MEMORY 就没位置（这条是被 `bun run docs` 里 `zk-kit doctor` 的预算告警逼出来的）。

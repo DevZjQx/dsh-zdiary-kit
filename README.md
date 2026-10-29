@@ -1,30 +1,30 @@
 # dsh-zdiary-kit 0.2.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
-> 插件自己装 zk（官方 release，一条命令）、自己建笔记本（zk init + 日记模板 + 日记 group），
+> 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
 > 然后给 agent 一组 `zk_*` 工具 —— 查、读、写、记日记、连双链，全部走 zk 自己的索引。
 >
-> 不用先配环境：agent 第一次调用工具时就把笔记本建好；设置页里再调路径、重建索引、跑自检。
+> 装好 zk 后不用先配环境：agent 第一次调用工具时就把笔记本建好；设置页里再调路径、重建索引、跑自检。
 
 ## 它给 agent 什么
 
 | 工具 | 干什么 |
 |---|---|
 | `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要 |
-| `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档 |
+| `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active） |
 | `zk_read` | 读一篇全文（按路径，或先按词找最相关的一篇）；超长会截断并标注 |
-| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带标签、type / authority 与双链；标题撞名直接报错 |
+| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带标签与双链；flat 下按标题查重，重复直接报错；type / authority 只有 layered 模板会写进 frontmatter |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题） |
 | `zk_daily` | 打开/创建某天的日记，并追加一条 `## HH:MM` 记录 |
-| `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选） |
-| `zk_supersede` | 废弃过时结论：标 `superseded` + 搬进 `archive/` + 重写所有入链；默认只预演 |
+| `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题） |
+| `zk_supersede` | 废弃过时结论：标 `superseded` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演 |
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）；宿主支持注入时每轮已自动带进系统提示 |
 | `zk_lint` | 体检：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧 / 重名标题，每类最多 50 条；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签）、daily 未完成项、被引最多；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded） |
 
-写笔记前 agent 会先 `zk_search` 查重；双链用相对路径（zk 的 `link-format = "wiki"` 认这个），
-所以 `--broken-links` 不会因为「按标题链接」而误报。
+写笔记前 agent 会先 `zk_search` 查重；flat 笔记本的 `zk_new` 还会按标题再查一次，重复直接报错。
+双链用相对路径（zk 的 `link-format = "wiki"` 认这个），所以 `--broken-links` 不会因为「按标题链接」而误报。
 
 **长期记忆**：笔记本根目录放 `AGENTS.md`（工作约定）、`USER.md`（偏好）、`MEMORY.md`（精炼记忆），
 插件会在每个 step 把它们注入系统提示（预算默认 300 词，设置页「结构与记忆 → 注入预算」可改；
@@ -133,9 +133,11 @@ template = "daily.md"
 （`entry.md` 三处共用，`type` 与 `authority` 由 `[group.X.extra]` 注入），
 以及根目录一份 **`AGENTS.md` 模板**（检索词归宿、中文必须打 tags、"插件不保证宿主自动加载本文件"三件事都写在里面）。
 **只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` 一律不覆盖。
+注意：从 flat 升级时旧的 `daily.md` 已存在，因此不会自动换成带 Events / Observations / Loose ends 的 layered 日记模板；
+想要三节模板，先备份并删掉 `<notebook>/.zk/templates/daily.md`，再点「按配置补建目录」。
 设置页的结构**以配置为准**：配置是 `layered` 但磁盘缺目录时只显示告警与补建按钮，不自动建、不自动删。`raw/` `inbox/` `archive/`
-与根目录的 `AGENTS.md` / `MEMORY.md` / `USER.md` / `DREAMS.md` / `INDEX.md` 一律不进检索与统计
-（`-x` 传绝对路径：它是相对 cwd 解析的，传相对名在换工作目录后会静默失效）。
+与根目录的 `AGENTS.md` / `MEMORY.md` / `USER.md` / `DREAMS.md` / `INDEX.md` 不进检索与笔记 / 标签 / 断链 / 孤立统计；
+`archive/` 的归档数由 `zk_stats` 单独统计（`archived` / `superseded`）。`-x` 传绝对路径：它是相对 cwd 解析的，传相对名在换工作目录后会静默失效。
 
 ## zk 从哪来（优先级）
 
@@ -173,10 +175,10 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 读 | `zk-kit read notes/f2sj.md`，或 `zk-kit read --query 搜索词`；`--max-chars` 可调 |
 | 续写 | `zk-kit append notes/f2sj.md --text "追一段" --heading 后续` |
 | 双链 | `zk-kit link notes/a.md "某篇标题"` |
-| 指定目录 | `zk-kit new --title 标题 --dir notes/concepts --type concept` |
+| 指定目录 | `zk-kit new --title 标题 --dir notes/concepts`（layered 下 type 由目录所属 group 决定） |
 | 装 zk | `zk-kit install 0.15.7`（下载约 10 MB → `~/.dsh/zdiary/bin`，不在可跑清单里） |
 
-加 `--json` 输出结构化结果。装好插件后也可以直接用 `node <插件目录>/dist/cli.js …`。
+除 `doctor` / `help` 外，其余子命令加 `--json` 输出结构化结果。装好插件后也可以直接用 `node <插件目录>/dist/cli.js …`。
 
 ## 权限
 
@@ -207,7 +209,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 设置页 503 | 宿主没有 `connection` 服务，信任栅栏按 fail-closed 拒绝（工具不受影响） |
 | 安装 zk 报「解包失败」 | 系统没有 `tar`；手动解包后把 `zk` 放进 `~/.dsh/zdiary/bin` |
 | 搜索结果不全 | 索引落后：点「重建索引」（`zk index`），或确认文件没被 `.zk/config.toml` 的 `exclude` 排除 |
-| 自检报「✗ 记忆：超预算」 | AGENTS + USER + MEMORY 写太长：先压缩，或在设置页调高「注入预算」（超预算时注入会先丢 MEMORY 尾部整段） |
+| 自检报「✗ 长期记忆：N/预算 词」 | AGENTS + USER + MEMORY 写太长：先压缩，或在设置页调高「注入预算」（超预算时注入会先丢 MEMORY 尾部整段） |
 | `Read` / `Edit` 笔记本报 `file access denied under workspace-write mode` | 笔记本被指到了工作区外。改用 `zk_*` 工具（不经这层策略），或把目录加进 `additionalWritableRoots`，或开会话到 `danger-full-access` |
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「按配置补建目录」，别手改配置去将就磁盘 |
 
@@ -217,7 +219,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉，并检查没有顶层声明
   （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：跑一遍 12 个工具 + 发 6 条 HTTP 请求，并检查输出 schema 在 DSH 支持的子集内）·
+  `bun run smoke`（加载 dist：跑一遍 12 个工具 + 覆盖 6 条设置路由，并检查输出 schema 在 DSH 支持的子集内）·
   `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。

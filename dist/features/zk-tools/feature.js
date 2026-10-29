@@ -128,7 +128,8 @@ export function buildTools() {
         def({
             name: 'zk_query',
             description: '结构化检索记忆：按 type（daily/source/concept/entity/pattern）、status（active/superseded）、标签、目录、日期、断链、孤立过滤。' +
-                '默认只看 active 且不含归档。要复查旧结论时传 include_archived: true。这是查「记忆里有什么」的主入口。',
+                '默认只看 active 且不含归档；传 include_archived: true 会连归档一起查，此时未显式给 status 就不再默认过滤 active。' +
+                '这是查「记忆里有什么」的主入口。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -170,18 +171,19 @@ export function buildTools() {
             async run(args, signal) {
                 const cfg = config();
                 await ensureNotebook(cfg, signal);
+                const includeArchived = args.include_archived === true;
                 const notes = await searchNotes(cfg, {
                     query: args.query ? String(args.query) : undefined,
                     tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
                     paths: Array.isArray(args.dirs) ? args.dirs.map(String) : undefined,
                     type: args.type ? [String(args.type)] : undefined,
-                    // 默认只给活着的：归档区外的 superseded 是手写 frontmatter 的残留，不该混进结果
-                    status: [args.status ? String(args.status) : 'active'],
+                    // 默认只给活着的；显式 include_archived 时连 superseded 一起看（不再默认卡 active）
+                    status: args.status ? [String(args.status)] : includeArchived ? undefined : ['active'],
                     since: args.since ? String(args.since) : undefined,
                     until: args.until ? String(args.until) : undefined,
                     orphan: args.orphan === true,
                     brokenLinks: args.brokenLinks === true,
-                    includeArchived: args.include_archived === true,
+                    includeArchived,
                     limit: args.limit === undefined ? 10 : Number(args.limit),
                     sort: args.sort ? String(args.sort) : 'created-desc',
                 }, signal);
@@ -273,8 +275,8 @@ export function buildTools() {
         def({
             name: 'zk_new',
             description: '新建一篇笔记（zk 负责生成文件名、套用模板、写入索引）。适合记下一个概念、决定、来源或想法；' +
-                '写前先 zk_search 查重。标题撞名会直接报错（不会被覆盖，也不会静默丢正文）。' +
-                'tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。',
+                '写前先 zk_search 查重。标题重复会直接报错（flat 按标题查重，layered 同目录同名 slug 也会被 zk 拒绝）。' +
+                'type / authority 只有 layered 模板会写进 frontmatter。tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -411,7 +413,7 @@ export function buildTools() {
         }),
         def({
             name: 'zk_link',
-            description: '在两篇笔记之间建立 wiki 双链：把 [[目标]] 追加到来源笔记的「Links」小节（已有「Links」或「链接」小节就写进去，不重复添加）。' +
+            description: '在两篇笔记之间建立 wiki 双链：把 [[目标]] 追加到来源笔记末尾（已有「Links」或「链接」小节就不再重复起标题；不保证插进该小节内部），已存在不重复添加。' +
                 '目标可以给相对路径，也可以给标题。',
             parameters: {
                 type: 'object',
@@ -444,7 +446,7 @@ export function buildTools() {
         }),
         def({
             name: 'zk_supersede',
-            description: '废弃一篇笔记：frontmatter 标 superseded、写入替代它的笔记、把指向它的双链改到归档路径、再把文件搬进 archive/（保留原相对路径）。' +
+            description: '废弃一篇笔记：frontmatter 标 superseded、写入替代它的笔记、把能精确匹配的 [[旧路径]] 入链改到归档路径、再把文件搬进 archive/（保留原相对路径；其它写法的入链列进 missingLinks）。' +
                 '默认 dry_run: true，只返回受影响清单；确认后传 dry_run: false 才真改。结论变了（不是删掉，是过时）时用它。',
             parameters: {
                 type: 'object',

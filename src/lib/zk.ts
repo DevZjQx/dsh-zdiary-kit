@@ -86,6 +86,11 @@ export function localDate(iso: string): string {
   return `${d.getFullYear()}-${mm}-${dd}`
 }
 
+/** 标题查重用的归一化：压空白 + 小写（与 lint 的重名口径一致） */
+function normalizeTitle(title: string): string {
+  return String(title ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
 export function managedBin(): string {
   return path.join(BIN_DIR, process.platform === 'win32' ? 'zk.exe' : 'zk')
 }
@@ -501,6 +506,21 @@ export async function createNote(
 ): Promise<{ path: string; absPath: string; title: string }> {
   const title = input.title.trim()
   if (!title) throw new ZkError('标题不能为空')
+
+  // flat 用的是 zk 默认的随机 {{id}} 文件名，按文件名查重永远不会命中；标题重复必须在建之前查。
+  // layered 的 group 用 {{slug title}}，同一目录同名会被 zk 自己拒绝；不同目录允许同名（lint 会提示）。
+  // 只查可见笔记（allNotes 已排除 raw/inbox/archive/meta）：归档里的旧结论可以复用标题。
+  if (cfg.structure !== 'layered' && hasNotebook(cfg)) {
+    const key = normalizeTitle(title)
+    const existing = (await allNotes(cfg, {}, signal)).find((n) => normalizeTitle(n.title) === key)
+    if (existing) {
+      throw new ZkError(
+        `同名笔记已存在：${existing.path}`,
+        '换一个标题，或直接用 zk_read / zk_append 改那一篇；归档里的旧结论不参与查重，可以复用标题',
+      )
+    }
+  }
+
   const dir = (input.dir ?? cfg.notesDir).replace(/^\/+/, '') || '.'
   // zk 解析相对目录用的是 cwd，不是笔记本 → 一律给绝对路径；
   // 先过 absPathOf：别在 zk 拒绝之前就把 `../..` 目录 mkdir 出去。
@@ -691,13 +711,8 @@ export async function notebookStats(cfg: Config, signal?: AbortSignal): Promise<
     try { return parseFrontmatter(fs.readFileSync(abs, 'utf8')).fields.status === 'superseded' }
     catch { return false }
   }).length + live.filter((n) => n.status === 'superseded').length
-  let tags = 0
-  try {
-    const raw = await zk(cfg, ['tag', 'list', '--quiet', '--format', 'json'], { signal })
-    const start = raw.indexOf('[')
-    const end = raw.lastIndexOf(']')
-    tags = start >= 0 && end > start ? (JSON.parse(raw.slice(start, end + 1)) as unknown[]).length : 0
-  } catch { tags = 0 }
+  // 标签数也从可见笔记汇总：zk tag list 没有 -x，直接用它会把 raw/inbox/archive/meta 的标签也算进来。
+  const tags = new Set(live.flatMap((n) => n.tags)).size
   return { notes, tags, brokenLinks, orphans, archived: archived.length, superseded }
 }
 
