@@ -5,7 +5,7 @@
  * 设置页通过 keys 白名单合并 —— 加字段只改这里，不存在第二处。
  */
 import path from 'node:path'
-import { CFG_FILE, DEFAULT_NOTEBOOK, expandHome } from './paths.ts'
+import { CFG_FILE, DEFAULT_NOTEBOOK, expandHome, resolveInWorkspace } from './paths.ts'
 import { readJson, writeJson } from '../lib/json-file.ts'
 
 export interface Config {
@@ -76,7 +76,8 @@ function tags(raw: unknown): string[] {
 export function normalizeConfig(raw: unknown): Config {
   const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const notebookRaw = String(src.notebook ?? '').trim()
-  const notebook = notebookRaw ? path.resolve(expandHome(notebookRaw)) : DEFAULTS.notebook
+  // 相对路径按工作区解析：用户填 `zdiary` 就是指工作区里那个，跟进程 cwd 无关
+  const notebook = notebookRaw ? resolveInWorkspace(expandHome(notebookRaw)) : DEFAULTS.notebook
   const version = String(src.zkVersion ?? '').trim().replace(/^v/i, '')
   const zkPathRaw = String(src.zkPath ?? '').trim()
   return {
@@ -90,7 +91,7 @@ export function normalizeConfig(raw: unknown): Config {
     structure: src.structure === 'layered' ? 'layered' : 'flat',
     archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
     zkVersion: /^\d+\.\d+\.\d+$/.test(version) ? version : DEFAULTS.zkVersion,
-    zkPath: zkPathRaw ? path.resolve(expandHome(zkPathRaw)) : '',
+    zkPath: zkPathRaw ? resolveInWorkspace(expandHome(zkPathRaw)) : '',
   }
 }
 

@@ -12,6 +12,8 @@ import path from 'node:path'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-test-'))
 process.env.DSH_HOME = home
+// 默认笔记本跟着工作区走（不是 DSH_HOME），测试里钉死，别让 cwd 决定结果
+process.env.DSH_WORKSPACE = home
 
 const zkBin = process.env.ZK_BIN ?? 'zk'
 const notebook = path.join(home, 'notebook')
@@ -62,6 +64,12 @@ describe('config', () => {
     expect(c.maxReadChars).toBe(200_000)
     expect(c.zkVersion).toBe('1.2.3')
     expect(c.notebook).toBe(path.join(os.homedir(), 'notes'))
+  })
+
+  test('笔记本默认落在工作区里；相对路径按工作区解析', () => {
+    expect(store.normalizeConfig({}).notebook).toBe(path.join(home, 'zdiary'))
+    expect(store.normalizeConfig({ notebook: 'zdiary' }).notebook).toBe(path.join(home, 'zdiary'))
+    expect(store.normalizeConfig({ notebook: './vault' }).notebook).toBe(path.join(home, 'vault'))
   })
 
   test('写入只认白名单键', () => {

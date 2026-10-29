@@ -69,7 +69,7 @@ dsh plugin --profile desktop add "link:/path/to/dsh-zdiary-kit"
 
 | 分组 | 字段 | 说明 |
 |---|---|---|
-| 笔记本 | 笔记本目录 | 空 = `~/.dsh/zdiary/notebook`；也可以指向任何已有 zk 笔记本 |
+| 笔记本 | 笔记本目录 | 空 = `<工作区>/zdiary`（在工作区内，agent 能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本 |
 | 笔记本 | 笔记子目录 / 日记子目录 | 默认 `notes` / `journal` |
 | 笔记本 | 日记 group 名 | 默认 `daily`，初始化时自动补配置 |
 | 笔记本 | 归档目录 | `supersede` 后搬到这里（保留原相对路径），默认 `archive` |
@@ -180,9 +180,21 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 
 ## 权限
 
-所有落盘都在 `~/.dsh/zdiary/`（配置、内置 zk、缓存）和笔记本目录里。
-会话权限保持「工作区读写 / workspace-write」即可，不需要 `danger-full-access`。
-如果笔记本指到工作区外，记得把那个目录加进 `additionalWritableRoots`。
+分两处落盘，会话文件策略对它们的影响不一样：
+
+| 位置 | 里面是什么 | `workspace-write` 下 |
+|---|---|---|
+| `<工作区>/zdiary`（默认笔记本） | 笔记、日记、AGENTS.md | 在工作区内：agent 直接 `Read` / `Edit` 就行 |
+| `~/.dsh/zdiary` | 配置、内置 zk、缓存 | 在工作区外：agent 写会被拒；插件自己在宿主进程里读写，不受影响 |
+
+所以普通用法保持 `workspace-write` 即可，不需要 `danger-full-access`。两点例外：
+
+- **笔记本故意放到工作区外**（多个项目共用一个库）：agent 直接 `Read` / `Edit` 会被拒，报
+  `file access denied under workspace-write mode`。要么把那个目录加进 `additionalWritableRoots`
+  （只解决写），要么开会话到 `danger-full-access`。就算不放开，`zk_*` 工具照常能用 ——
+  它们走插件自己的 `node:fs` 和 `zk` 子进程，不经这层策略。
+- **相对路径按工作区解析**，不是按进程 cwd：设置页里填 `zdiary` 就是 `<工作区>/zdiary`。
+  工作区的识别顺序是 `$DSH_WORKSPACE` → 进程 cwd。
 
 ## 排错
 
@@ -196,6 +208,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 安装 zk 报「解包失败」 | 系统没有 `tar`；手动解包后把 `zk` 放进 `~/.dsh/zdiary/bin` |
 | 搜索结果不全 | 索引落后：点「重建索引」（`zk index`），或确认文件没被 `.zk/config.toml` 的 `exclude` 排除 |
 | 自检报「✗ 记忆：超预算」 | AGENTS + USER + MEMORY 写太长：先压缩，或在设置页调高「注入预算」（超预算时注入会先丢 MEMORY 尾部整段） |
+| `Read` / `Edit` 笔记本报 `file access denied under workspace-write mode` | 笔记本被指到了工作区外。改用 `zk_*` 工具（不经这层策略），或把目录加进 `additionalWritableRoots`，或开会话到 `danger-full-access` |
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「按配置补建目录」，别手改配置去将就磁盘 |
 
 ## 开发
@@ -236,7 +249,7 @@ src/
 
 ```bash
 dsh plugin --profile desktop remove dsh-zdiary-kit
-rm -rf ~/.dsh/zdiary          # 内置 zk + 配置；笔记本若在别处请自己保留
+rm -rf ~/.dsh/zdiary          # 内置 zk + 配置；笔记本在工作区里（<工作区>/zdiary），要删自己来
 ```
 
 ## License

@@ -56,7 +56,7 @@ window.__ModuleLoader__?.load({
             document.head.appendChild(style);
         })();
         const FIELDS = [
-            { group: '笔记本', key: 'notebook', label: '笔记本目录', hint: 'zk 笔记本的根目录（含 .zk/）。空着 = ~/.dsh/zdiary/notebook；也可以指向任何已有 zk 笔记本' },
+            { group: '笔记本', key: 'notebook', label: '笔记本目录', hint: 'zk 笔记本的根目录（含 .zk/）。空着 = <工作区>/zdiary（放工作区内，agent 才能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本' },
             { group: '笔记本', key: 'notesDir', label: '笔记子目录', hint: '普通笔记放哪（相对笔记本），默认 notes' },
             { group: '笔记本', key: 'dailyDir', label: '日记子目录', hint: '日记放哪（相对笔记本），默认 journal；文件名由日期模板生成' },
             { group: '笔记本', key: 'dailyGroup', label: '日记 group 名', hint: 'zk 配置里的 [group."…"]，默认 daily —— 初始化时会自动补上' },

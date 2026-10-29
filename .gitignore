@@ -21,5 +21,6 @@ tmp/
 .DS_Store
 Thumbs.db
 
-# 插件运行期数据一律在 ~/.dsh/zdiary（src/config/paths.ts），不落仓库，
-# 所以不忽略 notes/ journal/ .zk/——真出现了就是配置写错了。
+# 插件运行期数据：配置 / 内置 zk 在 ~/.dsh/zdiary，笔记本默认在工作区内（<工作区>/zdiary，
+# src/config/paths.ts）。在本仓库里跑插件会生成 ./zdiary —— 那是本地日记本，不入库。
+/zdiary/
