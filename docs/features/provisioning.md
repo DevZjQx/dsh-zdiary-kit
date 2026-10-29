@@ -9,12 +9,14 @@
 
 两种结构（每个笔记本自己的 `Config.structure`，落在 `notebooks` 条目里），默认 `flat`：
 
-| | 目录 | 模板 | group | AGENTS.md |
+| | 目录 | 模板 | group | 根目录文档 |
 |---|---|---|---|---|
 | `flat`（默认，与 0.1.0 逐字节一致） | `notes/` `journal/` | `daily.md` | 1 个（daily） | 无 |
-| `layered` | 加 `raw/` `inbox/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） | 根目录 `AGENTS.md` |
+| `layered` | 加 `raw/` `inbox/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） | `AGENTS.md` + `WORKFLOW.md` |
 
-切到 `layered` **只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` 不覆盖（用户可能改过），只在缺失时写。
+切到 `layered` **只建目录与模板，不搬已有笔记**；已存在的模板、`AGENTS.md` 与 `WORKFLOW.md` 不覆盖（用户可能改过），只在缺失时写。
+`WORKFLOW.md` 是「改已有笔记」才读的细则（先列受影响清单等确认，再按 temporal / context variant / contradiction 三分类动手）：
+不注入（省预算），但和 meta 文件同口径排除出检索，`AGENTS.md` 里只留一行指针。
 因此从 flat 升级时旧 `daily.md` 会保留（没有 Events / Observations / Loose ends 三节）；想要 layered 日记模板，
 先备份并删掉 `<notebook>/.zk/templates/daily.md`，再重跑 `zk-kit init` 或点「初始化 / 补建」。
 `AGENTS.md` 只在 `layered` 写：flat 是从 0.1.0 升级来的 vault，不能因为升级多出一个文件（M0 的逐字节回归）。
@@ -29,8 +31,8 @@
 **Depends on.** `lib/exec`（`tar` 与 `zk`）、`config/paths`（`BIN_DIR` / `CACHE_DIR`）、`config/store`（版本、目录名）。
 
 **Public surface.** `installZk(version)`、`zkAsset(version)`、`ensureNotebook(cfg)`、`DAILY_TEMPLATE` / `DAILY_TEMPLATE_LAYERED`、
-`SOURCE_TEMPLATE`、`ENTRY_TEMPLATE`、`AGENTS_TEMPLATE`；`structureDirs(cfg)` / `structureStatus(cfg)`（只报告，不建不改）。
-`ensureNotebook` 返回 `dirsCreated` / `templatesWritten` / `groupsAdded` / `agentsWritten`，
+`SOURCE_TEMPLATE`、`ENTRY_TEMPLATE`、`AGENTS_TEMPLATE`、`WORKFLOW_TEMPLATE`；`structureDirs(cfg)` / `structureStatus(cfg)`（只报告，不建不改）。
+`ensureNotebook` 返回 `dirsCreated` / `templatesWritten` / `groupsAdded` / `agentsWritten` / `workflowWritten`，
 设置页据此显示「本次真正做了什么」（第二次调用四者都是空的）。
 `structureStatus` 是设置页「初始化 / 补建」的依据：「配置为准，磁盘只用来显示缺什么」，它自己不建目录。
 切换笔记本（`zk-kit notebooks use`、`remove` 的自动切换、设置页保存时换 `active`）会顺手 `ensureNotebook` ——

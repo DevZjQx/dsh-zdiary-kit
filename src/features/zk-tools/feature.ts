@@ -20,6 +20,7 @@ import {
 } from '../../lib/zk.ts'
 import type { NoteRecord, NoteDoc, SupersedeResult } from '../../lib/zk.ts'
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
+import { META_NAMES } from '../../lib/meta.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
 import { lintNotebook } from '../../lib/lint.ts'
 import type { LintResult } from '../../lib/lint.ts'
@@ -450,7 +451,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       name: 'zk_append',
       description:
         '往一篇已有笔记末尾追加内容（自动补空行，可选先起一个二级标题）。适合补充证据、跟进结论、在会议记录里续写；' +
-        '整篇重写请用编辑器，别用这个工具。根目录的 AGENTS / USER / MEMORY / DREAMS / INDEX 是 meta 文件，会被拒绝。',
+        `整篇重写请用编辑器，别用这个工具。根目录的 ${META_NAMES.join(' / ')} 是 meta 文件，会被拒绝。`,
       parameters: {
         type: 'object',
         properties: {

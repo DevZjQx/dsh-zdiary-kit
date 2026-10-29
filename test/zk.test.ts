@@ -1014,6 +1014,7 @@ describe('M4: 结构设置与记忆预算', () => {
     expect(body).toMatch(/中文.*tags|tags.*中文/)
     expect(body).toContain('不会')
     expect(body).toContain('MEMORY.md')
+    expect(body).toContain('WORKFLOW.md')
 
     fs.writeFileSync(agentsFile, '# 我自己写的\n\n不覆盖我。\n')
     const again = await notebookLib.ensureNotebook(m4)
@@ -1046,6 +1047,43 @@ describe('M4: 结构设置与记忆预算', () => {
     const st = notebookLib.structureStatus(m4)
     expect(st.ready).toBe(true)
     expect(st.agents.present).toBe(true)
+  })
+
+  it('layered 初始化写 WORKFLOW.md：改前清单与三分类，已有内容不覆盖', async () => {
+    const wf = path.join(m4dir, 'WORKFLOW.md')
+    fs.rmSync(wf, { force: true })
+    const first = await notebookLib.ensureNotebook(m4)
+    expect(first.workflowWritten).toBe(true)
+    const body = fs.readFileSync(wf, 'utf8')
+    expect(body).toContain('temporal update')
+    expect(body).toContain('context variant')
+    expect(body).toContain('contradiction')
+    expect(body).toContain('动笔前必须出清单')
+    // 不注入省预算，但要和 meta 同口径排除出检索，也不能被 zk_append 当流水账追加
+    expect(zk.excludedNames(m4)).toContain(wf)
+    expect(() => zk.appendToNote(m4, 'WORKFLOW.md', '追加')).toThrow(/meta/)
+
+    fs.writeFileSync(wf, '# 我自己的流程\n')
+    const again = await notebookLib.ensureNotebook(m4)
+    expect(again.workflowWritten).toBe(false)
+    expect(fs.readFileSync(wf, 'utf8')).toBe('# 我自己的流程\n')
+  })
+
+  it('raw/ 只读：zk_new / zk_append / zk_link / zk_supersede 都拒绝', async () => {
+    const rawDir = path.join(m4dir, 'raw')
+    fs.mkdirSync(rawDir, { recursive: true })
+    await expect(zk.createNote(m4, { title: '不该写进 raw', dir: 'raw', content: 'x' })).rejects.toThrow(/raw/)
+    expect(fs.readdirSync(rawDir)).toEqual([])
+
+    const paper = path.join(rawDir, 'paper.md')
+    fs.writeFileSync(paper, '# 原文\n\n一段原文。\n')
+    expect(() => zk.appendToNote(m4, 'raw/paper.md', '追加')).toThrow(/raw/)
+
+    const note = await zk.createNote(m4, { title: '要链原文的笔记', dir: 'notes/concepts', content: '正文' })
+    await expect(zk.linkNotes(m4, 'raw/paper.md', note.path)).rejects.toThrow(/raw/)
+    await expect(zk.supersedeNote(m4, { path: 'raw/paper.md', dryRun: false })).rejects.toThrow(/raw/)
+    // 一个字都没动
+    expect(fs.readFileSync(paper, 'utf8')).toBe('# 原文\n\n一段原文。\n')
   })
 
   it('设置写入后立刻生效：structure / memoryBudgetWords / archiveDir', async () => {

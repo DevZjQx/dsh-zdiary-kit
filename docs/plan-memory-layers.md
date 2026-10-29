@@ -308,7 +308,7 @@ layered 建 7 个目录 + 3 套模板 + 5 个 group；`excludedNames()` 一个�
 | `zk_search` | 改 ✅ | 加 `type/status` 过滤；结果带 metadata；固定排除 meta 文件 |
 | `zk_read` | 改 ✅ | 支持读 meta 文件（按路径直读，绕过索引） |
 | `zk_new` | 改 ✅ | 加 `type/authority/group`；撞名报错；模板必含 content |
-| `zk_append` | 改 ✅ | 拒写 meta 文件（AGENTS/MEMORY/USER/DREAMS/INDEX）；子目录同名文件照常 |
+| `zk_append` | 改 ✅ | 拒写 meta 文件（AGENTS/MEMORY/USER/DREAMS/INDEX/WORKFLOW）；子目录同名文件照常 |
 | `zk_daily` | 不变 | 继续用 `ensureDailyNote` 的目录快照判断新建 |
 | `zk_link` | 微调 ✅ | 目标不存在时给出候选建议 |
 | `zk_stats` | 改 ✅ | 增加 `archived` / `superseded` 计数（归档区靠磁盘扫，索引里查不到） |
@@ -463,7 +463,7 @@ meta 文件放根目录的理由：AGENTS.md 在根目录是给人和其他工�
 
 ## 12. 完成定义
 
-**基线先看一眼**：`bun run test` 现在 52 pass / 0 fail（zk 0.15.7）。测试入口 `scripts/test.ts` 先按插件顺序解析 zk，再跑 `bun test`，
+**基线先看一眼**：`bun run test` 现在 79 pass / 0 fail（zk 0.15.7）。测试入口 `scripts/test.ts` 先按插件顺序解析 zk，再跑 `bun test`，
 **出现 skip 即失败**；直接 `bun test` 且没有 zk 时会留一条红的（`zk 不可用`），不会被误读成全绿。
 
 - [x] layered vault 一条命令建好，模板全部生效，`zk list` 干净（无模板、无 meta 文件）—— 2026-10-29
@@ -471,7 +471,21 @@ meta 文件放根目录的理由：AGENTS.md 在根目录是给人和其他工�
 - [x] supersede 后原笔记在 archive/（保留原相对路径），检索不再命中，git 显示 rename，断链计数不增加 —— 2026-10-29
 - [ ] 新会话第一轮能引用 MEMORY.md（注入通道已落地，**端到端待真机验证**）
 - [x] `zk_lint` / `zk_dream` 只读，200 条笔记 3 秒内返回 —— 2026-10-29（实测 200 条约 0.9 秒；只读由逐字节快照比对证明）
-- [x] 现有测试全绿（52 pass，含不依赖 zk 的配置 / 注入 / 结构测试；flat 模式无回归）—— 2026-10-29
+- [x] 现有测试全绿（79 pass，含不依赖 zk 的配置 / 注入 / 结构测试；flat 模式无回归）—— 2026-10-29
 - [x] README / docs/features/memory.md / AGENTS.md 模板 三处口径一致 —— 2026-10-29（模板三条规则与两处文档逐条对应）
 - [x] 设置页切 flat → layered 只建目录与模板：弹窗明说、补建要再点一次，`zk-kit doctor` 的预算行证明模板没吃掉全部预算 —— 2026-10-29
 - [x] 文档命令可跑：`bun run docs` 在临时 vault 上跑通 README 全部 9 条 `zk-kit` 命令 —— 2026-10-29
+
+---
+
+## 13. 后续增补（2026-10-29，v0.3 之后）
+
+计划定稿后补的两处「写入侧防线」，不改变 §3 的任何结论：
+
+- **`WORKFLOW.md`**：把最初草案里的「修改分类三选一（temporal / context variant / contradiction）+ 先列受影响清单等确认」
+  找回来。它不能进 `AGENTS.md`（AGENTS 属于注入预算且永不截断，加一段就把 MEMORY 挤没），
+  所以单独一份、不注入、按需读，`AGENTS.md` 只留一行指针；同时进 `META_NAMES`（不进检索、`zk_append` 拒写）。
+  落地：`lib/agents-template.ts` 的 `WORKFLOW_TEMPLATE`、`ensureNotebook` 的 `workflowWritten`。
+- **`raw/` 只读机械拦截**：`zk_new` / `zk_append` / `zk_link` / `zk_supersede` 的写入入口统一走 `assertWritablePath`。
+  原因：raw 被 `excludedNames` 排除，写进去不报错但永远搜不到 —— 静默失败比明确拒绝更难查。
+- 测试 79 pass；`bun run test` 仍是 skip = 0 才通过。

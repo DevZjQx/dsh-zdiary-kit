@@ -125,7 +125,7 @@ window.__ModuleLoader__?.load({
                 catch { /* 基线坏了就当没切 */ }
                 if (switching && !window.confirm('切到 layered 只会新建目录与模板：\n' +
                     '  raw/ · inbox/ · notes/{sources,concepts,entities,patterns}/ · archive/\n' +
-                    '  daily.md / source.md / entry.md 三套模板 · 根目录 AGENTS.md\n\n' +
+                    '  daily.md / source.md / entry.md 三套模板 · 根目录 AGENTS.md / WORKFLOW.md\n\n' +
                     '**不会**移动、改写或删除任何已有笔记。\n\n' +
                     '保存后点底部的「补建 … 的目录」才会真正建出来。继续？'))
                     return;
@@ -180,6 +180,8 @@ window.__ModuleLoader__?.load({
                             parts.push('写入模板 ' + r.templatesWritten.join(' / '));
                         if (r.agentsWritten)
                             parts.push('写入 AGENTS.md');
+                        if (r.workflowWritten)
+                            parts.push('写入 WORKFLOW.md');
                         if (r.configPatched && !(r.templatesWritten && r.templatesWritten.length) && !(r.dirsCreated && r.dirsCreated.length))
                             parts.push('补齐 group');
                         setOkMsg('✓ ' + parts.join(' · '));

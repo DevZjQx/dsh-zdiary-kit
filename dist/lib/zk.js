@@ -407,6 +407,17 @@ export function absPathOf(cfg, p) {
 export function relPathOf(cfg, abs) {
     return path.relative(cfg.notebook, abs).split(path.sep).join('/');
 }
+/**
+ * raw/ 是只读的原始材料。往里写不会报错，但会被 excludedNames 排除出索引 ——
+ * 结果是「写了、没报错、但搜不到」，比直接失败更难查。所以在写入口就拦住。
+ * 读不受影响：raw 里的材料照常 zk_read / Read。
+ */
+function assertWritablePath(cfg, abs) {
+    const rel = relPathOf(cfg, abs);
+    if (rel === 'raw' || rel.startsWith('raw/')) {
+        throw new ZkError(`raw/ 是只读的原始材料，不能写：${rel}`, '结论写到 notes/，观察写进 daily；原始材料只在原位读，不改不搬');
+    }
+}
 function noteFromDisk(cfg, abs) {
     const content = fs.readFileSync(abs, 'utf8');
     const stat = fs.statSync(abs);
@@ -488,6 +499,7 @@ export async function createNote(cfg, input, signal) {
     // zk 解析相对目录用的是 cwd，不是笔记本 → 一律给绝对路径；
     // 先过 absPathOf：别在 zk 拒绝之前就把 `../..` 目录 mkdir 出去。
     const dirAbs = absPathOf(cfg, dir);
+    assertWritablePath(cfg, dirAbs);
     fs.mkdirSync(dirAbs, { recursive: true });
     const before = new Set(fs.readdirSync(dirAbs));
     const args = ['new', dirAbs, '-t', title, '-i', '-p'];
@@ -515,9 +527,10 @@ export function appendToNote(cfg, p, text, opts = {}) {
     const abs = absPathOf(cfg, p);
     if (!fs.existsSync(abs))
         throw new ZkError(`笔记不存在：${p}`);
+    assertWritablePath(cfg, abs);
     // meta 文件是人的工作面：追加会把它变成流水账，也让「记忆被谁改的」失去审计线索
     if (isMetaPath(relPathOf(cfg, abs))) {
-        throw new ZkError(`${relPathOf(cfg, abs)} 是 meta 文件，不能用 zk_append 追加`, 'AGENTS / USER / MEMORY / DREAMS / INDEX 请直接编辑（整篇重写，git diff 可审）');
+        throw new ZkError(`${relPathOf(cfg, abs)} 是 meta 文件，不能用 zk_append 追加`, `${META_NAMES.join(' / ')} 请直接编辑（整篇重写，git diff 可审）`);
     }
     const body = String(text ?? '').trim();
     if (!body)
@@ -567,6 +580,7 @@ export async function linkNotes(cfg, fromPath, target, signal) {
     const fromAbs = absPathOf(cfg, fromPath);
     if (!fs.existsSync(fromAbs))
         throw new ZkError(`笔记不存在：${fromPath}`);
+    assertWritablePath(cfg, fromAbs);
     const targetDoc = await findNote(cfg, target, signal);
     if (!targetDoc) {
         // 目标必须存在：写一条指向空气的 `[[…]]` 只会变成断链，还不如当场报错并给出最像的几篇
@@ -669,6 +683,7 @@ export async function supersedeNote(cfg, opts, signal) {
     const abs = absPathOf(cfg, opts.path);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile())
         throw new ZkError(`笔记不存在：${opts.path}`);
+    assertWritablePath(cfg, abs);
     const rel = relPathOf(cfg, abs);
     const content = fs.readFileSync(abs, 'utf8');
     const fields = parseFrontmatter(content).fields;

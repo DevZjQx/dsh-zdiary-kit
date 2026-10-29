@@ -13,7 +13,7 @@
 | `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要 |
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active） |
 | `zk_read` | 读一篇全文（按路径，或先按词找最相关的一篇）；超长会截断并标注 |
-| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带标签与双链；flat 下按标题查重，重复直接报错；type / authority 只有 layered 模板会写进 frontmatter |
+| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带标签与双链；flat 下按标题查重，重复直接报错；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 一律拒写（写进去会被排除出索引，等于静默消失） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题） |
 | `zk_daily` | 打开/创建某天的日记，并追加一条 `## HH:MM` 记录 |
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题） |
@@ -163,6 +163,7 @@ template = "daily.md"
 ├── raw/            # 原始材料，只读
 ├── inbox/          # 还没想好归属的碎片
 ├── AGENTS.md       # 工作约定（模板由插件写入；agent 每轮读它，DSH 不会自动加载）
+├── WORKFLOW.md     # 改已有笔记的细则：先列清单、三分类（不注入，按需读）
 ├── notes/
 │   ├── sources/
 │   ├── concepts/
@@ -173,14 +174,16 @@ template = "daily.md"
 
 外加 `source.md` / `entry.md` 两套模板与 source / concept / entity / pattern 四个 group
 （`entry.md` 三处共用，`type` 与 `authority` 由 `[group.X.extra]` 注入），
-以及根目录一份 **`AGENTS.md` 模板**（检索词归宿、中文必须打 tags、"插件不保证宿主自动加载本文件"三件事都写在里面）。
-**只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` 一律不覆盖。
+以及根目录两份模板：**`AGENTS.md`**（检索词归宿、中文必须打 tags、"插件不保证宿主自动加载本文件"三件事）
+与 **`WORKFLOW.md`**（改已有笔记前先列受影响清单等确认，再按 temporal / context variant / contradiction 三分类动手）。
+`WORKFLOW.md` 不进每轮注入 —— 它低频但重要，塞进 `AGENTS.md` 会把 300 词预算挤到 MEMORY 没位置。
+**只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` / `WORKFLOW.md` 一律不覆盖。
 切回 `flat` 同理：只改配置，已建出来的 `raw/` `archive/` 不会被删 —— 所以切换是「随时可逆」的，代价只是目录留在那里。
 `zk-kit config set` 会把被归一化改掉的值回显出来（例如 `structure=xyz` → 实际 `flat`），不会"命令成功但没生效"。
 注意：从 flat 升级时旧的 `daily.md` 已存在，因此不会自动换成带 Events / Observations / Loose ends 的 layered 日记模板；
 想要三节模板，先备份并删掉 `<notebook>/.zk/templates/daily.md`，再点「初始化 / 补建」。
 设置页的结构**以配置为准**：配置是 `layered` 但磁盘缺目录时只显示告警（底部按钮会变成「补建 *名* 的目录」），不自动建、不自动删。`raw/` `inbox/` `archive/`
-与根目录的 `AGENTS.md` / `MEMORY.md` / `USER.md` / `DREAMS.md` / `INDEX.md` 不进检索与笔记 / 标签 / 断链 / 孤立统计；
+与根目录的 `AGENTS.md` / `MEMORY.md` / `USER.md` / `DREAMS.md` / `INDEX.md` / `WORKFLOW.md` 不进检索与笔记 / 标签 / 断链 / 孤立统计；
 `archive/` 的归档数由 `zk_stats` 单独统计（`archived` / `superseded`）。`-x` 传绝对路径：它是相对 cwd 解析的，传相对名在换工作目录后会静默失效。
 
 ## zk 从哪来（优先级）
@@ -268,6 +271,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | `Read` / `Edit` 笔记本报 `file access denied under workspace-write mode` | 笔记本被指到了工作区外。改用 `zk_*` 工具（不经这层策略），或把目录加进 `additionalWritableRoots`，或开会话到 `danger-full-access` |
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「补建 *名* 的目录」，别手改配置去将就磁盘 |
 | 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |
+| 往 `raw/` 写笔记报「只读」 | `raw/` 是原始材料：写进去的笔记会被排除出索引，表现成「写了但搜不到」；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` 直接拒绝 | 结论写到 `notes/`；原文留在原位，用 `zk_read raw/xxx.md` 或直接读文件对照 |
 | `config set notebook=…` 报「派生值」 | `notebook` 是 `notebooks[active]` 解析后的派生值、不落盘也不可写：改路径用 `zk-kit notebooks add 名 路径`，切换用 `use` |
 
 ## 开发

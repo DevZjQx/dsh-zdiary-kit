@@ -4,6 +4,7 @@ import { S, validateArgs } from '../../lib/tool.js';
 import { ensureNotebook } from '../../lib/notebook.js';
 import { searchNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, notebookStats, supersedeNote, localDate as dateOnly, ZkError, } from '../../lib/zk.js';
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.js';
+import { META_NAMES } from '../../lib/meta.js';
 import { lintNotebook } from '../../lib/lint.js';
 import { dreamNotebook } from '../../lib/dream.js';
 const text = (value) => [{ type: 'text', text: value }];
@@ -392,7 +393,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
         t({
             name: 'zk_append',
             description: '往一篇已有笔记末尾追加内容（自动补空行，可选先起一个二级标题）。适合补充证据、跟进结论、在会议记录里续写；' +
-                '整篇重写请用编辑器，别用这个工具。根目录的 AGENTS / USER / MEMORY / DREAMS / INDEX 是 meta 文件，会被拒绝。',
+                `整篇重写请用编辑器，别用这个工具。根目录的 ${META_NAMES.join(' / ')} 是 meta 文件，会被拒绝。`,
             parameters: {
                 type: 'object',
                 properties: {

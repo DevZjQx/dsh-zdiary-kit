@@ -13,9 +13,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import { zk } from './zk.ts'
-import { AGENTS_TEMPLATE } from './agents-template.ts'
+import { AGENTS_TEMPLATE, WORKFLOW_TEMPLATE } from './agents-template.ts'
 
-export { AGENTS_TEMPLATE } from './agents-template.ts'
+export { AGENTS_TEMPLATE, WORKFLOW_TEMPLATE } from './agents-template.ts'
 
 export interface EnsureResult {
   notebook: string
@@ -30,6 +30,8 @@ export interface EnsureResult {
   groupsAdded: string[]
   /** 本次写了根目录的 AGENTS.md（layered 才写；已存在的不覆盖） */
   agentsWritten: boolean
+  /** 本次写了根目录的 WORKFLOW.md（同上，只在缺失时写） */
+  workflowWritten: boolean
 }
 
 export const DAILY_TEMPLATE = `# {{format-date now "%Y-%m-%d"}}
@@ -253,6 +255,14 @@ export async function ensureNotebook(cfg: Config, signal?: AbortSignal): Promise
     agentsWritten = true
   }
 
+  // WORKFLOW.md 是「动已有笔记」时才读的细则：不注入（省预算），但不进检索（是 meta）
+  const workflowFile = path.join(cfg.notebook, 'WORKFLOW.md')
+  let workflowWritten = false
+  if (layered && !fs.existsSync(workflowFile)) {
+    fs.writeFileSync(workflowFile, WORKFLOW_TEMPLATE, 'utf8')
+    workflowWritten = true
+  }
+
   const groups = layered ? layeredGroups(cfg) : [dailyGroup(cfg)]
   let configText = fs.readFileSync(configFile, 'utf8')
   const groupsAdded: string[] = []
@@ -273,5 +283,6 @@ export async function ensureNotebook(cfg: Config, signal?: AbortSignal): Promise
     templatesWritten,
     groupsAdded,
     agentsWritten,
+    workflowWritten,
   }
 }

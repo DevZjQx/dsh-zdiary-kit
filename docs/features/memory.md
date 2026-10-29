@@ -4,11 +4,12 @@
 注入有硬预算，截断多少必须可观测 —— 否则模型看到的是残缺记忆却不知道残缺。
 
 **Owns.**
-- `lib/meta.ts`：meta 文件唯一清单（注入 3 份 / 排除 5 份），memory、zk、settings 共用
+- `lib/meta.ts`：meta 文件唯一清单（注入 3 份 / 排除 6 份），memory、zk、settings 共用
 - `lib/memory.ts`：读 `<vault>/AGENTS.md` / `USER.md` / `MEMORY.md` → 词数 → 机械截断 → `<system-reminder>` 框；
   另读 `DREAMS.md` 的「上次做梦」一行（不进正文、不计预算）
 - `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）
-- `lib/agents-template.ts`：`AGENTS.md` 模板（layered 初始化时写入；约 170 词，因为它在预算里且永不截断）
+- `lib/agents-template.ts`：`AGENTS.md` 模板（layered 初始化时写入；约 180 词，因为它在预算里且永不截断）
+  与 `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
 - `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册 `zdiary:memory` 段（order 5200），`text` 是函数，每个 step 重新读文件；
   装配上下文带 `agent.id` 时按**会话工作区**解析笔记本（和 `zk_*` 工具同口径），裸装配才退回进程工作区
 - `zk_context` 工具：同一份 payload，给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用
@@ -21,7 +22,8 @@
 **Depends on.** `config/store`（`memoryBudgetWords`，每次现读 —— 设置页保存后下一次工具调用就生效）、
 `lib/meta`、`node:fs`；宿主的 `systemPrompt` 服务（可选，没有就只留 `zk_context`）。
 
-**Public surface.** `buildMemoryPayload(cfg)`、`countWords(text)`、`META_FILES`（别名 `MEMORY_META_FILES`）、`AGENTS_TEMPLATE`。
+**Public surface.** `buildMemoryPayload(cfg)`、`countWords(text)`、`META_FILES`（别名 `MEMORY_META_FILES`）、`AGENTS_TEMPLATE`、`WORKFLOW_TEMPLATE`。
+`WORKFLOW.md` 不进 `META_FILES`（不注入），只在 `META_NAMES` 里（排除出检索、`zk_append` 拒写）。
 
 **Rejected.** 只在会话开始时注入一次 —— 拒绝：改完 MEMORY.md 要等下一次会话才生效，还得自己实现「这条已经注入过」的去重。
 用 `systemPrompt.context()` 而不是 `section()` —— 拒绝：`context()` 会被 `suppressRuntimeContext` 连带关掉，

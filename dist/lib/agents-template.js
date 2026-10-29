@@ -26,9 +26,51 @@ notes/{concepts,entities,patterns}/ 原子笔记 · archive/ 废弃笔记（不�
 1. 先 zk_query / zk_search 查重（中文查 tags）。
 2. 一条笔记一件事，标题就是结论；来源进 sources/，结论进 concepts/ 等，用 zk_link 连起来。
 3. 结论过时用 zk_supersede（默认预演）：不删文件、不在旧结论上改写。
+4. 改已有笔记前先读 WORKFLOW.md：先列受影响清单等确认，再按三分类动手。
 
 ## 每周
 
 整理后把「上次做梦：YYYY-MM-DD」写进 DREAMS.md 开头；注入提示到期（或没这一行）再跑：
 zk_lint → zk_dream → 写 DREAMS.md（晋升/拒绝/待查）→ 人裁决后改 MEMORY.md。
+`;
+/**
+ * 根目录 WORKFLOW.md：只在「要动已有笔记」时才需要读，所以不注入、不计预算。
+ * 放进注入的话，AGENTS.md 一膨胀就会挤掉 MEMORY —— 这些规则低频但重要，适合按需读。
+ */
+export const WORKFLOW_TEMPLATE = `# 改笔记的工作流（按需读）
+
+> 由 dsh-zdiary-kit 生成。AGENTS.md 只放每轮都要用的规则；这一页在要动已有笔记时才读。
+> 它不进检索，也不要往里追加内容（整篇重写，git diff 可审）。
+
+## 新信息与旧笔记冲突时，先分类
+
+1. **temporal update** —— 事实随时间变了：改写现行结论，旧值连同日期搬进 Changelog 小节。
+2. **context variant** —— 不同情境答案不同：原结论保留，加一节「针对 X：」写条件分支。
+3. **contradiction** —— 同期、同情境互相冲突：一个字都不改，把两篇路径与冲突点写进 DREAMS.md，等人裁决。
+
+判断不了就按 3 处理：flag 的成本远低于悄悄改写。
+
+## 动笔前必须出清单
+
+1. 用 zk_search / zk_query 找出可能受影响的笔记；
+2. 列出「改哪几篇、每篇按哪一类改」；
+3. 等用户确认，再逐篇改。
+
+没有确认范围就动手 = 全库漂移。这条没有例外。
+
+## 什么时候该新建
+
+- 概念 / 实体以后还会遇到 → notes/concepts/ 或 notes/entities/；
+- 一次性来源 → 只建 source 笔记；
+- 旧结论过时 → zk_supersede（默认预演），不删文件。
+
+## 链接
+
+zk_link 只连真实的概念关联，不连「词面像」。同一篇首次提及时链一次即可。
+
+## 别做的事
+
+- 不写 raw/：它是只读原始材料，写了也搜不到，工具会直接拒绝。
+- 不跑无范围的「更新一下 wiki」。
+- 不手工改 status、不手工搬文件 —— 走 zk_supersede。
 `;

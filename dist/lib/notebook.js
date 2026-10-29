@@ -12,8 +12,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { zk } from './zk.js';
-import { AGENTS_TEMPLATE } from './agents-template.js';
-export { AGENTS_TEMPLATE } from './agents-template.js';
+import { AGENTS_TEMPLATE, WORKFLOW_TEMPLATE } from './agents-template.js';
+export { AGENTS_TEMPLATE, WORKFLOW_TEMPLATE } from './agents-template.js';
 export const DAILY_TEMPLATE = `# {{format-date now "%Y-%m-%d"}}
 
 {{content}}
@@ -195,6 +195,13 @@ export async function ensureNotebook(cfg, signal) {
         fs.writeFileSync(agentsFile, AGENTS_TEMPLATE, 'utf8');
         agentsWritten = true;
     }
+    // WORKFLOW.md 是「动已有笔记」时才读的细则：不注入（省预算），但不进检索（是 meta）
+    const workflowFile = path.join(cfg.notebook, 'WORKFLOW.md');
+    let workflowWritten = false;
+    if (layered && !fs.existsSync(workflowFile)) {
+        fs.writeFileSync(workflowFile, WORKFLOW_TEMPLATE, 'utf8');
+        workflowWritten = true;
+    }
     const groups = layered ? layeredGroups(cfg) : [dailyGroup(cfg)];
     let configText = fs.readFileSync(configFile, 'utf8');
     const groupsAdded = [];
@@ -215,5 +222,6 @@ export async function ensureNotebook(cfg, signal) {
         templatesWritten,
         groupsAdded,
         agentsWritten,
+        workflowWritten,
     };
 }

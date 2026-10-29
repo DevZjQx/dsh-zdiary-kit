@@ -277,7 +277,7 @@ async function main(): Promise<void> {
       const r = await ensureNotebook(cfg)
       print(json ? r : `笔记本 ${r.notebook}（结构 ${cfg.structure}）\n` +
         `初始化：${r.initialized ? '是' : '已是笔记本'} · 目录：${r.dirsCreated.length ? '新建 ' + r.dirsCreated.join('、') : '已齐全'}\n` +
-        `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')}`, json)
+        `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')} · WORKFLOW.md：${r.workflowWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')}`, json)
       return
     }
 
