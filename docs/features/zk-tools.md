@@ -40,6 +40,8 @@ layered 同目录同名靠 `{{slug title}}` 文件名拦住，不同目录允许
 不直接看文件就统计不到。
 `zk_supersede` 默认 `dry_run: true`：一句「更新一下 wiki」不该让全库漂移。
 `zk_read` 的"没找到"走 throw（isError），不返回 `found:false` —— 模型看到错误比看到空字段更容易改对。
+`zk_read` 也能读根目录 meta 文件（`MEMORY.md` / `USER.md`）：注入截断时留下的目录就是让 agent 用这个取回原文。
+`zk_context` 的 `files[].originalWords`（截断前词数）与 `tocWords`（目录占的词数）只用于解释预算，不改变注入内容。
 
 `zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关（D7）。
 `zk_lint` = 1 次 `zk list` + 四个 zk 原生过滤器（`--orphan` / `--broken-links` / `--missing-backlink` / `--tagless`），

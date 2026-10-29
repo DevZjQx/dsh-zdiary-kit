@@ -310,6 +310,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       name: 'zk_read',
       description:
         '读一篇笔记的全文（或先按搜索词找到最相关的一篇再读）。路径是相对笔记本根目录的路径，如 notes/ab12.md。' +
+        '也可以读根目录的 meta 文件（MEMORY.md / USER.md），注入时被截掉的段落用这个取回。' +
         '长笔记会被截断并明确标注。',
       parameters: {
         type: 'object',
@@ -627,15 +628,17 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           words: { type: 'number' },
           budget: { type: 'number' },
           truncatedWords: { type: 'number' },
+          tocWords: { type: 'number' },
           files: {
             type: 'array',
             items: objSchema({
               name: { type: 'string' },
               present: { type: 'boolean' },
               words: { type: 'number' },
-            }, ['name', 'present', 'words']),
+              originalWords: { type: 'number' },
+            }, ['name', 'present', 'words', 'originalWords']),
           },
-        }, ['text', 'words', 'budget', 'truncatedWords', 'files']),
+        }, ['text', 'words', 'budget', 'truncatedWords', 'tocWords', 'files']),
       },
       async run(_args, env) {
         // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷

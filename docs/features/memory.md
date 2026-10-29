@@ -29,7 +29,7 @@
 **Depends on.** `config/store`（`memoryBudgetWords`，每次现读 —— 设置页保存后下一次工具调用就生效）、
 `lib/meta`、`node:fs`；宿主的 `systemPrompt` 服务（可选，没有就只留 `zk_context`）。
 
-**Public surface.** `buildMemoryPayload(cfg)`、`countWords(text)`、`META_FILES`（别名 `MEMORY_META_FILES`）、`AGENTS_TEMPLATE`、`WORKFLOW_TEMPLATE`。
+**Public surface.** `buildMemoryPayload(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、`AGENTS_TEMPLATE`、`WORKFLOW_TEMPLATE`。
 `WORKFLOW.md` 不进 `META_FILES`（不注入），只在 `META_NAMES` 里（排除出检索、`zk_append` 拒写）。
 
 **Rejected.** 只在会话开始时注入一次 —— 拒绝：改完 MEMORY.md 要等下一次会话才生效，还得自己实现「这条已经注入过」的去重。
@@ -41,13 +41,19 @@
 `AGENTS.md` 模板自己也得守这条预算：初版 310 词，`bun run docs` 里 `zk-kit doctor` 直接报
 `✗ 记忆：310/300 词` —— 模板吃掉整个预算，MEMORY.md 就永远被截光，所以压到 160 词（195 词的版本把 USER + MEMORY 压到只剩 105 词）；
 `AGENTS.md` 是硬规则，单独超预算也不截断，只回显告警；文件内容里的 `</system-reminder>` 会被转义，
-不许提前闭合插件自己的框；任何一份文件读不到都当作不存在，笔记本没建好时返回空载荷而不是报错。
+截断目录里的段落标题同样转义 —— 不许提前闭合插件自己的框；任何一份文件读不到都当作不存在，笔记本没建好时返回空载荷而不是报错。
 
 **截断要归因。** 只说「已截断 83 词」等于没说：看的人（和模型）不知道是 AGENTS 太长，最容易把排查方向
 带到「注入没挂载」上。所以「确实截断了、且总载荷没超预算」时额外点名
 `AGENTS.md 占 120/200 词且不参与截断，留给 USER / MEMORY 的只有 80 词`；
 没截断时一个字都不加（不为诊断污染每步的载荷），AGENTS 自己超预算时也不加（「预算不足」那条已经点了名）。
 这条只写在 `buildMemoryPayload` 一处 —— 注入、`zk_context`、设置页、`doctor` 读的都是同一份载荷。
+
+**截断留目录，不静默消失。** 丢掉的 `##` 段会合成一份紧凑目录（`MEMORY.md：§标题、§标题`），
+最多 5 个标题；目录自己也算预算（载荷里的 `tocWords`，`min(40, 20%)`：默认 300 词预算时最多 40 词），
+放不下时按标题数递减，一段都列不出就退化成一句 `zk_read 读 MEMORY.md` 的指引。需要哪段由 agent
+按当前任务决定 —— 装配层拿不到 query，插件也不猜相关性，只保证「被丢掉的东西仍然可发现」。
+逐文件 `files[].originalWords` + `formatFileShares()` 让 `doctor` / 设置页能说清预算被谁吃掉。
 
 **周节奏靠注入提醒，不装定时器。** 插件不跑 cron（计划 §11），但模型自己算「过了几天」不可靠，
 所以把日期算术机械化：`DREAMS.md` 里写一行 `上次做梦：YYYY-MM-DD`，`buildMemoryPayload` 每步读它，

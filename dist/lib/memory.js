@@ -3,10 +3,12 @@
  * 按 `memoryBudgetWords` 截断，渲染成一段可注入系统提示的文本。
  * 另读 DREAMS.md 的「上次做梦」一行（不进正文、不计预算），给周节奏一句机械提醒。
  *
- * 三条硬约定（与 docs/plan-memory-layers.md §3 D6 一致）：
+ * 硬约定（与 docs/plan-memory-layers.md §3 D6 一致）：
  *   · 预算按**总载荷**算，不是只卡 MEMORY.md；
  *   · 截断顺序纯机械：先丢 MEMORY 的尾部 `##` 整段，再丢 USER 的尾部整段，
  *     最后各自只留首段；AGENTS.md 是硬规则，永不截断（单独超预算时只告警）；
+ *   · 丢掉的段落留一份**目录**（段落标题，计入预算），agent 用 zk_read 取回正文 ——
+ *     选哪段是 agent 按当前任务判断，插件只搬运目录，不猜相关性；
  *   · 中文按「1 词 / 2 字」计 —— 空白切分在中文上严重低估，300 词会变成装饰。
  *
  * 另有一条可观测性约定（D6 的补完）：截断不只回显「截了多少」，还要能解释「谁吃掉的」——
@@ -21,6 +23,20 @@ import { MEMORY_META_FILES } from './meta.js';
 /** vault 根目录下、按优先级排列的三份 meta 文件（定义在 lib/meta.ts，这里只挂个本地名） */
 export const META_FILES = MEMORY_META_FILES;
 const CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/g;
+/** 给 doctor / 设置页共用：`AGENTS 193 · USER 30 · MEMORY 22（原 82）` */
+export function formatFileShares(files, tocWords = 0) {
+    const parts = files
+        .filter((f) => f.present)
+        .map((f) => {
+        const label = f.name.replace(/\.md$/i, '');
+        return f.originalWords > f.words
+            ? `${label} ${f.words}（原 ${f.originalWords}）`
+            : `${label} ${f.words}`;
+    });
+    if (tocWords > 0)
+        parts.push(`目录 ${tocWords}`);
+    return parts.join(' · ');
+}
 /** 词数：CJK 按 2 字 1 词，其余按空白切分 */
 export function countWords(text) {
     if (!text)
@@ -29,6 +45,8 @@ export function countWords(text) {
     const latin = text.replace(CJK, ' ').split(/\s+/).filter(Boolean).length;
     return Math.ceil(cjk / 2) + latin;
 }
+/** 目录最多列几段：再多就只给「还有 N 段」，免得目录自己把预算吃掉 */
+const TOC_MAX = 5;
 function splitSections(body) {
     const head = [];
     const sections = [];
@@ -52,6 +70,48 @@ function joinSections(split) {
 function firstSection(body) {
     const split = splitSections(body);
     return joinSections({ head: split.head, sections: split.sections.slice(0, 1) });
+}
+function sectionTitle(section) {
+    const first = section.split('\n', 1)[0] ?? '';
+    return first.replace(/^##\s+/, '').trim() || '（无标题）';
+}
+/**
+ * 被截掉段落的目录：代替「按位置丢尾段」的不可见性。
+ * 只列标题、不搬运正文，也不列词数 —— 目录自己占预算，紧凑比「信息全」更重要；
+ * 选哪段读是 agent 按当前任务判断，插件不猜相关性。
+ */
+function renderToc(dropped, limit) {
+    const byFile = new Map();
+    for (const item of dropped.slice(0, limit)) {
+        const titles = byFile.get(item.name) ?? [];
+        titles.push(`§${item.title}`);
+        byFile.set(item.name, titles);
+    }
+    const lines = ['## 未注入的段落（用 zk_read 取回）'];
+    for (const [name, titles] of byFile)
+        lines.push(`- ${name}：${titles.join('、')}`);
+    if (dropped.length > limit)
+        lines.push(`（另有 ${dropped.length - limit} 段）`);
+    // 标题也来自文件内容：不转义的话，一个恶意 `## </system-reminder>` 就能提前闭合注入框
+    return escapeFrame(lines.join('\n'));
+}
+/** 目录最多占预算的这个比例：宁可少列几段，也别让索引把正文挤没 */
+function tocCapOf(budget) {
+    return Math.min(40, Math.max(0, Math.floor(budget * 0.2)));
+}
+/**
+ * 目录按「能放下多少列多少」生成；一段都放不下时返回空串，
+ * 由 notice 里的「用 zk_read 读 …」兜底，不让内容彻底静默。
+ */
+function tocText(dropped, cap = Number.POSITIVE_INFINITY) {
+    if (!dropped.length || cap <= 0)
+        return '';
+    for (let n = Math.min(TOC_MAX, dropped.length); n >= 1; n--) {
+        const text = renderToc(dropped, n);
+        if (countWords(text) <= cap)
+            return text;
+    }
+    return '';
 }
 function readMeta(cfg) {
     const out = [];
@@ -109,34 +169,52 @@ export function buildMemoryPayload(cfg) {
     const words = new Map(files.map((f) => [f.name, countWords(f.body)]));
     const total = () => [...words.values()].reduce((a, b) => a + b, 0);
     // ── 机械截断：MEMORY 尾段 → USER 尾段 → 各留首段 ──────────────────
+    // 丢掉的段落留一份目录（段落标题），让 agent 能按当前任务用 zk_read 取回。
+    // 目录自己也要占预算，所以每丢一段都把它算进去；目录有上限，循环一定收敛。
+    const dropped = [];
+    const tocCap = tocCapOf(budget);
     for (const name of ['MEMORY.md', 'USER.md']) {
-        if (total() <= budget)
+        if (total() + countWords(tocText(dropped, tocCap)) <= budget)
             break;
         const split = splitSections(original.get(name) ?? '');
-        while (total() > budget && split.sections.length > 1) {
-            split.sections.pop();
+        const mine = [];
+        const over = () => total() + countWords(tocText([...dropped, ...mine], tocCap)) > budget;
+        while (over() && split.sections.length > 1) {
+            const section = split.sections.pop();
+            mine.unshift({ name, title: sectionTitle(section) });
             const body = joinSections(split);
             original.set(name, body);
             words.set(name, countWords(body));
         }
+        dropped.push(...mine);
     }
-    if (total() > budget) {
+    if (total() + countWords(tocText(dropped, tocCap)) > budget) {
         for (const name of ['USER.md', 'MEMORY.md']) {
             const body = firstSection(original.get(name) ?? '');
             original.set(name, body);
             words.set(name, countWords(body));
         }
     }
+    // 目录本身也放不下时宁可不给：否则「截断」会变成另一处超预算的来源
+    const tocDraft = tocText(dropped, tocCap);
+    const toc = dropped.length > 0 && total() + countWords(tocDraft) <= budget ? tocDraft : '';
     const present = files.filter((f) => (original.get(f.name) ?? '').length > 0);
     const bodies = present.map((f) => `## ${f.name}\n\n${escapeFrame(original.get(f.name) ?? '')}`);
-    const finalWords = total();
+    const keptWords = total();
+    const finalWords = keptWords + countWords(toc);
     const originalWords = files.reduce((sum, f) => sum + countWords(f.body), 0);
-    const truncatedWords = Math.max(0, originalWords - finalWords);
+    // 报「正文被截掉多少」，不是净减少：目录也会占词，混在一起会让人以为没丢多少
+    const truncatedWords = Math.max(0, originalWords - keptWords);
     let text = '';
     if (bodies.length > 0) {
         const notes = [];
         if (truncatedWords > 0)
             notes.push(`已截断 ${truncatedWords} 词`);
+        // 目录放不下时至少留一句指路；否则被丢掉的段落对模型完全不可见
+        if (!toc && dropped.length > 0) {
+            const names = [...new Set(dropped.map((d) => d.name))];
+            notes.push(`其余 ${dropped.length} 段用 zk_read 读 ${names.join(' / ')}`);
+        }
         // 归因：AGENTS 不参与截断，占掉大半预算时得点名 —— 否则「记忆为什么总是不生效」无从查起。
         // 只在「确实截断了、且总载荷没超」时说：总载荷都超了的话，下面的「预算不足」已经点了 AGENTS 的名。
         const agentsWords = words.get('AGENTS.md') ?? 0;
@@ -153,6 +231,7 @@ export function buildMemoryPayload(cfg) {
             '<system-reminder>\n' +
                 '以下内容由 zdiary 从知识库根目录读出，是长期约定与记忆；与系统、开发者或用户的直接指令冲突时，以更直接的那条为准。\n\n' +
                 bodies.join('\n\n') +
+                (toc ? `\n\n${toc}` : '') +
                 (dream ? `\n\n（${dream}）` : '') +
                 notice +
                 '\n</system-reminder>';
@@ -162,6 +241,13 @@ export function buildMemoryPayload(cfg) {
         words: finalWords,
         budget,
         truncatedWords,
-        files: files.map((f) => ({ name: f.name, present: f.body.length > 0, words: words.get(f.name) ?? 0 })),
+        tocWords: countWords(toc),
+        files: files.map((f) => ({
+            name: f.name,
+            present: f.body.length > 0,
+            words: words.get(f.name) ?? 0,
+            // files[].body 始终是原文件内容（截断只改 original 副本）
+            originalWords: countWords(f.body),
+        })),
     };
 }

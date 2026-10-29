@@ -7,7 +7,7 @@ import path from 'node:path';
 import { config, writeConfig, selectNotebook, isNotebookName, CONFIG_KEYS } from './config/store.js';
 import { CFG_FILE } from './config/paths.js';
 import { ensureNotebook, structureStatus } from './lib/notebook.js';
-import { buildMemoryPayload } from './lib/memory.js';
+import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
 import { installZk } from './lib/install.js';
 import { resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
 import { formatMemoryLinks, lintNotebook } from './lib/lint.js';
@@ -224,7 +224,7 @@ async function doctor() {
     const present = payload.files.filter((f) => f.present);
     rows.push(present.length === 0
         ? '✓ 记忆：暂未启用（根目录没有 AGENTS.md / USER.md / MEMORY.md）'
-        : `${payload.words <= payload.budget ? '✓' : '✗'} 记忆：${payload.words}/${payload.budget} 词（${present.map((f) => f.name).join(' + ')}）` +
+        : `${payload.words <= payload.budget ? '✓' : '✗'} 记忆：${payload.words}/${payload.budget} 词（${formatFileShares(payload.files, payload.tocWords)}）` +
             (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : ''));
     if (zk && exists) {
         try {

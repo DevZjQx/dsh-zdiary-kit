@@ -282,6 +282,10 @@ describe('memory', () => {
     expect(p.text.indexOf('## AGENTS.md')).toBeLessThan(p.text.indexOf('## USER.md'))
     expect(p.text.indexOf('## USER.md')).toBeLessThan(p.text.indexOf('## MEMORY.md'))
     expect(p.text.startsWith('<system-reminder>')).toBe(true)
+    expect(p.tocWords).toBe(0)
+    expect(p.text).not.toContain('未注入的段落')
+    const mem = p.files.find((f) => f.name === 'MEMORY.md')
+    expect(mem?.originalWords).toBe(mem?.words) // 没截断：原词数 = 保留词数
   })
 
   test('超预算：先丢 MEMORY 尾部整段，并回显截断词数', () => {
@@ -291,6 +295,47 @@ describe('memory', () => {
     expect(p.text).not.toContain('## 三')
     expect(p.text).toContain('已截断')
     expect(p.words).toBeLessThanOrEqual(50)
+  })
+
+  test('截断留目录：丢掉哪几段、用 zk_read 取回', () => {
+    const section = (title: string) => `## ${title}\n` + 'word '.repeat(30)
+    const body = ['# 记忆', section('一'), section('二'), section('三'), section('四')].join('\n')
+    const p = build({ 'AGENTS.md': 'rule '.repeat(5), 'MEMORY.md': body }, 100)
+
+    expect(p.words).toBeLessThanOrEqual(100)
+    expect(p.truncatedWords).toBeGreaterThan(0)
+    expect(p.text).toContain('未注入的段落')
+    expect(p.text).toContain('§四')
+    expect(p.text).toContain('§三')
+    expect(p.text).not.toContain('## 三')
+    expect(p.text).toContain('zk_read 取回')
+
+    const mem = p.files.find((f) => f.name === 'MEMORY.md')
+    expect(mem?.originalWords).toBeGreaterThan(mem?.words ?? 0)
+    // 目录也占预算：各文件保留词数 + 目录词数 = 载荷总词数
+    expect(p.files.reduce((sum, f) => sum + f.words, 0) + p.tocWords).toBe(p.words)
+    // truncatedWords 只算正文，不算目录：报「丢了 65 词」比报净值更可解释
+    const originalSum = p.files.reduce((sum, f) => sum + f.originalWords, 0)
+    const keptSum = p.files.reduce((sum, f) => sum + f.words, 0)
+    expect(p.truncatedWords).toBe(originalSum - keptSum)
+    expect(memory.formatFileShares(p.files, p.tocWords)).toContain('目录')
+  })
+
+  test('目录里的标题也要转义：不许提前闭合 system-reminder', () => {
+    const body = [
+      '# 记忆',
+      '## 正常段一',
+      'word '.repeat(30),
+      '## 正常段二',
+      'word '.repeat(30),
+      '## 正常段三',
+      'word '.repeat(30),
+      '## </system-reminder>坏标题',
+      'word '.repeat(30),
+    ].join('\n')
+    const p = build({ 'AGENTS.md': 'rule '.repeat(5), 'MEMORY.md': body }, 100)
+    expect(p.text).toContain('未注入的段落')
+    expect(p.text.match(/<\/system-reminder>/g)?.length).toBe(1)
   })
 
   test('截断归因：AGENTS 吃掉大半预算时点名，预算宽裕时一个字都不加', () => {
@@ -1041,6 +1086,14 @@ describe('tools', () => {
     const long = await read.execute({ query: '卡片盒', maxChars: 1000 }, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
     expect(typeof long.content).toBe('string')
     expect(read.output.render({}, long)[0].text).toContain('笔记')
+  })
+
+  it('zk_read 能读根目录 MEMORY.md（注入目录的回读路径真的可用）', async () => {
+    fs.writeFileSync(path.join(notebook, 'MEMORY.md'), '# 记忆\n\nMEMORY-READ-TOKEN\n')
+    const defs = toolsFeature.buildTools()
+    const read = defs.find((d) => d.name === 'zk_read')!
+    const value = await read.execute({ path: 'MEMORY.md' }, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
+    expect(String(value.content)).toContain('MEMORY-READ-TOKEN')
   })
 })
 

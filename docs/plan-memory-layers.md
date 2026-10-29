@@ -504,3 +504,18 @@ meta 文件放根目录的理由：AGENTS.md 在根目录是给人和其他工�
   再让每条结论都带来源链接，记忆层会长期停在「被截断」状态 —— 规则本身可以写得更紧，预算不能涨（D6）。
 - 纯机械，不做语义重复判断、不自动改 MEMORY.md —— 记忆层的写入仍然归 agent。
 - `package.json` 补 `repository`（插件市场的仓库校验需要它，之前只有 git remote，注册表读不到）。
+
+## 15. v0.4.0：截断留目录
+
+按位置丢尾段的问题不是「丢了」，是「模型不知道丢了什么」。装配层拿不到 query
+（`AssemblyContextLike` 只有 `agent.id`），所以注入层做相关性打分既做不到、也违反 D5。
+v0.4.0 把「读哪段」下移给 agent，插件只负责让被丢的内容仍然可发现：
+
+- 截断时把丢掉的 `##` 段合成紧凑目录（`MEMORY.md：§标题、§标题`），最多 5 个标题；
+  目录计入预算（`tocWords`，`min(40, 20%)`），超出就按标题数递减。
+- 一段都列不出时退化成一句「用 `zk_read` 读 MEMORY.md / USER.md」，不让内容彻底静默。
+- `files[].originalWords` + `formatFileShares()`：doctor / 设置页给出每个文件的原词数与保留词数。
+- `zk_read` 明确支持读根目录 meta 文件（`readNote` 本来就能直接读文件，补的是工具描述与测试）。
+- 不改：截断顺序（MEMORY 尾 → USER 尾 → 首段）、AGENTS 永不截断、词数口径。
+- 测试 83 pass（新增：目录内容与上限、`truncatedWords` 只算正文、目录计入预算、
+  `zk_read MEMORY.md` 真能取回、目录标题同样转义）；`bun run check` / `bun run smoke` 全绿。

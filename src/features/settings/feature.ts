@@ -18,7 +18,7 @@ import { config, writeConfig } from '../../config/store.ts'
 import type { Config } from '../../config/store.ts'
 import { ensureNotebook, structureStatus } from '../../lib/notebook.ts'
 import type { StructureStatus } from '../../lib/notebook.ts'
-import { buildMemoryPayload } from '../../lib/memory.ts'
+import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
 import { installZk } from '../../lib/install.ts'
 import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.ts'
@@ -250,7 +250,7 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
         ok: payload.words <= payload.budget,
         detail: present.length === 0
           ? '未启用：根目录没有 AGENTS.md / USER.md / MEMORY.md（layered 初始化会写一份 AGENTS.md 模板）'
-          : `${payload.words}/${payload.budget} 词 · ${present.map((f) => f.name).join(' + ')}` +
+          : `${payload.words}/${payload.budget} 词 · ${formatFileShares(payload.files, payload.tocWords)}` +
             (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : ''),
       })
     } catch (err) {

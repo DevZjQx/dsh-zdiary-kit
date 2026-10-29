@@ -15,7 +15,7 @@ import { json, readBody } from '../../lib/http.js';
 import { CFG_FILE, processWorkspace } from '../../config/paths.js';
 import { config, writeConfig } from '../../config/store.js';
 import { ensureNotebook, structureStatus } from '../../lib/notebook.js';
-import { buildMemoryPayload } from '../../lib/memory.js';
+import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
 import { installZk } from '../../lib/install.js';
 import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.js';
 const P = '/dsh-zdiary-kit/api';
@@ -254,7 +254,7 @@ export function registerSettings({ route, isTrusted }) {
                 ok: payload.words <= payload.budget,
                 detail: present.length === 0
                     ? '未启用：根目录没有 AGENTS.md / USER.md / MEMORY.md（layered 初始化会写一份 AGENTS.md 模板）'
-                    : `${payload.words}/${payload.budget} 词 · ${present.map((f) => f.name).join(' + ')}` +
+                    : `${payload.words}/${payload.budget} 词 · ${formatFileShares(payload.files, payload.tocWords)}` +
                         (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : ''),
             });
         }

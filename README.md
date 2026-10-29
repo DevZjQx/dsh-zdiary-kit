@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 0.3.1
+# dsh-zdiary-kit 0.4.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -28,7 +28,8 @@
 
 **长期记忆**：笔记本根目录放 `AGENTS.md`（工作约定）、`USER.md`（偏好）、`MEMORY.md`（精炼记忆），
 插件会在每个 step 把它们注入系统提示（预算默认 300 词，设置页「记忆 → 注入预算」可改；
-超了先丢 MEMORY 的尾部整段，并明确告诉你截了多少、以及是不是 AGENTS 吃掉了大半预算）。
+超了先丢 MEMORY 的尾部整段，并留一份未注入段落的目录（段落标题）—— 需要时用 `zk_read MEMORY.md` 取回；
+同时明确告诉你截了多少、以及是不是 AGENTS 吃掉了大半预算）。
 DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不会**读笔记本根目录，所以别指望宿主帮你加载 —— 是插件自己读、自己注入。
 
 维护用 `zk_lint`（结构体检 + 记忆链接核对）和 `zk_dream`（晋升候选 / 拒绝原因 / 未完成项）：两个工具都**只读**，

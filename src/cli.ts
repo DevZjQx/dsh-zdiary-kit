@@ -8,7 +8,7 @@ import { config, writeConfig, selectNotebook, isNotebookName, CONFIG_KEYS } from
 import type { Config } from './config/store.ts'
 import { CFG_FILE } from './config/paths.ts'
 import { ensureNotebook, structureStatus } from './lib/notebook.ts'
-import { buildMemoryPayload } from './lib/memory.ts'
+import { buildMemoryPayload, formatFileShares } from './lib/memory.ts'
 import { installZk } from './lib/install.ts'
 import {
   resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
@@ -226,7 +226,7 @@ async function doctor(): Promise<boolean> {
   rows.push(
     present.length === 0
       ? '✓ 记忆：暂未启用（根目录没有 AGENTS.md / USER.md / MEMORY.md）'
-      : `${payload.words <= payload.budget ? '✓' : '✗'} 记忆：${payload.words}/${payload.budget} 词（${present.map((f) => f.name).join(' + ')}）` +
+      : `${payload.words <= payload.budget ? '✓' : '✗'} 记忆：${payload.words}/${payload.budget} 词（${formatFileShares(payload.files, payload.tocWords)}）` +
         (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : ''),
   )
 
