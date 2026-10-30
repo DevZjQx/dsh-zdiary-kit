@@ -683,11 +683,12 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_lint',
       description:
-        '给知识库做体检：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧（N 天没改）/ 重名标题，每类最多 50 条并给总数。' +
+        '给知识库做体检：断链 / 孤儿 / 无标签 / 单向链接 / 陈旧（N 天没改）/ 重名标题，每类最多 50 条并给总数。' +
         'frontmatter 解析失败的笔记单列一类：它们进不了索引，别的项统计不到，先修它们再看其余。' +
         'memoryLinks 查 MEMORY.md / USER.md 里的 [[来源链接]] 是否还指向活笔记（已废弃 / 不存在）—— ' +
         'supersede 不会重写 meta 文件里的链接，这类漂移 broken-links 看不见。' +
         '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
+        'oneWayLinks = S 链 X 但 X 没回链 S，且 S 不是日记 —— 日记天然是出边，回链它没有意义。' +
         '只读：不改任何笔记。拿到清单后自己判断先修哪个，再用 zk_link / zk_append / zk_supersede 动手。',
       parameters: {
         type: 'object',
@@ -707,10 +708,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           brokenLinks: LINT_BUCKET,
           stale: LINT_STALE,
           tagless: LINT_BUCKET,
-          missingBacklink: LINT_BUCKET,
+          oneWayLinks: LINT_BUCKET,
           duplicateTitles: LINT_DUPLICATE,
           memoryLinks: LINT_MEMORY,
-        }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'missingBacklink', 'duplicateTitles', 'memoryLinks']),
+        }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'memoryLinks']),
       },
       async run(args, env) {
         const cfg = config(env.workspace)
@@ -739,7 +740,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         lines.push(line('断链', v.brokenLinks))
         lines.push(line('孤儿', v.orphans))
         lines.push(line('无标签', v.tagless))
-        lines.push(line('缺反链', v.missingBacklink))
+        lines.push(line('单向链接', v.oneWayLinks))
         lines.push(
           v.stale.total === 0
             ? '✓ 陈旧：0'

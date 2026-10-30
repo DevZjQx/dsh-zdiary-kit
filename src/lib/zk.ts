@@ -357,8 +357,12 @@ export async function allNotes(
   return parseList(await zk(cfg, args, { signal, warnings: opts.warnings })).map((raw) => toRecord(raw, cfg))
 }
 
-/** zk 自带的布尔过滤器（比在 JS 里重算更贴近 zk 的定义） */
-export type FlagFilter = '--orphan' | '--tagless' | '--missing-backlink' | '--broken-links'
+/**
+ * zk 自带的布尔过滤器（比在 JS 里重算更贴近 zk 的定义）。
+ * `--missing-backlink` 故意不在列：它的原义是「至少一条单向链接」，日记天然是出边，
+ * 用它只会把日记提过的每篇笔记都报出来。单向链接由 `lint.ts` 在 `zk graph` 的边上算。
+ */
+export type FlagFilter = '--orphan' | '--tagless' | '--broken-links'
 
 /**
  * 用 zk 的过滤器挑笔记，只取**绝对路径**。

@@ -1,27 +1,31 @@
 /**
  * 巡检（M3）：只报告，不改任何笔记（计划 §3 D5）。
  *
- * 一次 `zk list` 拿全量，再用 zk 原生的三个过滤器（孤儿 / 断链 / 缺反链）各跑一次进程；
- * 「陈旧」与「重名」在 JS 里算。200 条笔记上 4 次进程就够 —— 不允许按笔记逐条跑 zk。
+ * 一次 `zk list` 拿全量，再用 zk 原生的两个过滤器（孤儿 / 断链）各跑一次进程，外加一次 `zk graph` 拿全库的边；
+ * 「陈旧」「重名」「单向链接」在 JS 里算。200 条笔记上 5 次进程就够 —— 不允许按笔记逐条跑 zk。
  *
  * 「陈旧」为什么自己算：zk 的 `stale` 不是内置过滤器，`zk list stale` 只在你自己的
  * `[filter]` 里定义过才存在（Z3 只说了位置参数语法，没说它是内置的）。所以阈值由插件定。
  *
  * 孤儿与无标签**不含日记**：日记按天写，天然没有入链、也没有标签，
- * 全报出来只会把真正的问题（断链、缺反链）淹掉。断链与缺反链仍包含日记 —— 那里出错是真问题。
+ * 全报出来只会把真正的问题（断链、单向链接）淹掉。断链仍包含日记 —— 那里出错是真问题。
+ *
+ * 「单向链接」为什么自己算：zk 的 `--missing-backlink` 是「至少有一条单向链接」（S 链 X、X 不回链），
+ * 而日记天然是一串出边 —— 日记提过的每篇笔记都会常年挂在桶里。那不是「笔记没接上」，是正常的引用方向。
+ * 所以改成在 `zk graph` 的边上算，只报**非日记来源**的单向链接。
  *
  * 解析失败单列一桶：frontmatter 写坏（典型是 `tags: [#你好世界]`，`#` 不是 tag 前缀）时
  * zk 只在 stderr 吭一声就跳过那篇，它于是从索引里消失 —— 搜不到，也不进上面任何一个桶。
  * 不单独报出来，用户只会看到「邻居突然孤儿、突然断链」，永远查不到根因。
  *
  * 记忆层（MEMORY.md / USER.md）的 `[[来源]]` 单列一项：它们不进索引，supersede 也不会重写，
- * 旧结论搬进 archive/ 之后链接会静默停在旧路径 —— 断链、孤儿、缺反链都统计不到。
+ * 旧结论搬进 archive/ 之后链接会静默停在旧路径 —— 断链、孤儿、单向链接都统计不到。
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
-import type { NoteRecord } from './zk.ts'
-import { allNotes, localDate, MAX_SCAN, notesWithFlag, parseErrorWarnings } from './zk.ts'
+import type { GraphEdge, NoteRecord } from './zk.ts'
+import { allNotes, graphEdges, localDate, MAX_SCAN, notesWithFlag, parseErrorWarnings } from './zk.ts'
 import { parseFrontmatter } from './frontmatter.ts'
 
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
@@ -107,7 +111,8 @@ export interface LintResult {
   brokenLinks: LintBucket
   stale: LintStaleBucket
   tagless: LintBucket
-  missingBacklink: LintBucket
+  /** S 链 X、X 不回链，且 S 不是日记（日记天然是出边，不算没接上） */
+  oneWayLinks: LintBucket
   duplicateTitles: LintDuplicateBucket
   /** 记忆层体检：MEMORY.md / USER.md 里的 `[[来源]]` 是否还指向活笔记 */
   memoryLinks: LintMemoryBucket
@@ -281,6 +286,30 @@ export function formatMemoryLinks(bucket: LintMemoryBucket): string | null {
   return `${bucket.total === 0 ? '✓' : '✗'} 记忆链接：${parts.join('｜')}`
 }
 
+/**
+ * 单向链接的目标：存在 S→X，但 X 没有回链 S（zk `--missing-backlink` 的原义）。
+ * 不用 zk 的过滤器，因为它没法排除「来源是日记」的边 —— 日记按天写、天然是一串出边，
+ * 要求每篇被提过的笔记回链日记只会让这个桶常年清零不了，跟「笔记没接上」是两回事。
+ * 返回绝对路径（与 `bucket` 的 `byAbs` 同口径）；指向索引外笔记的边直接丢掉。
+ */
+export function oneWayLinks(
+  edges: GraphEdge[],
+  notes: NoteRecord[],
+  skipSource: (path: string) => boolean,
+): string[] {
+  const linked = new Set(edges.map((e) => e.sourcePath + '\u0000' + e.targetPath))
+  const byPath = new Map(notes.map((n) => [n.path, n]))
+  const out = new Set<string>()
+  for (const edge of edges) {
+    if (edge.sourcePath === edge.targetPath) continue
+    if (skipSource(edge.sourcePath)) continue
+    if (linked.has(edge.targetPath + '\u0000' + edge.sourcePath)) continue
+    const target = byPath.get(edge.targetPath)
+    if (target) out.add(path.resolve(target.absPath || target.path))
+  }
+  return [...out]
+}
+
 export async function lintNotebook(
   cfg: Config,
   opts: LintOptions = {},
@@ -294,15 +323,17 @@ export async function lintNotebook(
   // 一次进程 ~50ms，5 次照样远低于「200 条 3 秒」的验收线。
   // warning 只从第一次 list 收：每篇坏笔记每次进程都会再报一遍，收五遍还得去重。
   const warnings: string[] = []
-  const notes = await allNotes(cfg, { warnings }, signal)
-  const orphanAbs = await notesWithFlag(cfg, '--orphan', signal)
-  const brokenAbs = await notesWithFlag(cfg, '--broken-links', signal)
-  const missingAbs = await notesWithFlag(cfg, '--missing-backlink', signal)
-  const taglessAbs = await notesWithFlag(cfg, '--tagless', signal)
-
   const dailyAbs = path.resolve(cfg.notebook, cfg.dailyDir)
   const isDaily = (abs: string): boolean =>
     path.resolve(abs) === dailyAbs || path.resolve(abs).startsWith(dailyAbs + path.sep)
+
+  const notes = await allNotes(cfg, { warnings }, signal)
+  const orphanAbs = await notesWithFlag(cfg, '--orphan', signal)
+  const brokenAbs = await notesWithFlag(cfg, '--broken-links', signal)
+  const taglessAbs = await notesWithFlag(cfg, '--tagless', signal)
+  const edges = await graphEdges(cfg, signal)
+  // 图里的路径是笔记本相对：先拼回绝对路径再判断是不是日记（isDaily 收的是绝对路径）
+  const oneWayAbs = oneWayLinks(edges, notes, (p) => isDaily(path.resolve(cfg.notebook, p)))
 
   const byAbs = new Map(notes.map((n) => [path.resolve(n.absPath || n.path), n]))
   const bucket = (absPaths: string[], max = MAX_ITEMS): LintBucket => {
@@ -340,7 +371,7 @@ export async function lintNotebook(
     brokenLinks: bucket(brokenAbs),
     stale,
     tagless: bucket(taglessAbs.filter((abs) => !isDaily(abs))),
-    missingBacklink: bucket(missingAbs),
+    oneWayLinks: bucket(oneWayAbs),
     duplicateTitles: duplicateTitles(notes),
     memoryLinks: memoryLinkIssues(cfg, notes),
   }

@@ -839,7 +839,7 @@ describe('M3: 巡检与做梦', () => {
   const note = (title: string, dirName: string, body: string) =>
     zk.createNote(m3, { title, dir: dirName, content: body })
 
-  it('lint：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧 / 重名各自命中', async () => {
+  it('lint：断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名各自命中', async () => {
     await notebookLib.ensureNotebook(m3)
     const orphan = await note('孤岛概念', 'notes/concepts', '没人链我，我也没标签。')
     const cited = await note('被引用概念', 'notes/concepts', '有入链的正文 #cited')
@@ -849,18 +849,23 @@ describe('M3: 巡检与做梦', () => {
     const dupA = await note('同名标题', 'notes/concepts', '甲 #dup')
     const dupB = await note('同名标题', 'notes/patterns', '乙 #dup')
     const stale = await note('陈旧概念', 'notes/concepts', '很久没动 #stale')
+    const dailyCited = await note('日记提过概念', 'notes/concepts', '只在日记里出现 #cited')
     const old = new Date(Date.now() - 120 * 86_400_000)
     fs.utimesSync(stale.absPath, old, old)
     const daily = await zk.ensureDailyNote(m3)
+    // 日记 → 笔记是正常引用方向：被日记提过、但没回链日记，不该算「没接上」
+    await zk.linkNotes(m3, daily.path, dailyCited.path)
     await zk.indexNotebook(m3)
 
     const lint = await lintLib.lintNotebook(m3, { staleDays: 90 })
-    expect(lint.notes).toBe(8)
+    expect(lint.notes).toBe(9)
     expect(lint.truncated).toBe(false)
     expect(lint.orphans.items.map((i) => i.path)).toContain(orphan.path)
     expect(lint.brokenLinks.items.map((i) => i.path)).toEqual([broken.path])
     expect(lint.tagless.items.map((i) => i.path)).toContain(orphan.path)
-    expect(lint.missingBacklink.items.map((i) => i.path)).toContain(cited.path)
+    // 笔记 → 笔记的单向链接照报；日记来源的不报（否则日记提过的每篇都常年挂在这里）
+    expect(lint.oneWayLinks.items.map((i) => i.path)).toContain(cited.path)
+    expect(lint.oneWayLinks.items.map((i) => i.path)).not.toContain(dailyCited.path)
     expect(lint.stale.items.map((i) => i.path)).toEqual([stale.path])
     expect(lint.stale.items[0].modified).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     expect(lint.duplicateTitles.total).toBe(1)

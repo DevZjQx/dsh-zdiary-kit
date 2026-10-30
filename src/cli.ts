@@ -32,7 +32,7 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit daily [--entry 一段] [--date yesterday]
   zk-kit append <路径> --text 一段 [--heading 标题]
   zk-kit link <来源路径> <目标路径或标题>
-  zk-kit lint [--stale-days 90]       体检：断链 / 孤儿 / 无标签 / 缺反链 / 陈旧 / 重名（只读）
+  zk-kit lint [--stale-days 90]       体检：断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名（只读）
   zk-kit dream [--days 7]             晋升材料：窗口新增 / daily 未完成 / 被引最多（只读）
   zk-kit query [-- <zk list 参数>]     透传 zk list（--notebook-dir / --format / -x 会被替换掉）
   zk-kit index                        重建索引
@@ -153,7 +153,7 @@ function lintReport(r: LintResult): string {
   lines.push(row('断链', r.brokenLinks.total, r.brokenLinks.items))
   lines.push(row('孤儿', r.orphans.total, r.orphans.items))
   lines.push(row('无标签', r.tagless.total, r.tagless.items))
-  lines.push(row('缺反链', r.missingBacklink.total, r.missingBacklink.items))
+  lines.push(row('单向链接', r.oneWayLinks.total, r.oneWayLinks.items))
   lines.push(r.stale.total === 0
     ? '✓ 陈旧：0'
     : `✗ 陈旧：${r.stale.total} 篇 — ` + r.stale.items.slice(0, 5).map((s) => `${s.path}（${s.modified}）`).join('、'))
