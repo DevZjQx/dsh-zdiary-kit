@@ -85,8 +85,11 @@ window.__ModuleLoader__?.load({
             const [out, setOut] = useState('');
             const [nbName, setNbName] = useState('');
             const [nbPath, setNbPath] = useState('');
+            const [stamp, setStamp] = useState('');
             const applySnap = useCallback((d) => {
                 setSnap(d);
+                if (typeof d.stamp === 'string' && d.stamp)
+                    setStamp(d.stamp);
                 if (d.config) {
                     setCfg(d.config);
                     setTagsText((d.config.defaultTags || []).join(', '));
@@ -138,6 +141,7 @@ window.__ModuleLoader__?.load({
                             ...cfg,
                             defaultTags: tagsText.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
                         },
+                        stamp,
                     };
                     const r = await fetch(`${API}/settings`, {
                         method: 'POST',
@@ -145,6 +149,13 @@ window.__ModuleLoader__?.load({
                         body: JSON.stringify(body),
                     });
                     const d = await r.json();
+                    // 409：别的会话 / CLI 在页面打开期间改过配置。别拿旧表单覆盖（那会把 active 改回去）：
+                    // 直接把最新配置铺回来，让人确认后再保存一次。
+                    if (r.status === 409) {
+                        applySnap(d);
+                        setErr(d.error || '配置已被其他会话修改，已刷新为最新值 —— 请确认后重新保存');
+                        return;
+                    }
                     if (!d.ok)
                         throw new Error(d.error || '保存失败');
                     applySnap(d);
@@ -156,7 +167,7 @@ window.__ModuleLoader__?.load({
                 finally {
                     setBusy('');
                 }
-            }, [cfg, tagsText, saved, applySnap]);
+            }, [cfg, tagsText, saved, stamp, applySnap]);
             const action = useCallback(async (name, path) => {
                 setBusy(name);
                 setErr('');
@@ -303,7 +314,9 @@ window.__ModuleLoader__?.load({
             return h('div', { className: 'zdk' }, h('h3', { className: 'zdk-title' }, '知识库（zk）'), h('p', { className: 'zdk-intro' }, '把你的 zk 笔记本接进 DSH：agent 用 zk_* 工具搜索、读写笔记与日记，双链交给 zk 索引。' +
                 '没装 zk 就让插件装一个 —— 第一次调用工具时会自动建好笔记本，不需要先来这里点任何按钮。'), statusLine ? h('div', { className: 'zdk-hint' }, '📚 ' + statusLine) : null, memoryLine ? h('div', { className: 'zdk-hint' }, '🧠 ' + memoryLine) : null, structureWarn
                 ? h('div', { className: 'zdk-err' }, '⚠️ ' + structureWarn + ' —— 点底部「' + initLabel + '」')
-                : null, h('div', null, h('div', { className: 'zdk-group' }, '笔记本 · 每个笔记本自己的路径与结构'), h('div', { className: 'zdk-row' }, h('div', null, h('div', { className: 'zdk-label' }, '当前笔记本'), h('div', { className: 'zdk-hint' }, 'agent 的 zk_* 工具只用这一个。路径与结构是每个笔记本自己的；笔记/日记子目录、归档目录、注入预算是全局的。\n' +
+                : null, h('div', null, h('div', { className: 'zdk-group' }, '笔记本 · 每个笔记本自己的路径与结构'), h('div', { className: 'zdk-row' }, h('div', null, h('div', { className: 'zdk-label' }, '当前笔记本'), h('div', { className: 'zdk-hint' }, '这里是**新会话的默认值**：每个会话第一次用 zk_* 时会把当时的值固定下来，之后各走各的。' +
+                '改这里不会带着已经跑着的会话走 —— 要让某个会话跟过去，在那个会话里说「切到 X 库」（zk_use）。\n' +
+                '路径与结构是每个笔记本自己的；笔记/日记子目录、归档目录、注入预算是全局的。\n' +
                 '切换保存后会自动建好目标笔记本（幂等，不动已有笔记）。\n' +
                 '空 / 相对路径按「会话工作区」解析：agent 在哪个会话调用，就落在那个工作区。' +
                 (snap?.workspace ? '\n本页工作区（插件进程）：' + snap.workspace : '') +

@@ -1,5 +1,5 @@
 /**
- * zk 工具（feature 的公共入口）：12 个模型可调用的工具，全部经 lib/zk.ts。
+ * zk 工具（feature 的公共入口）：13 个模型可调用的工具，全部经 lib/zk.ts。
  *
  * 设计要点：
  *   · 除 zk_context（只读 meta 文件，不依赖 zk）外，每个工具进来先 ensureNotebook —— 第一次调用就自动建好笔记本，用户不用先点设置页；
@@ -7,16 +7,19 @@
  *   · output.schema 只用 DSH 支持的子集（type/properties/required/items/enum + 注释）；
  *   · render 是纯函数：模型看到人话，程序拿到结构化值。
  */
+import fs from 'node:fs'
+import path from 'node:path'
 import type { Config } from '../../config/store.ts'
-import { config } from '../../config/store.ts'
+import { config, selectNotebook } from '../../config/store.ts'
+import { configFor, pinSession, sessionNotebook, sessionState } from '../../config/session.ts'
 import type { ToolsLike, ToolDefinitionLike, ContentBlockLike, ToolRunContextLike } from '../../lib/dsh.ts'
-import { processWorkspace } from '../../config/paths.ts'
+import { defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from '../../config/paths.ts'
 import { S, validateArgs } from '../../lib/tool.ts'
 import type { SchemaNode } from '../../lib/tool.ts'
 import { ensureNotebook } from '../../lib/notebook.ts'
 import {
   searchNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily,
-  linkNotes, withTags, notebookStats, supersedeNote, localDate as dateOnly, ZkError,
+  linkNotes, withTags, notebookStats, supersedeNote, hasNotebook, localDate as dateOnly, ZkError,
 } from '../../lib/zk.ts'
 import type { NoteRecord, NoteDoc, SupersedeResult } from '../../lib/zk.ts'
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
@@ -101,6 +104,34 @@ function fail(err: unknown): never {
   throw err instanceof Error ? err : new Error(String(err))
 }
 
+/** 别的笔记本里有同一条相对路径吗 —— 路径找不到时给一句「这篇在 X 库里」 */
+function elsewhere(cfg: Config, workspace: string, rel: string): string[] {
+  const clean = String(rel ?? '').trim().replace(/\\/g, '/')
+  if (!clean || path.isAbsolute(clean)) return []
+  const hits: string[] = []
+  for (const [name, entry] of Object.entries(cfg.notebooks)) {
+    if (name === cfg.active) continue
+    const raw = String(entry.path ?? '').trim()
+    const base = raw ? resolveInWorkspace(expandHome(raw), workspace) : defaultNotebook(workspace)
+    const abs = path.resolve(base, clean)
+    // 只认同一个库内的路径：rel 里带 ../ 时不许拿它去探库外
+    if (abs !== base && !abs.startsWith(base + path.sep)) continue
+    try {
+      if (fs.existsSync(abs)) hits.push(name)
+    } catch { /* 路径不可读：当没有 */ }
+  }
+  return hits
+}
+
+/** 路径找不到时补一句跨库线索；别的错误原样返回 */
+function withElsewhere(err: unknown, cfg: Config, workspace: string, rel: string): unknown {
+  if (!(err instanceof ZkError)) return err
+  const hits = elsewhere(cfg, workspace, rel)
+  if (!hits.length) return err
+  const extra = `同名笔记在笔记本「${hits.join('」「')}」里，当前会话用的是「${cfg.active}」`
+  return new ZkError(err.message, err.hint ? `${err.hint}；${extra}` : extra)
+}
+
 
 function tagSuffix(record: { tags: string[] }): string {
   return record.tags.length ? ' · ' + record.tags.map((t) => '#' + t).join(' ') : ''
@@ -113,10 +144,11 @@ function noteLine(n: NoteRecord, index: number): string {
   return `${head}\n   ${meta}${tagSuffix(n)}${lead}`
 }
 
-/** 一次工具调用的执行环境：取消信号 + 这次调用该用的工作区（会话 cwd，缺省进程 cwd） */
+/** 一次工具调用的执行环境：取消信号 + 工作区 + 会话 id（会话级笔记本固定用） */
 interface ToolRunEnv {
   signal?: AbortSignal
   workspace: string
+  sessionId?: string
 }
 
 /** 从宿主上下文取工作区：由 app 注入（会话 cwd → 进程工作区兜底），测试可替换 */
@@ -144,6 +176,7 @@ function def(spec: ToolSpec, workspaceOf: WorkspaceOf): ToolDefinitionLike {
         return await spec.run((args ?? {}) as Record<string, unknown>, {
           signal: exec?.signal,
           workspace: workspaceOf(exec),
+          sessionId: exec?.agent?.id,
         })
       } catch (err) {
         return fail(err)
@@ -191,7 +224,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }, ['notebook', 'count', 'notes']),
       },
       async run(args, env) {
-        const cfg: Config = config(env.workspace)
+        const cfg: Config = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg)
         const notes = await searchNotes(cfg, {
           query: args.query ? String(args.query) : undefined,
@@ -261,7 +294,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }, ['notebook', 'count', 'notes']),
       },
       async run(args, env) {
-        const cfg: Config = config(env.workspace)
+        const cfg: Config = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         const includeArchived = args.include_archived === true
         const notes = await searchNotes(cfg, {
@@ -338,9 +371,14 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const p = args.path ? String(args.path) : ''
         const q = args.query ? String(args.query) : ''
         if (!p && !q) throw new ZkError('path 和 query 至少给一个')
-        const cfg = config(env.workspace)
+        const cfg = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg)
-        const doc: NoteDoc | null = p ? await readNote(cfg, p, env.signal) : await findNote(cfg, q, env.signal)
+        let doc: NoteDoc | null
+        try {
+          doc = p ? await readNote(cfg, p, env.signal) : await findNote(cfg, q, env.signal)
+        } catch (err) {
+          throw withElsewhere(err, cfg, env.workspace, p)
+        }
         if (!doc) throw new ZkError(`没找到匹配的笔记：${q}`, '换一个搜索词，或用 zk_search 先看看有哪些笔记')
         const limit = Math.min(200_000, Math.max(1000, Math.trunc(Number(args.maxChars ?? cfg.maxReadChars))))
         const truncated = doc.content.length > limit
@@ -406,7 +444,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }, ['notebook', 'path', 'title', 'tags', 'links', 'archived', 'warnings']),
       },
       async run(args, env) {
-        const cfg = config(env.workspace)
+        const cfg = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         const tags = [...new Set([...(cfg.defaultTags ?? []), ...(Array.isArray(args.tags) ? args.tags.map(String) : [])])]
         const created = await createNote(cfg, {
@@ -474,7 +512,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }, ['notebook', 'path', 'created', 'appended']),
       },
       async run(args, env) {
-        const cfg = config(env.workspace)
+        const cfg = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         const daily = await ensureDailyNote(cfg, { date: args.date ? String(args.date) : undefined }, env.signal)
         const appended = Boolean(args.entry && String(args.entry).trim())
@@ -512,11 +550,16 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }, ['notebook', 'path', 'appendedChars', 'bytes']),
       },
       async run(args, env) {
-        const cfg = config(env.workspace)
+        const cfg = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg)
-        const r = appendToNote(cfg, String(args.path), String(args.text), {
-          heading: args.heading ? String(args.heading) : undefined,
-        })
+        let r: ReturnType<typeof appendToNote>
+        try {
+          r = appendToNote(cfg, String(args.path), String(args.text), {
+            heading: args.heading ? String(args.heading) : undefined,
+          })
+        } catch (err) {
+          throw withElsewhere(err, cfg, env.workspace, String(args.path))
+        }
         return { notebook: cfg.notebook, path: r.path, appendedChars: r.appendedChars, bytes: r.bytes }
       },
       render(_args, value) {
@@ -549,7 +592,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }, ['notebook', 'from', 'to', 'link', 'added']),
       },
       async run(args, env) {
-        const cfg = config(env.workspace)
+        const cfg = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         const r = await linkNotes(cfg, String(args.from), String(args.to), env.signal)
         return { notebook: cfg.notebook, from: r.from, to: r.to, link: r.link, added: r.added }
@@ -595,7 +638,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }, ['notebook', 'path', 'archivePath', 'supersededBy', 'reason', 'dryRun', 'performed', 'alreadySuperseded', 'rewrittenLinks', 'missingLinks']),
       },
       async run(args, env) {
-        const cfg = config(env.workspace)
+        const cfg = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         const r = await supersedeNote(cfg, {
           path: String(args.path),
@@ -658,6 +701,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           budget: { type: 'number' },
           truncatedWords: { type: 'number' },
           tocWords: { type: 'number' },
+          notebook: { type: 'string' },
+          defaultNotebook: { type: 'string' },
+          pinned: { type: 'string' },
           files: {
             type: 'array',
             items: objSchema({
@@ -667,16 +713,26 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               originalWords: { type: 'number' },
             }, ['name', 'present', 'words', 'originalWords']),
           },
-        }, ['text', 'words', 'budget', 'truncatedWords', 'tocWords', 'files']),
+        }, ['text', 'words', 'budget', 'truncatedWords', 'tocWords', 'notebook', 'defaultNotebook', 'pinned', 'files']),
       },
       async run(_args, env) {
         // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
-        return buildMemoryPayload(config(env.workspace))
+        const state = sessionState(env.workspace, env.sessionId)
+        return {
+          ...buildMemoryPayload(configFor(env.workspace, env.sessionId)),
+          notebook: state.active,
+          defaultNotebook: state.defaultName,
+          pinned: state.diverged ? state.pinned : '',
+        }
       },
       render(_args, value) {
-        const v = value as MemoryPayload
-        if (!v.text) return text(`知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的）。`)
-        return text(v.text)
+        const v = value as MemoryPayload & { defaultNotebook?: string; pinned?: string }
+        // 别的会话切过全局默认、而本会话还钉在原库时，先把这件事说破
+        const drift = v.pinned && v.pinned !== v.defaultNotebook
+          ? `本会话固定在「${v.pinned}」；全局默认已改为「${v.defaultNotebook}」—— 要跟随用 zk_use ${v.defaultNotebook}\n\n`
+          : ''
+        if (!v.text) return text(drift + `知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的）。`)
+        return text(drift + v.text)
       },
     }),
 
@@ -714,7 +770,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'memoryLinks']),
       },
       async run(args, env) {
-        const cfg = config(env.workspace)
+        const cfg = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         return lintNotebook(cfg, {
           staleDays: args.stale_days === undefined ? undefined : Number(args.stale_days),
@@ -821,7 +877,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }, ['notebook', 'windowDays', 'since', 'truncated', 'counts', 'newNotes', 'rejected', 'topCited', 'dailyLooseEnds']),
       },
       async run(args, env) {
-        const cfg = config(env.workspace)
+        const cfg = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         return dreamNotebook(cfg, { days: args.days === undefined ? undefined : Number(args.days) }, env.signal)
       },
@@ -871,28 +927,138 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       output: {
         schema: objSchema({
           notebook: { type: 'string' },
+          defaultNotebook: { type: 'string' },
+          pinned: { type: 'string' },
           notes: { type: 'number' },
           tags: { type: 'number' },
           brokenLinks: { type: 'number' },
           orphans: { type: 'number' },
           archived: { type: 'number' },
           superseded: { type: 'number' },
-        }, ['notebook', 'notes', 'tags', 'brokenLinks', 'orphans', 'archived', 'superseded']),
+        }, ['notebook', 'defaultNotebook', 'pinned', 'notes', 'tags', 'brokenLinks', 'orphans', 'archived', 'superseded']),
       },
       async run(_args, env) {
-        const cfg = config(env.workspace)
+        const cfg = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         const stats = await notebookStats(cfg, env.signal)
-        return { notebook: cfg.notebook, ...stats }
+        const state = sessionState(env.workspace, env.sessionId)
+        return {
+          notebook: cfg.notebook,
+          defaultNotebook: state.defaultName,
+          pinned: state.diverged ? state.pinned : '',
+          ...stats,
+        }
       },
       render(_args, value) {
         const v = value as {
-          notebook: string; notes: number; tags: number; brokenLinks: number; orphans: number; archived: number; superseded: number
+          notebook: string; defaultNotebook?: string; pinned?: string
+          notes: number; tags: number; brokenLinks: number; orphans: number; archived: number; superseded: number
         }
+        const drift = v.pinned && v.pinned !== v.defaultNotebook
+          ? `\n本会话固定在「${v.pinned}」；全局默认是「${v.defaultNotebook}」（要跟随用 zk_use ${v.defaultNotebook}）`
+          : ''
         return text(
-          `笔记本 ${v.notebook}\n` +
+          `笔记本 ${v.notebook}${drift}\n` +
           `笔记 ${v.notes} 篇 · 标签 ${v.tags} 个 · 断链 ${v.brokenLinks} 篇 · 孤立 ${v.orphans} 篇 · 归档 ${v.archived} 篇（superseded ${v.superseded}）`,
         )
+      },
+    }),
+
+    t({
+      name: 'zk_use',
+      description:
+        '切换「本会话」使用的笔记本：只影响当前会话，不改全局默认，也不动别的会话。' +
+        '设置页 / zk-kit notebooks use 改的是**新会话的默认值** —— 已经跑着的会话要跟过去，用这个工具。' +
+        '不带参数时列出所有笔记本，并说明本会话固定在哪一本。',
+      parameters: {
+        type: 'object',
+        properties: {
+          notebook: S.str('要切换到的笔记本名；省略 = 只看不改'),
+        },
+        additionalProperties: false,
+      },
+      output: {
+        schema: objSchema({
+          changed: { type: 'boolean' },
+          notebook: { type: 'string' },
+          path: { type: 'string' },
+          pinned: { type: 'string' },
+          defaultNotebook: { type: 'string' },
+          notebooks: { type: 'array', items: { type: 'string' } },
+          initialized: { type: 'boolean' },
+          warn: { type: 'string' },
+        }, ['changed', 'notebook', 'path', 'pinned', 'defaultNotebook', 'notebooks', 'initialized', 'warn']),
+      },
+      async run(args, env) {
+        const current = configFor(env.workspace, env.sessionId)
+        const defaultName = config(env.workspace).active
+        const names = Object.keys(current.notebooks)
+        const wanted = String(args.notebook ?? '').trim()
+        if (!wanted) {
+          return {
+            changed: false,
+            notebook: current.active,
+            path: current.notebook,
+            pinned: sessionNotebook(env.sessionId) ?? '',
+            defaultNotebook: defaultName,
+            notebooks: names,
+            initialized: false,
+            warn: '',
+          }
+        }
+        if (!env.sessionId) {
+          throw new ZkError(
+            '拿不到会话 id，无法只切本会话',
+            '改全局默认用 zk-kit notebooks use <名>；它只影响之后新建的会话',
+          )
+        }
+        if (!(wanted in current.notebooks)) {
+          throw new ZkError(
+            `没有这个笔记本：${wanted}`,
+            `现有：${names.join('、')}；新目录先在设置页或 zk-kit notebooks add 里加进来`,
+          )
+        }
+
+        pinSession(env.sessionId, wanted, env.workspace)
+        const target = selectNotebook(current, wanted, env.workspace)
+        let initialized = false
+        let warn = ''
+        // 和设置页切库一致：目标还不是 zk 笔记本就顺手建好；失败只告警，切换本身已生效
+        if (!hasNotebook(target)) {
+          try {
+            await ensureNotebook(target, env.signal)
+            initialized = true
+          } catch (err) {
+            warn = '已切换，但自动初始化失败：' + (err instanceof Error ? err.message : String(err)) +
+              ' —— 在设置页点「初始化 / 补建」重试'
+          }
+        }
+        return {
+          changed: wanted !== current.active,
+          notebook: wanted,
+          path: target.notebook,
+          pinned: wanted,
+          defaultNotebook: defaultName,
+          notebooks: names,
+          initialized,
+          warn,
+        }
+      },
+      render(_args, value) {
+        const v = value as {
+          changed: boolean; notebook: string; path: string; pinned: string
+          defaultNotebook: string; notebooks: string[]; initialized: boolean; warn: string
+        }
+        const lines: string[] = []
+        if (v.changed) lines.push(`✓ 本会话已切到「${v.notebook}」${v.initialized ? '（已初始化）' : ''}`)
+        else lines.push(`本会话笔记本：${v.notebook}`)
+        if (v.path) lines.push('路径：' + v.path)
+        lines.push('可用的：' + v.notebooks.join('、'))
+        if (v.pinned && v.defaultNotebook && v.pinned !== v.defaultNotebook) {
+          lines.push(`全局默认是「${v.defaultNotebook}」；本会话固定在「${v.pinned}」`)
+        }
+        if (v.warn) lines.push('⚠️ ' + v.warn)
+        return text(lines.join('\n'))
       },
     }),
   ]

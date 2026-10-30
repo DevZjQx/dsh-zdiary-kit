@@ -18,6 +18,10 @@ export const DSH_HOME = process.env.DSH_HOME
 /** 插件工作目录（配置 / zk 二进制 / 缓存） */
 export const WORK_DIR = path.join(DSH_HOME, 'zdiary');
 export const CFG_FILE = path.join(WORK_DIR, 'zdiary.config.json');
+/** 写配置时的跨进程锁（读不加锁：writeJson 是临时文件 + rename，读到的要么旧要么新） */
+export const CFG_LOCK = path.join(WORK_DIR, 'zdiary.config.lock');
+/** 会话级笔记本选择：一个会话一份小文件，彼此不会覆盖 */
+export const SESSION_DIR = path.join(WORK_DIR, 'sessions');
 /** 插件托管的 zk 二进制（resolveZk 找不到系统 zk 时用这里） */
 export const BIN_DIR = path.join(WORK_DIR, 'bin');
 export const CACHE_DIR = path.join(WORK_DIR, 'cache');

@@ -12,7 +12,8 @@
   与 `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
 - `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册 `zdiary:memory` 段（order 5200，`interpolate: false` —— 记忆是文件原文，
   `{{…}}` 一律原样保留：插值会让未注册变量在装配时抛错、`{{model}}` 这类被静默改写），`text` 是函数，每个 step 重新读文件；
-  装配上下文带 `agent.id` 时按**会话工作区**解析笔记本（和 `zk_*` 工具同口径），裸装配才退回进程工作区
+  装配上下文带 `agent.id` 时按**会话工作区 + 该会话固定的笔记本**解析（`config/session`，和 `zk_*` 工具同口径）；
+  别的会话切了默认值不会把已开的会话换库，裸装配才退回进程工作区 + 全局默认
 - `zk_context` 工具：同一份 payload，给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用
 - 设置页「记忆」：注入预算；「目录与 group」：归档目录。快照里带 `memory.words/budget/truncatedWords` 状态行
 

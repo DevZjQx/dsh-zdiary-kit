@@ -20,6 +20,7 @@ const zkBin = process.env.ZK_BIN ?? 'zk'
 const notebook = path.join(home, 'notebook')
 
 const store = await import('../src/config/store.ts')
+const session = await import('../src/config/session.ts')
 const zk = await import('../src/lib/zk.ts')
 const memory = await import('../src/lib/memory.ts')
 const notebookLib = await import('../src/lib/notebook.ts')
@@ -171,6 +172,23 @@ describe('config', () => {
     }
   })
 
+  test('writeConfig：stamp 不匹配就冲突，匹配才落盘', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const stamp = store.configStamp()
+    try {
+      expect(() => store.writeConfig({ notesDir: 'wrong' }, undefined, { expectStamp: 'stale' }))
+        .toThrow(store.ConfigConflictError)
+      expect(store.config().notesDir).not.toBe('wrong')
+
+      const next = store.writeConfig({ notesDir: 'notes2' }, undefined, { expectStamp: stamp })
+      expect(next.notesDir).toBe('notes2')
+      expect(store.configStamp()).not.toBe(stamp)
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+    }
+  })
+
   test('老配置缺 notebooks：读一次就把 notebooks / active 写回', async () => {
     const paths = await import('../src/config/paths.ts')
     const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
@@ -199,6 +217,38 @@ describe('config', () => {
     expect(onDisk.notebooks).toEqual({ default: { path: notebook, structure: 'flat' } })
     expect('structure' in onDisk).toBe(false)
     expect(onDisk.memoryBudgetWords).toBe(500)
+  })
+})
+
+describe('会话固定笔记本', () => {
+  test('切全局默认不带动已用过的会话；新会话跟默认；pin 落盘', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const workDir = path.join(home, 'work-vault')
+    const one = { default: { path: notebook, structure: 'flat' as const } }
+    try {
+      store.writeConfig({ notebooks: { ...one, work: { path: workDir, structure: 'flat' } }, active: 'default' })
+
+      // 第一次调用：快照当时的默认值
+      expect(session.configFor(home, 'sess-a').active).toBe('default')
+
+      // 别处切库：已用的会话不动，新会话跟默认
+      store.writeConfig({ active: 'work' })
+      expect(session.configFor(home, 'sess-a').active).toBe('default')
+      expect(session.configFor(home, 'sess-b').active).toBe('work')
+      expect(store.config().active).toBe('work')
+
+      // 每会话一份，互不覆盖；id 也落盘，方便排查
+      const pins = fs.readdirSync(paths.SESSION_DIR)
+        .map((f) => JSON.parse(fs.readFileSync(path.join(paths.SESSION_DIR, f), 'utf8')) as { id: string; notebook: string })
+      expect(pins.find((p) => p.id === 'sess-a')?.notebook).toBe('default')
+      expect(pins.find((p) => p.id === 'sess-b')?.notebook).toBe('work')
+
+      // pin 指向的笔记本被删掉：回到默认值，不卡在空配置上
+      store.writeConfig({ notebooks: one, active: 'default' })
+      expect(session.configFor(home, 'sess-b').active).toBe('default')
+    } finally {
+      store.writeConfig({ notebooks: one, active: 'default' })
+    }
   })
 })
 
@@ -1100,11 +1150,11 @@ describe('daily', () => {
 })
 
 describe('tools', () => {
-  it('12 个工具，参数校验拒绝坏输入', () => {
+  it('13 个工具，参数校验拒绝坏输入', () => {
     const defs = toolsFeature.buildTools()
     expect(defs.map((d) => d.name)).toEqual([
       'zk_search', 'zk_query', 'zk_read', 'zk_new', 'zk_daily', 'zk_append', 'zk_link', 'zk_supersede',
-      'zk_context', 'zk_lint', 'zk_dream', 'zk_stats',
+      'zk_context', 'zk_lint', 'zk_dream', 'zk_stats', 'zk_use',
     ])
     const zkNew = defs.find((d) => d.name === 'zk_new')!
     expect(toolLib.validateArgs(zkNew.parameters, { body: 'x' }).some((i) => i.includes('title'))).toBe(true)
@@ -1113,6 +1163,20 @@ describe('tools', () => {
     expect(toolLib.validateArgs(query.parameters, { type: 'nonsense' }).length).toBe(1)
     const supersede = defs.find((d) => d.name === 'zk_supersede')!
     expect(toolLib.validateArgs(supersede.parameters, { by: 'x' }).some((i) => i.includes('path'))).toBe(true)
+  })
+
+  it('zk_use：不带参数只列；没有会话 id 时拒绝切换', async () => {
+    const defs = toolsFeature.buildTools()
+    const use = defs.find((d) => d.name === 'zk_use')!
+    const listed = await use.execute({}, { signal: AbortSignal.timeout(10_000) }) as Record<string, unknown>
+    expect(listed.changed).toBe(false)
+    expect(String(listed.notebook)).toBe(store.config().active)
+    expect(Array.isArray(listed.notebooks)).toBe(true)
+    // 裸调用没有 agent.id：切不了会话，但要说清楚该用什么替代，而不是静默失败
+    await expect(use.execute({ notebook: 'default' }, { signal: AbortSignal.timeout(10_000) }))
+      .rejects.toThrow(/会话 id/)
+    await expect(use.execute({ notebook: '没有这本' }, { signal: AbortSignal.timeout(10_000), agent: { id: 'sess-use' } }))
+      .rejects.toThrow(/没有这个笔记本/)
   })
 
   it('注册后能真的执行（zk_new → zk_search → zk_read → zk_stats）', async () => {
@@ -1427,7 +1491,7 @@ describe('cli: zk-kit notebooks', () => {
       // 切换即就绪：use 顺手把目标笔记本建好，不用再跑 init
       const used = run('notebooks', 'use', 'work')
       expect(used.status).toBe(0)
-      expect((used.stdout ?? '')).toContain('当前笔记本 → work')
+      expect((used.stdout ?? '')).toContain('默认笔记本 → work')
       expect((used.stdout ?? '')).toContain('已自动建好')
       expect(store.config().notebook).toBe(work)
       expect(fs.existsSync(path.join(work, '.zk', 'config.toml'))).toBe(true)

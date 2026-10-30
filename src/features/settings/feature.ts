@@ -14,7 +14,7 @@ import path from 'node:path'
 import type { IncomingMessage } from 'node:http'
 import { json, readBody } from '../../lib/http.ts'
 import { CFG_FILE, processWorkspace } from '../../config/paths.ts'
-import { config, writeConfig } from '../../config/store.ts'
+import { config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.ts'
 import type { Config } from '../../config/store.ts'
 import { ensureNotebook, structureStatus } from '../../lib/notebook.ts'
 import type { StructureStatus } from '../../lib/notebook.ts'
@@ -95,7 +95,7 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
   route(`${P}/settings`, async (req, res) => {
     if (req.method === 'GET') {
       const cfg = config()
-      json(res, 200, { ok: true, config: cfg, configPath: CFG_FILE, ...(await snapshot(cfg)) })
+      json(res, 200, { ok: true, config: cfg, configPath: CFG_FILE, stamp: configStamp(), ...(await snapshot(cfg)) })
       return
     }
     if (!requireTrusted(req, res)) return
@@ -109,7 +109,27 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
     }
     const incoming = body.config && typeof body.config === 'object' ? body.config as Record<string, unknown> : body
     const before = config()
-    const next = writeConfig(incoming)
+    // 乐观并发：页面 POST 回打开时拿到的 stamp。别人（别的会话 / CLI）刚写过就 409，
+    // 不拿这份旧表单覆盖对方的 active —— 设置页发的是整份配置，覆盖一次等于一次静默切库。
+    const expectStamp = typeof body.stamp === 'string' && body.stamp ? body.stamp : undefined
+    let next: Config
+    try {
+      next = writeConfig(incoming, processWorkspace(), { expectStamp })
+    } catch (err) {
+      if (err instanceof ConfigConflictError) {
+        const latest = config()
+        json(res, 409, {
+          ok: false,
+          error: '配置已被其他会话或 CLI 修改，已刷新为最新值 —— 请确认后重新保存',
+          config: latest,
+          configPath: CFG_FILE,
+          stamp: configStamp(),
+          ...(await snapshot(latest)),
+        })
+        return
+      }
+      throw err
+    }
     const warn: string[] = []
     // 切换即就绪：active 变了就顺手建好目标笔记本（ensureNotebook 幂等）；
     // 失败只进 warn —— 保存本身已生效。改路径不算切换，不在这里建目录（防手滑）。
@@ -132,7 +152,7 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
     if (exists && st.agents.required && !st.agents.present) {
       warn.push('layered 结构缺 AGENTS.md —— 点「初始化 / 补建」写入模板')
     }
-    json(res, 200, { ok: true, config: next, configPath: CFG_FILE, warn: warn.length ? warn.join('；') : null, ...(await snapshot(next)) })
+    json(res, 200, { ok: true, config: next, configPath: CFG_FILE, stamp: configStamp(), warn: warn.length ? warn.join('；') : null, ...(await snapshot(next)) })
   })
 
   // ── 状态 ──

@@ -12,8 +12,9 @@
  * 老配置只有 `notebook`（或 structure 是全局键）：读进来一次性迁进 `notebooks.default`，
  * 之后就不再有双向合并 —— notebooks 存在时，散落的 `notebook` 顶层键只当没看见。
  */
-import { CFG_FILE, defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from './paths.ts'
+import { CFG_FILE, CFG_LOCK, defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from './paths.ts'
 import { fileStamp } from '../lib/file-stamp.ts'
+import { withFileLockSync } from '../lib/lock.ts'
 import { readJson, writeJson } from '../lib/json-file.ts'
 
 /** 结构模式：flat = 只有 notes/ + 日记；layered = raw/inbox/notes 分类目录/archive + 三套模板 */
@@ -250,27 +251,57 @@ export function selectNotebook(cfg: Config, name: string, workspace: string = pr
  *     同时给了别的派生键也以它为准 —— 设置页整份发回来时那些是上一次的旧值。
  *   · `structure`：只在没给 notebooks 时生效，改的是**当前笔记本**的结构。
  *   · `notebook`：纯派生，patch 里出现直接忽略（改路径用 notebooks；CLI 会拦下并提示）。
+ *
+ * 并发：读-合并-写整段持 `CFG_LOCK`，多个进程（多开 DSH / CLI / 设置页）不会丢更新。
+ * 给了 `expectStamp` 就先核对文件指纹 —— 设置页拿的是打开页面时的配置，
+ * 别人刚切过笔记本就 409，而不是把对方的 active 覆盖回去。
  */
-export function writeConfig(patch: Record<string, unknown>, workspace: string = processWorkspace()): Config {
-  const current = config(workspace)
-  const merged: Record<string, unknown> = { ...toDisk(current) }
-  for (const [k, v] of Object.entries(patch)) {
-    if (DERIVED_KEYS.has(k)) continue
-    if ((CONFIG_KEYS as ReadonlyArray<string>).includes(k)) merged[k] = v
+export function writeConfig(
+  patch: Record<string, unknown>,
+  workspace: string = processWorkspace(),
+  opts: { expectStamp?: string } = {},
+): Config {
+  return withFileLockSync(CFG_LOCK, () => {
+    if (opts.expectStamp && opts.expectStamp !== fileStamp(CFG_FILE)) throw new ConfigConflictError()
+    // 锁内重读：等锁期间别的进程可能已经写过，不能拿进程内的缓存做合并基线
+    const current = readConfigFresh(workspace)
+    const merged: Record<string, unknown> = { ...toDisk(current) }
+    for (const [k, v] of Object.entries(patch)) {
+      if (DERIVED_KEYS.has(k)) continue
+      if ((CONFIG_KEYS as ReadonlyArray<string>).includes(k)) merged[k] = v
+    }
+    // 不是对象就当没给（垃圾输入不许把整个笔记本表清空）
+    const hasNotebooks = !!patch.notebooks && typeof patch.notebooks === 'object' && !Array.isArray(patch.notebooks)
+    const activeRaw = String(merged.active ?? current.active ?? '').trim()
+    const active = NOTEBOOK_NAME_RE.test(activeRaw) ? activeRaw : current.active
+    const notebooks = hasNotebooks
+      ? notebookEntries(patch.notebooks, current.notebooks, 'flat')
+      : { ...current.notebooks }
+    if (!hasNotebooks && 'structure' in patch) {
+      const entry = notebooks[active] ?? { path: '', structure: 'flat' as Structure }
+      notebooks[active] = { ...entry, structure: structureOf(patch.structure, 'flat') }
+    }
+    const next = normalizeConfig({ ...merged, notebooks, active }, workspace)
+    writeJson(CFG_FILE, toDisk(next))
+    configCache = null
+    return next
+  })
+}
+
+/** 配置文件的当前指纹（设置页用它做乐观并发：GET 拿 stamp，POST 带回） */
+export function configStamp(): string {
+  return fileStamp(CFG_FILE)
+}
+
+/** 设置页保存时发现配置被别处改过 —— 调用方翻成 409 + 最新配置 */
+export class ConfigConflictError extends Error {
+  constructor() {
+    super('配置已被其他会话或 CLI 修改')
+    this.name = 'ConfigConflictError'
   }
-  // 不是对象就当没给（垃圾输入不许把整个笔记本表清空）
-  const hasNotebooks = !!patch.notebooks && typeof patch.notebooks === 'object' && !Array.isArray(patch.notebooks)
-  const activeRaw = String(merged.active ?? current.active ?? '').trim()
-  const active = NOTEBOOK_NAME_RE.test(activeRaw) ? activeRaw : current.active
-  const notebooks = hasNotebooks
-    ? notebookEntries(patch.notebooks, current.notebooks, 'flat')
-    : { ...current.notebooks }
-  if (!hasNotebooks && 'structure' in patch) {
-    const entry = notebooks[active] ?? { path: '', structure: 'flat' as Structure }
-    notebooks[active] = { ...entry, structure: structureOf(patch.structure, 'flat') }
-  }
-  const next = normalizeConfig({ ...merged, notebooks, active }, workspace)
-  writeJson(CFG_FILE, toDisk(next))
-  configCache = null
-  return next
+}
+
+/** 锁内用的干净读取：不吃 configCache，合并基线必须是磁盘上的现状 */
+function readConfigFresh(workspace: string): Config {
+  return normalizeConfig(readJson<Record<string, unknown>>(CFG_FILE, {}), workspace)
 }

@@ -38,7 +38,7 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit index                        重建索引
   zk-kit notebooks                    列出所有笔记本（* 是当前那个；[flat/layered] 是各自的结构）
   zk-kit notebooks add 名 路径         加一个笔记本（路径空 = <工作区>/zdiary；结构跟当前笔记本一致）
-  zk-kit notebooks use 名              切换当前笔记本（自动建好目标笔记本，幂等）
+  zk-kit notebooks use 名              切换默认笔记本（新会话生效；自动建好目标笔记本，幂等）
   zk-kit notebooks remove 名           从配置移除一个笔记本（只删配置，磁盘目录与笔记保留；至少留一个；删的是当前那个就自动切到剩下的第一个）
   zk-kit config [get [键]]             看配置（不传键 = 全量；未知键报错）
   zk-kit config set 键=值 [键=值 …]     改配置（只落盘，不建目录；structure 改的是当前笔记本，切完跑 zk-kit init）
@@ -406,7 +406,7 @@ async function main(): Promise<void> {
         const next = writeConfig({ active: name })
         // 切换即就绪：ensureNotebook 幂等，缺了才补；失败只告警（配置已经落盘）
         const tail = await autoInit(next)
-        print(json ? { active: next.active, notebook: next.notebook } : `当前笔记本 → ${next.active}（${next.notebook}）${tail}`, json)
+        print(json ? { active: next.active, notebook: next.notebook } : `默认笔记本 → ${next.active}（${next.notebook}）${tail}\n（只影响新会话；已经跑着的会话用 zk_use 跟随）`, json)
         return
       }
       if (sub === 'remove') {

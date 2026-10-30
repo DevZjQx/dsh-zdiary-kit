@@ -66,6 +66,8 @@ interface Snapshot {
   warn?: string | null
   config: ZkConfig
   configPath?: string
+  /** 配置文件的指纹：保存时带回，别处改过就 409（乐观并发） */
+  stamp?: string
   /** 本页解析空 / 相对路径时用的工作区（插件进程的；agent 工具按各自会话工作区） */
   workspace?: string
   zk: ZkStatus
@@ -161,9 +163,11 @@ interface Field {
       const [out, setOut] = useState('')
       const [nbName, setNbName] = useState('')
       const [nbPath, setNbPath] = useState('')
+      const [stamp, setStamp] = useState('')
 
       const applySnap = useCallback((d: Snapshot) => {
         setSnap(d)
+        if (typeof d.stamp === 'string' && d.stamp) setStamp(d.stamp)
         if (d.config) {
           setCfg(d.config)
           setTagsText((d.config.defaultTags || []).join(', '))
@@ -207,6 +211,7 @@ interface Field {
               ...cfg,
               defaultTags: tagsText.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
             },
+            stamp,
           }
           const r = await fetch(`${API}/settings`, {
             method: 'POST',
@@ -214,12 +219,19 @@ interface Field {
             body: JSON.stringify(body),
           })
           const d = await r.json() as Snapshot
+          // 409：别的会话 / CLI 在页面打开期间改过配置。别拿旧表单覆盖（那会把 active 改回去）：
+          // 直接把最新配置铺回来，让人确认后再保存一次。
+          if (r.status === 409) {
+            applySnap(d)
+            setErr(d.error || '配置已被其他会话修改，已刷新为最新值 —— 请确认后重新保存')
+            return
+          }
           if (!d.ok) throw new Error(d.error || '保存失败')
           applySnap(d)
           setOkMsg('✓ 已保存' + (d.warn ? '\n⚠️ ' + d.warn : ''))
         } catch (e) { setErr(String((e as Error).message || e)) }
         finally { setBusy('') }
-      }, [cfg, tagsText, saved, applySnap])
+      }, [cfg, tagsText, saved, stamp, applySnap])
 
       const action = useCallback(async (name: string, path: string) => {
         setBusy(name); setErr(''); setOkMsg(''); setOut('')
@@ -369,7 +381,9 @@ interface Field {
             h('div', null,
               h('div', { className: 'zdk-label' }, '当前笔记本'),
               h('div', { className: 'zdk-hint' },
-                'agent 的 zk_* 工具只用这一个。路径与结构是每个笔记本自己的；笔记/日记子目录、归档目录、注入预算是全局的。\n' +
+                '这里是**新会话的默认值**：每个会话第一次用 zk_* 时会把当时的值固定下来，之后各走各的。' +
+                '改这里不会带着已经跑着的会话走 —— 要让某个会话跟过去，在那个会话里说「切到 X 库」（zk_use）。\n' +
+                '路径与结构是每个笔记本自己的；笔记/日记子目录、归档目录、注入预算是全局的。\n' +
                 '切换保存后会自动建好目标笔记本（幂等，不动已有笔记）。\n' +
                 '空 / 相对路径按「会话工作区」解析：agent 在哪个会话调用，就落在那个工作区。' +
                 (snap?.workspace ? '\n本页工作区（插件进程）：' + snap.workspace : '') +

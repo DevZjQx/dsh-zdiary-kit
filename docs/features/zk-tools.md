@@ -2,15 +2,22 @@
 
 **Purpose.** 让模型用 zk 思维工作：先查重、再写原子笔记、用双链连起来、每天记一段。
 
-**Owns.** 12 个工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
-`zk_supersede` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats`）：
+**Owns.** 13 个工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
+`zk_supersede` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
 `zk_context` 例外：它只读根目录三份 meta 文件，**不** `ensureNotebook`（读记忆不该依赖 zk）。
+
+**多会话与笔记本归属.** 工具拿配置走 `config/session.ts` 的 `configFor(workspace, sessionId)`，不是直接 `config()`：
+会话第一次调用时把当时的 `active`（默认值）快照成自己的 pin，之后设置页 / CLI / 别的会话切库都不带动它；
+本会话换库只能显式 `zk_use`。pin 一会话一个文件（`~/.dsh/zdiary/sessions/`），进程重启与会话 resume 都接得上；
+指向的笔记本被删掉时静默回到默认值。`zk_context` / `zk_stats` 会在 pin 与默认值不一致时把这件事写出来，
+不让模型自己从「笔记不存在」里猜。`zk_read` / `zk_append` 找不到路径时还会查其他笔记本里有没有同名，
+命中就把「这篇在 X 库里」放进错误提示。
 
 **Does not own.** zk 命令行怎么拼（`lib/zk.ts`）；笔记本怎么建（`lib/notebook.ts`）；配置读写（`config/store`）；
 设置页（`features/settings`）。工具不 import settings，settings 也不 import 工具 —— 只共享 lib 与 config。
 
-**Depends on.** `config/store`（每次调用现读，设置页改完立刻生效）、`lib/notebook`、`lib/zk`、`lib/memory`、`lib/tool`。
+**Depends on.** `config/session`（会话固定的笔记本 → 配置；每次调用现读，设置页改完立刻生效）、`lib/notebook`、`lib/zk`、`lib/memory`、`lib/tool`。
 
 **Public surface.** `buildTools()`（纯数据，测试用）与 `registerZkTools(tools)`（返回撤销函数）。
 

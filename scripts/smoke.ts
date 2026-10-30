@@ -4,7 +4,7 @@
  *
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
- *   · 12 个工具能注册、能执行、能渲染；
+ *   · 13 个工具能注册、能执行、能渲染；
  *   · 6 条设置路由能工作（走真实的 http 请求，信任栅栏用假的 connection 顶替）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
@@ -90,7 +90,7 @@ for (const tool of tools) checkSchema(tool.output.schema, `${tool.name}.output.s
 
 console.log('工具：' + tools.map((t) => t.name).join(', '))
 console.log('路由：' + [...routes.keys()].join(', '))
-if (tools.length !== 12) throw new Error('工具数量不对：' + tools.length)
+if (tools.length !== 13) throw new Error('工具数量不对：' + tools.length)
 if (routes.size !== 6) throw new Error('路由数量不对：' + routes.size)
 
 const call = async (name: string, args: unknown) => {
@@ -119,6 +119,7 @@ if (typeof (linted.orphans as Record<string, unknown>).total !== 'number') throw
 const dreamed = await call('zk_dream', { days: 7 })
 if (!Array.isArray(dreamed.newNotes)) throw new Error('zk_dream 输出不对')
 await call('zk_stats', {})
+await call('zk_use', {})
 
 // ── 真发 HTTP：设置页依赖的 6 条路由 ──────────────────────────────────────
 const server = http.createServer((req, res) => {
@@ -212,6 +213,29 @@ for (const item of selftest.items as Array<{ ok: boolean; name: string; detail: 
   console.log(`  ${item.ok ? '✓' : '✗'} ${item.name}：${item.detail}`)
 }
 if (selftest.ok !== true) throw new Error('自检没全过')
+
+// ── 乐观并发：页面拿的 stamp 过期 → 409，而不是把别处刚改的值覆盖回去 ──────
+const fresh = await getJson('/settings')
+const staleStamp = String(fresh.stamp ?? '')
+if (!staleStamp) throw new Error('GET /settings 没返回 stamp')
+// 模拟另一个会话 / CLI 在页面打开期间改了配置
+writeConfig({ memoryBudgetWords: 700 })
+const staleRes = await fetch(base + '/settings', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ stamp: staleStamp, config: { memoryBudgetWords: 500 } }),
+})
+if (staleRes.status !== 409) throw new Error('过期 stamp 没被拒绝：HTTP ' + staleRes.status)
+const conflict = await staleRes.json() as { config?: { memoryBudgetWords?: number }; stamp?: string }
+if (conflict.config?.memoryBudgetWords !== 700) throw new Error('409 没带回最新配置：' + JSON.stringify(conflict))
+// 拿最新 stamp 重存才成功
+const retried = await fetch(base + '/settings', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ stamp: conflict.stamp, config: { memoryBudgetWords: 500 } }),
+})
+if (!retried.ok) throw new Error('带最新 stamp 的保存失败了：HTTP ' + retried.status)
+console.log('[POST /settings] 过期 stamp = 409 ✓ · 最新 stamp 重存 ✓')
 
 server.close()
 console.log('\n✓ 冒烟通过（工作目录 ' + home + '）')

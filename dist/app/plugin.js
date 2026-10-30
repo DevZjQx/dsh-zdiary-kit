@@ -1,6 +1,7 @@
 import { json } from '../lib/http.js';
 import { CFG_FILE, processWorkspace } from '../config/paths.js';
 import { config } from '../config/store.js';
+import { configFor } from '../config/session.js';
 import { registerZkTools } from '../features/zk-tools/feature.js';
 import { registerSettings } from '../features/settings/feature.js';
 import { buildMemoryPayload } from '../lib/memory.js';
@@ -134,14 +135,14 @@ export default {
         }
         // ── 记忆注入（M1）─────────────────────────────────────────────────
         // text 用函数：宿主每个 step 都重新求值 → 改完 MEMORY.md 立刻生效，也不写会话历史。
-        // 装配上下文带 agent.id（= 会话 id，裸装配没有）→ 记忆跟着**这次会话的工作区**走，
-        // 和 zk_* 工具看同一份；拿不到会话才退回进程工作区。
+        // 装配上下文带 agent.id（= 会话 id，裸装配没有）→ 记忆跟着**这次会话的工作区与笔记本**走，
+        // 和 zk_* 工具看同一份；拿不到会话才退回进程工作区 + 全局默认笔记本。
         // 宿主没有 systemPrompt（headless / 精简 profile）就安静跳过，工具侧仍有 zk_context。
         function memoryText(assemble) {
             try {
                 const sessions = service(ctx, 'sessions');
                 const workspace = sessionWorkspace(assemble, sessions) ?? processWorkspace();
-                return buildMemoryPayload(config(workspace)).text;
+                return buildMemoryPayload(configFor(workspace, assemble?.agent?.id)).text;
             }
             catch {
                 return '';

@@ -22,9 +22,16 @@
 | `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 记忆链接失效，每类最多 50 条；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、daily 未完成项、被引最多；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded） |
+| `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |
 
 写笔记前 agent 会先 `zk_search` 查重；flat 笔记本的 `zk_new` 还会按标题再查一次，重复直接报错。
 双链用相对路径（zk 的 `link-format = "wiki"` 认这个），所以 `--broken-links` 不会因为「按标题链接」而误报。
+
+**多会话**：每个会话第一次调工具时，会把当时配置里的默认笔记本**固定**下来（落在 `~/.dsh/zdiary/sessions/`，
+一个会话一份）。之后别的会话或设置页 / `zk-kit notebooks use` 切库，都不会把这个会话带到另一个库里 ——
+记忆注入也跟着这个会话固定的那本走。要跟着换，就在**那个会话里**说「切到 X 库」（agent 调 `zk_use`）。
+设置页保存时带文件指纹，别处刚改过配置会 409 并要求确认，不会拿旧表单把别人的 `active` 覆盖回去。
+路径找不到时，`zk_read` / `zk_append` 还会顺手查别的笔记本里有没有同名笔记，并告诉你它在哪一本。
 
 **长期记忆**：笔记本根目录放 `AGENTS.md`（工作约定）、`USER.md`（偏好）、`MEMORY.md`（精炼记忆），
 插件会在每个 step 把它们注入系统提示（预算默认 500 词，设置页「记忆 → 注入预算」可改；
@@ -75,7 +82,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 
 | 分组 | 字段 | 说明 |
 |---|---|---|
-| 笔记本 | 当前笔记本（下拉） | 切换 = 改 `active`；`zk_*` 工具只认当前这一个。切换保存后自动建好目标笔记本（幂等，不动已有笔记） |
+| 笔记本 | 当前笔记本（下拉） | 切换 = 改**新会话的默认值**（`active`）；每个会话首次使用时固定一本，跑着的会话不跟着变 —— 要跟过去用 `zk_use`。切换保存后自动建好目标笔记本（幂等，不动已有笔记） |
 | 笔记本 | 每个笔记本一行：路径 + 结构 | 路径空 = `<会话工作区>/zdiary`（在工作区内，agent 能直接读写）；相对路径按工作区解析；也可以指向任何已有 zk 笔记本。结构（`flat` / `layered`）是**每个笔记本自己的**，行里直接选。**删除只移除配置，磁盘目录与笔记保留** |
 | 目录与 group | 笔记子目录 / 日记子目录 | 默认 `notes` / `journal`（全局共用，不按笔记本分开） |
 | 目录与 group | 日记 group 名 | 默认 `daily`，初始化时自动补配置 |
@@ -105,7 +112,8 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 
 - `notebooks`：名字 → `{path, structure}`。名字只接受字母、数字、`_` 与 `-`（1-32 字符）；路径为空就是 `<会话工作区>/zdiary`，相对路径按工作区解析。老写法（名字 → 裸路径字符串）照常读，结构继承全局缺省。
 - **路径与结构都是笔记本自己的属性**：`work` 可以是 layered 而 `default` 还是 flat，互不牵连。
-- `active`：当前笔记本的名字。名字不存在、非法时退回 `default`。
+- `active`：**默认**笔记本的名字（新会话用）。每个会话第一次调工具时会把当时的 `active` 固定成自己的 pin
+  （`~/.dsh/zdiary/sessions/`），之后改这里不会带动已开的会话；本会话换库在会话里说一声（`zk_use`）。名字不存在、非法时退回 `default`。
 - `notebook` 与 `structure` 是**派生的**（`notebooks[active]` 解析后的绝对路径 / 该条目的结构），只在内存里、不落盘也不可写 —— 磁盘上笔记本只有一个真相，就是 `notebooks` + `active`。
   老配置里那个单独的 `notebook` 字段（和全局 `structure`）读进来会**一次性**迁进 `notebooks.default`，之后不再互相覆盖。
 - **共享的是全局项**：笔记 / 日记子目录、`daily` group、归档目录、注入预算 —— 这些不按笔记本分开。
@@ -120,6 +128,7 @@ zk-kit notebooks
 ```
 
 设置页里改「当前笔记本」下拉、改路径 / 结构、新增 / 删除，最后点 **保存** 落盘；命令行 `zk-kit notebooks …` 改的是同一份配置。
+保存带文件指纹：页面打开期间别处（别的会话 / CLI）改过配置就 409，页面刷新成最新值再让你确认一次，不会拿旧表单覆盖。
 删除笔记本只是从配置里移除条目（设置页会先确认）：磁盘上的目录与笔记原样保留，加回同名条目就能继续用。
 空 / 相对路径按**会话工作区**解析：设置页显示的是**插件进程工作区**下的解析结果，agent 在别的会话里调用时可能落在它自己的工作区 —— 要固定位置就写绝对路径。
 **切换即就绪**：`use`（和设置页保存时切换）会顺手把目标笔记本建好 —— `ensureNotebook` 幂等，缺了才补，不动已有笔记；
@@ -285,7 +294,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉，并检查没有顶层声明
   （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：跑一遍 12 个工具 + 覆盖 6 条设置路由，并检查输出 schema 在 DSH 支持的子集内）·
+  `bun run smoke`（加载 dist：跑一遍 13 个工具 + 覆盖 6 条设置路由，并检查输出 schema 在 DSH 支持的子集内）·
   `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
@@ -296,7 +305,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 ```
 src/
 ├── app/plugin.ts                 # 装配：信任栅栏、工具注册、路由门（唯一组合点）
-├── config/                       # paths（唯一路径真相）+ store（默认值/白名单/归一化）
+├── config/                       # paths（唯一路径真相）+ store（默认值/白名单/归一化）+ session（会话级笔记本）
 ├── lib/
 │   ├── zk.ts                     # zk 唯一的调用面：解析二进制、list/new/append/link/daily/graph、路径守卫
 │   ├── frontmatter.ts            # 只改 status / superseded-by 这类标量，其余行原样保留
@@ -305,10 +314,11 @@ src/
 │   ├── notebook.ts               # 自举：zk init + 日记模板 + group 配置（幂等）
 │   ├── install.ts / platform.ts  # 内置 zk：平台映射、下载、解包、验证
 │   ├── tool.ts                   # 最小 JSON Schema 构造 + 输入校验（裸注册工具自己兜）
+│   ├── lock.ts                   # 跨进程文件锁（写配置时用，O_EXCL + stale 清理）
 │   ├── dsh.ts                    # 宿主契约（纯类型，编译后为空）
 │   └── exec.ts / http.ts / json-file.ts
 ├── features/
-│   ├── zk-tools/feature.ts       # 12 个工具
+│   ├── zk-tools/feature.ts       # 13 个工具
 │   └── settings/                 # 宿主 API + 浏览器 section
 └── cli.ts                        # zk-kit 命令行
 ```
