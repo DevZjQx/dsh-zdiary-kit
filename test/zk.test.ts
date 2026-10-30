@@ -421,7 +421,7 @@ describe('memory', () => {
 
   test('有 systemPrompt 时注册 zdiary:memory；没有时安静跳过', async () => {
     const plugin = (await import('../src/app/plugin.ts')).default
-    const sections: Array<{ name: string; order: number; text: string | (() => string) }> = []
+    const sections: Array<{ name: string; order: number; text: string | (() => string); interpolate?: boolean }> = []
     const withPrompt = {
       get: (name: string) => (name === 'systemPrompt'
         ? { section: (s: typeof sections[number]) => { sections.push(s); return () => undefined } }
@@ -432,6 +432,8 @@ describe('memory', () => {
     expect(sections.map((s) => s.name)).toEqual(['zdiary:memory'])
     expect(sections[0].order).toBe(5200)
     expect(typeof sections[0].text).toBe('function')
+    // 记忆是文件原文：插值会让 `{{未知变量}}` 抛错、`{{model}}` 被改写
+    expect(sections[0].interpolate).toBe(false)
 
     const bare = { get: () => undefined, effect: (fn: () => undefined | (() => void)) => { fn() } }
     expect(() => plugin.apply(bare as never)).not.toThrow()

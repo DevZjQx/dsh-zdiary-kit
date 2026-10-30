@@ -60,6 +60,8 @@ export interface SystemPromptSectionLike {
   order: number
   /** 静态文本，或每步装配时用当时的上下文求值的函数（ctx 可能整个缺席） */
   text: string | ((ctx?: AssemblyContextLike) => string)
+  /** 是否把 `{{name}}` 当提示变量插值（默认 true）。记忆是文件原文，必须关掉 */
+  interpolate?: boolean
 }
 
 /** 系统提示注册表（dsh-system-prompt 提供；headless 宿主可能没有） */

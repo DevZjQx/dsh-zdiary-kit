@@ -140,7 +140,10 @@ export default {
     function registerMemory(host: PluginContext): void {
       const prompt = service<SystemPromptLike>(host, 'systemPrompt')
       if (!prompt || typeof prompt.section !== 'function') return
-      host.effect(() => prompt.section({ name: 'zdiary:memory', order: MEMORY_SECTION_ORDER, text: memoryText }))
+      // interpolate: false —— 记忆是文件原文：笔记里写 `{{title}}` / `{{content}}` 很常见，
+      // 按提示变量插值的话，未注册的名字会让整次装配抛错（整个 step 失败），
+      // 叫 provider / model 的则会被静默改写成真实值。DSH 自己给所有「内容类」段也是这么关的。
+      host.effect(() => prompt.section({ name: 'zdiary:memory', order: MEMORY_SECTION_ORDER, text: memoryText, interpolate: false }))
       try { console.log('[zdiary] 记忆注入已挂载：AGENTS.md / USER.md / MEMORY.md → 系统提示') } catch { /* ignore */ }
     }
     if (service<SystemPromptLike>(ctx, 'systemPrompt')) {
