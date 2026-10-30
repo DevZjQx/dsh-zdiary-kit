@@ -145,6 +145,15 @@ export function normalizeConfig(raw, workspace = processWorkspace()) {
             : '',
     };
 }
+/** 所有已配置笔记本，保持配置里的顺序；路径规则与 cfg.notebook 一致 */
+export function notebookInfos(cfg, workspace = processWorkspace()) {
+    return Object.entries(cfg.notebooks).map(([name, entry]) => ({
+        name,
+        path: notebookPath(entry.path, workspace),
+        structure: entry.structure,
+        active: name === cfg.active,
+    }));
+}
 /** 落盘用：去掉派生的 notebook / structure（磁盘上只有 notebooks + active 这一个真相） */
 function toDisk(cfg) {
     const out = { ...cfg };

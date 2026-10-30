@@ -7,6 +7,7 @@ import { registerSettings } from '../features/settings/feature.js';
 import { buildMemoryPayload } from '../lib/memory.js';
 import { sessionWorkspace } from '../lib/workspace.js';
 /** 系统提示里的段位：5000 是 TOOLS_SDK，9000 是交付物引用 —— 记忆落在两者之间的空档 */
+const NOTEBOOK_SECTION_ORDER = 5190;
 const MEMORY_SECTION_ORDER = 5200;
 export default {
     name: 'dsh-zdiary-kit',
@@ -148,22 +149,40 @@ export default {
                 return '';
             }
         }
-        function registerMemory(host) {
+        /**
+         * 笔记本一行：模型不用先调工具就知道「当前在哪本、还有哪些能切」。
+         * 单独一段、不计入记忆预算 —— 塞进 memory payload 会参与截断，还会挤占 500 词额度。
+         */
+        function notebookText(assemble) {
+            try {
+                const sessions = service(ctx, 'sessions');
+                const workspace = sessionWorkspace(assemble, sessions) ?? processWorkspace();
+                const cfg = configFor(workspace, assemble?.agent?.id);
+                const others = Object.keys(cfg.notebooks).filter((name) => name !== cfg.active);
+                const extra = others.length ? `；另有：${others.join('、')}（zk_use 切换本会话）` : '';
+                return `知识库：当前笔记本「${cfg.active}」（${cfg.structure}）→ ${cfg.notebook}${extra}`;
+            }
+            catch {
+                return '';
+            }
+        }
+        function registerPromptSections(host) {
             const prompt = service(host, 'systemPrompt');
             if (!prompt || typeof prompt.section !== 'function')
                 return;
             // interpolate: false —— 记忆是文件原文：笔记里写 `{{title}}` / `{{content}}` 很常见，
             // 按提示变量插值的话，未注册的名字会让整次装配抛错（整个 step 失败），
             // 叫 provider / model 的则会被静默改写成真实值。DSH 自己给所有「内容类」段也是这么关的。
+            host.effect(() => prompt.section({ name: 'zdiary:notebook', order: NOTEBOOK_SECTION_ORDER, text: notebookText, interpolate: false }));
             host.effect(() => prompt.section({ name: 'zdiary:memory', order: MEMORY_SECTION_ORDER, text: memoryText, interpolate: false }));
             try {
-                console.log('[zdiary] 记忆注入已挂载：AGENTS.md / USER.md / MEMORY.md → 系统提示');
+                console.log('[zdiary] 提示注入已挂载：笔记本 + AGENTS.md / USER.md / MEMORY.md → 系统提示');
             }
             catch { /* ignore */ }
         }
         if (service(ctx, 'systemPrompt')) {
             try {
-                registerMemory(ctx);
+                registerPromptSections(ctx);
             }
             catch (err) {
                 try {
@@ -175,7 +194,7 @@ export default {
         else if (typeof ctx.inject === 'function') {
             // service 还没就绪：等它出现再注册（宿主完全没这个 service 时永不回调）
             try {
-                ctx.inject(['systemPrompt'], registerMemory);
+                ctx.inject(['systemPrompt'], registerPromptSections);
             }
             catch { /* ignore */ }
         }

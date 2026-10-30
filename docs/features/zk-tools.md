@@ -5,7 +5,7 @@
 **Owns.** 14 个工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
 `zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
-`zk_context` 例外：它只读根目录三份 meta 文件，**不** `ensureNotebook`（读记忆不该依赖 zk）。
+`zk_context` 例外：它只读根目录三份 meta 文件并列出已配置笔记本，**不** `ensureNotebook`（读记忆不该依赖 zk）。
 
 **多会话与笔记本归属.** 工具拿配置走 `config/session.ts` 的 `configFor(workspace, sessionId)`，不是直接 `config()`：
 会话第一次调用时把当时的 `active`（默认值）快照成自己的 pin，之后设置页 / CLI / 别的会话切库都不带动它；

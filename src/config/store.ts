@@ -192,6 +192,24 @@ export function normalizeConfig(raw: unknown, workspace: string = processWorkspa
   }
 }
 
+/** 一个笔记本的解析结果（给 zk_context / 提示注入回显用；路径按 workspace 解析） */
+export interface NotebookInfo {
+  name: string
+  path: string
+  structure: Structure
+  active: boolean
+}
+
+/** 所有已配置笔记本，保持配置里的顺序；路径规则与 cfg.notebook 一致 */
+export function notebookInfos(cfg: Config, workspace: string = processWorkspace()): NotebookInfo[] {
+  return Object.entries(cfg.notebooks).map(([name, entry]) => ({
+    name,
+    path: notebookPath(entry.path, workspace),
+    structure: entry.structure,
+    active: name === cfg.active,
+  }))
+}
+
 /** 落盘用：去掉派生的 notebook / structure（磁盘上只有 notebooks + active 这一个真相） */
 function toDisk(cfg: Config): Record<string, unknown> {
   const out: Record<string, unknown> = { ...cfg }

@@ -10,11 +10,12 @@
 - `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）
 - `lib/agents-template.ts`：`AGENTS.md` 模板（layered 初始化时写入；约 160 词，占默认 500 词的 32%，因为它在预算里且永不截断）
   与 `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
-- `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册 `zdiary:memory` 段（order 5200，`interpolate: false` —— 记忆是文件原文，
+- `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册两段：`zdiary:notebook`（order 5190，一行当前笔记本名字 / 结构 / 路径 + 其余已配置库名，每步跟随会话 pin；**不进记忆预算**）与 `zdiary:memory`（order 5200，`interpolate: false` —— 记忆是文件原文，
   `{{…}}` 一律原样保留：插值会让未注册变量在装配时抛错、`{{model}}` 这类被静默改写），`text` 是函数，每个 step 重新读文件；
   装配上下文带 `agent.id` 时按**会话工作区 + 该会话固定的笔记本**解析（`config/session`，和 `zk_*` 工具同口径）；
   别的会话切了默认值不会把已开的会话换库，裸装配才退回进程工作区 + 全局默认
-- `zk_context` 工具：同一份 payload，给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用
+- `zk_context` 工具：同一份 payload，给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用；
+  另返回 `notebooks`（名字 / 路径 / 结构 / 当前），没有提示注入时模型也能发现已配置的库
 - 设置页「记忆」：注入预算；「目录与 group」：归档目录。快照里带 `memory.words/budget/truncatedWords` 状态行
 
 **Does not own.** MEMORY.md 写什么（agent 按 AGENTS.md 直接改文件，git diff 可审）；

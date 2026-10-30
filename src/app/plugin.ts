@@ -21,6 +21,7 @@ import type { SessionsLike } from '../lib/workspace.ts'
 import type { AssemblyContextLike, ConnectionLike, PluginContext, RouteHandler, SystemPromptLike, ToolsLike, ToolRunContextLike, WebServerLike } from '../lib/dsh.ts'
 
 /** 系统提示里的段位：5000 是 TOOLS_SDK，9000 是交付物引用 —— 记忆落在两者之间的空档 */
+const NOTEBOOK_SECTION_ORDER = 5190
 const MEMORY_SECTION_ORDER = 5200
 
 export default {
@@ -138,24 +139,41 @@ export default {
         return ''
       }
     }
-    function registerMemory(host: PluginContext): void {
+    /**
+     * 笔记本一行：模型不用先调工具就知道「当前在哪本、还有哪些能切」。
+     * 单独一段、不计入记忆预算 —— 塞进 memory payload 会参与截断，还会挤占 500 词额度。
+     */
+    function notebookText(assemble?: AssemblyContextLike): string {
+      try {
+        const sessions = service<SessionsLike>(ctx, 'sessions')
+        const workspace = sessionWorkspace(assemble, sessions) ?? processWorkspace()
+        const cfg = configFor(workspace, assemble?.agent?.id)
+        const others = Object.keys(cfg.notebooks).filter((name) => name !== cfg.active)
+        const extra = others.length ? `；另有：${others.join('、')}（zk_use 切换本会话）` : ''
+        return `知识库：当前笔记本「${cfg.active}」（${cfg.structure}）→ ${cfg.notebook}${extra}`
+      } catch {
+        return ''
+      }
+    }
+    function registerPromptSections(host: PluginContext): void {
       const prompt = service<SystemPromptLike>(host, 'systemPrompt')
       if (!prompt || typeof prompt.section !== 'function') return
       // interpolate: false —— 记忆是文件原文：笔记里写 `{{title}}` / `{{content}}` 很常见，
       // 按提示变量插值的话，未注册的名字会让整次装配抛错（整个 step 失败），
       // 叫 provider / model 的则会被静默改写成真实值。DSH 自己给所有「内容类」段也是这么关的。
+      host.effect(() => prompt.section({ name: 'zdiary:notebook', order: NOTEBOOK_SECTION_ORDER, text: notebookText, interpolate: false }))
       host.effect(() => prompt.section({ name: 'zdiary:memory', order: MEMORY_SECTION_ORDER, text: memoryText, interpolate: false }))
-      try { console.log('[zdiary] 记忆注入已挂载：AGENTS.md / USER.md / MEMORY.md → 系统提示') } catch { /* ignore */ }
+      try { console.log('[zdiary] 提示注入已挂载：笔记本 + AGENTS.md / USER.md / MEMORY.md → 系统提示') } catch { /* ignore */ }
     }
     if (service<SystemPromptLike>(ctx, 'systemPrompt')) {
       try {
-        registerMemory(ctx)
+        registerPromptSections(ctx)
       } catch (err) {
         try { console.warn('[zdiary] 记忆注入失败：' + (err instanceof Error ? err.message : String(err))) } catch { /* ignore */ }
       }
     } else if (typeof ctx.inject === 'function') {
       // service 还没就绪：等它出现再注册（宿主完全没这个 service 时永不回调）
-      try { ctx.inject(['systemPrompt'], registerMemory) } catch { /* ignore */ }
+      try { ctx.inject(['systemPrompt'], registerPromptSections) } catch { /* ignore */ }
     }
 
     // ── 设置页路由（没有 webServer 就不挂，headless profile 也照常跑工具）──

@@ -479,14 +479,45 @@ describe('memory', () => {
       effect: (fn: () => undefined | (() => void)) => { fn() },
     }
     plugin.apply(withPrompt as never)
-    expect(sections.map((s) => s.name)).toEqual(['zdiary:memory'])
-    expect(sections[0].order).toBe(5200)
+    expect(sections.map((s) => s.name)).toEqual(['zdiary:notebook', 'zdiary:memory'])
+    expect(sections[0].order).toBe(5190)
+    expect(sections[1].order).toBe(5200)
     expect(typeof sections[0].text).toBe('function')
-    // 记忆是文件原文：插值会让 `{{未知变量}}` 抛错、`{{model}}` 被改写
+    expect(typeof sections[1].text).toBe('function')
+    // 笔记本提示与记忆都是内容类：不插值，`{{…}}` 原样保留
     expect(sections[0].interpolate).toBe(false)
+    expect(sections[1].interpolate).toBe(false)
 
     const bare = { get: () => undefined, effect: (fn: () => undefined | (() => void)) => { fn() } }
     expect(() => plugin.apply(bare as never)).not.toThrow()
+  })
+
+  test('笔记本提示：当前库带路径与结构，多库时列出其余库', async () => {
+    const plugin = (await import('../src/app/plugin.ts')).default
+    const work = path.join(home, 'work-notebook')
+    const sections: Array<{ name: string; text: string | (() => string) }> = []
+    const fake = {
+      get: (name: string) => (name === 'systemPrompt'
+        ? { section: (s: typeof sections[number]) => { sections.push(s); return () => undefined } }
+        : undefined),
+      effect: (fn: () => undefined | (() => void)) => { fn() },
+    }
+    store.writeConfig({
+      notebooks: { default: { path: notebook, structure: 'flat' }, work: { path: work, structure: 'layered' } },
+      active: 'default',
+    })
+    try {
+      plugin.apply(fake as never)
+      const section = sections.find((s) => s.name === 'zdiary:notebook')
+      expect(section).toBeDefined()
+      const line = (section!.text as () => string)()
+      expect(line).toContain('当前笔记本「default」（flat）')
+      expect(line).toContain(notebook)
+      expect(line).toContain('另有：work')
+      expect(line).toContain('zk_use')
+    } finally {
+      store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
+    }
   })
 
   test('注入按会话工作区取记忆（装配上下文带 agent）；裸调用退回进程工作区', async () => {
@@ -507,7 +538,8 @@ describe('memory', () => {
         effect: (fn: () => undefined | (() => void)) => { fn() },
       }
       plugin.apply(fake as never)
-      const text = sections[0].text as (ctx?: { agent?: { id?: string } }) => string
+      const memorySection = sections.find((s) => s.name === 'zdiary:memory')!
+      const text = memorySection.text as (ctx?: { agent?: { id?: string } }) => string
       // 和 zk_* 工具同一口径：agent.id → sessions.get(id).header.cwd
       expect(text({ agent: { id: 'sess-ws' } })).toContain('会话工作区的注入记忆')
       expect(text({ agent: { id: 'nope' } })).not.toContain('会话工作区的注入记忆')
@@ -1273,6 +1305,32 @@ describe('tools', () => {
       .rejects.toThrow(/会话 id/)
     await expect(use.execute({ notebook: '没有这本' }, { signal: AbortSignal.timeout(10_000), agent: { id: 'sess-use' } }))
       .rejects.toThrow(/没有这个笔记本/)
+  })
+
+  it('zk_context：列出已配置笔记本（名字 / 路径 / 结构 / 当前）', async () => {
+    const work = path.join(home, 'ctx-work')
+    store.writeConfig({
+      notebooks: { default: { path: notebook, structure: 'flat' }, work: { path: work, structure: 'layered' } },
+      active: 'default',
+    })
+    try {
+      const defs = toolsFeature.buildTools()
+      const ctxTool = defs.find((d) => d.name === 'zk_context')!
+      const value = await ctxTool.execute({}, { signal: AbortSignal.timeout(10_000) }) as {
+        notebook: string
+        notebooks: Array<{ name: string; path: string; structure: string; active: boolean }>
+      }
+      expect(value.notebook).toBe('default')
+      expect(value.notebooks).toEqual([
+        { name: 'default', path: notebook, structure: 'flat', active: true },
+        { name: 'work', path: work, structure: 'layered', active: false },
+      ])
+      const blocks = ctxTool.output.render({}, value)
+      expect(blocks[0].text).toContain(`笔记本「default」（flat）→ ${notebook}`)
+      expect(blocks[0].text).toContain('另有：work（layered）')
+    } finally {
+      store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
+    }
   })
 
   it('注册后能真的执行（zk_new → zk_search → zk_read → zk_stats）', async () => {

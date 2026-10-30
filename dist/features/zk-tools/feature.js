@@ -9,7 +9,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { config, selectNotebook } from '../../config/store.js';
+import { config, notebookInfos, selectNotebook } from '../../config/store.js';
 import { configFor, pinSession, sessionNotebook, sessionState } from '../../config/session.js';
 import { defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from '../../config/paths.js';
 import { S, validateArgs } from '../../lib/tool.js';
@@ -716,7 +716,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
         }),
         t({
             name: 'zk_context',
-            description: '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回。' +
+            description: '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回；' +
+                '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前）。' +
                 '宿主支持注入时这些内容每轮已自动进入系统提示；宿主不支持、或想核对「被截断了多少」时用它。',
             parameters: { type: 'object', properties: {}, additionalProperties: false },
             output: {
@@ -729,6 +730,15 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     notebook: { type: 'string' },
                     defaultNotebook: { type: 'string' },
                     pinned: { type: 'string' },
+                    notebooks: {
+                        type: 'array',
+                        items: objSchema({
+                            name: { type: 'string' },
+                            path: { type: 'string' },
+                            structure: { type: 'string' },
+                            active: { type: 'boolean' },
+                        }, ['name', 'path', 'structure', 'active']),
+                    },
                     files: {
                         type: 'array',
                         items: objSchema({
@@ -738,16 +748,18 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             originalWords: { type: 'number' },
                         }, ['name', 'present', 'words', 'originalWords']),
                     },
-                }, ['text', 'words', 'budget', 'truncatedWords', 'tocWords', 'notebook', 'defaultNotebook', 'pinned', 'files']),
+                }, ['text', 'words', 'budget', 'truncatedWords', 'tocWords', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
             },
             async run(_args, env) {
                 // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
+                const cfg = configFor(env.workspace, env.sessionId);
                 const state = sessionState(env.workspace, env.sessionId);
                 return {
-                    ...buildMemoryPayload(configFor(env.workspace, env.sessionId)),
+                    ...buildMemoryPayload(cfg),
                     notebook: state.active,
                     defaultNotebook: state.defaultName,
                     pinned: state.diverged ? state.pinned : '',
+                    notebooks: notebookInfos(cfg, env.workspace),
                 };
             },
             render(_args, value) {
@@ -756,9 +768,16 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 const drift = v.pinned && v.pinned !== v.defaultNotebook
                     ? `本会话固定在「${v.pinned}」；全局默认已改为「${v.defaultNotebook}」—— 要跟随用 zk_use ${v.defaultNotebook}\n\n`
                     : '';
+                const list = v.notebooks ?? [];
+                const current = list.find((n) => n.active);
+                const others = list.filter((n) => !n.active);
+                const head = current
+                    ? `笔记本「${current.name}」（${current.structure}）→ ${current.path}` +
+                        (others.length ? `\n另有：${others.map((n) => `${n.name}（${n.structure}）`).join('、')} —— zk_use 切换本会话` : '')
+                    : `笔记本「${v.notebook}」`;
                 if (!v.text)
-                    return text(drift + `知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的）。`);
-                return text(drift + v.text);
+                    return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的）。`);
+                return text(drift + head + '\n\n' + v.text);
             },
         }),
         t({
