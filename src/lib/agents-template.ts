@@ -25,7 +25,7 @@ notes/{concepts,entities,patterns}/ 原子笔记 · archive/ 废弃（不删）
 ## 写之前
 
 1. zk_query / zk_search 查重（中文查 tags）。
-2. 一条笔记一件事，标题即结论；来源进 sources/，结论进 concepts/，zk_link 相连。
+2. 一条笔记一件事，标题即结论，用英文短 slug（中文标题会生成拼音文件名）；来源进 sources/，结论进 concepts/，zk_link 相连。
 3. 结论过时用 zk_supersede（默认预演，带 reason）：不删文件、不改旧结论。
 4. 改已有笔记前读 WORKFLOW.md：先列清单等确认，再按三分类动手。
 

@@ -360,6 +360,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
             name: 'zk_new',
             description: '新建一篇笔记（zk 负责生成文件名、套用模板、写入索引）。适合记下一个概念、决定、来源或想法；' +
                 '写前先 zk_search 查重。标题重复会直接报错（flat 按标题查重，layered 同目录同名 slug 也会被 zk 拒绝）。' +
+                'layered 的文件名来自标题（{{slug title}}）：标题用英文短 slug，中文标题会生成拼音文件名。' +
                 '归档里有同名旧结论不会拦，但会放进 archived（带 supersede-reason）：先读它，别把同一个错误结论重新提出来。' +
                 'type / authority 只有 layered 模板会写进 frontmatter。tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。',
             parameters: {

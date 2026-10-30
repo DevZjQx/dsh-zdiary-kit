@@ -37,6 +37,7 @@
 `zk_new` 撞名直接报错（`zk new` 遇到同名文件是 exit 0 + 不写内容，Z8），不自动加后缀。
 flat 的随机 `{{id}}` 文件名撞不上，所以在建之前按标题查重一次（只查可见笔记，归档旧结论可复用标题）；
 layered 同目录同名靠 `{{slug title}}` 文件名拦住，不同目录允许同名（交给 `zk_lint` 提示）。
+文件名来自标题 slug：约定新标题用英文短 slug（中文标题会生成拼音文件名）；老笔记不改名，改名会断路径式入链。
 `type` / `authority` 只有 layered 模板（`{{extra.*}}`）会写进 frontmatter；flat 的 `default.md` 没有占位符，传了也不会落盘。
 `zk_append` 拒写根目录的 meta 文件（AGENTS / USER / MEMORY / DREAMS / INDEX / WORKFLOW，清单来自 `lib/meta.ts`）：追加会把记忆变成流水账，
 也让「这条记忆是谁改的」失去审计线索；子目录里的同名文件是普通笔记，照常可写。
