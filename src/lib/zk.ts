@@ -567,6 +567,8 @@ export interface NewNoteInput {
   content?: string
   dir?: string
   group?: string
+  /** 文件名（不含扩展名，只允许 basename）；不给就由 zk 按标题生成（layered 下是拼音 slug） */
+  name?: string
   /** frontmatter 的 type（走 `--extra type=`，模板里是 `{{extra.type}}`） */
   type?: string
   /** frontmatter 的 authority（走 `--extra authority=`） */
@@ -579,6 +581,33 @@ export interface NewNoteResult {
   title: string
   /** 归档里的同名旧结论（建之前那次全库扫描顺带算出来的，不再额外跑一次 zk） */
   archived: ArchivedTitleHit[]
+}
+
+/** 文件名里不收的字符：路径分隔符 + Windows 非法字符（库会被同步到 Windows / 塞进 zip） */
+const BAD_FILE_NAME = /[\\/:*?"<>|\u0000-\u001f]/
+
+/**
+ * 校验调用方给的文件名（只收 basename，不含扩展名）。
+ *
+ * 只管「能不能落成文件」：超过文件系统的 255 字节单段上限就是 ENAMETOOLONG，
+ * 那行错误照着做不了，所以在这里换成一句能照做的。可读性好坏不归它判断。
+ */
+function normalizeNoteName(raw: string): string {
+  const name = String(raw ?? '').trim().replace(NOTE_EXT, '')
+  if (!name) throw new ZkError('文件名不能为空', '不给 name 就由 zk 按标题生成；给了就要有内容')
+  if (name === '.' || name === '..') throw new ZkError(`文件名不能是 ${name}`)
+  if (name.startsWith('.')) throw new ZkError(`文件名不能以 . 开头：${name}`, '开头的点会被当成隐藏文件，去掉它')
+  if (BAD_FILE_NAME.test(name)) {
+    throw new ZkError(`文件名里有不能用的字符：${name}`, '只给文件名本身，不要 / \\ : * ? " < > |；换目录用 dir')
+  }
+  // 255 是单段上限，扩展名也算在里面（.md 占 3 字节）
+  if (Buffer.byteLength(name) > 252) {
+    throw new ZkError(
+      `文件名太长：${Buffer.byteLength(name)} 字节`,
+      '文件系统单段上限是 255 字节，缩到 252 字节以内（中文约 80 字）',
+    )
+  }
+  return name
 }
 
 /** 全库扫描（建笔记之前那一次）：默认走 allNotes（含归档），测试可注入一个会失败的版本 */
@@ -598,6 +627,9 @@ export async function createNote(
 ): Promise<NewNoteResult> {
   const title = input.title.trim()
   if (!title) throw new ZkError('标题不能为空')
+  // 给了 name 就是确定的 basename：先校验，后面建完直接换名
+  const wanted = input.name ? normalizeNoteName(input.name) : ''
+  const dir = (input.dir ?? cfg.notesDir).replace(/^\/+/, '') || '.'
 
   // 一次全库扫描（含归档）干两件事：活笔记查重 + 归档同名提醒。
   // 以前是各跑一次 `zk list`：同一个库扫两遍，还多起一个进程。
@@ -625,18 +657,39 @@ export async function createNote(
             '换一个标题，或直接用 zk_read / zk_append 改那一篇；归档里的旧结论不参与查重，可以复用标题',
           )
         }
+      } else if (wanted) {
+        // 给了 name 的 layered 笔记不走 zk 的 slug 撞名（文件名和标题脱钩，同名不会被拒），
+        // 所以按标题在同目录下补一道 —— 口径和 lint 的 duplicateTitles 一致。
+        const key = normalizeTitle(title)
+        const dirKey = dir.replace(/\/+$/, '')
+        const existing = snapshot.find((n) => !inArchive(cfg, n.path)
+          && path.posix.dirname(n.path) === dirKey
+          && normalizeTitle(n.title) === key)
+        if (existing) {
+          throw new ZkError(
+            `同目录下已有同名笔记：${existing.path}`,
+            '换一个标题，或直接用 zk_read / zk_append 改那一篇',
+          )
+        }
       }
       archived = archivedHits(cfg, snapshot, title)
     }
   }
 
-  const dir = (input.dir ?? cfg.notesDir).replace(/^\/+/, '') || '.'
   // zk 解析相对目录用的是 cwd，不是笔记本 → 一律给绝对路径；
   // 先过 absPathOf：别在 zk 拒绝之前就把 `../..` 目录 mkdir 出去。
   const dirAbs = absPathOf(cfg, dir)
   assertWritablePath(cfg, dirAbs)
   fs.mkdirSync(dirAbs, { recursive: true })
   const before = new Set(fs.readdirSync(dirAbs))
+  // name 是确定的，撞名在建之前就能查出来：zk 撞名是 exit 0 + 丢正文，不能等它
+  const clash = wanted && [...before].find((f) => path.basename(f, path.extname(f)) === wanted)
+  if (clash) {
+    throw new ZkError(
+      `同名笔记已存在：${dir === '.' ? '' : dir + '/'}${clash}`,
+      '换一个 name，或直接用 zk_read / zk_append 改那一篇',
+    )
+  }
   const args = ['new', dirAbs, '-t', title, '-i', '-p']
   if (input.group) args.push('-g', input.group)
   // 只在真给了 type/authority 时才传：flat 的 daily/notes 模板没有 {{extra.*}}，多传无害但没必要
@@ -653,7 +706,22 @@ export async function createNote(
       '同名时 zk 不覆盖（这次传入的正文被丢弃了，原文件一个字都没动）。换个标题，或直接用 zk_read / zk_append 改那一篇',
     )
   }
-  return { path: relPathOf(cfg, abs), absPath: abs, title, archived }
+  // name 只换 basename、不换目录：正文里的相对链接和 [[stem]] 都不受影响，所以这里是纯搬文件。
+  // 跨目录改名要重写入链，那是 zk_rename / renameNote 的活，不走这条路。
+  let finalAbs = abs
+  if (wanted && path.basename(abs, path.extname(abs)) !== wanted) {
+    const targetAbs = path.join(path.dirname(abs), wanted + (path.extname(abs) || '.md'))
+    try {
+      fs.renameSync(abs, targetAbs)
+    } catch (err) {
+      throw new ZkError(
+        `笔记已建好，但改文件名失败：${err instanceof Error ? err.message : String(err)}`,
+        `文件还在 ${relPathOf(cfg, abs)}，可以直接改文件名，或删掉重来`,
+      )
+    }
+    finalAbs = targetAbs
+  }
+  return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived }
 }
 
 export interface ArchivedTitleHit {

@@ -13,7 +13,7 @@
 | `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要 |
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active） |
 | `zk_read` | 读一篇全文（按路径，或先按词找最相关的一篇）；超长会截断并标注 |
-| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带标签与双链；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 一律拒写（写进去会被排除出索引，等于静默消失） |
+| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带标签与双链；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 一律拒写（写进去会被排除出索引，等于静默消失） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题） |
 | `zk_daily` | 打开/创建某天的日记，并追加一条 `## HH:MM` 记录 |
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题） |
@@ -26,7 +26,7 @@
 | `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |
 
 写笔记前 agent 会先 `zk_search` 查重；flat 笔记本的 `zk_new` 还会按标题再查一次，重复直接报错。
-layered 笔记本的文件名由标题生成：新笔记标题约定用英文短 slug（中文标题会得到拼音文件名）；老笔记不改名，改名会断入链。
+layered 笔记本的文件名是标题的 slug：英文标题自然得到英文文件名，短不短看标题本身；中文标题会变成很长的拼音名，要短名就在 `zk_new` 时传 `name`；老笔记不改名，改名会断入链。
 双链用相对路径（zk 的 `link-format = "wiki"` 认这个），所以 `--broken-links` 不会因为「按标题链接」而误报。
 
 **多会话**：每个会话第一次调工具时，会把当时配置里的默认笔记本**固定**下来（落在 `~/.dsh/zdiary/sessions/`，
@@ -242,6 +242,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 续写 | `zk-kit append notes/f2sj.md --text "追一段" --heading 后续` |
 | 双链 | `zk-kit link notes/a.md "某篇标题"` |
 | 指定目录 | `zk-kit new --title 标题 --dir notes/concepts`（layered 下 type 由目录所属 group 决定） |
+| 指定文件名 | `zk-kit new --title 很长的中文结论标题 --name 短文件名`（只换文件名，标题与正文不动；不给就是拼音 slug） |
 | 装 zk | `zk-kit install 0.15.7`（下载约 10 MB → `~/.dsh/zdiary/bin`，不在可跑清单里） |
 
 除 `doctor` / `help` / `config set` 外，其余子命令加 `--json` 输出结构化结果。

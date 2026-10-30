@@ -360,13 +360,15 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
             name: 'zk_new',
             description: '新建一篇笔记（zk 负责生成文件名、套用模板、写入索引）。适合记下一个概念、决定、来源或想法；' +
                 '写前先 zk_search 查重。标题重复会直接报错（flat 按标题查重，layered 同目录同名 slug 也会被 zk 拒绝）。' +
-                'layered 的文件名来自标题（{{slug title}}）：标题用英文短 slug，中文标题会生成拼音文件名。' +
+                'layered 的文件名默认来自标题（{{slug title}}）：中文标题会生成很长的拼音文件名。' +
+                '要短文件名就传 name（8–14 字中文短语 / 英文小写短横线名）：只换文件名，标题和正文一个字不动。' +
                 '归档里有同名旧结论不会拦，但会放进 archived（带 supersede-reason）：先读它，别把同一个错误结论重新提出来。' +
                 'type / authority 只有 layered 模板会写进 frontmatter。tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。',
             parameters: {
                 type: 'object',
                 properties: {
                     title: S.str('笔记标题（会成为一级标题）'),
+                    name: S.str('文件名（不含扩展名，也不要带目录）；不给就由 zk 按标题生成。中文标题建议给一个短名，否则是长拼音'),
                     body: S.str('正文 Markdown（可空）'),
                     tags: S.arr('标签（不写 #）。与设置里的默认标签合并', S.str('标签名')),
                     dir: S.str('放到哪个子目录（相对笔记本），默认用设置里的 notesDir'),
@@ -402,6 +404,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 const tags = [...new Set([...(cfg.defaultTags ?? []), ...(Array.isArray(args.tags) ? args.tags.map(String) : [])])];
                 const created = await createNote(cfg, {
                     title: String(args.title),
+                    name: args.name ? String(args.name) : undefined,
                     content: withTags(args.body ? String(args.body) : '', tags),
                     dir: args.dir ? String(args.dir) : cfg.notesDir,
                     group: args.group ? String(args.group) : undefined,

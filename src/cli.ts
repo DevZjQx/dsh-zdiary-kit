@@ -26,7 +26,7 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit doctor                       自检：zk / 笔记本 / 模板 / group / 索引
   zk-kit install [版本]                安装内置 zk（默认取配置里的版本）
   zk-kit init                         建好（或补齐）笔记本
-  zk-kit new --title T [--body B] [--tags a,b] [--dir notes]
+  zk-kit new --title T [--name 文件名] [--body B] [--tags a,b] [--dir notes]
   zk-kit search [词] [--tags a,b] [--since 日期] [--limit 5] [--json]
   zk-kit read <路径> | --query 词 [--max-chars n] [--json]
   zk-kit daily [--entry 一段] [--date yesterday]
@@ -287,10 +287,11 @@ async function main(): Promise<void> {
 
     case 'new': {
       const title = str(flags.title) || pos[0] || ''
-      if (!title) throw new ZkError('用法：zk-kit new --title 标题 [--body 正文] [--tags a,b]')
+      if (!title) throw new ZkError('用法：zk-kit new --title 标题 [--name 文件名] [--body 正文] [--tags a,b]')
       const tags = [...new Set([...cfg.defaultTags, ...list(flags.tags)])]
       const created = await createNote(cfg, {
         title,
+        name: str(flags.name) || undefined,
         content: withTags(str(flags.body), tags),
         dir: str(flags.dir) || cfg.notesDir,
       })

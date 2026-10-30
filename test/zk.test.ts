@@ -642,6 +642,25 @@ describe('structure: layered', () => {
     const all = await zk.searchNotes(layered, { limit: 50 })
     expect(all.some((n) => n.path.startsWith('.zk/'))).toBe(false)
   })
+
+  it('name：文件名不再跟标题走，同目录的重复标题仍然拦下', async () => {
+    const created = await zk.createNote(layered, {
+      title: '给中文标题配短文件名',
+      name: '短文件名',
+      dir: 'notes/concepts',
+      content: '正文',
+    })
+    expect(created.path).toBe('notes/concepts/短文件名.md')
+    expect(fs.readFileSync(created.absPath, 'utf8')).toContain('title: 给中文标题配短文件名')
+
+    // 文件名和标题脱钩后 zk 的 slug 撞名就失效了：同目录同名标题要在建之前拦住
+    await expect(zk.createNote(layered, {
+      title: '给中文标题配短文件名',
+      name: '另一个短名',
+      dir: 'notes/concepts',
+    })).rejects.toThrow(/同目录下已有同名笔记/)
+    expect(fs.existsSync(path.join(layeredDir, 'notes/concepts/另一个短名.md'))).toBe(false)
+  })
 })
 
 describe('notes', () => {
@@ -670,6 +689,24 @@ describe('notes', () => {
     await expect(zk.createNote(cfg, { title: 'flat 同名标题', content: '第二次的正文' })).rejects.toThrow(/同名笔记已存在/)
     expect(fs.readFileSync(first.absPath, 'utf8')).toContain('第一次的正文')
     expect(fs.readFileSync(first.absPath, 'utf8')).not.toContain('第二次的正文')
+  })
+
+  it('name 指定文件名：标题 / 正文不动，只换路径；扩展名不重复', async () => {
+    const created = await zk.createNote(cfg, { title: '命名参数', name: '短名.md', content: '正文还在' })
+    expect(path.basename(created.path)).toBe('短名.md')
+    const disk = fs.readFileSync(created.absPath, 'utf8')
+    expect(disk).toContain('# 命名参数')
+    expect(disk).toContain('正文还在')
+    expect((await zk.readNote(cfg, created.path)).title).toBe('命名参数')
+  })
+
+  it('name 撞名 / 非法字符：建之前就报错，目录里不多出文件', async () => {
+    const dirAbs = path.dirname((await zk.createNote(cfg, { title: '占位标题', name: '占位文件' })).absPath)
+    const before = fs.readdirSync(dirAbs).length
+    await expect(zk.createNote(cfg, { title: '另一个标题', name: '占位文件' })).rejects.toThrow(/同名笔记已存在/)
+    await expect(zk.createNote(cfg, { title: '越界标题', name: 'notes/越界' })).rejects.toThrow(/不能用的字符/)
+    await expect(zk.createNote(cfg, { title: '空名标题', name: '  ' })).rejects.toThrow(/不能为空/)
+    expect(fs.readdirSync(dirAbs).length).toBe(before)
   })
 
   it('扫描失败时：layered 照建（fail-open），flat 仍然拦下（fail-closed）', async () => {
