@@ -720,6 +720,8 @@ export async function createNote(
       )
     }
     finalAbs = targetAbs
+    // 索引里还是 zk 生成的那个文件名：不刷新的话，紧接着的 search / stats 会读到旧路径
+    await refreshIndexQuietly(cfg, signal)
   }
   return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived }
 }
@@ -935,11 +937,12 @@ export async function notebookStats(cfg: Config, signal?: AbortSignal): Promise<
   // 一次全库（含归档）拿全：笔记数 / 标签 / 归档数 / superseded 都从这份算。
   // 以前是「多跑一次 list 数笔记 + 递归扫 archive 再逐篇读全文看 status」——
   // 归档一大，光数个数就要把整片归档读一遍磁盘。
-  const [brokenLinks, orphans, all] = await Promise.all([
-    count(['--broken-links']),
-    count(['--orphan']),
-    allNotes(cfg, { includeArchived: true }, signal),
-  ])
+  //
+  // 三次查询必须串行：索引脏时每个 zk 进程都会自己去重扫（.zk/notebook.db），
+  // 并发的进程会互相看到对方写到一半的结果，同一次统计里「归档」和「活跃」就对不上。
+  const brokenLinks = await count(['--broken-links'])
+  const orphans = await count(['--orphan'])
+  const all = await allNotes(cfg, { includeArchived: true }, signal)
   const live = all.filter((n) => !inArchive(cfg, n.path))
   // 标签数只从可见笔记汇总：zk tag list 没有 -x，直接用它会把 raw/inbox/archive/meta 的标签也算进来。
   return {
@@ -955,6 +958,19 @@ export async function notebookStats(cfg: Config, signal?: AbortSignal): Promise<
 
 export async function indexNotebook(cfg: Config, signal?: AbortSignal): Promise<void> {
   await zk(cfg, ['index', '--quiet'], { signal, timeoutMs: 120_000 })
+}
+
+/**
+ * 我们自己动过文件（改名 / 搬归档）之后补一次增量索引。
+ *
+ * 不补的话索引就是脏的：脏索引下每个 zk 进程都会自己去重扫，并起来就互相打架
+ * （zk_stats 会在自己的三次查询之间看到不一致的归档数）。索引只是缓存，
+ * 刷新失败不该把「已经落盘的改名」变成一句报错，所以这里吞掉异常。
+ */
+async function refreshIndexQuietly(cfg: Config, signal?: AbortSignal): Promise<void> {
+  try {
+    await indexNotebook(cfg, signal)
+  } catch { /* 下一个读者会自己重扫，最坏只是那一次读到旧路径 */ }
 }
 
 /** 指向某篇笔记的所有来源笔记（相对路径）—— 一次 `zk graph`，不按笔记逐个跑 */
@@ -1099,6 +1115,8 @@ export async function supersedeNote(
     fs.writeFileSync(abs, setFrontmatter(content, patch), 'utf8')
     fs.mkdirSync(path.dirname(archiveAbs), { recursive: true })
     fs.renameSync(abs, archiveAbs)
+    // 搬完索引就脏了：马上 zk_stats 会把这篇既不算归档也不算活跃（见 refreshIndexQuietly）
+    await refreshIndexQuietly(cfg, signal)
   }
 
   return {
@@ -1413,6 +1431,8 @@ export async function renameNote(
     fs.renameSync(oldAbs, newAbs)
     if (self.changed > 0) fs.writeFileSync(newAbs, self.text, 'utf8')
     for (const item of pending) fs.writeFileSync(item.abs, item.text, 'utf8')
+    // 路径全变了：索引不刷新的话，紧接着的检索还会按旧路径 / 旧入链回答
+    await refreshIndexQuietly(cfg, signal)
   }
 
   return {

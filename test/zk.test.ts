@@ -1642,6 +1642,27 @@ describe('M4: 结构设置与记忆预算', () => {
     expect(line).toContain('归档 1')
     expect(line).toContain('superseded 1')
   })
+
+  it('supersede 之后索引当场刷新：并发的 zk_stats 读到同一份结果', async () => {
+    // 索引脏的时候，多个 zk 进程会各扫各的：同一次统计里「归档」和「活跃」对不上。
+    // supersede 自己补索引之后，并发的两次统计必须完全一致。
+    const dir = path.join(home, 'nb-stats-race')
+    const c = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(c)
+    const target = await zk.createNote(c, { title: '并发统计的结论', dir: 'notes/concepts', content: '旧结论' })
+    await zk.supersedeNote(c, { path: target.path, dryRun: false })
+
+    const [a, b] = await Promise.all([zk.notebookStats(c), zk.notebookStats(c)])
+    expect(a.archived).toBe(1)
+    expect(b.archived).toBe(1)
+    expect(a.notes).toBe(b.notes)
+    expect(a.superseded).toBe(1)
+
+    // 搬走之后旧路径不该再被索引出来（哪怕只有一瞬间的「既不算归档也不算活跃」）
+    const all = await zk.allNotes(c, { includeArchived: true })
+    expect(all.some((n) => n.path === target.path)).toBe(false)
+    expect(all.some((n) => n.path.startsWith(`${c.archiveDir}/`))).toBe(true)
+  })
 })
 
 describe('cli: zk-kit config', () => {
