@@ -148,7 +148,7 @@ if (!settings.config || (settings.zk as { found: boolean }).found !== true) thro
 const structure0 = settings.structure as { mode: string; ready: boolean; missing: string[] }
 if (structure0.mode !== 'flat' || !structure0.ready) throw new Error('settings 快照里的结构状态不对：' + JSON.stringify(structure0))
 const memory0 = settings.memory as { budget: number; words: number }
-if (memory0.budget !== 300 || memory0.words <= 0) throw new Error('settings 快照里的记忆预算不对：' + JSON.stringify(memory0))
+if (memory0.budget !== 500 || memory0.words <= 0) throw new Error('settings 快照里的记忆预算不对：' + JSON.stringify(memory0))
 console.log('\n[GET /settings] zk =', JSON.stringify(settings.zk), '笔记数 =', JSON.stringify(settings.counts), '结构 =', structure0.mode, '记忆 =', memory0.words + '/' + memory0.budget)
 
 const status = await getJson('/status')

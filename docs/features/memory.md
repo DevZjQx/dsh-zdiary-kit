@@ -8,7 +8,7 @@
 - `lib/memory.ts`：读 `<vault>/AGENTS.md` / `USER.md` / `MEMORY.md` → 词数 → 机械截断 → `<system-reminder>` 框；
   另读 `DREAMS.md` 的「上次做梦」一行（不进正文、不计预算）
 - `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）
-- `lib/agents-template.ts`：`AGENTS.md` 模板（layered 初始化时写入；约 160 词，占默认 300 词的 53%，因为它在预算里且永不截断）
+- `lib/agents-template.ts`：`AGENTS.md` 模板（layered 初始化时写入；约 160 词，占默认 500 词的 32%，因为它在预算里且永不截断）
   与 `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
 - `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册 `zdiary:memory` 段（order 5200），`text` 是函数，每个 step 重新读文件；
   装配上下文带 `agent.id` 时按**会话工作区**解析笔记本（和 `zk_*` 工具同口径），裸装配才退回进程工作区
@@ -37,7 +37,7 @@
 多一个开关就多一种「记忆静默消失」。依赖 DSH 自动加载 vault 根目录的 `AGENTS.md` —— 拒绝：不成立，
 内置加载器只认「项目根 → cwd」链与用户级两份，vault 不在 cwd 祖先链上时完全读不到（见计划 §4 M1）。
 
-**Exceptions.** 中文按 2 字 1 词计（空白切分在中文上严重低估，300 词会变成装饰）；
+**Exceptions.** 中文按 2 字 1 词计（空白切分在中文上严重低估，预算会变成装饰）；
 `AGENTS.md` 模板自己也得守这条预算：初版 310 词，`bun run docs` 里 `zk-kit doctor` 直接报
 `✗ 记忆：310/300 词` —— 模板吃掉整个预算，MEMORY.md 就永远被截光，所以压到 160 词（195 词的版本把 USER + MEMORY 压到只剩 105 词）；
 `AGENTS.md` 是硬规则，单独超预算也不截断，只回显告警；文件内容里的 `</system-reminder>` 会被转义，
@@ -50,7 +50,7 @@
 这条只写在 `buildMemoryPayload` 一处 —— 注入、`zk_context`、设置页、`doctor` 读的都是同一份载荷。
 
 **截断留目录，不静默消失。** 丢掉的 `##` 段会合成一份紧凑目录（`MEMORY.md：§标题、§标题`），
-最多 5 个标题；目录自己也算预算（载荷里的 `tocWords`，`min(40, 20%)`：默认 300 词预算时最多 40 词），
+最多 5 个标题；目录自己也算预算（载荷里的 `tocWords`，`min(40, 20%)`：默认 500 词预算时封顶 40 词），
 放不下时按标题数递减，一段都列不出就退化成一句 `zk_read 读 MEMORY.md` 的指引。需要哪段由 agent
 按当前任务决定 —— 装配层拿不到 query，插件也不猜相关性，只保证「被丢掉的东西仍然可发现」。
 逐文件 `files[].originalWords` + `formatFileShares()` 让 `doctor` / 设置页能说清预算被谁吃掉。

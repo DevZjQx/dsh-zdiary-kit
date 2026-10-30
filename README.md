@@ -27,7 +27,7 @@
 双链用相对路径（zk 的 `link-format = "wiki"` 认这个），所以 `--broken-links` 不会因为「按标题链接」而误报。
 
 **长期记忆**：笔记本根目录放 `AGENTS.md`（工作约定）、`USER.md`（偏好）、`MEMORY.md`（精炼记忆），
-插件会在每个 step 把它们注入系统提示（预算默认 300 词，设置页「记忆 → 注入预算」可改；
+插件会在每个 step 把它们注入系统提示（预算默认 500 词，设置页「记忆 → 注入预算」可改；
 超了先丢 MEMORY 的尾部整段，并留一份未注入段落的目录（段落标题）—— 需要时用 `zk_read MEMORY.md` 取回；
 同时明确告诉你截了多少、以及是不是 AGENTS 吃掉了大半预算）。
 DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不会**读笔记本根目录，所以别指望宿主帮你加载 —— 是插件自己读、自己注入。
@@ -80,7 +80,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 | 目录与 group | 笔记子目录 / 日记子目录 | 默认 `notes` / `journal`（全局共用，不按笔记本分开） |
 | 目录与 group | 日记 group 名 | 默认 `daily`，初始化时自动补配置 |
 | 目录与 group | 归档目录 | `supersede` 后搬到这里（保留原相对路径），默认 `archive` |
-| 记忆 | 注入预算（词） | AGENTS + USER + MEMORY 的合计上限，默认 300（中文按 2 字 1 词） |
+| 记忆 | 注入预算（词） | AGENTS + USER + MEMORY 的合计上限，默认 500（中文按 2 字 1 词） |
 | 写入 | 默认标签 / zk_read 上限 | 新笔记自动带标签；单次读取字符上限 |
 | zk | zk 路径 / 内置版本 | 路径空 = 自动找；版本默认 0.15.7 |
 
@@ -179,7 +179,7 @@ template = "daily.md"
 （`entry.md` 三处共用，`type` 与 `authority` 由 `[group.X.extra]` 注入），
 以及根目录两份模板：**`AGENTS.md`**（检索词归宿、中文必须打 tags、"插件不保证宿主自动加载本文件"三件事）
 与 **`WORKFLOW.md`**（改已有笔记前先列受影响清单等确认，再按 temporal / context variant / contradiction 三分类动手）。
-`WORKFLOW.md` 不进每轮注入 —— 它低频但重要，塞进 `AGENTS.md` 会把 300 词预算挤到 MEMORY 没位置。
+`WORKFLOW.md` 不进每轮注入 —— 它低频但重要，塞进 `AGENTS.md` 会把 500 词预算挤到 MEMORY 没位置。
 **只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` / `WORKFLOW.md` 一律不覆盖。
 切回 `flat` 同理：只改配置，已建出来的 `raw/` `archive/` 不会被删 —— 所以切换是「随时可逆」的，代价只是目录留在那里。
 `zk-kit config set` 会把被归一化改掉的值回显出来（例如 `structure=xyz` → 实际 `flat`），不会"命令成功但没生效"。

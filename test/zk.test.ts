@@ -198,7 +198,7 @@ describe('config', () => {
     // 结构落在条目里；其余默认值照旧显式落盘（以后翻默认值不牵连老 vault）
     expect(onDisk.notebooks).toEqual({ default: { path: notebook, structure: 'flat' } })
     expect('structure' in onDisk).toBe(false)
-    expect(onDisk.memoryBudgetWords).toBe(300)
+    expect(onDisk.memoryBudgetWords).toBe(500)
   })
 })
 

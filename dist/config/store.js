@@ -38,7 +38,7 @@ export const DEFAULTS = {
     dailyGroup: 'daily',
     defaultTags: [],
     maxReadChars: 20_000,
-    memoryBudgetWords: 300,
+    memoryBudgetWords: 500,
     archiveDir: 'archive',
     zkVersion: '0.15.7',
     zkPath: '',
