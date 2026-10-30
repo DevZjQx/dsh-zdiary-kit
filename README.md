@@ -18,6 +18,7 @@
 | `zk_daily` | 打开/创建某天的日记，并追加一条 `## HH:MM` 记录 |
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题） |
 | `zk_supersede` | 废弃过时结论：标 `superseded` + 写 `reason` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演 |
+| `zk_rename` | 改名 / 换目录并修断链：入链（`[[…]]` 与 Markdown 链接，保留 `#锚点` 与 `\|别名`）按实际解析结果改到新路径，根目录 meta 里的 `[[来源]]` 一起改，被搬走那篇自己的相对 Markdown 链接按新位置重算；默认只预演 |
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）；宿主支持注入时每轮已自动带进系统提示 |
 | `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 记忆链接失效，每类最多 50 条；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、daily 未完成项、被引最多；只报告 |
@@ -43,6 +44,7 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 写 `MEMORY.md` / `DREAMS.md` 由 agent 按 `AGENTS.md` 自己决定 —— 机械活留在插件，语义判断留在可审计的地方。
 `zk_lint` 会核对 `MEMORY.md` / `USER.md` 里的 `[[来源路径]]` 是否还指向活笔记 ——
 `zk_supersede` 只重写笔记之间的入链，meta 文件不在图里，链接不会跟着搬，`--broken-links` 也看不见。
+改名同理：`zk_rename` 会把 `zk graph` 里的入链和根目录 meta 的 `[[来源]]` 一起改到新路径，被搬走那篇自己的相对 Markdown 链接也按新位置重算 —— 手工 `mv` 会一次断掉这三处。
 插件不跑定时任务：`DREAMS.md` 开头写一行 `上次做梦：YYYY-MM-DD`，注入里就会按 7 天节奏提醒该整理
 （没做过就提示先跑一次；没有 `AGENTS.md` 的库不提醒）。
 
@@ -285,7 +287,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「补建 *名* 的目录」，别手改配置去将就磁盘 |
 | 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |
 | 新建时提示「归档里有同名旧结论」 | 允许复用标题，但先 `zk_read` 归档那篇，确认不是同一个错误；插件只警告、不拦 |
-| 往 `raw/` 写笔记报「只读」 | `raw/` 是原始材料：写进去的笔记会被排除出索引，表现成「写了但搜不到」；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` 直接拒绝 | 结论写到 `notes/`；原文留在原位，用 `zk_read raw/xxx.md` 或直接读文件对照 |
+| 往 `raw/` 写笔记报「只读」 | `raw/` 是原始材料：写进去的笔记会被排除出索引，表现成「写了但搜不到」；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 直接拒绝 | 结论写到 `notes/`；原文留在原位，用 `zk_read raw/xxx.md` 或直接读文件对照 |
 | `config set notebook=…` 报「派生值」 | `notebook` 是 `notebooks[active]` 解析后的派生值、不落盘也不可写：改路径用 `zk-kit notebooks add 名 路径`，切换用 `use` |
 
 ## 开发
@@ -294,7 +296,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉，并检查没有顶层声明
   （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：跑一遍 13 个工具 + 覆盖 6 条设置路由，并检查输出 schema 在 DSH 支持的子集内）·
+  `bun run smoke`（加载 dist：跑一遍 14 个工具 + 覆盖 6 条设置路由，并检查输出 schema 在 DSH 支持的子集内）·
   `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
@@ -318,7 +320,7 @@ src/
 │   ├── dsh.ts                    # 宿主契约（纯类型，编译后为空）
 │   └── exec.ts / http.ts / json-file.ts
 ├── features/
-│   ├── zk-tools/feature.ts       # 13 个工具
+│   ├── zk-tools/feature.ts       # 14 个工具
 │   └── settings/                 # 宿主 API + 浏览器 section
 └── cli.ts                        # zk-kit 命令行
 ```

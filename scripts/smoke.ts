@@ -4,7 +4,7 @@
  *
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
- *   · 13 个工具能注册、能执行、能渲染；
+ *   · 14 个工具能注册、能执行、能渲染；
  *   · 6 条设置路由能工作（走真实的 http 请求，信任栅栏用假的 connection 顶替）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
@@ -90,7 +90,7 @@ for (const tool of tools) checkSchema(tool.output.schema, `${tool.name}.output.s
 
 console.log('工具：' + tools.map((t) => t.name).join(', '))
 console.log('路由：' + [...routes.keys()].join(', '))
-if (tools.length !== 13) throw new Error('工具数量不对：' + tools.length)
+if (tools.length !== 14) throw new Error('工具数量不对：' + tools.length)
 if (routes.size !== 6) throw new Error('路由数量不对：' + routes.size)
 
 const call = async (name: string, args: unknown) => {
@@ -114,6 +114,8 @@ const queried = await call('zk_query', { tags: ['smoke'], status: 'active' })
 if (Number(queried.count) < 1) throw new Error('zk_query 没查到刚写的笔记')
 const preview = await call('zk_supersede', { path: created.path })
 if (preview.dryRun !== true || preview.performed !== false) throw new Error('zk_supersede 默认不是预演')
+const renamed = await call('zk_rename', { path: created.path, to: 'notes/smoke-renamed.md' })
+if (renamed.dryRun !== true || renamed.performed !== false) throw new Error('zk_rename 默认不是预演')
 const linted = await call('zk_lint', {})
 if (typeof (linted.orphans as Record<string, unknown>).total !== 'number') throw new Error('zk_lint 输出不对')
 const dreamed = await call('zk_dream', { days: 7 })

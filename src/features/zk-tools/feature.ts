@@ -1,5 +1,5 @@
 /**
- * zk 工具（feature 的公共入口）：13 个模型可调用的工具，全部经 lib/zk.ts。
+ * zk 工具（feature 的公共入口）：14 个模型可调用的工具，全部经 lib/zk.ts。
  *
  * 设计要点：
  *   · 除 zk_context（只读 meta 文件，不依赖 zk）外，每个工具进来先 ensureNotebook —— 第一次调用就自动建好笔记本，用户不用先点设置页；
@@ -19,9 +19,9 @@ import type { SchemaNode } from '../../lib/tool.ts'
 import { ensureNotebook } from '../../lib/notebook.ts'
 import {
   searchNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily,
-  linkNotes, withTags, notebookStats, supersedeNote, hasNotebook, localDate as dateOnly, ZkError,
+  linkNotes, withTags, notebookStats, supersedeNote, renameNote, hasNotebook, localDate as dateOnly, ZkError,
 } from '../../lib/zk.ts'
-import type { NoteRecord, NoteDoc, SupersedeResult } from '../../lib/zk.ts'
+import type { NoteRecord, NoteDoc, SupersedeResult, RenameResult } from '../../lib/zk.ts'
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
 import { META_NAMES } from '../../lib/meta.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
@@ -682,6 +682,80 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }
         if (v.missingLinks.length) {
           lines.push('⚠️ 这些笔记有入链但写法不是 [[旧路径]]，没有自动改，需要人看一眼：' + v.missingLinks.join('、'))
+        }
+        if (v.dryRun) lines.push('确认无误后传 dry_run: false 执行。')
+        return text(lines.join('\n'))
+      },
+    }),
+
+    t({
+      name: 'zk_rename',
+      description:
+        '给笔记改名 / 换目录，并修好改名带来的断链：入链（[[…]] 与 Markdown 链接，保留 #锚点 与 |别名）按实际解析结果改到新路径，' +
+        '根目录 meta 文件与归档笔记里的 [[来源]] 一起改；被搬走那篇自己的相对链接也会按新位置重算。认不出的写法列进 missingLinks，不猜。' +
+        '默认 dry_run: true，只返回受影响清单；确认后传 dry_run: false 才真改。改名后 zk_daily 的日记、archive/ 里的笔记、raw/ 与 meta 文件都不许动。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: S.str('要改名的笔记（当前相对路径）'),
+          to: S.str('新路径：相对笔记本；只给文件名 = 留在原目录；以 / 结尾 = 放进那个目录并保留原文件名'),
+          dry_run: S.bool('true（默认）= 只出清单不改文件；false = 真的执行'),
+        },
+        required: ['path', 'to'],
+        additionalProperties: false,
+      },
+      output: {
+        schema: objSchema({
+          notebook: { type: 'string' },
+          path: { type: 'string' },
+          newPath: { type: 'string' },
+          dryRun: { type: 'boolean' },
+          performed: { type: 'boolean' },
+          rewrittenLinks: {
+            type: 'array',
+            items: objSchema({ path: { type: 'string' }, replaced: { type: 'number' } }, ['path', 'replaced']),
+          },
+          missingLinks: { type: 'array', items: { type: 'string' } },
+          selfRewritten: { type: 'number' },
+        }, ['notebook', 'path', 'newPath', 'dryRun', 'performed', 'rewrittenLinks', 'missingLinks', 'selfRewritten']),
+      },
+      async run(args, env) {
+        const cfg = configFor(env.workspace, env.sessionId)
+        await ensureNotebook(cfg, env.signal)
+        const r = await renameNote(cfg, {
+          path: String(args.path),
+          to: String(args.to),
+          // 缺省是预演：改名会同时改别的笔记，不该一次说错就全库漂移
+          dryRun: args.dry_run !== false,
+        }, env.signal)
+        return {
+          notebook: cfg.notebook,
+          path: r.path,
+          newPath: r.newPath,
+          dryRun: r.dryRun,
+          performed: r.performed,
+          rewrittenLinks: r.rewrittenLinks,
+          missingLinks: r.missingLinks,
+          selfRewritten: r.selfRewritten,
+        }
+      },
+      render(_args, value) {
+        const v = value as RenameResult & { notebook: string }
+        const lines: string[] = []
+        lines.push(v.dryRun
+          ? `预演（没有动任何文件）：${v.path} → ${v.newPath}`
+          : `已改名：${v.path} → ${v.newPath}`)
+        if (v.rewrittenLinks.length) {
+          lines.push(`${v.dryRun ? '将重写' : '已重写'} ${v.rewrittenLinks.length} 篇笔记的入链：`)
+          for (const item of v.rewrittenLinks) lines.push(`  · ${item.path}（${item.replaced} 处）`)
+        } else {
+          lines.push('没有需要重写的入链。')
+        }
+        if (v.selfRewritten > 0) {
+          lines.push(`它自己正文里的 ${v.selfRewritten} 条相对链接已按新位置重算。`)
+        }
+        if (v.missingLinks.length) {
+          lines.push('⚠️ 这些笔记有入链但没找到能改写的写法，需要人看一眼：' + v.missingLinks.join('、'))
         }
         if (v.dryRun) lines.push('确认无误后传 dry_run: false 执行。')
         return text(lines.join('\n'))

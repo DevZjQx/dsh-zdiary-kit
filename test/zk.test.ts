@@ -885,6 +885,101 @@ describe('M2: 结构化检索与废弃', () => {
   })
 })
 
+describe('M7: 改名不断链', () => {
+  const dir = path.join(home, 'nb-m7')
+  const m7 = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+  const note = (title: string, dirName: string, body: string) => zk.createNote(m7, { title, dir: dirName, content: body })
+
+  it('预演不改文件；执行后搬走文件，并把入链 / 别名 / 锚点 / Markdown 链接 / meta 一起改到位', async () => {
+    await notebookLib.ensureNotebook(m7)
+    const target = await note('改名目标', 'notes/concepts', '被引用的正文')
+    const neighbor = await note('改名目标的邻居', 'notes/concepts', '邻居正文')
+    const stem = path.basename(target.path, '.md')
+    const neighborStem = path.basename(neighbor.path, '.md')
+
+    // 它自己的链接：wiki 按文件名解析（换目录不受影响），Markdown 才是相对路径
+    await zk.appendToNote(m7, target.path, `见 [[${neighborStem}]] 和 [邻居](../concepts/${neighborStem}.md)`)
+
+    // 三种入链写法：根相对、带别名、带锚点；外加一条 Markdown 链接
+    const rootSource = await note('根相对来源', 'notes/sources', `正文 [[${target.path.replace(/\.md$/, '')}]]`)
+    const siblingSource = await note('同目录来源', 'notes/concepts', `正文 [[${stem}]]`)
+    fs.appendFileSync(rootSource.absPath, `\n[[${target.path.replace(/\.md$/, '')}|别名]] [[${target.path.replace(/\.md$/, '')}#小节]]\n\n[x](../concepts/${stem}.md)\n`)
+    fs.writeFileSync(path.join(dir, 'MEMORY.md'), `## 记忆\n\n- 结论见 [[${target.path.replace(/\.md$/, '')}]]\n`)
+    // 归档里的笔记也链向活笔记：不在 lint / 默认图里，但同样会断
+    const oldSource = await note('归档里的来源', 'notes/concepts', `旧来源 [[${target.path.replace(/\.md$/, '')}]]`)
+    await zk.supersedeNote(m7, { path: oldSource.path, dryRun: false })
+    const archivedSourcePath = `archive/${oldSource.path}`
+
+    const brokenBefore = (await zk.searchNotes(m7, { brokenLinks: true, limit: 50 })).length
+    const newRel = 'notes/patterns/deep/改名之后.md'
+
+    // ── 预演 ──
+    const dry = await zk.renameNote(m7, { path: target.path, to: newRel })
+    expect(dry.dryRun).toBe(true)
+    expect(dry.performed).toBe(false)
+    expect(dry.newPath).toBe(newRel)
+    expect(dry.rewrittenLinks.map((r) => r.path).sort()).toEqual([rootSource.path, siblingSource.path, 'MEMORY.md', archivedSourcePath].sort())
+    expect(dry.missingLinks).toEqual([])
+    expect(dry.selfRewritten).toBe(1)
+    expect(fs.existsSync(target.absPath)).toBe(true)
+    expect(fs.existsSync(path.join(dir, newRel))).toBe(false)
+    expect(fs.readFileSync(rootSource.absPath, 'utf8')).toContain(stem)
+
+    // ── 执行 ──
+    const done = await zk.renameNote(m7, { path: target.path, to: newRel, dryRun: false })
+    expect(done.performed).toBe(true)
+    expect(fs.existsSync(target.absPath)).toBe(false)
+    expect(fs.readFileSync(path.join(dir, newRel), 'utf8')).toContain('被引用的正文')
+    const newStem = newRel.replace(/\.md$/, '')
+
+    const rootText = fs.readFileSync(rootSource.absPath, 'utf8')
+    expect(rootText).toContain(`[[${newStem}]]`)
+    expect(rootText).toContain(`[[${newStem}|别名]]`)
+    expect(rootText).toContain(`[[${newStem}#小节]]`)
+    expect(rootText).toContain('[x](../patterns/deep/改名之后.md)')
+    expect(rootText).not.toContain(stem)
+
+    // 只写文件名的 [[…]] 入链（zk 按全局文件名解析）：改名后要改成能解析的根路径写法
+    expect(fs.readFileSync(siblingSource.absPath, 'utf8')).toContain('[[notes/patterns/deep/改名之后]]')
+    // meta 文件不在 zk graph 里，也要跟着改
+    expect(fs.readFileSync(path.join(dir, 'MEMORY.md'), 'utf8')).toContain(`[[${newStem}]]`)
+    expect(fs.readFileSync(path.join(dir, archivedSourcePath), 'utf8')).toContain(`[[${newStem}]]`)
+    // 它自己正文：wiki 链接不动（按文件名解析），Markdown 相对链接按新目录重算
+    const selfText = fs.readFileSync(path.join(dir, newRel), 'utf8')
+    expect(selfText).toContain(`[[${neighborStem}]]`)
+    expect(selfText).toContain(`[邻居](../../concepts/${neighborStem}.md)`)
+
+    // 断链数不增加，新路径能被检索到
+    expect((await zk.searchNotes(m7, { brokenLinks: true, limit: 50 })).length).toBe(brokenBefore)
+    expect((await zk.searchNotes(m7, { paths: ['notes/patterns'], limit: 10 })).map((n) => n.path)).toContain(newRel)
+
+    // 重放：原路径已经不存在
+    await expect(zk.renameNote(m7, { path: target.path, to: 'notes/patterns/再来一次.md' })).rejects.toThrow(/笔记不存在/)
+  })
+
+  it('拒绝：目标占位 / 换成 meta / 日记 / raw / 归档 / 换格式', async () => {
+    await notebookLib.ensureNotebook(m7)
+    const a = await note('拒绝改名甲', 'notes/concepts', '甲')
+    const b = await note('拒绝改名乙', 'notes/concepts', '乙')
+    await expect(zk.renameNote(m7, { path: a.path, to: b.path })).rejects.toThrow(/占用/)
+    await expect(zk.renameNote(m7, { path: a.path, to: 'MEMORY.md' })).rejects.toThrow(/meta/)
+    await expect(zk.renameNote(m7, { path: a.path, to: 'notes/concepts/换成.txt' })).rejects.toThrow(/格式/)
+
+    const daily = await zk.ensureDailyNote(m7)
+    await expect(zk.renameNote(m7, { path: daily.path, to: 'journal/改名日记.md' })).rejects.toThrow(/日记/)
+
+    fs.mkdirSync(path.join(dir, 'raw'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'raw', '素材.md'), '# 素材\n\n原文\n')
+    await expect(zk.renameNote(m7, { path: 'raw/素材.md', to: 'notes/素材.md' })).rejects.toThrow(/只读/)
+
+    const archived = await note('归档里的旧结论', 'notes/concepts', '旧')
+    await zk.supersedeNote(m7, { path: archived.path, dryRun: false })
+    await expect(zk.renameNote(m7, { path: `archive/${archived.path}`, to: 'notes/挪回来.md' })).rejects.toThrow(/归档/)
+    // meta 文件本身也不许改名
+    await expect(zk.renameNote(m7, { path: 'MEMORY.md', to: 'MEMO.md' })).rejects.toThrow(/meta/)
+  })
+})
+
 describe('M3: 巡检与做梦', () => {
   const dir = path.join(home, 'nb-m3')
   const m3 = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
@@ -1150,10 +1245,11 @@ describe('daily', () => {
 })
 
 describe('tools', () => {
-  it('13 个工具，参数校验拒绝坏输入', () => {
+  it('14 个工具，参数校验拒绝坏输入', () => {
     const defs = toolsFeature.buildTools()
     expect(defs.map((d) => d.name)).toEqual([
-      'zk_search', 'zk_query', 'zk_read', 'zk_new', 'zk_daily', 'zk_append', 'zk_link', 'zk_supersede',
+      'zk_search', 'zk_query', 'zk_read', 'zk_new', 'zk_daily', 'zk_append', 'zk_link',       'zk_supersede',
+      'zk_rename',
       'zk_context', 'zk_lint', 'zk_dream', 'zk_stats', 'zk_use',
     ])
     const zkNew = defs.find((d) => d.name === 'zk_new')!

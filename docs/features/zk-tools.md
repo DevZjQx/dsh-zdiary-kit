@@ -2,8 +2,8 @@
 
 **Purpose.** 让模型用 zk 思维工作：先查重、再写原子笔记、用双链连起来、每天记一段。
 
-**Owns.** 13 个工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
-`zk_supersede` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）：
+**Owns.** 14 个工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
+`zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
 `zk_context` 例外：它只读根目录三份 meta 文件，**不** `ensureNotebook`（读记忆不该依赖 zk）。
 
@@ -40,7 +40,7 @@ layered 同目录同名靠 `{{slug title}}` 文件名拦住，不同目录允许
 `type` / `authority` 只有 layered 模板（`{{extra.*}}`）会写进 frontmatter；flat 的 `default.md` 没有占位符，传了也不会落盘。
 `zk_append` 拒写根目录的 meta 文件（AGENTS / USER / MEMORY / DREAMS / INDEX / WORKFLOW，清单来自 `lib/meta.ts`）：追加会把记忆变成流水账，
 也让「这条记忆是谁改的」失去审计线索；子目录里的同名文件是普通笔记，照常可写。
-`raw/` 是唯一的只读目录：`zk_new` / `zk_append` / `zk_link` / `zk_supersede` 的写入入口都走 `assertWritablePath`，
+`raw/` 是唯一的只读目录：`zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 的写入入口都走 `assertWritablePath`，
 往里写会直接报错 —— raw 被排除出索引，写进去的笔记不会报错、只是永远搜不到，那比失败更难查。
 `zk_stats` 除笔记 / 标签 / 断链 / 孤立外，还给 `archived`（archive/ 下的文件数，磁盘扫）与
 `superseded`（归档区扫 frontmatter + 非归档区里手工标了 status 的笔记）—— 归档区被排除在索引查询之外，
@@ -49,6 +49,16 @@ layered 同目录同名靠 `{{slug title}}` 文件名拦住，不同目录允许
 `reason` 会做单行规范化（≤200 字）并以 YAML 双引号标量写进归档的 `supersede-reason`：带冒号或引号也不会写坏
 frontmatter；预演也回显，重放返回已记录的原因。双引号值读回来走 JSON 解析（`\"`、`\n` 还原成原字符），
 YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号」—— 与改动前同行为，只是不再尝试解码。
+`zk_rename` 也默认 `dry_run: true`，理由同上；默认只返回「搬到哪里、哪些入链会改」。
+入链按**实际解析结果**匹配，不按字面量：zk 的 wiki 路径是笔记本根相对、只写文件名时按全局文件名匹配（实测 `../` 不建边），
+所以同目录写成 `[[文件名]]` 的入链也能认出来；Markdown 链接则只相对来源文件解析。
+改名后一律写成根路径（`[[notes/patterns/x]]`），避免新文件名与别的笔记撞名时产生歧义；`#锚点`、`\|别名`、图片一起保留。
+被搬走那篇自己的 wiki 链接不用动（按根 / 文件名解析），但相对 Markdown 链接会按新目录重算。
+根目录 meta 文件里的 `[[来源]]` 不在 `zk graph` 里，单独读进来一起改 —— 否则 `zk_lint` 的记忆层体检会立刻报漂移。
+归档里的入链也一起改（默认图排除了 archive，改名时单独带上）：归档不进 lint，断了没人会看见。
+拒绝的情况：目标路径已存在（不覆盖）、换成 meta 文件名、换扩展名、改 `journal/YYYY-MM-DD` 的日记（`zk_daily` 会另建一篇）、
+改 `raw/`（只读）、改 `archive/`（归档只由 `zk_supersede` 写入）。`zk graph` 说某篇有入链但正文里找不到可改写的写法时，
+列进 `missingLinks`，不猜。
 `zk_new` 不拦归档同名（归档本来就不参与标题查重），但会把 `archived`（路径 + 废弃原因）放进输出并警告 ——
 允许复用标题，但先读旧结论。「是不是同一个错误」仍然由 agent 判断，插件只负责把材料摆出来。
 代价是每次 `zk_new` 多一次全库 `zk list --include-archived`（扫描上限 1 万篇，按比例放大）——

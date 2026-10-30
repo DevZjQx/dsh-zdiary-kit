@@ -382,9 +382,13 @@ export interface GraphEdge {
 }
 
 /** 全部双链边（一次 `zk graph`）。路径是**笔记本相对**的，按路径比对，不缓存 targetId（Z11 之后 id 会变）。 */
-export async function graphEdges(cfg: Config, signal?: AbortSignal): Promise<GraphEdge[]> {
+export async function graphEdges(
+  cfg: Config,
+  signal?: AbortSignal,
+  opts: { includeArchived?: boolean } = {},
+): Promise<GraphEdge[]> {
   const args = ['graph', '--quiet', '--format', 'json', '--limit', '10000']
-  for (const name of excludedNames(cfg)) args.push('-x', name)
+  for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived })) args.push('-x', name)
   const text = await zk(cfg, args, { signal })
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
@@ -847,9 +851,14 @@ export async function indexNotebook(cfg: Config, signal?: AbortSignal): Promise<
 }
 
 /** 指向某篇笔记的所有来源笔记（相对路径）—— 一次 `zk graph`，不按笔记逐个跑 */
-async function inboundSources(cfg: Config, rel: string, signal?: AbortSignal): Promise<string[]> {
+async function inboundSources(
+  cfg: Config,
+  rel: string,
+  signal?: AbortSignal,
+  opts: { includeArchived?: boolean } = {},
+): Promise<string[]> {
   const out: string[] = []
-  for (const edge of await graphEdges(cfg, signal)) {
+  for (const edge of await graphEdges(cfg, signal, opts)) {
     if (edge.targetPath !== rel) continue
     if (edge.sourcePath !== rel && !out.includes(edge.sourcePath)) out.push(edge.sourcePath)
   }
@@ -995,6 +1004,318 @@ export async function supersedeNote(
     reason,
     rewrittenLinks,
     missingLinks,
+  }
+}
+
+
+// ── 改名（M7）：先把能解析到的入链改到新路径，再搬文件 ──────────────────
+//
+// 断链风险来自三处，改名时一次处理：
+//   1. 别的笔记里的 `[[旧路径]]` —— 按**实际解析结果**匹配（相对来源目录或相对笔记本根），
+//      不用字面量匹配：同目录写成 `[[foo]]` 的入链也能认出来；
+//   2. 根目录 meta 文件（MEMORY.md / USER.md …）里的 `[[来源]]` —— 它们不进 zk graph；
+//   3. 被搬走那篇自己的相对链接（wiki 与 Markdown 都算）—— 换了目录，同样的写法就指向别处了。
+// 锚点（#小节）、别名（|别名）、Markdown 链接与图片一起处理。认不出的写法列进 missingLinks，不猜。
+
+export interface RenameOptions {
+  /** 当前相对路径 */
+  path: string
+  /** 新相对路径：只给文件名 = 留在原目录；以 / 结尾 = 放进那个目录、保留原文件名 */
+  to: string
+  /** 默认 true：只出清单，不动文件 */
+  dryRun?: boolean
+}
+
+export interface RenameRewrite {
+  path: string
+  replaced: number
+}
+
+export interface RenameResult {
+  dryRun: boolean
+  performed: boolean
+  path: string
+  newPath: string
+  /** 别处被重写的入链（笔记 + 根目录 meta 文件） */
+  rewrittenLinks: RenameRewrite[]
+  /** 图里有入链、但正文里找不到能识别的写法 —— 需要人看 */
+  missingLinks: string[]
+  /** 被改名笔记自己正文里跟着重算的相对链接条数 */
+  selfRewritten: number
+}
+
+interface WikiTarget {
+  abs: string
+  /** root = 按笔记本根解析出的路径；stem = 按文件名（全局唯一）匹配 */
+  style: 'root' | 'stem'
+}
+
+/** 文件名（去扩展名）→ 绝对路径；wiki 链接允许只写文件名，zk 会按全局文件名匹配 */
+type StemIndex = Map<string, string[]>
+
+/** wiki 链接：[[目标|别名]] / [[目标#小节]]（不含换行与嵌套方括号） */
+const WIKI_LINK = /\[\[([^[\]\n]+)\]\]/g
+/** Markdown 行内链接 / 图片：[文字](目标 "标题")，目标可带尖括号 */
+const MD_LINK = /(!?\[[^\]\n]*\]\()(<[^>\n]+>|[^)\s]+)([^)\n]*\))/g
+
+/** 候选路径在笔记本里存在、且是文件 → 返回绝对路径（wiki 链接常省略扩展名） */
+function existingFile(cfg: Config, base: string): string | null {
+  const nb = path.resolve(cfg.notebook)
+  for (const abs of [base, base + '.md', base + '.markdown']) {
+    if (abs !== nb && !abs.startsWith(nb + path.sep)) continue
+    try {
+      if (fs.existsSync(abs) && fs.statSync(abs).isFile()) return abs
+    } catch { /* 读不到的当没命中 */ }
+  }
+  return null
+}
+
+/**
+ * 解析 wiki 链接目标。zk 的路径是**笔记本根相对**（不是相对链接所在目录，实测 ../ 不建边），
+ * 另外允许只写文件名（全局按文件名匹配）。认 URL / 纯锚点 / 不存在的目标为 null。
+ */
+function resolveWikiTarget(cfg: Config, target: string, stems: StemIndex): WikiTarget | null {
+  const raw = target.trim()
+  if (!raw || raw.startsWith('#') || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) return null
+  const rel = raw.replace(/^\/+/, '')
+  if (!rel) return null
+  const byRoot = existingFile(cfg, path.resolve(cfg.notebook, rel))
+  if (byRoot) return { abs: byRoot, style: 'root' }
+  if (rel.includes('/')) return null
+  const hits = stems.get(rel.replace(NOTE_EXT, '')) ?? []
+  // 同名多篇时 zk 自己也可能选错 —— 不猜，留给人看
+  return hits.length === 1 ? { abs: hits[0], style: 'stem' } : null
+}
+
+/** Markdown 链接只相对当前文件解析（实测根相对写法 zk 不建边） */
+function resolveMarkdownTarget(cfg: Config, sourceDir: string, target: string): string | null {
+  const raw = target.trim()
+  if (!raw || raw.startsWith('#') || raw.startsWith('/') || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) return null
+  return existingFile(cfg, path.resolve(sourceDir, raw))
+}
+
+/** 写出相对笔记本根的路径（wiki 链接用；不带前导 /，zk 不认） */
+function rootLinkPath(cfg: Config, targetAbs: string, keepExt: boolean): string {
+  const rel = relPathOf(cfg, targetAbs)
+  return keepExt ? rel : rel.replace(NOTE_EXT, '')
+}
+
+/** 写出从 outDir 到 targetAbs 的相对路径（Markdown 链接用；转义交给调用方） */
+function relativeLinkPath(outDir: string, targetAbs: string, keepExt: boolean): string {
+  let rel = path.relative(outDir, targetAbs).split(path.sep).join('/')
+  if (!rel) rel = path.basename(targetAbs)
+  return keepExt ? rel : rel.replace(NOTE_EXT, '')
+}
+
+interface RelinkPlan {
+  /** Markdown 链接按哪个目录解析（来源笔记目录 / 笔记搬走前的目录） */
+  sourceDir: string
+  /** Markdown 链接按哪个目录写出（来源笔记目录不变 / 笔记搬走后的新目录） */
+  outDir: string
+  /** 解析结果命中这些绝对路径时换成新路径 */
+  remap: Map<string, string>
+  /** true = 所有相对 Markdown 链接都按 outDir 重算（文件自己换了目录） */
+  rebaseMarkdown: boolean
+  stems: StemIndex
+}
+
+/** 按计划重写一段 Markdown 里的链接；返回新文本与被改条数 */
+function relinkText(cfg: Config, text: string, plan: RelinkPlan): { text: string; changed: number } {
+  let changed = 0
+
+  const afterWiki = text.replace(WIKI_LINK, (whole: string, inner: string) => {
+    const bar = inner.indexOf('|')
+    const head = bar >= 0 ? inner.slice(0, bar) : inner
+    const tail = bar >= 0 ? inner.slice(bar) : ''
+    const hash = head.indexOf('#')
+    const target = (hash >= 0 ? head.slice(0, hash) : head).trim()
+    const anchor = hash >= 0 ? head.slice(hash) : ''
+    if (!target) return whole
+    const resolved = resolveWikiTarget(cfg, target, plan.stems)
+    if (!resolved) return whole
+    const next = plan.remap.get(resolved.abs)
+    // 换目录不影响 wiki 链接（按根 / 文件名解析），只有指向自己时才需要改
+    if (!next) return whole
+    const out = rootLinkPath(cfg, next, NOTE_EXT.test(target))
+    const rebuilt = '[[' + out + anchor + tail + ']]'
+    if (rebuilt === whole) return whole
+    changed++
+    return rebuilt
+  })
+
+  const afterMd = afterWiki.replace(MD_LINK, (whole: string, prefix: string, dest: string, tail: string) => {
+    const angled = dest.startsWith('<') && dest.endsWith('>')
+    const raw = angled ? dest.slice(1, -1) : dest
+    if (!raw || raw.startsWith('#')) return whole
+    const hash = raw.indexOf('#')
+    const pathPart = hash >= 0 ? raw.slice(0, hash) : raw
+    const frag = hash >= 0 ? raw.slice(hash) : ''
+    if (!pathPart) return whole
+    const resolved = resolveMarkdownTarget(cfg, plan.sourceDir, pathPart)
+    if (!resolved) return whole
+    const next = plan.remap.get(resolved) ?? (plan.rebaseMarkdown ? resolved : undefined)
+    if (!next) return whole
+    const rel = relativeLinkPath(plan.outDir, next, NOTE_EXT.test(pathPart))
+    // 空格 / 括号在 Markdown 目标里必须转义（统一用 %xx，不猜编辑器）
+    const escaped = /[\s()%]/.test(rel) ? encodeURI(rel).replace(/\(/g, '%28').replace(/\)/g, '%29') : rel
+    const rebuilt = prefix + (angled ? '<' + escaped + '>' : escaped) + frag + tail
+    if (rebuilt === whole) return whole
+    changed++
+    return rebuilt
+  })
+
+  return { text: afterMd, changed }
+}
+
+/** 新路径归一化：可只给文件名、可给目录（末尾 /），扩展名不变；跑出笔记本由 absPathOf 兜 */
+function renameTargetRel(cfg: Config, oldAbs: string, to: string): string {
+  const raw = String(to ?? '').trim()
+  if (!raw) throw new ZkError('新路径不能为空', '给一个相对路径，例如 notes/新标题.md')
+  const oldExt = path.extname(oldAbs)
+  const oldBase = path.basename(oldAbs)
+  let rel: string
+  if (path.isAbsolute(raw)) {
+    rel = relPathOf(cfg, absPathOf(cfg, raw))
+  } else {
+    rel = raw.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/{2,}/g, '/')
+  }
+  // 目录形式：末尾 / ，或指向一个已存在的目录 → 保留原文件名
+  const asDir = rel.endsWith('/')
+  let target = asDir ? `${rel.replace(/\/+$/, '')}/${oldBase}` : rel
+  if (!asDir) {
+    const probe = path.resolve(cfg.notebook, target)
+    try {
+      if (fs.existsSync(probe) && fs.statSync(probe).isDirectory()) target = `${target}/${oldBase}`
+    } catch { /* 探测失败就按文件处理，后面 existsSync 会再拦 */ }
+  }
+  target = target.replace(/\/{2,}/g, '/').replace(/^\/+/, '')
+  const ext = path.extname(target)
+  if (!ext) target += oldExt
+  else if (ext.toLowerCase() !== oldExt.toLowerCase()) {
+    throw new ZkError(`改名不能换格式：${ext} ≠ ${oldExt}`, '只改文件名或目录；换格式请新建一篇再 zk_supersede')
+  }
+  return target
+}
+
+/**
+ * 给一篇笔记改名 / 换目录，并把引用它的链接一起改到新路径。
+ *
+ * 顺序：先在内存里算好所有改写（解析用当前磁盘状态，旧文件还在）→ rename → 写回。
+ * 入链先改、后搬文件会让「目标还不存在」的中间态出现在磁盘上；反过来则是「入链短暂失效」——
+ * 两者都会在进程中途失败时留下半成品，区别只在于重跑时从哪一侧接上。这里选 rename 先行：
+ * 文件搬到位之后，剩下的只是文本改写，重复调用不会再搬第二次。
+ * 可重放：第二次调用原路径已经不存在，直接报「笔记不存在」。
+ */
+export async function renameNote(
+  cfg: Config,
+  opts: RenameOptions,
+  signal?: AbortSignal,
+): Promise<RenameResult> {
+  const dryRun = opts.dryRun !== false
+  const oldAbs = absPathOf(cfg, opts.path)
+  if (!fs.existsSync(oldAbs) || !fs.statSync(oldAbs).isFile()) throw new ZkError(`笔记不存在：${opts.path}`)
+  const oldRel = relPathOf(cfg, oldAbs)
+
+  if (isMetaPath(oldRel)) {
+    throw new ZkError(`${oldRel} 是 meta 文件，不能改名`, `${META_NAMES.join(' / ')} 的名字是约定（注入、排除都按它认），要改内容请直接编辑`)
+  }
+  assertWritablePath(cfg, oldAbs)
+  if (oldRel === cfg.archiveDir || oldRel.startsWith(`${cfg.archiveDir}/`)) {
+    throw new ZkError(`归档里的笔记不能改名：${oldRel}`, `${cfg.archiveDir}/ 下的路径是 supersede 重写入链的目标，搬动它会让历史链接再断一次`)
+  }
+  const oldBase = path.basename(oldAbs, path.extname(oldAbs))
+  if (path.dirname(oldRel) === cfg.dailyDir && /^\d{4}-\d{2}-\d{2}$/.test(oldBase)) {
+    throw new ZkError(`日记按日期命名，不能改名：${oldRel}`, '改名后 zk_daily 会为同一天另建一篇；整理内容用 zk_append，废弃结论用 zk_supersede')
+  }
+
+  const newRel = renameTargetRel(cfg, oldAbs, opts.to)
+  const newAbs = absPathOf(cfg, newRel)
+  if (newAbs === oldAbs) throw new ZkError('新旧路径一样', '给一个不同的文件名或目录')
+  if (isMetaPath(newRel)) {
+    throw new ZkError(`不能把笔记改名成 meta 文件：${newRel}`, `${META_NAMES.join(' / ')} 是根目录约定文件，请直接编辑它们`)
+  }
+  assertWritablePath(cfg, newAbs)
+  if (newRel === cfg.archiveDir || newRel.startsWith(`${cfg.archiveDir}/`)) {
+    throw new ZkError(`不能把笔记改名进归档目录：${newRel}`, '归档只由 zk_supersede 写入；要废弃那篇笔记请用它')
+  }
+  if (fs.existsSync(newAbs)) {
+    throw new ZkError(`目标路径已被占用：${newRel}`, '改名不覆盖任何文件；先处理掉那个文件，或换一个名字')
+  }
+
+  // ── 入链：zk graph（活笔记）+ 根目录 meta 文件（不在图里）────────────
+  const stems: StemIndex = new Map()
+  try {
+    for (const note of await allNotes(cfg, { includeArchived: true }, signal)) {
+      const key = path.basename(note.path).replace(NOTE_EXT, '')
+      const list = stems.get(key) ?? []
+      list.push(note.absPath || path.join(cfg.notebook, note.path))
+      stems.set(key, list)
+    }
+  } catch { /* 索引读不到时退化成只认根路径：少改几个，绝不多改 */ }
+
+  // 归档里的笔记也会链向活笔记：改名不带上它们，会让历史入链静默断掉（lint 看不见归档）
+  const graphSources = new Set<string>(await inboundSources(cfg, oldRel, signal, { includeArchived: true }))
+  const sources = new Set<string>(graphSources)
+  for (const name of META_NAMES) {
+    try {
+      if (fs.existsSync(path.join(cfg.notebook, name))) sources.add(name)
+    } catch { /* 单个文件读不到不影响其它 */ }
+  }
+
+  const rewrittenLinks: RenameRewrite[] = []
+  const missingLinks: string[] = []
+  const pending: Array<{ abs: string; text: string }> = []
+  const remap = new Map([[oldAbs, newAbs]])
+  for (const source of sources) {
+    const sourceAbs = path.join(cfg.notebook, source)
+    let text: string
+    try {
+      text = fs.readFileSync(sourceAbs, 'utf8')
+    } catch {
+      if (graphSources.has(source)) missingLinks.push(source)
+      continue
+    }
+    const out = relinkText(cfg, text, {
+      sourceDir: path.dirname(sourceAbs),
+      outDir: path.dirname(sourceAbs),
+      remap,
+      rebaseMarkdown: false,
+      stems,
+    })
+    if (out.changed === 0) {
+      // 图说它链过来了，正文里却找不到能识别的写法：可能写在代码块/奇怪语法里，交给人看
+      if (graphSources.has(source)) missingLinks.push(source)
+      continue
+    }
+    rewrittenLinks.push({ path: source, replaced: out.changed })
+    if (!dryRun) pending.push({ abs: sourceAbs, text: out.text })
+  }
+
+  // ── 它自己的相对链接：换目录后同样的写法会指向别处 ──────────────────
+  const selfRaw = fs.readFileSync(oldAbs, 'utf8')
+  const self = relinkText(cfg, selfRaw, {
+    sourceDir: path.dirname(oldAbs),
+    outDir: path.dirname(newAbs),
+    remap,
+    rebaseMarkdown: true,
+    stems,
+  })
+
+  if (!dryRun) {
+    fs.mkdirSync(path.dirname(newAbs), { recursive: true })
+    fs.renameSync(oldAbs, newAbs)
+    if (self.changed > 0) fs.writeFileSync(newAbs, self.text, 'utf8')
+    for (const item of pending) fs.writeFileSync(item.abs, item.text, 'utf8')
+  }
+
+  return {
+    dryRun,
+    performed: !dryRun,
+    path: oldRel,
+    newPath: newRel,
+    rewrittenLinks,
+    missingLinks,
+    selfRewritten: self.changed,
   }
 }
 
