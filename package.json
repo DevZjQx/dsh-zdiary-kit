@@ -2,6 +2,7 @@
   "name": "dsh-zdiary-kit",
   "version": "0.5.0",
   "description": "内置 zk 的 DSH 知识库 / 日记插件：装好即用 —— 自动装 zk、建笔记本，给 agent 一组 zk_* 工具（搜索、读写、日记、双链），设置页里管路径、索引与自检。",
+  "icon": "./icon.svg",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/DevZjQx/dsh-zdiary-kit.git"
@@ -21,7 +22,8 @@
   "exports": {
     ".": "./dist/app/plugin.js",
     "./client": "./dist/features/settings/client.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./icon": "./icon.svg"
   },
   "bin": {
     "zk-kit": "dist/cli.js"
@@ -31,7 +33,8 @@
     "docs",
     "scripts",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "icon.svg"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && bun scripts/postbuild.ts",
