@@ -1307,6 +1307,50 @@ describe('daily', () => {
     expect(content).toContain('今天把 zk 接进了 DSH。')
   })
 
+  it('layered 日记：记录写进 Events、Loose ends 保持原样', async () => {
+    const layered = store.normalizeConfig({
+      notebook: path.join(home, 'nb-daily-layered'),
+      zkPath: zkBin,
+      structure: 'layered',
+    })
+    await notebookLib.ensureNotebook(layered)
+    const daily = await zk.ensureDailyNote(layered)
+    fs.writeFileSync(daily.absPath, [
+      '# 2026-10-31',
+      '',
+      '## Events',
+      '',
+      '### 08:00',
+      '',
+      '- 晨会',
+      '',
+      '## Observations',
+      '',
+      '## Loose ends',
+      '',
+      '- [ ] 补实验数据',
+      '- 回邮件',
+      '',
+    ].join('\n'), 'utf8')
+
+    zk.appendDaily(layered, daily.path, '摄入：读了一篇关于分层记忆的笔记。', new Date(2026, 9, 31, 9, 15))
+    const content = fs.readFileSync(daily.absPath, 'utf8')
+    // 条目在 Events 里、标题降一级，否则同级 `##` 会把 Events 截断
+    expect(content).toContain('### 09:15')
+    expect(content).not.toMatch(/^## 09:15$/m)
+    const events = content.indexOf('## Events')
+    const entry = content.indexOf('摄入：读了一篇')
+    const observations = content.indexOf('## Observations')
+    const loose = content.indexOf('## Loose ends')
+    expect(events).toBeLessThan(entry)
+    expect(entry).toBeLessThan(observations)
+    expect(observations).toBeLessThan(loose)
+    // 原有条目和 loose ends 都不被挪动
+    expect(content).toContain('### 08:00')
+    expect(content).toContain('- [ ] 补实验数据')
+    expect(content).toContain('- 回邮件')
+  })
+
   it('指定日期', async () => {
     const other = await zk.ensureDailyNote(cfg, { date: '2026-01-02' })
     expect(other.path).toBe('journal/2026-01-02.md')

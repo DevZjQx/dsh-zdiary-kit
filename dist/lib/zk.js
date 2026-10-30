@@ -631,7 +631,33 @@ function archivedHits(cfg, notes, title) {
         reason: String(n.metadata['supersede-reason'] ?? '').trim(),
     }));
 }
-/** 往一篇笔记末尾追加（自动补空行；可选先写一个二级标题） */
+/**
+ * `## 名称` 小节的正文范围（行号，右开）：从标题下一行到下一个一/二级标题之前。
+ * 没有这一节返回 null —— 调用方退回「追加到文件末尾」。
+ */
+function sectionRange(content, name) {
+    const lines = content.split('\n');
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const heading = new RegExp(`^##\\s+${escaped}\\s*$`, 'i');
+    const start = lines.findIndex((line) => heading.test(line));
+    if (start < 0)
+        return null;
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i++) {
+        if (/^#{1,2}\s+\S/.test(lines[i])) {
+            end = i;
+            break;
+        }
+    }
+    return { start: start + 1, end };
+}
+/**
+ * 往一篇笔记追加（自动补空行；可选先写一个二级标题）。
+ *
+ * `section` 给了且笔记里有这一节时，追加到该节末尾，标题降为三级 —— 日记模板的
+ * `## Events` 是正文位置，同级的 `## HH:MM` 会把条目顶成兄弟小节，反而落到
+ * `## Loose ends` 之后。没有这一节（flat 日记 / 用户自定义日记）就仍旧追加到末尾。
+ */
 export function appendToNote(cfg, p, text, opts = {}) {
     const abs = absPathOf(cfg, p);
     if (!fs.existsSync(abs))
@@ -645,10 +671,24 @@ export function appendToNote(cfg, p, text, opts = {}) {
     if (!body)
         throw new ZkError('追加内容不能为空');
     const current = fs.readFileSync(abs, 'utf8');
-    const sep = current.endsWith('\n\n') ? '' : current.endsWith('\n') ? '\n' : '\n\n';
     // 标题只占一行：换行会把后面的正文顶出小节
-    const heading = opts.heading ? `## ${opts.heading.replace(/\s+/g, ' ').trim()}\n\n` : '';
-    fs.appendFileSync(abs, `${sep}${heading}${body}\n`, 'utf8');
+    const title = opts.heading ? opts.heading.replace(/\s+/g, ' ').trim() : '';
+    const range = opts.section ? sectionRange(current, opts.section) : null;
+    if (range) {
+        const lines = current.split('\n');
+        const parts = [
+            lines.slice(0, range.start).join('\n'),
+            lines.slice(range.start, range.end).join('\n'),
+            `${title ? `### ${title}\n\n` : ''}${body}`,
+            lines.slice(range.end).join('\n'),
+        ].map((part) => part.trim()).filter(Boolean);
+        fs.writeFileSync(abs, `${parts.join('\n\n')}\n`, 'utf8');
+    }
+    else {
+        const sep = current.endsWith('\n\n') ? '' : current.endsWith('\n') ? '\n' : '\n\n';
+        const heading = title ? `## ${title}\n\n` : '';
+        fs.appendFileSync(abs, `${sep}${heading}${body}\n`, 'utf8');
+    }
     const bytes = fs.statSync(abs).size;
     return { path: relPathOf(cfg, abs), appendedChars: body.length, bytes };
 }
@@ -673,11 +713,14 @@ export async function ensureDailyNote(cfg, opts = {}, signal) {
     const created = !before.has(path.basename(abs));
     return { path: relPathOf(cfg, abs), absPath: abs, created };
 }
-/** 往日记里追加一段（`## HH:MM` 小节） */
+/**
+ * 往日记里追加一段（layered 模板写进 `## Events` 的 `### HH:MM`，
+ * flat 模板仍是文件末尾的 `## HH:MM`）
+ */
 export function appendDaily(cfg, p, entry, now = new Date()) {
     const hh = String(now.getHours()).padStart(2, '0');
     const mm = String(now.getMinutes()).padStart(2, '0');
-    return appendToNote(cfg, p, entry, { heading: `${hh}:${mm}` });
+    return appendToNote(cfg, p, entry, { heading: `${hh}:${mm}`, section: 'Events' });
 }
 const NOTE_EXT = /\.(md|markdown|org|txt)$/i;
 /** 相对笔记本、去掉扩展名的路径 —— 也就是 zk 双链里写的那一段（Z11） */
