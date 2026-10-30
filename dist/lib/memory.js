@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DREAM_INTERVAL_DAYS, daysSinceDream, lastDreamDate } from './dream.js';
+import { fileStamp } from './file-stamp.js';
 import { MEMORY_META_FILES } from './meta.js';
 /** vault 根目录下、按优先级排列的三份 meta 文件（定义在 lib/meta.ts，这里只挂个本地名） */
 export const META_FILES = MEMORY_META_FILES;
@@ -157,16 +158,50 @@ function dreamNote(cfg) {
         return `做梦：上次 ${last}（${ago}），未到 ${DREAM_INTERVAL_DAYS} 天`;
     return `做梦：上次 ${last}（${ago}），已到 ${DREAM_INTERVAL_DAYS} 天 —— zk_lint → zk_dream → 写 DREAMS.md 并更新这一行`;
 }
+/** 缓存里只放最近几个库：同一进程可能开着多个工作区（各自一个笔记本） */
+const PAYLOAD_CACHE_MAX = 8;
+const payloadCache = new Map();
+/** DREAMS.md 不进正文，但「上次做梦 N 天前」也算载荷的一部分 —— 它变了同样要重算 */
+const STAMPED_FILES = [...META_FILES, 'DREAMS.md'];
+function payloadKeyOf(cfg) {
+    const stamps = STAMPED_FILES.map((name) => `${name}=${fileStamp(path.join(cfg.notebook, name))}`).join('|');
+    // 做梦提醒按本地日历天变化（「3 天前」→「4 天前」）：文件没动也得跟着日期失效
+    const now = new Date();
+    const day = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+    return `${cfg.notebook}|${cfg.memoryBudgetWords}|${day}|${stamps}`;
+}
 /**
  * 生成注入载荷。纯读文件，不调 zk、不建目录：笔记本不存在时返回空载荷。
+ *
+ * 宿主把它挂在系统提示的 text 函数上 —— **每个 step 都会重新求值**。所以这里带一层
+ * 按文件指纹失效的缓存：文件没变（最常见的连续 step）就整个载荷复用，不再重复读盘
+ * 与重算词数；改动 MEMORY.md 后下一次求值立刻看得见新内容。
+ *
  * @param cfg - 当前配置（只用到 notebook 与 memoryBudgetWords）
  * @returns 载荷；`text === ''` 表示没有可注入的内容
  */
 export function buildMemoryPayload(cfg) {
+    const key = payloadKeyOf(cfg);
+    const hit = payloadCache.get(key);
+    if (hit)
+        return hit;
+    const value = computePayload(cfg);
+    if (payloadCache.size >= PAYLOAD_CACHE_MAX) {
+        const oldest = payloadCache.keys().next().value;
+        if (oldest !== undefined)
+            payloadCache.delete(oldest);
+    }
+    payloadCache.set(key, value);
+    return value;
+}
+/** 真正的计算（无缓存）。词数只算一次：截断只改`original`副本，原文词数始终来自这里。 */
+function computePayload(cfg) {
     const budget = cfg.memoryBudgetWords;
     const files = readMeta(cfg);
     const original = new Map(files.map((f) => [f.name, f.body]));
-    const words = new Map(files.map((f) => [f.name, countWords(f.body)]));
+    const pristineWords = new Map(files.map((f) => [f.name, countWords(f.body)]));
+    // 截断会改写这份计数；pristineWords 保留原值，给「原多少词」和 truncatedWords 用
+    const words = new Map(pristineWords);
     const total = () => [...words.values()].reduce((a, b) => a + b, 0);
     // ── 机械截断：MEMORY 尾段 → USER 尾段 → 各留首段 ──────────────────
     // 丢掉的段落留一份目录（段落标题），让 agent 能按当前任务用 zk_read 取回。
@@ -202,7 +237,7 @@ export function buildMemoryPayload(cfg) {
     const bodies = present.map((f) => `## ${f.name}\n\n${escapeFrame(original.get(f.name) ?? '')}`);
     const keptWords = total();
     const finalWords = keptWords + countWords(toc);
-    const originalWords = files.reduce((sum, f) => sum + countWords(f.body), 0);
+    const originalWords = files.reduce((sum, f) => sum + (pristineWords.get(f.name) ?? 0), 0);
     // 报「正文被截掉多少」，不是净减少：目录也会占词，混在一起会让人以为没丢多少
     const truncatedWords = Math.max(0, originalWords - keptWords);
     let text = '';
@@ -247,7 +282,7 @@ export function buildMemoryPayload(cfg) {
             present: f.body.length > 0,
             words: words.get(f.name) ?? 0,
             // files[].body 始终是原文件内容（截断只改 original 副本）
-            originalWords: countWords(f.body),
+            originalWords: pristineWords.get(f.name) ?? 0,
         })),
     };
 }

@@ -260,6 +260,28 @@ describe('memory', () => {
     }
   }
 
+  test('缓存层：同一份内容复用；文件 / 预算一变下一次立刻重算', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-cache-'))
+    const cfg = store.normalizeConfig({ notebook: dir, memoryBudgetWords: 300 })
+    try {
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), '# 记忆\n选了 SQLite。')
+      const first = memory.buildMemoryPayload(cfg)
+      expect(first.text).toContain('选了 SQLite。')
+      // 宿主每个 step 都会求值：文件没动就不该再读盘、再算一遍
+      expect(memory.buildMemoryPayload(cfg)).toBe(first)
+
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), '# 记忆\n改用 Postgres。')
+      const fresh = memory.buildMemoryPayload(cfg)
+      expect(fresh.text).toContain('改用 Postgres。')
+      expect(fresh.text).not.toContain('选了 SQLite。')
+
+      // 预算变了，截断结果就得重算
+      expect(memory.buildMemoryPayload({ ...cfg, memoryBudgetWords: 50 })).not.toBe(fresh)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('词数：中文按 2 字 1 词，空白切分只算拉丁', () => {
     expect(memory.countWords('中文标题测试')).toBe(3)
     expect(memory.countWords('hello world')).toBe(2)
@@ -566,6 +588,30 @@ describe('notes', () => {
     expect(fs.readFileSync(first.absPath, 'utf8')).not.toContain('第二次的正文')
   })
 
+  it('扫描失败时：layered 照建（fail-open），flat 仍然拦下（fail-closed）', async () => {
+    // 造一个「全库扫描一定失败」的版本：不伪装 zk 二进制，两个平台都能跑
+    const boom: zk.NoteScan = async () => { throw new zk.ZkError('boom: 全库扫描挂了') }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-scan-'))
+    const flatDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-scan-flat-'))
+    try {
+      // layered：同名由 zk 自己拒，归档提醒只是附加信息 —— 扫不动也要照建，宁可少一条提醒
+      const layered = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+      await notebookLib.ensureNotebook(layered)
+      const built = await zk.createNote(layered, { title: '扫描挂掉也照建', dir: 'notes/concepts', content: '正文' }, undefined, boom)
+      expect(fs.existsSync(built.absPath)).toBe(true)
+      expect(built.archived).toEqual([])
+
+      // flat：标题查重是写入前的硬门槛（不查会静默丢正文）—— 扫不了就不建
+      const flat = store.normalizeConfig({ notebook: flatDir, zkPath: zkBin })
+      await notebookLib.ensureNotebook(flat)
+      await expect(zk.createNote(flat, { title: 'flat 扫不了就不建', content: '正文' }, undefined, boom)).rejects.toThrow(/boom/)
+      expect(fs.readdirSync(path.join(flatDir, flat.notesDir))).toHaveLength(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+      fs.rmSync(flatDir, { recursive: true, force: true })
+    }
+  })
+
   it('标签过滤与日期过滤', async () => {
     const byTag = await zk.searchNotes(cfg, { tags: ['zettelkasten'] })
     expect(byTag.length).toBe(1)
@@ -757,11 +803,12 @@ describe('M2: 结构化检索与废弃', () => {
     const newNote = await note('同名新结论甲', 'notes/concepts', '新')
     await zk.supersedeNote(m2, { path: oldNote.path, by: newNote.path, reason: '数据源错了', dryRun: false })
 
-    const hits = await zk.archivedSameTitle(m2, '同名旧结论甲')
-    expect(hits).toHaveLength(1)
-    expect(hits[0].path).toBe(`archive/${oldNote.path}`)
-    expect(hits[0].reason).toBe('数据源错了')
-    expect(await zk.archivedSameTitle(m2, '没有这个标题')).toEqual([])
+    // 复用标题建新笔记：同一次全库扫描里就把归档那份的废弃原因带出来（不额外跑一次 zk）
+    const reused = await zk.createNote(m2, { title: '同名旧结论甲', dir: 'notes/concepts', content: '又提一遍' })
+    expect(reused.archived).toHaveLength(1)
+    expect(reused.archived[0].path).toBe(`archive/${oldNote.path}`)
+    expect(reused.archived[0].reason).toBe('数据源错了')
+    expect((await zk.createNote(m2, { title: '没有这个标题', dir: 'notes/concepts', content: 'x' })).archived).toEqual([])
   })
 
   it('supersede 拒绝：替代者不存在 / 自己也是废弃的 / 目标不存在', async () => {

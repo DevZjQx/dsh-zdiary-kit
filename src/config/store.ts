@@ -13,6 +13,7 @@
  * 之后就不再有双向合并 —— notebooks 存在时，散落的 `notebook` 顶层键只当没看见。
  */
 import { CFG_FILE, defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from './paths.ts'
+import { fileStamp } from '../lib/file-stamp.ts'
 import { readJson, writeJson } from '../lib/json-file.ts'
 
 /** 结构模式：flat = 只有 notes/ + 日记；layered = raw/inbox/notes 分类目录/archive + 三套模板 */
@@ -199,10 +200,21 @@ function toDisk(cfg: Config): Record<string, unknown> {
 }
 
 /**
- * 读配置（每次现读：设置页保存后工具下一句就看到新值，没有缓存要失效）。
+ * 配置读缓存：宿主每个 step 都会求值一次记忆注入，没有这层就是每步 readFileSync + JSON.parse。
+ * 失效靠文件指纹（mtime/size/ino），不是超时 —— 手改配置、设置页保存、写回迁移都能立刻生效。
+ * 带上 workspace：同一份配置在不同工作区解析出的笔记本绝对路径不同。
+ */
+let configCache: { stamp: string; workspace: string; value: Config } | null = null
+
+/**
+ * 读配置（每次现读，除非文件没变：设置页保存后工具下一句就看到新值）。
  * workspace 只在解析「空 / 相对」笔记本路径时用到：工具传会话 cwd，其余场景用进程工作区。
  */
 export function config(workspace: string = processWorkspace()): Config {
+  const stamp = fileStamp(CFG_FILE)
+  if (configCache && configCache.stamp === stamp && configCache.workspace === workspace) {
+    return configCache.value
+  }
   const raw = readJson<Record<string, unknown>>(CFG_FILE, {})
   const next = normalizeConfig(raw, workspace)
   // 一次性迁移：老形状（没有 notebooks / 顶层还留着 notebook 或 structure / 条目还是裸字符串）
@@ -211,9 +223,12 @@ export function config(workspace: string = processWorkspace()): Config {
     || ('structure' in raw)
     || ('notebook' in raw)
     || Object.values((raw.notebooks ?? {}) as Record<string, unknown>).some((v) => typeof v === 'string')
+  let writable = true
   if (Object.keys(raw).length > 0 && legacy) {
-    try { writeJson(CFG_FILE, toDisk(next)) } catch { /* 只读环境：下次再补 */ }
+    try { writeJson(CFG_FILE, toDisk(next)) } catch { writable = false /* 只读环境：下次再补 */ }
   }
+  // 写回失败就不缓存：下次还得再试一次迁移（改了权限要能自愈）
+  configCache = writable ? { stamp: fileStamp(CFG_FILE), workspace, value: next } : null
   return next
 }
 
@@ -256,5 +271,6 @@ export function writeConfig(patch: Record<string, unknown>, workspace: string = 
   }
   const next = normalizeConfig({ ...merged, notebooks, active }, workspace)
   writeJson(CFG_FILE, toDisk(next))
+  configCache = null
   return next
 }

@@ -16,7 +16,7 @@ import type { SchemaNode } from '../../lib/tool.ts'
 import { ensureNotebook } from '../../lib/notebook.ts'
 import {
   searchNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily,
-  linkNotes, withTags, notebookStats, supersedeNote, archivedSameTitle, localDate as dateOnly, ZkError,
+  linkNotes, withTags, notebookStats, supersedeNote, localDate as dateOnly, ZkError,
 } from '../../lib/zk.ts'
 import type { NoteRecord, NoteDoc, SupersedeResult } from '../../lib/zk.ts'
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
@@ -429,7 +429,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           }
         }
         // 归档同名只是提醒：zk_new 的查重本来就不含 archive，允许复用标题 —— 但要把废弃原因一起交出来
-        const archived = await archivedSameTitle(cfg, created.title, env.signal)
+        // （createNote 建之前那次全库扫描已经算好了，这里不再单独跑一次 zk）
+        const archived = created.archived
         return { notebook: cfg.notebook, path: created.path, title: created.title, tags, links, archived, warnings }
       },
       render(_args, value) {

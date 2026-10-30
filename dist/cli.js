@@ -9,7 +9,7 @@ import { CFG_FILE } from './config/paths.js';
 import { ensureNotebook, structureStatus } from './lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
 import { installZk } from './lib/install.js';
-import { resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, archivedSameTitle, } from './lib/zk.js';
+import { resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
 import { formatMemoryLinks, lintNotebook } from './lib/lint.js';
 import { dreamNotebook } from './lib/dream.js';
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
@@ -286,8 +286,8 @@ async function main() {
                 content: withTags(str(flags.body), tags),
                 dir: str(flags.dir) || cfg.notesDir,
             });
-            const archived = await archivedSameTitle(cfg, created.title);
-            print(json ? { ...created, tags, archived } : `已创建 ${created.path}${tags.length ? ' · ' + tags.map((t) => '#' + t).join(' ') : ''}`, json);
+            const archived = created.archived;
+            print(json ? { ...created, tags } : `已创建 ${created.path}${tags.length ? ' · ' + tags.map((t) => '#' + t).join(' ') : ''}`, json);
             for (const hit of archived) {
                 console.error(`⚠️ 归档里有同名旧结论：${hit.path}${hit.reason ? `（废弃原因：${hit.reason}）` : '（没有记录废弃原因）'} —— 先读它，确认不是同一个结论再复用标题`);
             }

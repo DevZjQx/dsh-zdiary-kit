@@ -490,18 +490,37 @@ export async function findNote(cfg, query, signal) {
  * 撞名（Z8）：`zk new` 遇到同名文件时 exit 0、**内容不写**、只回显路径 —— 不查就会静默丢内容。
  * 所以在建之前拍一张目录快照，建完发现文件名本来就有，直接报错（先写入的内容一个字没动，可以放心重试）。
  */
-export async function createNote(cfg, input, signal) {
+export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c, { includeArchived: true }, s)) {
     const title = input.title.trim();
     if (!title)
         throw new ZkError('标题不能为空');
-    // flat 用的是 zk 默认的随机 {{id}} 文件名，按文件名查重永远不会命中；标题重复必须在建之前查。
-    // layered 的 group 用 {{slug title}}，同一目录同名会被 zk 自己拒绝；不同目录允许同名（lint 会提示）。
-    // 只查可见笔记（allNotes 已排除 raw/inbox/archive/meta）：归档里的旧结论可以复用标题。
-    if (cfg.structure !== 'layered' && hasNotebook(cfg)) {
-        const key = normalizeTitle(title);
-        const existing = (await allNotes(cfg, {}, signal)).find((n) => normalizeTitle(n.title) === key);
-        if (existing) {
-            throw new ZkError(`同名笔记已存在：${existing.path}`, '换一个标题，或直接用 zk_read / zk_append 改那一篇；归档里的旧结论不参与查重，可以复用标题');
+    // 一次全库扫描（含归档）干两件事：活笔记查重 + 归档同名提醒。
+    // 以前是各跑一次 `zk list`：同一个库扫两遍，还多起一个进程。
+    const dupCheck = cfg.structure !== 'layered';
+    let archived = [];
+    if (hasNotebook(cfg)) {
+        let snapshot = null;
+        try {
+            snapshot = await scan(cfg, signal);
+        }
+        catch (err) {
+            // flat 的标题查重是写入前的硬门槛（不查就会静默丢正文），扫描失败必须 fail-closed；
+            // layered 的同名由 zk 自己拒，归档提醒只是附加信息 —— 扫不动就照建，宁可少一条提醒。
+            if (dupCheck)
+                throw err;
+        }
+        if (snapshot) {
+            // flat 用的是 zk 默认的随机 {{id}} 文件名，按文件名查重永远不会命中；标题重复必须在建之前查。
+            // layered 的 group 用 {{slug title}}，同一目录同名会被 zk 自己拒绝；不同目录允许同名（lint 会提示）。
+            // 只查可见笔记：归档里的旧结论不参与查重，可以复用标题。
+            if (dupCheck) {
+                const key = normalizeTitle(title);
+                const existing = snapshot.find((n) => !inArchive(cfg, n.path) && normalizeTitle(n.title) === key);
+                if (existing) {
+                    throw new ZkError(`同名笔记已存在：${existing.path}`, '换一个标题，或直接用 zk_read / zk_append 改那一篇；归档里的旧结论不参与查重，可以复用标题');
+                }
+            }
+            archived = archivedHits(cfg, snapshot, title);
         }
     }
     const dir = (input.dir ?? cfg.notesDir).replace(/^\/+/, '') || '.';
@@ -529,28 +548,25 @@ export async function createNote(cfg, input, signal) {
     if (before.has(path.basename(abs))) {
         throw new ZkError(`同名笔记已存在：${relPathOf(cfg, abs)}`, '同名时 zk 不覆盖（这次传入的正文被丢弃了，原文件一个字都没动）。换个标题，或直接用 zk_read / zk_append 改那一篇');
     }
-    return { path: relPathOf(cfg, abs), absPath: abs, title };
+    return { path: relPathOf(cfg, abs), absPath: abs, title, archived };
+}
+/** 笔记本相对路径是否在归档目录下（supersede 会把文件搬进去，路径保持不变） */
+function inArchive(cfg, rel) {
+    return rel === cfg.archiveDir || rel.startsWith(`${cfg.archiveDir}/`);
 }
 /**
  * 归档里同名的旧结论 —— 机械查重，不判断「是不是同一个错误」。
  *
  * zk_new 的标题查重只看活笔记，旧结论被 supersede 后标题就空出来了。允许复用，
  * 但要把 supersede-reason 一起带出来：重新提出同样的错误结论，通常从复用这个标题开始。
- * 查不到 / zk 跑不起来都返回空数组：这是提醒，不是写入前的硬门槛。
+ * 输入是 createNote 建之前那一次全库快照：纯内存计算，不再单独跑一次 zk。
  */
-export async function archivedSameTitle(cfg, title, signal) {
+function archivedHits(cfg, notes, title) {
     const key = normalizeTitle(title);
-    if (!key || !hasNotebook(cfg))
+    if (!key)
         return [];
-    let notes;
-    try {
-        notes = await allNotes(cfg, { includeArchived: true }, signal);
-    }
-    catch {
-        return [];
-    }
     return notes
-        .filter((n) => n.path === cfg.archiveDir || n.path.startsWith(`${cfg.archiveDir}/`))
+        .filter((n) => inArchive(cfg, n.path))
         .filter((n) => normalizeTitle(n.title) === key)
         .map((n) => ({
         path: n.path,
@@ -642,54 +658,31 @@ export async function linkNotes(cfg, fromPath, target, signal) {
     fs.appendFileSync(fromAbs, `${sep}${heading}- ${link}\n`, 'utf8');
     return { from: relPathOf(cfg, fromAbs), to: relPathOf(cfg, targetAbs), link, added: true };
 }
-/** archive/ 下的全部 .md（磁盘扫描：归档区被排除在索引查询之外，只能直接看文件） */
-function archivedFiles(cfg) {
-    const root = path.resolve(cfg.notebook, cfg.archiveDir);
-    const out = [];
-    const walk = (dir) => {
-        let entries;
-        try {
-            entries = fs.readdirSync(dir, { withFileTypes: true });
-        }
-        catch {
-            return;
-        }
-        for (const entry of entries) {
-            const abs = path.join(dir, entry.name);
-            if (entry.isDirectory())
-                walk(abs);
-            else if (entry.isFile() && /\.md$/i.test(entry.name))
-                out.push(abs);
-        }
-    };
-    walk(root);
-    return out;
-}
 export async function notebookStats(cfg, signal) {
     const exclude = excludedNames(cfg).flatMap((name) => ['-x', name]);
     const count = async (args) => {
         const out = await zk(cfg, ['list', '--quiet', '--no-pager', '--format', '{{path}}', ...exclude, ...args], { signal });
         return out.split('\n').filter((l) => l.trim()).length;
     };
-    const [notes, brokenLinks, orphans, live] = await Promise.all([
-        count([]),
+    // 一次全库（含归档）拿全：笔记数 / 标签 / 归档数 / superseded 都从这份算。
+    // 以前是「多跑一次 list 数笔记 + 递归扫 archive 再逐篇读全文看 status」——
+    // 归档一大，光数个数就要把整片归档读一遍磁盘。
+    const [brokenLinks, orphans, all] = await Promise.all([
         count(['--broken-links']),
         count(['--orphan']),
-        // 非归档区里被手工标成 superseded 的笔记（正常流程会搬进 archive，这里兜手滑）
-        allNotes(cfg, {}, signal).catch(() => []),
+        allNotes(cfg, { includeArchived: true }, signal),
     ]);
-    const archived = archivedFiles(cfg);
-    const superseded = archived.filter((abs) => {
-        try {
-            return parseFrontmatter(fs.readFileSync(abs, 'utf8')).fields.status === 'superseded';
-        }
-        catch {
-            return false;
-        }
-    }).length + live.filter((n) => n.status === 'superseded').length;
-    // 标签数也从可见笔记汇总：zk tag list 没有 -x，直接用它会把 raw/inbox/archive/meta 的标签也算进来。
-    const tags = new Set(live.flatMap((n) => n.tags)).size;
-    return { notes, tags, brokenLinks, orphans, archived: archived.length, superseded };
+    const live = all.filter((n) => !inArchive(cfg, n.path));
+    // 标签数只从可见笔记汇总：zk tag list 没有 -x，直接用它会把 raw/inbox/archive/meta 的标签也算进来。
+    return {
+        notes: live.length,
+        tags: new Set(live.flatMap((n) => n.tags)).size,
+        brokenLinks,
+        orphans,
+        archived: all.length - live.length,
+        // 含已归档的，以及手工标了但没搬进 archive 的（正常流程会搬，这里兜手滑）
+        superseded: all.filter((n) => n.status === 'superseded').length,
+    };
 }
 export async function indexNotebook(cfg, signal) {
     await zk(cfg, ['index', '--quiet'], { signal, timeoutMs: 120_000 });
