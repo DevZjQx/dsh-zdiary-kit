@@ -185,7 +185,7 @@ export async function dreamNotebook(
 
   // 顺序跑：两个 zk 进程同时补索引会撞 SQLite 写锁（lint 里同样处理）
   const notes = await allNotes(cfg, {}, signal)
-  const edges = await graphEdges(cfg, signal)
+  const edges = (await graphEdges(cfg, signal)).edges
 
   // 入链来源按目标分组：既算「被引几次」，也给 dream 一份上下文（谁在引它）
   const inbound = new Map<string, string[]>()

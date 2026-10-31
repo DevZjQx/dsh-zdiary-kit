@@ -171,6 +171,8 @@ function lintReport(r) {
         lines.push(memLine);
     if (r.truncated)
         lines.push('⚠️ 笔记数触到扫描上限：结果不完整（只会漏报，不会误报）');
+    if (oneWay.edgesTruncated)
+        lines.push('⚠️ 建图笔记载入触到上限：单向链接可能误报（回链边未加载）');
     lines.push('（只报告，没有改动任何文件）');
     return lines.join('\n');
 }

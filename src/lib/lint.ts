@@ -82,6 +82,11 @@ export interface LintOneWayBucket {
   bodyOnly: number
   /** true = 只列 Links 小节的单向边（正文引用只进 bodyOnly） */
   linksOnly: boolean
+  /**
+   * true = `zk graph` 的笔记载入触到上限（`--limit` 数的是笔记），边集可能不完整。
+   * 与 `truncated`（笔记扫描）不同：那边少一篇只会漏报，这边**缺一条回链边就会把双向误判成单向**。
+   */
+  edgesTruncated: boolean
   items: LintOneWayEntry[]
 }
 
@@ -123,7 +128,10 @@ export interface LintResult {
   notebook: string
   /** 参与巡检的笔记数（已排除 raw / inbox / archive / meta 文件） */
   notes: number
-  /** true = 触到扫描上限，结果不完整：只会漏报，不会误报（别当成「只有这些问题」） */
+  /**
+   * true = 笔记扫描触到上限，结果不完整：只会漏报，不会误报（别当成「只有这些问题」）。
+   * 边截断是另一回事，见 `oneWayLinks.edgesTruncated`。
+   */
   truncated: boolean
   staleDays: number
   /** zk 解析不了 frontmatter 的笔记：它们不在索引里，下面各桶都统计不到 */
@@ -369,11 +377,15 @@ export async function lintNotebook(
   const orphanAbs = await notesWithFlag(cfg, '--orphan', signal)
   const brokenAbs = await notesWithFlag(cfg, '--broken-links', signal)
   const taglessAbs = await notesWithFlag(cfg, '--tagless', signal)
-  const edges = await graphEdges(cfg, signal)
+  const graph = await graphEdges(cfg, signal)
+  const edges = graph.edges
   // 图里的路径是笔记本相对：先拼回绝对路径再判断是不是日记（isDaily 收的是绝对路径）
   const oneWay = oneWayLinks(edges, notes, (p) => isDaily(path.resolve(cfg.notebook, p)))
 
-  const byAbs = new Map(notes.map((n) => [path.resolve(n.absPath || n.path), n]))
+  // 别用 `path.resolve(n.absPath || n.path)`：absPath 缺失时相对路径会按进程 cwd 解析，键就错了。
+  const byAbs = new Map(
+    notes.map((n) => [n.absPath ? path.resolve(n.absPath) : path.resolve(cfg.notebook, n.path), n]),
+  )
   const byPath = new Map(notes.map((n) => [n.path, n]))
   const bucket = (absPaths: string[], max = MAX_ITEMS): LintBucket => {
     const items = absPaths
@@ -463,6 +475,7 @@ export async function lintNotebook(
     edges: oneWayEdges,
     bodyOnly,
     linksOnly,
+    edgesTruncated: graph.truncated,
     items: oneWayItems.slice(0, MAX_ITEMS),
   }
 

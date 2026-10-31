@@ -1108,6 +1108,7 @@ describe('M3: 巡检与做梦', () => {
     expect(lint.oneWayLinks.edges).toBe(1)
     expect(lint.oneWayLinks.bodyOnly).toBe(0)
     expect(lint.oneWayLinks.linksOnly).toBe(false)
+    expect(lint.oneWayLinks.edgesTruncated).toBe(false)
     const citedItem = lint.oneWayLinks.items.find((i) => i.path === cited.path)
     expect(citedItem?.from).toEqual([source.path])
     expect(citedItem?.where).toBe('links')
@@ -1153,6 +1154,26 @@ describe('M3: 巡检与做梦', () => {
     expect(lint.oneWayLinks.total).toBe(3)
     expect(lint.oneWayLinks.edges).toBe(3)
     expect(lint.oneWayLinks.bodyOnly).toBe(2)
+  })
+
+  it('graphEdges：边数触到 --limit 时置 truncated（缺回链边会误报单向）', async () => {
+    const trDir = path.join(home, 'nb-edges-trunc')
+    const cfgTr = store.normalizeConfig({ notebook: trDir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfgTr)
+    const a = await zk.createNote(cfgTr, { title: '边甲', dir: 'notes/concepts', content: '甲。' })
+    const b = await zk.createNote(cfgTr, { title: '边乙', dir: 'notes/concepts', content: '乙。' })
+    const c = await zk.createNote(cfgTr, { title: '边丙', dir: 'notes/sources', content: '丙。' })
+    await zk.linkNotes(cfgTr, c.path, a.path)
+    await zk.linkNotes(cfgTr, c.path, b.path)
+    await zk.indexNotebook(cfgTr)
+
+    const full = await zk.graphEdges(cfgTr)
+    expect(full.edges.length).toBe(2)
+    expect(full.truncated).toBe(false)
+    // --limit 数的是笔记（1 来源 + 2 目标 = 3），不是边；limit=2 时只载入 2 篇、丢一条边
+    const cut = await zk.graphEdges(cfgTr, undefined, { limit: 2 })
+    expect(cut.edges.length).toBe(1)
+    expect(cut.truncated).toBe(true)
   })
 
   it('lint：links_only 只列 Links 小节，正文引用只计数', async () => {

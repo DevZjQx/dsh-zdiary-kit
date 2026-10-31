@@ -60,9 +60,10 @@ const LINT_ONE_WAY = objSchema(
     edges: { type: 'number' },
     bodyOnly: { type: 'number' },
     linksOnly: { type: 'boolean' },
+    edgesTruncated: { type: 'boolean' },
     items: { type: 'array', items: LINT_ONE_WAY_ITEM },
   },
-  ['total', 'edges', 'bodyOnly', 'linksOnly', 'items'],
+  ['total', 'edges', 'bodyOnly', 'linksOnly', 'edgesTruncated', 'items'],
 )
 const LINT_STALE = objSchema(
   {
@@ -869,10 +870,11 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'supersede 不会重写 meta 文件里的链接，这类漂移 broken-links 看不见。' +
         '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
         'oneWayLinks.items 是缺回链的目标 X（不是来源），from 是没被 X 回链的来源 S；' +
-        'edges 是列出的单向边数，bodyOnly 是正文引用（不在 ## Links / ## 链接 小节）的单向边数。' +
+        'edges 是全部单向边数（items 截到 50 条时仍计全量），bodyOnly 是正文引用（不在 ## Links / ## 链接 小节）的单向边数。' +
         'links_only=true 时只列 Links 小节的单向链接，正文引用只进 bodyOnly，适合把桶当可修清单。' +
         'S 或 X 是日记的边不算 —— 日记天然是出边，回链它没有意义。' +
-        '触到扫描上限时结果只会漏报，不会误报。' +
+        '笔记数触到扫描上限只会漏报；但 oneWayLinks.edgesTruncated=true 表示建图笔记载入触顶、边集可能不完整 —— ' +
+        '缺掉的回链边会把双向误判成单向，这是唯一可能误报的截断，看到它先归档旧笔记再重跑。' +
         '只读：不改任何笔记。拿到清单后自己判断先修哪个，再用 zk_link / zk_append / zk_supersede 动手。',
       parameters: {
         type: 'object',
@@ -956,6 +958,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const memLine = formatMemoryLinks(v.memoryLinks)
         if (memLine) lines.push(memLine)
         if (v.truncated) lines.push('⚠️ 笔记数触到扫描上限：结果不完整（只会漏报，不会误报），先归档旧笔记再跑一次')
+        if (oneWay.edgesTruncated) lines.push('⚠️ 建图笔记载入触到上限：单向链接可能误报（回链边未加载），先归档旧笔记再跑一次')
         lines.push('（只报告，没有改动任何文件）')
         return text(lines.join('\n'))
       },

@@ -318,32 +318,48 @@ export async function notesWithFlag(cfg, flag, signal) {
     const out = await zk(cfg, args, { signal });
     return out.split('\n').map((line) => line.trim()).filter(Boolean);
 }
-/** 全部双链边（一次 `zk graph`）。路径是**笔记本相对**的，按路径比对，不缓存 targetId（Z11 之后 id 会变）。 */
+/**
+ * `zk graph` 的 `--limit` 上限。注意它限的是**笔记载入数**（`zk graph --help`：`Limit the number of notes found`），
+ * 不是边数 —— 实测 1 个来源 + 6 个目标、`--limit 3` 只回 2 条边。边集不完整的后果是**误报**，见 `graphEdges`。
+ */
+export const MAX_GRAPH_NOTES = 10_000;
+/**
+ * 全部双链边（一次 `zk graph`）。路径是**笔记本相对**的，按路径比对，不缓存 targetId（Z11 之后 id 会变）。
+ *
+ * `truncated` 必须往上报：`--limit` 到顶时 zk 不报错，少掉的那条边如果正好是回链，
+ * S→X 就会被算成单向 —— 这是整个巡检里唯一能产生**误报**的截断（笔记扫描到顶只会漏报）。
+ * 判定用「结果里出现的不同笔记数 ≥ limit」：`--limit` 数的是笔记，不是边，按边数比永远触发不了。
+ */
 export async function graphEdges(cfg, signal, opts = {}) {
-    const args = ['graph', '--quiet', '--format', 'json', '--limit', '10000'];
+    const limit = Math.min(MAX_GRAPH_NOTES, Math.max(1, Math.trunc(opts.limit ?? MAX_GRAPH_NOTES)));
+    const args = ['graph', '--quiet', '--format', 'json', '--limit', String(limit)];
     for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived }))
         args.push('-x', name);
     const text = await zk(cfg, args, { signal });
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
     if (start < 0 || end <= start)
-        return [];
+        return { edges: [], truncated: false };
     let graph;
     try {
         graph = JSON.parse(text.slice(start, end + 1));
     }
     catch {
-        return [];
+        return { edges: [], truncated: false };
     }
     const out = [];
+    const nodes = new Set();
     for (const link of graph.links ?? []) {
         const sourcePath = String(link.sourcePath ?? '');
         const targetPath = String(link.targetPath ?? '');
         const snippetStart = Number(link.snippetStart);
-        if (sourcePath && targetPath)
-            out.push({ sourcePath, targetPath, snippetStart: Number.isFinite(snippetStart) ? snippetStart : -1 });
+        if (!sourcePath || !targetPath)
+            continue;
+        out.push({ sourcePath, targetPath, snippetStart: Number.isFinite(snippetStart) ? snippetStart : -1 });
+        nodes.add(sourcePath);
+        nodes.add(targetPath);
     }
-    return out;
+    return { edges: out, truncated: nodes.size >= limit };
 }
 /**
  * `zk-kit query` 会被**丢掉**的参数：它们要么绕开「统一排除」，要么弄坏 JSON 解析。
@@ -841,7 +857,7 @@ async function refreshIndexQuietly(cfg, signal) {
 /** 指向某篇笔记的所有来源笔记（相对路径）—— 一次 `zk graph`，不按笔记逐个跑 */
 async function inboundSources(cfg, rel, signal, opts = {}) {
     const out = [];
-    for (const edge of await graphEdges(cfg, signal, opts)) {
+    for (const edge of (await graphEdges(cfg, signal, opts)).edges) {
         if (edge.targetPath !== rel)
             continue;
         if (edge.sourcePath !== rel && !out.includes(edge.sourcePath))

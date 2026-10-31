@@ -241,10 +241,12 @@ export async function lintNotebook(cfg, opts = {}, signal) {
     const orphanAbs = await notesWithFlag(cfg, '--orphan', signal);
     const brokenAbs = await notesWithFlag(cfg, '--broken-links', signal);
     const taglessAbs = await notesWithFlag(cfg, '--tagless', signal);
-    const edges = await graphEdges(cfg, signal);
+    const graph = await graphEdges(cfg, signal);
+    const edges = graph.edges;
     // 图里的路径是笔记本相对：先拼回绝对路径再判断是不是日记（isDaily 收的是绝对路径）
     const oneWay = oneWayLinks(edges, notes, (p) => isDaily(path.resolve(cfg.notebook, p)));
-    const byAbs = new Map(notes.map((n) => [path.resolve(n.absPath || n.path), n]));
+    // 别用 `path.resolve(n.absPath || n.path)`：absPath 缺失时相对路径会按进程 cwd 解析，键就错了。
+    const byAbs = new Map(notes.map((n) => [n.absPath ? path.resolve(n.absPath) : path.resolve(cfg.notebook, n.path), n]));
     const byPath = new Map(notes.map((n) => [n.path, n]));
     const bucket = (absPaths, max = MAX_ITEMS) => {
         const items = absPaths
@@ -341,6 +343,7 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         edges: oneWayEdges,
         bodyOnly,
         linksOnly,
+        edgesTruncated: graph.truncated,
         items: oneWayItems.slice(0, MAX_ITEMS),
     };
     const parseErrors = parseErrorWarnings(cfg, warnings);
