@@ -30,8 +30,7 @@
   },
   "files": [
     "dist",
-    "docs",
-    "scripts",
+    "docs/features",
     "cordis.patch.yml",
     "README.md",
     "icon.svg"
@@ -44,7 +43,8 @@
     "check:dist": "bun scripts/dist-check.ts",
     "cli": "bun src/cli.ts",
     "smoke": "bun scripts/smoke.ts && bun scripts/docs.ts",
-    "docs": "bun scripts/docs.ts"
+    "docs": "bun scripts/docs.ts",
+    "prepublishOnly": "bun run check"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
