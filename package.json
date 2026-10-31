@@ -1,6 +1,6 @@
 {
   "name": "dsh-zdiary-kit",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "内置 zk 的 DSH 知识库 / 日记插件：装好即用 —— 自动装 zk、建笔记本，给 agent 一组 zk_* 工具（搜索、读写、日记、双链），设置页里管路径、索引与自检。",
   "icon": "./icon.svg",
   "repository": {
