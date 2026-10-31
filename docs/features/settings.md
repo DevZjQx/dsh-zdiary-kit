@@ -8,7 +8,7 @@
 - `GET /status`：zk 位置/版本/来源、笔记本是否存在、笔记/标签/断链/孤立计数
 - `POST /init`：`ensureNotebook`（幂等；layered 时一并写 `AGENTS.md`）
 - `POST /index`：`zk index`
-- `POST /install`：内置 zk（下载 → 解包 → `--version` 验证）
+- `POST /install`：内置 zk（下载 → 解包 → `--version` 验证）；`detail` 里回显下载源（自定义镜像会点名）
 - `GET /selftest`：七项真检查（zk、笔记本、模板、group、结构、长期记忆、索引）
 
 快照（`GET /settings`、`GET /status`、写操作的回包）除了配置与计数，还带两块**诊断**：

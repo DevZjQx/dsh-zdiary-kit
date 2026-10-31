@@ -10,11 +10,16 @@ import { BIN_DIR, CACHE_DIR, expandHome } from '../config/paths.js';
 import { run } from './exec.js';
 import { zkAsset } from './platform.js';
 import { managedBin, versionOf, ZkError } from './zk.js';
+/** 给人看的一句话来源：装完要让用户知道刚才信任了谁 */
+export function sourceLabel(mirror) {
+    return mirror ? `自定义镜像 ${mirror}` : 'github.com';
+}
 export async function installZk(version, signal) {
     const target = zkAsset(version);
     if (!target) {
         throw new ZkError(`暂不支持自动安装（${process.platform}/${process.arch}）`, '请自己装一份 zk 并把路径填进设置 →「zk 路径」：https://github.com/zk-org/zk#installation');
     }
+    const mirror = (process.env.ZK_DOWNLOAD_BASE ?? '').replace(/\/+$/, '') || null;
     fs.mkdirSync(BIN_DIR, { recursive: true });
     fs.mkdirSync(CACHE_DIR, { recursive: true });
     const tarFile = path.join(CACHE_DIR, target.asset);
@@ -51,7 +56,8 @@ export async function installZk(version, signal) {
     const actual = await versionOf(bin);
     if (!actual)
         throw new ZkError('装好的 zk 跑不起来', bin);
-    return { path: bin, version: actual, asset: target.asset };
+    // 镜像不给校验和（上游 release 也没有 checksums.txt），至少把「实际从哪下的」交回去
+    return { path: bin, version: actual, asset: target.asset, url: target.url, mirror };
 }
 /** 用户手动指的那个路径是不是真的 zk */
 export async function verifyZkPath(p) {

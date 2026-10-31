@@ -4,7 +4,8 @@
 
 **Owns.**
 - `lib/platform.ts`：`process.platform/arch` → 官方 release 资源名（`zk-v0.15.7-linux-amd64.tar.gz` 等）
-- `lib/install.ts`：下载（`ZK_DOWNLOAD_BASE` 可换镜像）→ 系统 `tar` 解包 → `chmod 755` → `zk --version` 验证
+- `lib/install.ts`：下载（`ZK_DOWNLOAD_BASE` 可换镜像）→ 系统 `tar` 解包 → `chmod 755` → `zk --version` 验证；
+  结果里带 `url` 与 `mirror`，由 `sourceLabel()` 说清这次从哪下的（上游 release 没有 checksums.txt，不做假校验）
 - `lib/notebook.ts`：`ensureNotebook` = 建目录 → `zk init`（缺 `.zk/config.toml` 时）→ 写模板 → 追加 group
 
 两种结构（每个笔记本自己的 `Config.structure`，落在 `notebooks` 条目里），默认 `flat`：
@@ -30,7 +31,7 @@
 
 **Depends on.** `lib/exec`（`tar` 与 `zk`）、`config/paths`（`BIN_DIR` / `CACHE_DIR`）、`config/store`（版本、目录名）。
 
-**Public surface.** `installZk(version)`、`zkAsset(version)`、`ensureNotebook(cfg)`、`DAILY_TEMPLATE` / `DAILY_TEMPLATE_LAYERED`、
+**Public surface.** `installZk(version)`（返回 `path` / `version` / `asset` / `url` / `mirror`）、`sourceLabel(mirror)`、`zkAsset(version)`、`ensureNotebook(cfg)`、`DAILY_TEMPLATE` / `DAILY_TEMPLATE_LAYERED`、
 `SOURCE_TEMPLATE`、`ENTRY_TEMPLATE`、`AGENTS_TEMPLATE`、`WORKFLOW_TEMPLATE`；`structureDirs(cfg)` / `structureStatus(cfg)`（只报告，不建不改）。
 `ensureNotebook` 返回 `dirsCreated` / `templatesWritten` / `groupsAdded` / `agentsWritten` / `workflowWritten`，
 设置页据此显示「本次真正做了什么」（第二次调用五项都是空的）。

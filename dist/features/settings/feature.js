@@ -16,7 +16,7 @@ import { CFG_FILE, processWorkspace } from '../../config/paths.js';
 import { config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.js';
 import { ensureNotebook, structureStatus } from '../../lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
-import { installZk } from '../../lib/install.js';
+import { installZk, sourceLabel } from '../../lib/install.js';
 import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.js';
 const P = '/dsh-zdiary-kit/api';
 async function zkStatus(cfg) {
@@ -215,7 +215,8 @@ export function registerSettings({ route, isTrusted }) {
         }
         try {
             const result = await installZk(version);
-            json(res, 200, { ok: true, result, detail: `已安装 zk ${result.version} → ${result.path}`, ...(await snapshot(cfg)) });
+            const detail = `已安装 zk ${result.version} → ${result.path}（源：${sourceLabel(result.mirror)}）`;
+            json(res, 200, { ok: true, result, detail, ...(await snapshot(cfg)) });
         }
         catch (err) {
             json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });

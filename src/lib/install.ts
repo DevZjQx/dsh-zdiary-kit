@@ -15,6 +15,15 @@ export interface InstallResult {
   path: string
   version: string
   asset: string
+  /** 实际下载地址：换了镜像时不是 github.com */
+  url: string
+  /** 自定义镜像的 base（`ZK_DOWNLOAD_BASE`）；没换就是 null */
+  mirror: string | null
+}
+
+/** 给人看的一句话来源：装完要让用户知道刚才信任了谁 */
+export function sourceLabel(mirror: string | null): string {
+  return mirror ? `自定义镜像 ${mirror}` : 'github.com'
 }
 
 export async function installZk(version: string, signal?: AbortSignal): Promise<InstallResult> {
@@ -25,6 +34,8 @@ export async function installZk(version: string, signal?: AbortSignal): Promise<
       '请自己装一份 zk 并把路径填进设置 →「zk 路径」：https://github.com/zk-org/zk#installation',
     )
   }
+
+  const mirror = (process.env.ZK_DOWNLOAD_BASE ?? '').replace(/\/+$/, '') || null
 
   fs.mkdirSync(BIN_DIR, { recursive: true })
   fs.mkdirSync(CACHE_DIR, { recursive: true })
@@ -63,7 +74,8 @@ export async function installZk(version: string, signal?: AbortSignal): Promise<
 
   const actual = await versionOf(bin)
   if (!actual) throw new ZkError('装好的 zk 跑不起来', bin)
-  return { path: bin, version: actual, asset: target.asset }
+  // 镜像不给校验和（上游 release 也没有 checksums.txt），至少把「实际从哪下的」交回去
+  return { path: bin, version: actual, asset: target.asset, url: target.url, mirror }
 }
 
 /** 用户手动指的那个路径是不是真的 zk */

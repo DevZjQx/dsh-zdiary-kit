@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      ZK_VERSION: 0.15.7
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      # 集成测试要真起 zk 进程；没有 zk 时 scripts/test.ts 会把「全部跳过」按失败处理。
+      - name: 装 zk
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          url="https://github.com/zk-org/zk/releases/download/v${ZK_VERSION}/zk-v${ZK_VERSION}-linux-amd64.tar.gz"
+          curl -fsSL "$url" -o "$RUNNER_TEMP/zk.tar.gz"
+          tar -xzf "$RUNNER_TEMP/zk.tar.gz" -C "$RUNNER_TEMP/bin" zk
+          chmod +x "$RUNNER_TEMP/bin/zk"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/zk" --version
+
+      - run: bun install --frozen-lockfile
+
+      # check = typecheck → build → dist 漂移闸 → test（要求 skip = 0）
+      - run: bun run check
+
+      # 加载 dist 跑一遍 14 个工具与 6 条设置路由，再把 README 里的 zk-kit 命令真跑一遍
+      - run: bun run smoke

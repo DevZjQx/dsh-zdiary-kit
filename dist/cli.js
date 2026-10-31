@@ -8,7 +8,7 @@ import { config, writeConfig, selectNotebook, isNotebookName, CONFIG_KEYS } from
 import { CFG_FILE } from './config/paths.js';
 import { ensureNotebook, structureStatus } from './lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
-import { installZk } from './lib/install.js';
+import { installZk, sourceLabel } from './lib/install.js';
 import { resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
 import { formatMemoryLinks, lintNotebook } from './lib/lint.js';
 import { dreamNotebook } from './lib/dream.js';
@@ -269,7 +269,7 @@ async function main() {
             if (!/^\d+\.\d+\.\d+$/.test(version))
                 throw new ZkError('版本号不合法：' + version);
             const result = await installZk(version);
-            print(json ? result : `已安装 zk ${result.version} → ${result.path}`, json);
+            print(json ? result : `已安装 zk ${result.version} → ${result.path}\n源：${sourceLabel(result.mirror)}（${result.url}）`, json);
             return;
         }
         case 'init': {

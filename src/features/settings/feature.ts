@@ -20,7 +20,7 @@ import { ensureNotebook, structureStatus } from '../../lib/notebook.ts'
 import type { StructureStatus } from '../../lib/notebook.ts'
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
-import { installZk } from '../../lib/install.ts'
+import { installZk, sourceLabel } from '../../lib/install.ts'
 import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.ts'
 import type { ZkLocation } from '../../lib/zk.ts'
 import type { RouteHandler } from '../../lib/dsh.ts'
@@ -210,7 +210,8 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
     }
     try {
       const result = await installZk(version)
-      json(res, 200, { ok: true, result, detail: `已安装 zk ${result.version} → ${result.path}`, ...(await snapshot(cfg)) })
+      const detail = `已安装 zk ${result.version} → ${result.path}（源：${sourceLabel(result.mirror)}）`
+      json(res, 200, { ok: true, result, detail, ...(await snapshot(cfg)) })
     } catch (err) {
       json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) })
     }

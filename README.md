@@ -79,7 +79,8 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
    建目录 → `zk init` → 写 `.zk/templates/daily.md` → 往 `config.toml` 补 `[group."daily"]`；
 2. 如果本机没有 zk，工具会明确告诉你「找不到 zk 可执行文件」，此时去设置页点
    **安装内置 zk**（从 GitHub 官方 release 下 `zk-v<版本>-<平台>.tar.gz`，解到 `~/.dsh/zdiary/bin`，
-   装完真跑一次 `zk --version` 才算成功）；
+   装完真跑一次 `zk --version` 才算成功）。装完会回显下载源：设了 `ZK_DOWNLOAD_BASE` 就明确标成
+   「自定义镜像」并给出实际 URL —— 上游 release 不带校验和，至少让你知道刚才信任了谁；
 3. 点 **自检** 看七项：zk、笔记本、日记模板、日记 group、结构、长期记忆、索引。
    zk / 索引会真起进程，笔记本 / 模板 / group / 结构直接读磁盘与配置，长期记忆会重算一遍载荷。
 
@@ -305,6 +306,10 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
 - `dist/` 随仓库提交：`dsh plugin add github:…` 不会触发安装时构建（pnpm 默认禁止 git 依赖跑构建脚本）。
+  所以 `bun run check` 里串了一道 **dist 漂移闸**（`bun run check:dist`）：dist 有未提交改动、而 src 已经干净时报错
+  （源码提交了、dist 没跟上）；src 也还脏时跳过 —— 本地改源码时 dist 本来就是脏的，那不是漂移。
+- CI（`.github/workflows/ci.yml`）在 ubuntu 上装 zk 后跑 `check` + `smoke`，和本地两条命令完全一样。
+  它兑现的是那两个安全网：测试 **skip = 0**、README 里的命令**真跑** —— 靠人记得跑是不够的。
 
 ### 目录
 

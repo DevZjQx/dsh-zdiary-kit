@@ -9,7 +9,7 @@ import type { Config } from './config/store.ts'
 import { CFG_FILE } from './config/paths.ts'
 import { ensureNotebook, structureStatus } from './lib/notebook.ts'
 import { buildMemoryPayload, formatFileShares } from './lib/memory.ts'
-import { installZk } from './lib/install.ts'
+import { installZk, sourceLabel } from './lib/install.ts'
 import {
   resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
   appendDaily, linkNotes, notebookStats, indexNotebook, withTags, hasNotebook, localDate, ZkError,
@@ -275,7 +275,7 @@ async function main(): Promise<void> {
       // 与设置页 /install 同一套校验：版本号会进 URL 和缓存文件名
       if (!/^\d+\.\d+\.\d+$/.test(version)) throw new ZkError('版本号不合法：' + version)
       const result = await installZk(version)
-      print(json ? result : `已安装 zk ${result.version} → ${result.path}`, json)
+      print(json ? result : `已安装 zk ${result.version} → ${result.path}\n源：${sourceLabel(result.mirror)}（${result.url}）`, json)
       return
     }
 

@@ -40,7 +40,8 @@
     "build": "tsc -p tsconfig.build.json && bun scripts/postbuild.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "bun scripts/test.ts",
-    "check": "bun run typecheck && bun run build && bun run test",
+    "check": "bun run typecheck && bun run build && bun run check:dist && bun run test",
+    "check:dist": "bun scripts/dist-check.ts",
     "cli": "bun src/cli.ts",
     "smoke": "bun scripts/smoke.ts && bun scripts/docs.ts",
     "docs": "bun scripts/docs.ts"

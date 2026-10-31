@@ -30,6 +30,7 @@ const toolsFeature = await import('../src/features/zk-tools/feature.ts')
 const workspaceLib = await import('../src/lib/workspace.ts')
 const toolLib = await import('../src/lib/tool.ts')
 const fm = await import('../src/lib/frontmatter.ts')
+const installLib = await import('../src/lib/install.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
@@ -1845,3 +1846,10 @@ describe('cli: zk-kit notebooks', () => {
   })
 })
 
+describe('install source', () => {
+  // 装完要说清「刚才信任了谁」：换了镜像时不写出来，用户不知道二进制从哪来
+  test('默认从 github.com 下，换了镜像就点名', () => {
+    expect(installLib.sourceLabel(null)).toBe('github.com')
+    expect(installLib.sourceLabel('https://ghproxy.example.com/https://github.com')).toContain('自定义镜像')
+  })
+})
