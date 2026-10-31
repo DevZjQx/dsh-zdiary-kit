@@ -1174,6 +1174,17 @@ describe('M3: 巡检与做梦', () => {
     const cut = await zk.graphEdges(cfgTr, undefined, { limit: 2 })
     expect(cut.edges.length).toBe(1)
     expect(cut.truncated).toBe(true)
+
+    // 链接稀疏时不能靠「边里出现过的笔记数」：两端的笔记可能一篇都没载入 → 0 条边、0 个节点
+    const sparseDir = path.join(home, 'nb-edges-sparse')
+    const cfgSparse = store.normalizeConfig({ notebook: sparseDir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfgSparse)
+    for (let i = 0; i < 5; i++)
+      await zk.createNote(cfgSparse, { title: `孤篇${i}`, dir: 'notes/x', content: `没有链接 ${i}` })
+    await zk.indexNotebook(cfgSparse)
+    const sparseCut = await zk.graphEdges(cfgSparse, undefined, { limit: 3 })
+    expect(sparseCut.edges.length).toBe(0)
+    expect(sparseCut.truncated).toBe(true)
   })
 
   it('lint：links_only 只列 Links 小节，正文引用只计数', async () => {

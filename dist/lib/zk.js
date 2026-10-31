@@ -328,7 +328,10 @@ export const MAX_GRAPH_NOTES = 10_000;
  *
  * `truncated` 必须往上报：`--limit` 到顶时 zk 不报错，少掉的那条边如果正好是回链，
  * S→X 就会被算成单向 —— 这是整个巡检里唯一能产生**误报**的截断（笔记扫描到顶只会漏报）。
- * 判定用「结果里出现的不同笔记数 ≥ limit」：`--limit` 数的是笔记，不是边，按边数比永远触发不了。
+ *
+ * 判定以 JSON 里的 `notes` 数组长度为准（就是实际载入的笔记数，`--limit 3` → 3）。只数边里出现过的
+ * 笔记会漏：链接稀疏时两端的笔记可能一篇都没载入，一条边都不返回，`nodes.size` 恒为 0（`--limit 3` 实测
+ * 0 条边）。`notes` 缺失（老版本 zk）时才退回按边里的笔记数判断。
  */
 export async function graphEdges(cfg, signal, opts = {}) {
     const limit = Math.min(MAX_GRAPH_NOTES, Math.max(1, Math.trunc(opts.limit ?? MAX_GRAPH_NOTES)));
@@ -359,7 +362,9 @@ export async function graphEdges(cfg, signal, opts = {}) {
         nodes.add(sourcePath);
         nodes.add(targetPath);
     }
-    return { edges: out, truncated: nodes.size >= limit };
+    // notes 是实际载入的笔记数；两个条件取或，宁可多报一次也别静默漏掉告警
+    const loaded = Array.isArray(graph.notes) ? graph.notes.length : 0;
+    return { edges: out, truncated: loaded >= limit || nodes.size >= limit };
 }
 /**
  * `zk-kit query` 会被**丢掉**的参数：它们要么绕开「统一排除」，要么弄坏 JSON 解析。
