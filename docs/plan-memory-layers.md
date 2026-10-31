@@ -4,7 +4,7 @@
 
 > **历史快照（2026-10-31 注）**：本文是 v0.2–v0.5 的实施记录；正文中的测试数（52 / 79 / 86 / 88）、工具数（7 / 10 / 12）、
 > 文档命令数（9）与 meta 份数（5）都是各版本当天的数字。当前口径以 README / 代码为准：
-> `bun run test` 103 pass / 0 fail，14 个工具，`bun run docs` 17 条，meta 注入 3 份 / 排除 6 份，AGENTS 模板 175 词。
+> `bun run test` 107 pass / 0 fail，14 个工具，`bun run docs` 17 条，meta 注入 3 份 / 排除 6 份，AGENTS 模板 175 词。
 **目标**：让 zdiary 支撑 A-MEM 式「编译而非检索」的知识库——原始材料 → 原子笔记 → 精炼记忆（MEMORY.md），
 agent 负责日常 upkeep，人每周审 30 分钟。不用向量库。
 **不在本计划内**：重新设计 zk；自动跑 cron 做梦；多用户 / 同步；任何形式的向量或 embedding。

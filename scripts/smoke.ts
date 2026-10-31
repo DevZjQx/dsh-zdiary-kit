@@ -4,8 +4,8 @@
  *
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
- *   · 14 个工具能注册、能执行、能渲染；
- *   · 6 条设置路由能工作（走真实的 http 请求，信任栅栏用假的 connection 顶替）。
+ *   · 14 个工具能注册、能执行、能渲染（zk_context 也执行一次）；
+ *   · 6 条设置路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
  */
@@ -121,6 +121,7 @@ if (typeof (linted.orphans as Record<string, unknown>).total !== 'number') throw
 const dreamed = await call('zk_dream', { days: 7 })
 if (!Array.isArray(dreamed.newNotes)) throw new Error('zk_dream 输出不对')
 await call('zk_stats', {})
+await call('zk_context', {})
 await call('zk_use', {})
 
 // ── 真发 HTTP：设置页依赖的 6 条路由 ──────────────────────────────────────
@@ -215,6 +216,18 @@ for (const item of selftest.items as Array<{ ok: boolean; name: string; detail: 
   console.log(`  ${item.ok ? '✓' : '✗'} ${item.name}：${item.detail}`)
 }
 if (selftest.ok !== true) throw new Error('自检没全过')
+
+// /install 不联网：用非法版本号验证路由本身的校验分支（400），避免冒烟真的下载二进制
+const badInstall = await fetch(base + '/install', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ version: 'not-a-version' }),
+})
+const badInstallBody = await badInstall.json() as { ok?: boolean; error?: string }
+if (badInstall.status !== 400 || badInstallBody.ok !== false) {
+  throw new Error('POST /install 非法版本没被拒绝：HTTP ' + badInstall.status + ' ' + JSON.stringify(badInstallBody))
+}
+console.log('[POST /install] 非法版本 = 400 ✓（不下载）')
 
 // ── 乐观并发：页面拿的 stamp 过期 → 409，而不是把别处刚改的值覆盖回去 ──────
 const fresh = await getJson('/settings')

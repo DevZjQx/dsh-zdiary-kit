@@ -35,7 +35,7 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit config [get [键]]             看配置（不传键 = 全量；未知键报错）
   zk-kit config set 键=值 [键=值 …]     改配置（只落盘，不建目录；structure 改的是当前笔记本，切完跑 zk-kit init）
 
-除 doctor / help 外，其余子命令加 --json 输出结构化结果。`;
+除 doctor / help / config set 外，其余子命令加 --json 输出结构化结果。`;
 function parse(argv) {
     const out = { pos: [], flags: {} };
     for (let i = 0; i < argv.length; i++) {

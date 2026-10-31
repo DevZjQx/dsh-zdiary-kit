@@ -215,7 +215,7 @@ export function registerSettings({ route, isTrusted }) {
         }
         try {
             const result = await installZk(version);
-            const detail = `已安装 zk ${result.version} → ${result.path}（源：${sourceLabel(result.mirror)}）`;
+            const detail = `已安装 zk ${result.version} → ${result.path}（源：${sourceLabel(result.mirror)} · ${result.url}）`;
             json(res, 200, { ok: true, result, detail, ...(await snapshot(cfg)) });
         }
         catch (err) {
