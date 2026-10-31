@@ -82,9 +82,10 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 不用 zk 的 `--missing-backlink`：它的原义是「至少有一条单向链接」，日记天然是一串出边，
 日记提过的每篇笔记都会常年挂在桶里 —— 那不是「没接上」，是正常的引用方向，桶就再也清零不了。
 普通笔记链到日记（"今天做了 X"）同理，不要求日记回链。
-`oneWayLinks.items` 是缺回链的目标 X（不是来源），`from` 是没被 X 回链的来源 S；`edges` 是单向边数，
+`oneWayLinks.items` 是缺回链的目标 X（不是来源），`from` 是没被 X 回链的来源 S；`edges` 是列出的单向边数，
 `where` / `bodyOnly` 标出其中来自正文引用（不在 `## Links` / `## 链接` 小节）的部分 —— 正文引用天然常单向，
-单独计数，方便判断该不该补回链。
+单独计数，方便判断该不该补回链。`zk_lint(links_only=true)` / `zk-kit lint --links-only` 只列 Links 小节的单向边，
+正文引用只进 `bodyOnly`；默认 `false`，仍然全报。
 `parseErrors` 单列一类：frontmatter 写坏（典型是 `tags: [#你好世界]` —— YAML 里 `#` 不是 tag 前缀，要写 `tags: ["你好世界"]`）
 时 zk 以 exit 0 跳过那篇、只往 stderr 打一行 `error parsing note content`，于是它不在索引里 ——
 搜不到，也不会出现在上面任何一个桶里（表现成邻居突然孤儿 / 断链）。`zk()` 收 exit 0 的 stderr warning，

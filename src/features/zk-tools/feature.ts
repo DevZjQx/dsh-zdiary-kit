@@ -59,9 +59,10 @@ const LINT_ONE_WAY = objSchema(
     total: { type: 'number' },
     edges: { type: 'number' },
     bodyOnly: { type: 'number' },
+    linksOnly: { type: 'boolean' },
     items: { type: 'array', items: LINT_ONE_WAY_ITEM },
   },
-  ['total', 'edges', 'bodyOnly', 'items'],
+  ['total', 'edges', 'bodyOnly', 'linksOnly', 'items'],
 )
 const LINT_STALE = objSchema(
   {
@@ -868,7 +869,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'supersede 不会重写 meta 文件里的链接，这类漂移 broken-links 看不见。' +
         '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
         'oneWayLinks.items 是缺回链的目标 X（不是来源），from 是没被 X 回链的来源 S；' +
-        'edges 是单向边数，bodyOnly 是其中来自正文引用（不在 ## Links / ## 链接 小节）的条数。' +
+        'edges 是列出的单向边数，bodyOnly 是正文引用（不在 ## Links / ## 链接 小节）的单向边数。' +
+        'links_only=true 时只列 Links 小节的单向链接，正文引用只进 bodyOnly，适合把桶当可修清单。' +
         'S 或 X 是日记的边不算 —— 日记天然是出边，回链它没有意义。' +
         '触到扫描上限时结果只会漏报，不会误报。' +
         '只读：不改任何笔记。拿到清单后自己判断先修哪个，再用 zk_link / zk_append / zk_supersede 动手。',
@@ -876,6 +878,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         type: 'object',
         properties: {
           stale_days: S.num('多少天没修改算陈旧（1-3650，默认 90）'),
+          links_only: S.bool('只报 Links 小节的单向链接；正文引用只计数（默认 false）'),
         },
         additionalProperties: false,
       },
@@ -900,6 +903,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         await ensureNotebook(cfg, env.signal)
         return lintNotebook(cfg, {
           staleDays: args.stale_days === undefined ? undefined : Number(args.stale_days),
+          linksOnly: args.links_only === true,
         }, env.signal)
       },
       render(_args, value) {
@@ -923,12 +927,16 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         lines.push(line('孤儿', v.orphans))
         lines.push(line('无标签', v.tagless))
         const oneWay = v.oneWayLinks
-        if (oneWay.total === 0) lines.push('✓ 单向链接：0')
+        const oneWayLabel = oneWay.linksOnly ? '单向链接（Links）' : '单向链接'
+        const bodyNote = oneWay.bodyOnly > 0
+          ? (oneWay.linksOnly ? '（另有正文引用 ' + oneWay.bodyOnly + ' 条未计）' : '（正文引用 ' + oneWay.bodyOnly + ' 条）')
+          : ''
+        if (oneWay.total === 0) lines.push('✓ ' + oneWayLabel + '：0' + bodyNote)
         else {
           const items = oneWay.items.slice(0, 5).map((i) => i.path + ' ← ' + i.from.join('、'))
           lines.push(
-            '✗ 单向链接：' + oneWay.total + ' 篇 / ' + oneWay.edges + ' 条单向边' +
-            (oneWay.bodyOnly > 0 ? '（正文引用 ' + oneWay.bodyOnly + ' 条）' : '') +
+            '✗ ' + oneWayLabel + '：' + oneWay.total + ' 篇 / ' + oneWay.edges + ' 条单向边' +
+            bodyNote +
             ' — ' + items.join('；') + (oneWay.total > items.length ? ' …' : ''),
           )
         }

@@ -67,9 +67,9 @@ export interface LintDuplicateBucket {
 }
 
 export interface LintOneWayEntry extends LintEntry {
-  /** 没有回链的来源（笔记本相对路径）；一个目标可以有多条 */
+  /** 没有回链的来源（笔记本相对路径）；一个目标可以有多条。linksOnly 时只含 Links 小节来源 */
   from: string[]
-  /** 来源把链接写在哪：links = `## Links` / `## 链接` 小节，body = 正文引用，mixed = 两者都有 */
+  /** 来源把链接写在哪：links = `## Links` / `## 链接` 小节，body = 正文引用，mixed = 两者都有；linksOnly 时恒为 links */
   where: 'links' | 'body' | 'mixed'
 }
 
@@ -78,8 +78,10 @@ export interface LintOneWayBucket {
   total: number
   /** 单向边数：一个目标可能被多条边指向 */
   edges: number
-  /** 落在正文引用（不在 Links 小节）的单向边数 */
+  /** 正文引用的单向边数；linksOnly 时这些边只计数、不列出 */
   bodyOnly: number
+  /** true = 只列 Links 小节的单向边（正文引用只进 bodyOnly） */
+  linksOnly: boolean
   items: LintOneWayEntry[]
 }
 
@@ -111,6 +113,8 @@ export interface LintMemoryBucket {
 export interface LintOptions {
   /** 多少天没修改算陈旧（默认 90） */
   staleDays?: number
+  /** 只报 Links 小节的单向链接；正文引用只计数（默认 false = 全报） */
+  linksOnly?: boolean
   /** 测试用；默认 now */
   now?: Date
 }
@@ -414,6 +418,7 @@ export async function lintNotebook(
     return starts.some((s) => s >= section.start && s < section.end) ? 'links' : 'body'
   }
 
+  const linksOnly = opts.linksOnly === true
   const oneWayItems: LintOneWayEntry[] = []
   let oneWayEdges = 0
   let bodyOnly = 0
@@ -423,28 +428,41 @@ export async function lintNotebook(
     if (isDaily(path.resolve(cfg.notebook, row.target))) continue
     const target = byPath.get(row.target)
     if (!target) continue
-    let links = 0
-    let body = 0
+    const all: string[] = []
+    const links: string[] = []
+    const body: string[] = []
     for (const source of row.from) {
-      oneWayEdges += 1
-      if (whereOf(source.path, source.snippetStarts) === 'links') links += 1
-      else {
-        body += 1
-        bodyOnly += 1
-      }
+      all.push(source.path)
+      if (whereOf(source.path, source.snippetStarts) === 'links') links.push(source.path)
+      else body.push(source.path)
     }
-    oneWayItems.push({
-      title: target.title,
-      path: target.path,
-      from: row.from.map((s) => s.path),
-      where: links === 0 ? 'body' : body === 0 ? 'links' : 'mixed',
-    })
+    // bodyOnly 始终统计全部正文边：linksOnly 时它们被隐藏，但要让调用方知道有多少
+    bodyOnly += body.length
+    if (linksOnly && links.length === 0) continue
+    if (linksOnly) {
+      oneWayEdges += links.length
+      oneWayItems.push({
+        title: target.title,
+        path: target.path,
+        from: links,
+        where: 'links',
+      })
+    } else {
+      oneWayEdges += all.length
+      oneWayItems.push({
+        title: target.title,
+        path: target.path,
+        from: all,
+        where: links.length === 0 ? 'body' : body.length === 0 ? 'links' : 'mixed',
+      })
+    }
   }
   oneWayItems.sort((a, b) => a.path.localeCompare(b.path))
   const oneWayBucket: LintOneWayBucket = {
     total: oneWayItems.length,
     edges: oneWayEdges,
     bodyOnly,
+    linksOnly,
     items: oneWayItems.slice(0, MAX_ITEMS),
   }
 

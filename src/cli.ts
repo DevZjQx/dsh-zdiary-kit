@@ -32,7 +32,8 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit daily [--entry 一段] [--date yesterday]
   zk-kit append <路径> --text 一段 [--heading 标题]
   zk-kit link <来源路径> <目标路径或标题>
-  zk-kit lint [--stale-days 90]       体检：断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名（只读）
+  zk-kit lint [--stale-days 90] [--links-only]
+                                      体检：断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名（只读）
   zk-kit dream [--days 7]             晋升材料：窗口新增 / daily 未完成 / 被引最多（只读）
   zk-kit query [-- <zk list 参数>]     透传 zk list（--notebook-dir / --format / -x 会被替换掉）
   zk-kit index                        重建索引
@@ -154,12 +155,16 @@ function lintReport(r: LintResult): string {
   lines.push(row('孤儿', r.orphans.total, r.orphans.items))
   lines.push(row('无标签', r.tagless.total, r.tagless.items))
   const oneWay = r.oneWayLinks
-  if (oneWay.total === 0) lines.push('✓ 单向链接：0')
+  const oneWayLabel = oneWay.linksOnly ? '单向链接（Links）' : '单向链接'
+  const bodyNote = oneWay.bodyOnly > 0
+    ? (oneWay.linksOnly ? `（另有正文引用 ${oneWay.bodyOnly} 条未计）` : `（正文引用 ${oneWay.bodyOnly} 条）`)
+    : ''
+  if (oneWay.total === 0) lines.push(`✓ ${oneWayLabel}：0${bodyNote}`)
   else {
     const items = oneWay.items.slice(0, 5).map((i) => `${i.path} ← ${i.from.join('、')}`)
     lines.push(
-      `✗ 单向链接：${oneWay.total} 篇 / ${oneWay.edges} 条单向边` +
-      (oneWay.bodyOnly > 0 ? `（正文引用 ${oneWay.bodyOnly} 条）` : '') +
+      `✗ ${oneWayLabel}：${oneWay.total} 篇 / ${oneWay.edges} 条单向边` +
+      bodyNote +
       ` — ${items.join('；')}${oneWay.total > items.length ? ' …' : ''}`,
     )
   }
@@ -362,7 +367,10 @@ async function main(): Promise<void> {
 
     case 'lint': {
       await ensureNotebook(cfg)
-      const r = await lintNotebook(cfg, { staleDays: Number(str(flags['stale-days'])) || 90 })
+      const r = await lintNotebook(cfg, {
+        staleDays: Number(str(flags['stale-days'])) || 90,
+        linksOnly: flags['links-only'] === true || flags['links-only'] === 'true',
+      })
       print(json ? r : lintReport(r), json)
       return
     }

@@ -1107,6 +1107,7 @@ describe('M3: 巡检与做梦', () => {
     expect(lint.oneWayLinks.total).toBe(1)
     expect(lint.oneWayLinks.edges).toBe(1)
     expect(lint.oneWayLinks.bodyOnly).toBe(0)
+    expect(lint.oneWayLinks.linksOnly).toBe(false)
     const citedItem = lint.oneWayLinks.items.find((i) => i.path === cited.path)
     expect(citedItem?.from).toEqual([source.path])
     expect(citedItem?.where).toBe('links')
@@ -1152,6 +1153,42 @@ describe('M3: 巡检与做梦', () => {
     expect(lint.oneWayLinks.total).toBe(3)
     expect(lint.oneWayLinks.edges).toBe(3)
     expect(lint.oneWayLinks.bodyOnly).toBe(2)
+  })
+
+  it('lint：links_only 只列 Links 小节，正文引用只计数', async () => {
+    const linksOnlyDir = path.join(home, 'nb-links-only')
+    const cfgLinksOnly = store.normalizeConfig({ notebook: linksOnlyDir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfgLinksOnly)
+    const note3 = (title: string, dirName: string, body: string) =>
+      zk.createNote(cfgLinksOnly, { title, dir: dirName, content: body })
+    const stem = (p: string): string => path.basename(p, '.md')
+
+    const bodyOnlyTarget = await note3('正文目标', 'notes/concepts', '正文。')
+    const linksTarget = await note3('链接目标', 'notes/concepts', '链接。')
+    const mixedTarget = await note3('混合目标', 'notes/concepts', '混合。')
+    const bodySource = await note3('正文来源', 'notes/sources',
+      `见 [[${stem(bodyOnlyTarget.path)}]] 和 [[${stem(mixedTarget.path)}]]。`)
+    const linksSource = await note3('链接来源', 'notes/sources',
+      `## Links\n\n- [[${stem(linksTarget.path)}]]\n- [[${stem(mixedTarget.path)}]]\n`)
+    await zk.indexNotebook(cfgLinksOnly)
+
+    const all = await lintLib.lintNotebook(cfgLinksOnly)
+    expect(all.oneWayLinks.linksOnly).toBe(false)
+    expect(all.oneWayLinks.total).toBe(3)
+    expect(all.oneWayLinks.edges).toBe(4)
+    expect(all.oneWayLinks.bodyOnly).toBe(2)
+    expect(all.oneWayLinks.items.find((i) => i.path === bodyOnlyTarget.path)?.from).toEqual([bodySource.path])
+
+    const only = await lintLib.lintNotebook(cfgLinksOnly, { linksOnly: true })
+    expect(only.oneWayLinks.linksOnly).toBe(true)
+    expect(only.oneWayLinks.total).toBe(2)
+    expect(only.oneWayLinks.edges).toBe(2)
+    expect(only.oneWayLinks.bodyOnly).toBe(2)
+    const items = new Map(only.oneWayLinks.items.map((i) => [i.path, i]))
+    expect(items.get(linksTarget.path)?.from).toEqual([linksSource.path])
+    expect(items.get(mixedTarget.path)?.from).toEqual([linksSource.path])
+    expect(items.get(mixedTarget.path)?.where).toBe('links')
+    expect(items.has(bodyOnlyTarget.path)).toBe(false)
   })
 
   it('lint：frontmatter 写坏的那篇单列一类（zk 只写 stderr，它不在索引里）', async () => {

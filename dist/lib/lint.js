@@ -290,6 +290,7 @@ export async function lintNotebook(cfg, opts = {}, signal) {
             return 'body';
         return starts.some((s) => s >= section.start && s < section.end) ? 'links' : 'body';
     };
+    const linksOnly = opts.linksOnly === true;
     const oneWayItems = [];
     let oneWayEdges = 0;
     let bodyOnly = 0;
@@ -301,29 +302,45 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         const target = byPath.get(row.target);
         if (!target)
             continue;
-        let links = 0;
-        let body = 0;
+        const all = [];
+        const links = [];
+        const body = [];
         for (const source of row.from) {
-            oneWayEdges += 1;
+            all.push(source.path);
             if (whereOf(source.path, source.snippetStarts) === 'links')
-                links += 1;
-            else {
-                body += 1;
-                bodyOnly += 1;
-            }
+                links.push(source.path);
+            else
+                body.push(source.path);
         }
-        oneWayItems.push({
-            title: target.title,
-            path: target.path,
-            from: row.from.map((s) => s.path),
-            where: links === 0 ? 'body' : body === 0 ? 'links' : 'mixed',
-        });
+        // bodyOnly 始终统计全部正文边：linksOnly 时它们被隐藏，但要让调用方知道有多少
+        bodyOnly += body.length;
+        if (linksOnly && links.length === 0)
+            continue;
+        if (linksOnly) {
+            oneWayEdges += links.length;
+            oneWayItems.push({
+                title: target.title,
+                path: target.path,
+                from: links,
+                where: 'links',
+            });
+        }
+        else {
+            oneWayEdges += all.length;
+            oneWayItems.push({
+                title: target.title,
+                path: target.path,
+                from: all,
+                where: links.length === 0 ? 'body' : body.length === 0 ? 'links' : 'mixed',
+            });
+        }
     }
     oneWayItems.sort((a, b) => a.path.localeCompare(b.path));
     const oneWayBucket = {
         total: oneWayItems.length,
         edges: oneWayEdges,
         bodyOnly,
+        linksOnly,
         items: oneWayItems.slice(0, MAX_ITEMS),
     };
     const parseErrors = parseErrorWarnings(cfg, warnings);
