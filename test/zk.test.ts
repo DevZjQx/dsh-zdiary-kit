@@ -941,6 +941,23 @@ describe('M2: 结构化检索与废弃', () => {
     await expect(zk.supersedeNote(m2, { path: a.path, by: `archive/${b.path}` })).rejects.toThrow(/归档/)
   })
 
+  it('meta 文件不允许被 zk_supersede / zk_new / zk_link 触碰', async () => {
+    await notebookLib.ensureNotebook(m2)
+    const memoryPath = path.join(dir, 'MEMORY.md')
+    fs.writeFileSync(memoryPath, '# 记忆\n\nMETA-GUARD\n')
+
+    await expect(zk.supersedeNote(m2, { path: 'MEMORY.md', dryRun: false })).rejects.toThrow(/meta/)
+    expect(fs.existsSync(memoryPath)).toBe(true)
+    expect(fs.readFileSync(memoryPath, 'utf8')).toContain('META-GUARD')
+
+    await expect(zk.createNote(m2, { title: '注入内容', name: 'MEMORY', dir: '.', content: 'x' })).rejects.toThrow(/meta/)
+    expect(fs.readFileSync(memoryPath, 'utf8')).toContain('META-GUARD')
+
+    const linked = await note('链接 meta 的笔记', 'notes/concepts', '正文')
+    await expect(zk.linkNotes(m2, linked.path, 'MEMORY.md')).rejects.toThrow(/meta/)
+    await expect(zk.linkNotes(m2, 'MEMORY.md', linked.path)).rejects.toThrow(/meta/)
+  })
+
   it('meta 文件与 raw/inbox 不进检索；归档默认不进、include_archived 才进', async () => {
     fs.writeFileSync(path.join(dir, 'MEMORY.md'), '## 记忆\n\nM2-META-TOKEN\n')
     fs.writeFileSync(path.join(dir, 'raw', 'clip.md'), '# 素材\n\nM2-RAW-TOKEN\n')
@@ -1355,6 +1372,13 @@ describe('daily', () => {
     const other = await zk.ensureDailyNote(cfg, { date: '2026-01-02' })
     expect(other.path).toBe('journal/2026-01-02.md')
   })
+
+  it('type: daily 按 dailyDir 命中日记（不依赖 frontmatter）', async () => {
+    const d = await zk.ensureDailyNote(cfg)
+    const hits = await zk.searchNotes(cfg, { type: ['daily'], limit: 50 })
+    expect(hits.map((n) => n.path)).toContain(d.path)
+    expect(hits.every((n) => n.path.startsWith('journal/'))).toBe(true)
+  })
 })
 
 describe('tools', () => {
@@ -1681,6 +1705,12 @@ describe('cli: zk-kit config', () => {
     expect(bad.status).not.toBe(0)
     expect(bad.stderr ?? '').toContain('没有配置项 nonsense')
     expect(bad.stderr ?? '').toContain('structure')
+  })
+
+  it('install 拒绝非法版本号：不会拼出奇怪的 URL / 缓存路径', () => {
+    const bad = run('install', '../evil')
+    expect(bad.status).not.toBe(0)
+    expect(bad.stderr ?? '').toContain('版本号不合法')
   })
 
   it('config set 只落盘：切到 layered 不建任何目录', async () => {

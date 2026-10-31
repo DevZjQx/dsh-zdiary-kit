@@ -236,6 +236,11 @@ export function excludedNames(cfg, opts = {}) {
     rels.push(...META_NAMES);
     return rels.map((rel) => path.join(cfg.notebook, rel));
 }
+/** 相对路径是否落在某个目录下（含目录本身）—— 用于把 dailyDir 映射成 type=daily */
+export function isUnderDir(rel, dir) {
+    const d = String(dir ?? '').replace(/\/+$/, '');
+    return !!d && (rel === d || rel.startsWith(d + '/'));
+}
 export async function searchNotes(cfg, opts = {}, signal) {
     const limit = Math.min(200, Math.max(1, Math.trunc(opts.limit ?? 10)));
     const statuses = (opts.status ?? []).filter(Boolean);
@@ -269,8 +274,10 @@ export async function searchNotes(cfg, opts = {}, signal) {
     };
     // 0.1.0 的老笔记没有 frontmatter：status 缺省按 active 算，
     // 否则 flat vault 上 `status: ['active']` 会一条都查不出来（静默空结果比报错更难查）。
+    // daily 模板没有 frontmatter：`type: daily` 按 dailyDir 路径兜底，
+    // 否则工具枚举里给得出这个值、查询却永远命中 0 条。
     const keep = (n) => (statuses.length === 0 || statuses.includes(n.status || 'active')) &&
-        (types.length === 0 || types.includes(n.type));
+        (types.length === 0 || types.includes(n.type) || (types.includes('daily') && isUnderDir(n.path, cfg.dailyDir)));
     const runStrategy = async (strategy) => {
         const notes = parseList(await zk(cfg, build(strategy), { signal })).map((raw) => toRecord(raw, cfg));
         return (jsFilter ? notes.filter(keep) : notes).slice(0, limit);
@@ -427,6 +434,17 @@ function assertWritablePath(cfg, abs) {
         throw new ZkError(`raw/ 是只读的原始材料，不能写：${rel}`, '结论写到 notes/，观察写进 daily；原始材料只在原位读，不改不搬');
     }
 }
+/**
+ * 根目录 meta 文件是人的工作面：新建 / 链接 / 废弃都会绕过 zk_append 的守卫，
+ * 让「谁改的记忆」失去审计线，甚至能把 MEMORY.md 搬进 archive/。
+ * 子目录里的同名文件仍是普通笔记，不受影响。
+ */
+function assertNotMeta(cfg, abs, action) {
+    const rel = relPathOf(cfg, abs);
+    if (!isMetaPath(rel))
+        return;
+    throw new ZkError(`${rel} 是 meta 文件，不能${action}`, `${META_NAMES.join(' / ')} 由人和 agent 直接编辑；子目录里的同名文件是普通笔记`);
+}
 function noteFromDisk(cfg, abs) {
     const content = fs.readFileSync(abs, 'utf8');
     const stat = fs.statSync(abs);
@@ -567,6 +585,9 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
     // 先过 absPathOf：别在 zk 拒绝之前就把 `../..` 目录 mkdir 出去。
     const dirAbs = absPathOf(cfg, dir);
     assertWritablePath(cfg, dirAbs);
+    // name 是确定的：先按默认扩展名预判，别等 zk 建出根目录 meta 文件
+    if (wanted)
+        assertNotMeta(cfg, path.join(dirAbs, `${wanted}.md`), '新建');
     fs.mkdirSync(dirAbs, { recursive: true });
     const before = new Set(fs.readdirSync(dirAbs));
     // name 是确定的，撞名在建之前就能查出来：zk 撞名是 exit 0 + 丢正文，不能等它
@@ -589,6 +610,17 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
     const abs = path.isAbsolute(last) ? last : path.resolve(cfg.notebook, last);
     if (!fs.existsSync(abs))
         throw new ZkError(`zk 说建好了但文件不存在：${abs}`);
+    // 扩展名被用户改成 .markdown 等时，预判可能漏掉；这里再兜一次（只删本次新建的文件）
+    const createdRel = relPathOf(cfg, abs);
+    if (isMetaPath(createdRel)) {
+        if (!before.has(path.basename(abs))) {
+            try {
+                fs.rmSync(abs, { force: true });
+            }
+            catch { /* 删不掉也拦下 */ }
+        }
+        throw new ZkError(`${createdRel} 是 meta 文件，不能新建`, `${META_NAMES.join(' / ')} 由人和 agent 直接编辑；子目录里的同名文件是普通笔记`);
+    }
     if (before.has(path.basename(abs))) {
         throw new ZkError(`同名笔记已存在：${relPathOf(cfg, abs)}`, '同名时 zk 不覆盖（这次传入的正文被丢弃了，原文件一个字都没动）。换个标题，或直接用 zk_read / zk_append 改那一篇');
     }
@@ -735,6 +767,7 @@ export async function linkNotes(cfg, fromPath, target, signal) {
     if (!fs.existsSync(fromAbs))
         throw new ZkError(`笔记不存在：${fromPath}`);
     assertWritablePath(cfg, fromAbs);
+    assertNotMeta(cfg, fromAbs, '作为链接来源');
     const targetDoc = await findNote(cfg, target, signal);
     if (!targetDoc) {
         // 目标必须存在：写一条指向空气的 `[[…]]` 只会变成断链，还不如当场报错并给出最像的几篇
@@ -746,6 +779,7 @@ export async function linkNotes(cfg, fromPath, target, signal) {
         throw new ZkError(`找不到要链接的笔记：${target}`, hints.length ? `是不是想链：${hints.join('、')}` : '先用 zk_search 查一下标题，或用 zk_new 把它建出来');
     }
     const targetAbs = absPathOf(cfg, targetDoc.absPath || targetDoc.path);
+    assertNotMeta(cfg, targetAbs, '作为链接目标');
     if (targetAbs === fromAbs)
         throw new ZkError('不能链接自己', '换一个目标笔记');
     const stem = linkStemOf(cfg, targetAbs);
@@ -831,6 +865,7 @@ export async function supersedeNote(cfg, opts, signal) {
         throw new ZkError(`笔记不存在：${opts.path}`);
     assertWritablePath(cfg, abs);
     const rel = relPathOf(cfg, abs);
+    assertNotMeta(cfg, abs, '废弃');
     const content = fs.readFileSync(abs, 'utf8');
     const fields = parseFrontmatter(content).fields;
     const inArchive = rel === cfg.archiveDir || rel.startsWith(`${cfg.archiveDir}/`);
@@ -858,6 +893,7 @@ export async function supersedeNote(cfg, opts, signal) {
         if (!target)
             throw new ZkError(`找不到替代笔记：${by}`, '先把它建出来，再把 by 指向它');
         const targetAbs = absPathOf(cfg, target.absPath || target.path);
+        assertNotMeta(cfg, targetAbs, '作为替代笔记');
         if (targetAbs === abs)
             throw new ZkError('替代笔记不能是它自己');
         if (target.path === cfg.archiveDir || target.path.startsWith(`${cfg.archiveDir}/`)) {

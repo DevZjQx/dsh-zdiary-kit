@@ -264,7 +264,10 @@ async function main() {
                 process.exitCode = 1;
             return;
         case 'install': {
-            const version = str(flags.version) || pos[0] || cfg.zkVersion;
+            const version = (str(flags.version) || pos[0] || cfg.zkVersion).replace(/^v/i, '');
+            // 与设置页 /install 同一套校验：版本号会进 URL 和缓存文件名
+            if (!/^\d+\.\d+\.\d+$/.test(version))
+                throw new ZkError('版本号不合法：' + version);
             const result = await installZk(version);
             print(json ? result : `已安装 zk ${result.version} → ${result.path}`, json);
             return;

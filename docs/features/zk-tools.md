@@ -34,20 +34,22 @@
 `status` / `type` 只能靠 `metadata` 在 JS 层过滤（zk 的 `--match` 不索引 frontmatter），
 所以带这两个过滤时会先按 `--limit 200` 多取再截断 —— 否则「前 10 条里没有 active」会被误读成「没有结果」。
 `status` 缺省按 `active` 算（`include_archived: true` 且未显式给 status 是例外）：0.1.0 的老笔记没有 frontmatter，不这样兜，flat vault 上一条都查不出来。
+`type: daily` 按 `cfg.dailyDir` 路径匹配：layered 日记模板没有 frontmatter，老日记也没有；只按 `metadata.type` 比对的话，枚举里的 `daily` 永远命中 0 条。
 `zk_new` 撞名直接报错（`zk new` 遇到同名文件是 exit 0 + 不写内容，Z8），不自动加后缀。
 flat 的随机 `{{id}}` 文件名撞不上，所以在建之前按标题查重一次（只查可见笔记，归档旧结论可复用标题）；
 layered 同目录同名靠 `{{slug title}}` 文件名拦住，不同目录允许同名（交给 `zk_lint` 提示）。
 文件名默认来自标题 slug：中文标题会生成很长的拼音文件名，所以 `zk_new` 支持 `name` 直接给 basename
 （只换文件名，标题和正文不动）。改名后 zk 的 slug 撞名失效，所以给了 `name` 时会在建之前按「同目录 + 同标题」补查一次。
-老笔记不改名，改名会断路径式入链。
+老笔记不自动改名；**手工 `mv`** 会断路径式入链，要改名用 `zk_rename`（它会重写入链 / meta 来源 / 自身相对链接）。
 `type` / `authority` 只有 layered 模板（`{{extra.*}}`）会写进 frontmatter；flat 的 `default.md` 没有占位符，传了也不会落盘。
 `zk_append` 拒写根目录的 meta 文件（AGENTS / USER / MEMORY / DREAMS / INDEX / WORKFLOW，清单来自 `lib/meta.ts`）：追加会把记忆变成流水账，
 也让「这条记忆是谁改的」失去审计线索；子目录里的同名文件是普通笔记，照常可写。
+同一道守卫也覆盖 `zk_new`（不能新建根目录 meta）、`zk_link`（meta 不能作为来源或目标）与 `zk_supersede`（不能废弃 meta，否则会把它搬进 archive/）。
 `raw/` 是唯一的只读目录：`zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 的写入入口都走 `assertWritablePath`，
 往里写会直接报错 —— raw 被排除出索引，写进去的笔记不会报错、只是永远搜不到，那比失败更难查。
-`zk_stats` 除笔记 / 标签 / 断链 / 孤立外，还给 `archived`（archive/ 下的文件数，磁盘扫）与
-`superseded`（归档区扫 frontmatter + 非归档区里手工标了 status 的笔记）—— 归档区被排除在索引查询之外，
-不直接看文件就统计不到。
+`zk_stats` 除笔记 / 标签 / 断链 / 孤立外，还给 `archived`（索引里 archive/ 下的笔记数）与
+`superseded`（全部笔记中 `status: superseded` 的数量，含已归档与手工标的）—— 一次 `allNotes(includeArchived)`
+从索引算，不扫磁盘、也不逐篇读全文。
 `zk_supersede` 默认 `dry_run: true`：一句「更新一下 wiki」不该让全库漂移。
 `reason` 会做单行规范化（≤200 字）并以 YAML 双引号标量写进归档的 `supersede-reason`：带冒号或引号也不会写坏
 frontmatter；预演也回显，重放返回已记录的原因。双引号值读回来走 JSON 解析（`\"`、`\n` 还原成原字符），
@@ -60,12 +62,12 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 根目录 meta 文件里的 `[[来源]]` 不在 `zk graph` 里，单独读进来一起改 —— 否则 `zk_lint` 的记忆层体检会立刻报漂移。
 归档里的入链也一起改（默认图排除了 archive，改名时单独带上）：归档不进 lint，断了没人会看见。
 拒绝的情况：目标路径已存在（不覆盖）、换成 meta 文件名、换扩展名、改 `journal/YYYY-MM-DD` 的日记（`zk_daily` 会另建一篇）、
-改 `raw/`（只读）、改 `archive/`（归档只由 `zk_supersede` 写入）。`zk graph` 说某篇有入链但正文里找不到可改写的写法时，
+改 `raw/`（只读）、改 `archive/`（改名不能进归档；归档由 `zk_supersede` 写入）。`zk graph` 说某篇有入链但正文里找不到可改写的写法时，
 列进 `missingLinks`，不猜。
 `zk_new` 不拦归档同名（归档本来就不参与标题查重），但会把 `archived`（路径 + 废弃原因）放进输出并警告 ——
 允许复用标题，但先读旧结论。「是不是同一个错误」仍然由 agent 判断，插件只负责把材料摆出来。
 代价是每次 `zk_new` 多一次全库 `zk list --include-archived`（扫描上限 1 万篇，按比例放大）——
-用一次读换一条「不会静默复用的错误结论」；zk 跑不起来时返回空数组，提醒降级、写入不受影响。
+用一次读换一条「不会静默复用的错误结论」；zk 跑不起来时 layered 照建（归档提醒降级），flat 直接报错（标题查重是写入前的硬门槛，fail-closed）。
 `zk_read` 的"没找到"走 throw（isError），不返回 `found:false` —— 模型看到错误比看到空字段更容易改对。
 `zk_read` 也能读根目录 meta 文件（`MEMORY.md` / `USER.md`）：注入截断时留下的目录就是让 agent 用这个取回原文。
 `zk_context` 的 `files[].originalWords`（截断前词数）与 `tocWords`（目录占的词数）只用于解释预算，不改变注入内容。

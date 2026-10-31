@@ -66,10 +66,16 @@ async function snapshot(cfg: Config) {
   }
   // 结构一致性只做检查：以配置为准，磁盘不一致就如实说缺哪个目录（不自动建、不自动删）
   const structure: StructureStatus = structureStatus(cfg)
-  let memory: Pick<MemoryPayload, 'words' | 'budget' | 'truncatedWords' | 'files'> | null = null
+  let memory: Pick<MemoryPayload, 'words' | 'budget' | 'truncatedWords' | 'tocWords' | 'files'> | null = null
   try {
     const payload = buildMemoryPayload(cfg)
-    memory = { words: payload.words, budget: payload.budget, truncatedWords: payload.truncatedWords, files: payload.files }
+    memory = {
+      words: payload.words,
+      budget: payload.budget,
+      truncatedWords: payload.truncatedWords,
+      tocWords: payload.tocWords,
+      files: payload.files,
+    }
   } catch { memory = null }
   return {
     zk,

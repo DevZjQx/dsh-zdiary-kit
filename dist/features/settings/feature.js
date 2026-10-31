@@ -48,7 +48,13 @@ async function snapshot(cfg) {
     let memory = null;
     try {
         const payload = buildMemoryPayload(cfg);
-        memory = { words: payload.words, budget: payload.budget, truncatedWords: payload.truncatedWords, files: payload.files };
+        memory = {
+            words: payload.words,
+            budget: payload.budget,
+            truncatedWords: payload.truncatedWords,
+            tocWords: payload.tocWords,
+            files: payload.files,
+        };
     }
     catch {
         memory = null;

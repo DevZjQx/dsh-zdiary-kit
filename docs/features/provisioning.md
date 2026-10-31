@@ -20,7 +20,7 @@
 因此从 flat 升级时旧 `daily.md` 会保留（没有 Events / Observations / Loose ends 三节）；想要 layered 日记模板，
 先备份并删掉 `<notebook>/.zk/templates/daily.md`，再重跑 `zk-kit init` 或点「初始化 / 补建」。
 `AGENTS.md` 只在 `layered` 写：flat 是从 0.1.0 升级来的 vault，不能因为升级多出一个文件（M0 的逐字节回归）。
-模板 `AGENTS_TEMPLATE` 在 `lib/agents-template.ts`，正文控制在 150 词左右 —— 它属于注入预算且**永不截断**，
+模板 `AGENTS_TEMPLATE` 在 `lib/agents-template.ts`，正文当前约 175 词 —— 它属于注入预算且**永不截断**，
 写长了 USER / MEMORY 就没位置（这条是被 `bun run docs` 里 `zk-kit doctor` 的预算告警逼出来的）。
 `entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入（Z10）；
 所有模板必须含 `{{content}}`，否则 stdin 的正文会被丢（Z9）。
@@ -33,7 +33,7 @@
 **Public surface.** `installZk(version)`、`zkAsset(version)`、`ensureNotebook(cfg)`、`DAILY_TEMPLATE` / `DAILY_TEMPLATE_LAYERED`、
 `SOURCE_TEMPLATE`、`ENTRY_TEMPLATE`、`AGENTS_TEMPLATE`、`WORKFLOW_TEMPLATE`；`structureDirs(cfg)` / `structureStatus(cfg)`（只报告，不建不改）。
 `ensureNotebook` 返回 `dirsCreated` / `templatesWritten` / `groupsAdded` / `agentsWritten` / `workflowWritten`，
-设置页据此显示「本次真正做了什么」（第二次调用四者都是空的）。
+设置页据此显示「本次真正做了什么」（第二次调用五项都是空的）。
 `structureStatus` 是设置页「初始化 / 补建」的依据：「配置为准，磁盘只用来显示缺什么」，它自己不建目录。
 切换笔记本（`zk-kit notebooks use`、`remove` 的自动切换、设置页保存时换 `active`）会顺手 `ensureNotebook` ——
 幂等所以放心调，切过去即就绪；改路径与新增**不**自动建目录（防手滑把库建到打错的路径上）。

@@ -19,7 +19,7 @@ import type { SchemaNode } from '../../lib/tool.ts'
 import { ensureNotebook } from '../../lib/notebook.ts'
 import {
   searchNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily,
-  linkNotes, withTags, notebookStats, supersedeNote, renameNote, hasNotebook, localDate as dateOnly, ZkError,
+  linkNotes, withTags, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, ZkError,
 } from '../../lib/zk.ts'
 import type { NoteRecord, NoteDoc, SupersedeResult, RenameResult } from '../../lib/zk.ts'
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
@@ -202,7 +202,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           until: S.str('只看这个日期之前创建的笔记'),
           orphan: S.bool('只看没有任何反链的孤立笔记'),
           brokenLinks: S.bool('只看含有断链的笔记'),
-          limit: S.num('最多返回几条（1-50，默认 10）'),
+          limit: S.num('最多返回几条（1-200，默认 10）'),
           sort: S.enum('排序方式', ['created-desc', 'created-asc', 'modified-desc', 'title-asc']),
         },
         additionalProperties: false,
@@ -269,7 +269,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           brokenLinks: S.bool('只看含断链的笔记'),
           include_archived: S.bool('连 archive/ 里的废弃笔记一起查（默认 false）'),
           sort: S.enum('排序方式', ['created-desc', 'created-asc', 'modified-desc', 'title-asc']),
-          limit: S.num('最多返回几条（1-50，默认 10）'),
+          limit: S.num('最多返回几条（1-200，默认 10）'),
         },
         additionalProperties: false,
       },
@@ -318,7 +318,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           notes: notes.map((n) => ({
             title: n.title,
             path: n.path,
-            type: n.type,
+            // daily 模板没有 frontmatter：按 dailyDir 回显，和 type=daily 的过滤口径一致
+            type: n.type || (isUnderDir(n.path, cfg.dailyDir) ? 'daily' : ''),
             status: n.status || 'active',
             authority: n.authority,
             tags: n.tags,
@@ -411,7 +412,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'layered 的文件名默认来自标题（{{slug title}}）：中文标题会生成很长的拼音文件名。' +
         '要短文件名就传 name（8–14 字中文短语 / 英文小写短横线名）：只换文件名，标题和正文一个字不动。' +
         '归档里有同名旧结论不会拦，但会放进 archived（带 supersede-reason）：先读它，别把同一个错误结论重新提出来。' +
-        'type / authority 只有 layered 模板会写进 frontmatter。tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。',
+        'type / authority 只有 layered 模板会写进 frontmatter。tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。' +
+        '根目录 meta 文件（AGENTS / USER / MEMORY 等）与 raw/ 不能写；写进去一个会被当成人写的工作面、另一个会被排除出索引。',
       parameters: {
         type: 'object',
         properties: {
@@ -576,7 +578,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       name: 'zk_link',
       description:
         '在两篇笔记之间建立 wiki 双链：把 [[目标]] 追加到来源笔记末尾（已有「Links」或「链接」小节就不再重复起标题；不保证插进该小节内部），已存在不重复添加。' +
-        '目标可以给相对路径，也可以给标题。',
+        '目标可以给相对路径，也可以给标题；根目录 meta 文件不作为来源或目标。',
       parameters: {
         type: 'object',
         properties: {
@@ -612,7 +614,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       description:
         '废弃一篇笔记：frontmatter 标 superseded、写入替代它的笔记、把能精确匹配的 [[旧路径]] 入链改到归档路径、再把文件搬进 archive/（保留原相对路径；其它写法的入链列进 missingLinks）。' +
         '默认 dry_run: true，只返回受影响清单；确认后传 dry_run: false 才真改。结论变了（不是删掉，是过时）时用它。' +
-        'reason 会写进归档 frontmatter 的 supersede-reason：下次有人建同名笔记时会被带出来，防止同一个错误结论被重新提出。',
+        'reason 会写进归档 frontmatter 的 supersede-reason：下次有人建同名笔记时会被带出来，防止同一个错误结论被重新提出。' +
+        '根目录 meta 文件不能废弃（否则会把 MEMORY.md 之类搬进 archive/）。',
       parameters: {
         type: 'object',
         properties: {

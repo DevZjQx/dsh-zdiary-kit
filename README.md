@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 0.5.0
+# dsh-zdiary-kit 0.6.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -13,11 +13,11 @@
 | `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要 |
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active） |
 | `zk_read` | 读一篇全文（按路径，或先按词找最相关的一篇）；超长会截断并标注 |
-| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带标签与双链；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 一律拒写（写进去会被排除出索引，等于静默消失） |
-| `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题） |
+| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带标签与双链；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面） |
+| `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题）；根目录 meta 文件拒写 |
 | `zk_daily` | 打开/创建某天的日记，并追加一条带时间的记录（layered 模板写进 `## Events` 的 `### HH:MM`，flat 追加到文件末尾的 `## HH:MM`） |
-| `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题） |
-| `zk_supersede` | 废弃过时结论：标 `superseded` + 写 `reason` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演 |
+| `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题）；meta 文件不作为来源或目标 |
+| `zk_supersede` | 废弃过时结论：标 `superseded` + 写 `reason` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演；meta 文件不能废弃 |
 | `zk_rename` | 改名 / 换目录并修断链：入链（`[[…]]` 与 Markdown 链接，保留 `#锚点` 与 `\|别名`）按实际解析结果改到新路径，根目录 meta 里的 `[[来源]]` 一起改，被搬走那篇自己的相对 Markdown 链接按新位置重算；默认只预演 |
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时记忆每轮已自动带进系统提示 |
 | `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 记忆链接失效，每类最多 50 条；只报告不改写 |
@@ -26,7 +26,7 @@
 | `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |
 
 写笔记前 agent 会先 `zk_search` 查重；flat 笔记本的 `zk_new` 还会按标题再查一次，重复直接报错。
-layered 笔记本的文件名是标题的 slug：英文标题自然得到英文文件名，短不短看标题本身；中文标题会变成很长的拼音名，要短名就在 `zk_new` 时传 `name`；老笔记不改名，改名会断入链。
+layered 笔记本的文件名是标题的 slug：英文标题自然得到英文文件名，短不短看标题本身；中文标题会变成很长的拼音名，要短名就在 `zk_new` 时传 `name`；老笔记不自动改名，**手工 `mv` 会断入链**，要改名用 `zk_rename`（默认预演，会重写引用）。
 双链用相对路径（zk 的 `link-format = "wiki"` 认这个），所以 `--broken-links` 不会因为「按标题链接」而误报。
 
 **多会话**：每个会话第一次调工具时，会把当时配置里的默认笔记本**固定**下来（落在 `~/.dsh/zdiary/sessions/`，
@@ -103,7 +103,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 
 ## 多个笔记本
 
-配置里可以放好几个笔记本，任意时刻只有 `active` 指向的那个生效（`zk_*` 工具、设置页的计数与自检都只看它）：
+配置里可以放好几个笔记本。`active` 是**新会话的默认值**：还没 pin 的会话、以及设置页的计数与自检看它；已经有 pin 的会话看自己那本（下面会讲）：
 
 ```json
 {
@@ -119,7 +119,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 - **路径与结构都是笔记本自己的属性**：`work` 可以是 layered 而 `default` 还是 flat，互不牵连。
 - `active`：**默认**笔记本的名字（新会话用）。每个会话第一次调工具时会把当时的 `active` 固定成自己的 pin
   （`~/.dsh/zdiary/sessions/`），之后改这里不会带动已开的会话；本会话换库在会话里说一声（`zk_use`）。名字不存在、非法时退回 `default`。
-- `notebook` 与 `structure` 是**派生的**（`notebooks[active]` 解析后的绝对路径 / 该条目的结构），只在内存里、不落盘也不可写 —— 磁盘上笔记本只有一个真相，就是 `notebooks` + `active`。
+- 顶层 `notebook` 与 `structure` 是**派生的**（`notebooks[active]` 解析后的绝对路径 / 该条目的结构），只在内存里、不落盘也不可写；可写的是条目里的 `notebooks[名].structure`（`zk-kit config set structure=…` 改的就是当前笔记本那一条）—— 磁盘上笔记本只有一个真相，就是 `notebooks` + `active`。
   老配置里那个单独的 `notebook` 字段（和全局 `structure`）读进来会**一次性**迁进 `notebooks.default`，之后不再互相覆盖。
 - **共享的是全局项**：笔记 / 日记子目录、`daily` group、归档目录、注入预算 —— 这些不按笔记本分开。
 
@@ -247,7 +247,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 
 除 `doctor` / `help` / `config set` 外，其余子命令加 `--json` 输出结构化结果。
 `config set` 只认白名单键，值会被同一份归一化处理（`structure=xyz` 落盘成 `flat` 并回显），
-与设置页共用一套告警口径 —— 两者都**只改配置不建目录**；`structure` 改的是**当前笔记本**的结构。
+与设置页共用一套告警口径。区别只有一处：`config set` **只改配置不建目录**；设置页保存时如果把 `active` 切到另一本，会顺手 `ensureNotebook` 建好目标库。`structure` 改的是**当前笔记本**的结构。
 派生键不接受单键赋值：`notebook=…`（纯派生）与 `notebooks=…`（整体映射）会直接报错并指路 `zk-kit notebooks …`。
 装好插件后也可以直接用 `node <插件目录>/dist/cli.js …`。
 
@@ -315,7 +315,7 @@ src/
 ├── lib/
 │   ├── zk.ts                     # zk 唯一的调用面：解析二进制、list/new/append/link/daily/graph、路径守卫
 │   ├── frontmatter.ts            # 只改 status / superseded-by 这类标量，其余行原样保留
-│   ├── meta.ts                   # meta 文件清单（注入 3 份 / 排除 5 份，一个真相）
+│   ├── meta.ts                   # meta 文件清单（注入 3 份 / 排除 6 份，一个真相）
 │   ├── lint.ts / dream.ts        # 巡检与做梦：只报告，绝不写文件
 │   ├── notebook.ts               # 自举：zk init + 日记模板 + group 配置（幂等）
 │   ├── install.ts / platform.ts  # 内置 zk：平台映射、下载、解包、验证

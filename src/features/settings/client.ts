@@ -58,6 +58,8 @@ interface Memory {
   words: number
   budget: number
   truncatedWords: number
+  /** 截断目录占的词数（0 = 没有目录） */
+  tocWords: number
   files: Array<{ name: string; present: boolean; words: number }>
 }
 interface Snapshot {
