@@ -1,13 +1,13 @@
 name: release
 
-# 打 tag 即发布：git tag v0.6.0 && git push origin v0.6.0
+# 打 tag 即发布：git tag v0.6.1 && git push origin v0.6.1
 on:
   push:
     tags: ["v*"]
 
 permissions:
   contents: read
-  id-token: write # npm provenance（OIDC 签名）
+  id-token: write # 必需：trusted publishing 用它换 npm 的短期发布凭证（顺带签名 provenance）
 
 jobs:
   publish:
@@ -21,10 +21,12 @@ jobs:
         with:
           bun-version: 1.4.4
 
-      - uses: actions/setup-node@v4
+      # trusted publishing 要求 npm >= 11.5.1 / node >= 22.14；node 24 自带 npm 11
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       # 与 ci.yml 同源：集成测试要真起 zk，没有 zk 时 scripts/test.ts 会把「全部跳过」按失败处理
       - name: 装 zk
@@ -52,7 +54,7 @@ jobs:
       - run: bun run check
       - run: bun run smoke
 
+      # 无 token：npm 用 id-token 换 OIDC 凭证，provenance 自动生成，无需 --provenance
+      # 前置：npmjs 包设置里配了 Trusted Publisher（仓库 DevZjQx/dsh-zdiary-kit + 本文件名）
       # 闸门已显式跑过，--ignore-scripts 避免 prepublishOnly 再执行一遍 check
-      - run: npm publish --provenance --ignore-scripts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --ignore-scripts
