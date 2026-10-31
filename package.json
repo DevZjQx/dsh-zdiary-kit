@@ -44,6 +44,7 @@
     "cli": "bun src/cli.ts",
     "smoke": "bun scripts/smoke.ts && bun scripts/docs.ts",
     "docs": "bun scripts/docs.ts",
+    "version": "bun scripts/sync-version.ts",
     "prepublishOnly": "bun run check"
   },
   "devDependencies": {
