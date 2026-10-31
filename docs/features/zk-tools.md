@@ -78,15 +78,19 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 「陈旧」在 JS 里算（`stale_days` 默认 90）—— zk 的 `stale` 不是内置过滤器，只在用户的 `[filter]` 里定义过才存在。
 「重名标题」按「压空白 + 小写」归一化后分组。孤儿与无标签**排除 daily 目录**：日记按天写，天然没入链没标签，
 全报会淹掉真问题；断链仍包含日记。
-「单向链接」（`oneWayLinks`）在 JS 里按 `zk graph` 的边算：存在 S→X、X 没回链 S，且 **S 不是日记**。
+「单向链接」（`oneWayLinks`）在 JS 里按 `zk graph` 的边算：存在 S→X、X 没回链 S，且 **S、X 都不是日记**。
 不用 zk 的 `--missing-backlink`：它的原义是「至少有一条单向链接」，日记天然是一串出边，
 日记提过的每篇笔记都会常年挂在桶里 —— 那不是「没接上」，是正常的引用方向，桶就再也清零不了。
+普通笔记链到日记（"今天做了 X"）同理，不要求日记回链。
+`oneWayLinks.items` 是缺回链的目标 X（不是来源），`from` 是没被 X 回链的来源 S；`edges` 是单向边数，
+`where` / `bodyOnly` 标出其中来自正文引用（不在 `## Links` / `## 链接` 小节）的部分 —— 正文引用天然常单向，
+单独计数，方便判断该不该补回链。
 `parseErrors` 单列一类：frontmatter 写坏（典型是 `tags: [#你好世界]` —— YAML 里 `#` 不是 tag 前缀，要写 `tags: ["你好世界"]`）
 时 zk 以 exit 0 跳过那篇、只往 stderr 打一行 `error parsing note content`，于是它不在索引里 ——
 搜不到，也不会出现在上面任何一个桶里（表现成邻居突然孤儿 / 断链）。`zk()` 收 exit 0 的 stderr warning，
 按 `excludedNames` 同一套口径过滤（归档 / raw / inbox / meta 的坏文件本来就不参与检索，报了只会淹掉真问题），
 `zk_lint` 与 `zk-kit doctor` 各回一行；`doctor` 用 ⚠️ 标，不影响它的退出码。
-一次最多扫 10000 篇，到顶时两个工具都返回 `truncated: true` 并在文本里告警（不静默截断）。
+一次最多扫 10000 篇，到顶时两个工具都返回 `truncated: true` 并在文本里告警：结果只会漏报，不会误报。
 `memoryLinks` 单独查**记忆层**：`MEMORY.md` / `USER.md` 里的 `[[来源]]` 是否还指向活笔记。
 解析顺序固定：原路径 → 加 `.md` → `archive/` 下同名 → 活笔记标题 / 文件名；旧路径在 `archive/` 下找到同名，
 或活文件带 `status: superseded`，报 `superseded`；都找不到报 `missing`。**显式写 `archive/` 路径的链接是有意引用**

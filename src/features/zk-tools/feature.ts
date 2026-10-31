@@ -45,6 +45,24 @@ const LINT_BUCKET = objSchema(
   { total: { type: 'number' }, items: { type: 'array', items: LINT_ENTRY } },
   ['total', 'items'],
 )
+const LINT_ONE_WAY_ITEM = objSchema(
+  {
+    title: { type: 'string' },
+    path: { type: 'string' },
+    from: { type: 'array', items: { type: 'string' } },
+    where: { type: 'string', enum: ['links', 'body', 'mixed'] },
+  },
+  ['title', 'path', 'from', 'where'],
+)
+const LINT_ONE_WAY = objSchema(
+  {
+    total: { type: 'number' },
+    edges: { type: 'number' },
+    bodyOnly: { type: 'number' },
+    items: { type: 'array', items: LINT_ONE_WAY_ITEM },
+  },
+  ['total', 'edges', 'bodyOnly', 'items'],
+)
 const LINT_STALE = objSchema(
   {
     total: { type: 'number' },
@@ -849,7 +867,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'memoryLinks 查 MEMORY.md / USER.md 里的 [[来源链接]] 是否还指向活笔记（已废弃 / 不存在）—— ' +
         'supersede 不会重写 meta 文件里的链接，这类漂移 broken-links 看不见。' +
         '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
-        'oneWayLinks = S 链 X 但 X 没回链 S，且 S 不是日记 —— 日记天然是出边，回链它没有意义。' +
+        'oneWayLinks.items 是缺回链的目标 X（不是来源），from 是没被 X 回链的来源 S；' +
+        'edges 是单向边数，bodyOnly 是其中来自正文引用（不在 ## Links / ## 链接 小节）的条数。' +
+        'S 或 X 是日记的边不算 —— 日记天然是出边，回链它没有意义。' +
+        '触到扫描上限时结果只会漏报，不会误报。' +
         '只读：不改任何笔记。拿到清单后自己判断先修哪个，再用 zk_link / zk_append / zk_supersede 动手。',
       parameters: {
         type: 'object',
@@ -869,7 +890,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           brokenLinks: LINT_BUCKET,
           stale: LINT_STALE,
           tagless: LINT_BUCKET,
-          oneWayLinks: LINT_BUCKET,
+          oneWayLinks: LINT_ONE_WAY,
           duplicateTitles: LINT_DUPLICATE,
           memoryLinks: LINT_MEMORY,
         }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'memoryLinks']),
@@ -901,7 +922,16 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         lines.push(line('断链', v.brokenLinks))
         lines.push(line('孤儿', v.orphans))
         lines.push(line('无标签', v.tagless))
-        lines.push(line('单向链接', v.oneWayLinks))
+        const oneWay = v.oneWayLinks
+        if (oneWay.total === 0) lines.push('✓ 单向链接：0')
+        else {
+          const items = oneWay.items.slice(0, 5).map((i) => i.path + ' ← ' + i.from.join('、'))
+          lines.push(
+            '✗ 单向链接：' + oneWay.total + ' 篇 / ' + oneWay.edges + ' 条单向边' +
+            (oneWay.bodyOnly > 0 ? '（正文引用 ' + oneWay.bodyOnly + ' 条）' : '') +
+            ' — ' + items.join('；') + (oneWay.total > items.length ? ' …' : ''),
+          )
+        }
         lines.push(
           v.stale.total === 0
             ? '✓ 陈旧：0'
@@ -917,7 +947,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         )
         const memLine = formatMemoryLinks(v.memoryLinks)
         if (memLine) lines.push(memLine)
-        if (v.truncated) lines.push('⚠️ 笔记数触到扫描上限：结果不完整，先归档旧笔记再跑一次')
+        if (v.truncated) lines.push('⚠️ 笔记数触到扫描上限：结果不完整（只会漏报，不会误报），先归档旧笔记再跑一次')
         lines.push('（只报告，没有改动任何文件）')
         return text(lines.join('\n'))
       },

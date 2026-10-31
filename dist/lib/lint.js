@@ -201,16 +201,10 @@ export function formatMemoryLinks(bucket) {
         parts.push(`${bucket.unlinked} 个条目没附来源链接`);
     return `${bucket.total === 0 ? '✓' : '✗'} 记忆链接：${parts.join('｜')}`;
 }
-/**
- * 单向链接的目标：存在 S→X，但 X 没有回链 S（zk `--missing-backlink` 的原义）。
- * 不用 zk 的过滤器，因为它没法排除「来源是日记」的边 —— 日记按天写、天然是一串出边，
- * 要求每篇被提过的笔记回链日记只会让这个桶常年清零不了，跟「笔记没接上」是两回事。
- * 返回绝对路径（与 `bucket` 的 `byAbs` 同口径）；指向索引外笔记的边直接丢掉。
- */
 export function oneWayLinks(edges, notes, skipSource) {
     const linked = new Set(edges.map((e) => e.sourcePath + '\u0000' + e.targetPath));
     const byPath = new Map(notes.map((n) => [n.path, n]));
-    const out = new Set();
+    const out = new Map();
     for (const edge of edges) {
         if (edge.sourcePath === edge.targetPath)
             continue;
@@ -218,11 +212,20 @@ export function oneWayLinks(edges, notes, skipSource) {
             continue;
         if (linked.has(edge.targetPath + '\u0000' + edge.sourcePath))
             continue;
-        const target = byPath.get(edge.targetPath);
-        if (target)
-            out.add(path.resolve(target.absPath || target.path));
+        if (!byPath.has(edge.targetPath))
+            continue;
+        const sources = out.get(edge.targetPath) ?? new Map();
+        const starts = sources.get(edge.sourcePath) ?? [];
+        starts.push(edge.snippetStart);
+        sources.set(edge.sourcePath, starts);
+        out.set(edge.targetPath, sources);
     }
-    return [...out];
+    return [...out].map(([target, sources]) => ({
+        target,
+        from: [...sources]
+            .map(([source, snippetStarts]) => ({ path: source, snippetStarts }))
+            .sort((a, b) => a.path.localeCompare(b.path)),
+    }));
 }
 export async function lintNotebook(cfg, opts = {}, signal) {
     const staleDays = Math.min(3650, Math.max(1, Math.trunc(opts.staleDays ?? 90)));
@@ -240,8 +243,9 @@ export async function lintNotebook(cfg, opts = {}, signal) {
     const taglessAbs = await notesWithFlag(cfg, '--tagless', signal);
     const edges = await graphEdges(cfg, signal);
     // 图里的路径是笔记本相对：先拼回绝对路径再判断是不是日记（isDaily 收的是绝对路径）
-    const oneWayAbs = oneWayLinks(edges, notes, (p) => isDaily(path.resolve(cfg.notebook, p)));
+    const oneWay = oneWayLinks(edges, notes, (p) => isDaily(path.resolve(cfg.notebook, p)));
     const byAbs = new Map(notes.map((n) => [path.resolve(n.absPath || n.path), n]));
+    const byPath = new Map(notes.map((n) => [n.path, n]));
     const bucket = (absPaths, max = MAX_ITEMS) => {
         const items = absPaths
             .map((abs) => byAbs.get(path.resolve(abs)))
@@ -250,6 +254,77 @@ export async function lintNotebook(cfg, opts = {}, signal) {
             .slice(0, max)
             .map((n) => ({ title: n.title, path: n.path }));
         return { total: absPaths.length, items };
+    };
+    // `zk graph` 的 snippetStart 是 UTF-8 字节偏移：Links 小节也按字节算，才能直接比较。
+    // 只读有单向边的来源文件（当前库里个位数），不按笔记逐篇读。
+    const sectionCache = new Map();
+    const linksSection = (rel) => {
+        if (sectionCache.has(rel))
+            return sectionCache.get(rel) ?? null;
+        let text = '';
+        try {
+            text = fs.readFileSync(path.resolve(cfg.notebook, rel), 'utf8');
+        }
+        catch {
+            sectionCache.set(rel, null);
+            return null;
+        }
+        const head = /^##[ \t]+(?:Links|链接)[ \t]*\r?$/m.exec(text);
+        if (!head) {
+            sectionCache.set(rel, null);
+            return null;
+        }
+        const after = head.index + head[0].length;
+        const next = /^#{1,2}[ \t]+\S/m.exec(text.slice(after));
+        const endChar = next ? after + next.index : text.length;
+        const section = {
+            start: Buffer.byteLength(text.slice(0, head.index), 'utf8'),
+            end: Buffer.byteLength(text.slice(0, endChar), 'utf8'),
+        };
+        sectionCache.set(rel, section);
+        return section;
+    };
+    const whereOf = (rel, starts) => {
+        const section = linksSection(rel);
+        if (!section)
+            return 'body';
+        return starts.some((s) => s >= section.start && s < section.end) ? 'links' : 'body';
+    };
+    const oneWayItems = [];
+    let oneWayEdges = 0;
+    let bodyOnly = 0;
+    for (const row of oneWay) {
+        // 目标也不报日记：普通笔记链到日记（"今天做了 X"）同样是正常引用方向，
+        // 要求日记回链每篇被提到的笔记，跟要求笔记回链日记是同一个问题。
+        if (isDaily(path.resolve(cfg.notebook, row.target)))
+            continue;
+        const target = byPath.get(row.target);
+        if (!target)
+            continue;
+        let links = 0;
+        let body = 0;
+        for (const source of row.from) {
+            oneWayEdges += 1;
+            if (whereOf(source.path, source.snippetStarts) === 'links')
+                links += 1;
+            else {
+                body += 1;
+                bodyOnly += 1;
+            }
+        }
+        oneWayItems.push({
+            title: target.title,
+            path: target.path,
+            from: row.from.map((s) => s.path),
+            where: links === 0 ? 'body' : body === 0 ? 'links' : 'mixed',
+        });
+    }
+    oneWayItems.sort((a, b) => a.path.localeCompare(b.path));
+    const oneWayBucket = {
+        total: oneWayItems.length,
+        edges: oneWayEdges,
+        bodyOnly,
+        items: oneWayItems.slice(0, MAX_ITEMS),
     };
     const parseErrors = parseErrorWarnings(cfg, warnings);
     const staleNotes = notes
@@ -274,7 +349,7 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         brokenLinks: bucket(brokenAbs),
         stale,
         tagless: bucket(taglessAbs.filter((abs) => !isDaily(abs))),
-        oneWayLinks: bucket(oneWayAbs),
+        oneWayLinks: oneWayBucket,
         duplicateTitles: duplicateTitles(notes),
         memoryLinks: memoryLinkIssues(cfg, notes),
     };

@@ -339,8 +339,9 @@ export async function graphEdges(cfg, signal, opts = {}) {
     for (const link of graph.links ?? []) {
         const sourcePath = String(link.sourcePath ?? '');
         const targetPath = String(link.targetPath ?? '');
+        const snippetStart = Number(link.snippetStart);
         if (sourcePath && targetPath)
-            out.push({ sourcePath, targetPath });
+            out.push({ sourcePath, targetPath, snippetStart: Number.isFinite(snippetStart) ? snippetStart : -1 });
     }
     return out;
 }

@@ -66,6 +66,23 @@ export interface LintDuplicateBucket {
   items: Array<{ title: string; paths: string[] }>
 }
 
+export interface LintOneWayEntry extends LintEntry {
+  /** 没有回链的来源（笔记本相对路径）；一个目标可以有多条 */
+  from: string[]
+  /** 来源把链接写在哪：links = `## Links` / `## 链接` 小节，body = 正文引用，mixed = 两者都有 */
+  where: 'links' | 'body' | 'mixed'
+}
+
+export interface LintOneWayBucket {
+  /** 缺回链的**目标笔记数**（不是边数） */
+  total: number
+  /** 单向边数：一个目标可能被多条边指向 */
+  edges: number
+  /** 落在正文引用（不在 Links 小节）的单向边数 */
+  bodyOnly: number
+  items: LintOneWayEntry[]
+}
+
 export interface LintMemoryLink {
   /** 哪个 meta 文件里的链接（MEMORY.md / USER.md） */
   source: string
@@ -102,7 +119,7 @@ export interface LintResult {
   notebook: string
   /** 参与巡检的笔记数（已排除 raw / inbox / archive / meta 文件） */
   notes: number
-  /** true = 触到扫描上限，结果不完整（别当成「只有这些问题」） */
+  /** true = 触到扫描上限，结果不完整：只会漏报，不会误报（别当成「只有这些问题」） */
   truncated: boolean
   staleDays: number
   /** zk 解析不了 frontmatter 的笔记：它们不在索引里，下面各桶都统计不到 */
@@ -111,8 +128,8 @@ export interface LintResult {
   brokenLinks: LintBucket
   stale: LintStaleBucket
   tagless: LintBucket
-  /** S 链 X、X 不回链，且 S 不是日记（日记天然是出边，不算没接上） */
-  oneWayLinks: LintBucket
+  /** S 链 X、X 不回链，且 S 不是日记（日记天然是出边，不算没接上）；items 是 X，from 是 S */
+  oneWayLinks: LintOneWayBucket
   duplicateTitles: LintDuplicateBucket
   /** 记忆层体检：MEMORY.md / USER.md 里的 `[[来源]]` 是否还指向活笔记 */
   memoryLinks: LintMemoryBucket
@@ -290,24 +307,41 @@ export function formatMemoryLinks(bucket: LintMemoryBucket): string | null {
  * 单向链接的目标：存在 S→X，但 X 没有回链 S（zk `--missing-backlink` 的原义）。
  * 不用 zk 的过滤器，因为它没法排除「来源是日记」的边 —— 日记按天写、天然是一串出边，
  * 要求每篇被提过的笔记回链日记只会让这个桶常年清零不了，跟「笔记没接上」是两回事。
- * 返回绝对路径（与 `bucket` 的 `byAbs` 同口径）；指向索引外笔记的边直接丢掉。
+ * 返回 X 和它的来源 S；指向索引外笔记的边直接丢掉（不做 cwd 兜底解析）。
+ * 同一对 S→X 写多次只算一条边；snippetStart 留给调用方判断写在正文还是 Links 小节。
  */
+export interface OneWayLink {
+  /** 目标笔记（笔记本相对路径） */
+  target: string
+  /** 没回链的来源；每个来源一条，snippetStarts 是它在源文件里的字节偏移 */
+  from: Array<{ path: string; snippetStarts: number[] }>
+}
+
 export function oneWayLinks(
   edges: GraphEdge[],
   notes: NoteRecord[],
   skipSource: (path: string) => boolean,
-): string[] {
+): OneWayLink[] {
   const linked = new Set(edges.map((e) => e.sourcePath + '\u0000' + e.targetPath))
   const byPath = new Map(notes.map((n) => [n.path, n]))
-  const out = new Set<string>()
+  const out = new Map<string, Map<string, number[]>>()
   for (const edge of edges) {
     if (edge.sourcePath === edge.targetPath) continue
     if (skipSource(edge.sourcePath)) continue
     if (linked.has(edge.targetPath + '\u0000' + edge.sourcePath)) continue
-    const target = byPath.get(edge.targetPath)
-    if (target) out.add(path.resolve(target.absPath || target.path))
+    if (!byPath.has(edge.targetPath)) continue
+    const sources = out.get(edge.targetPath) ?? new Map<string, number[]>()
+    const starts = sources.get(edge.sourcePath) ?? []
+    starts.push(edge.snippetStart)
+    sources.set(edge.sourcePath, starts)
+    out.set(edge.targetPath, sources)
   }
-  return [...out]
+  return [...out].map(([target, sources]) => ({
+    target,
+    from: [...sources]
+      .map(([source, snippetStarts]) => ({ path: source, snippetStarts }))
+      .sort((a, b) => a.path.localeCompare(b.path)),
+  }))
 }
 
 export async function lintNotebook(
@@ -333,9 +367,10 @@ export async function lintNotebook(
   const taglessAbs = await notesWithFlag(cfg, '--tagless', signal)
   const edges = await graphEdges(cfg, signal)
   // 图里的路径是笔记本相对：先拼回绝对路径再判断是不是日记（isDaily 收的是绝对路径）
-  const oneWayAbs = oneWayLinks(edges, notes, (p) => isDaily(path.resolve(cfg.notebook, p)))
+  const oneWay = oneWayLinks(edges, notes, (p) => isDaily(path.resolve(cfg.notebook, p)))
 
   const byAbs = new Map(notes.map((n) => [path.resolve(n.absPath || n.path), n]))
+  const byPath = new Map(notes.map((n) => [n.path, n]))
   const bucket = (absPaths: string[], max = MAX_ITEMS): LintBucket => {
     const items = absPaths
       .map((abs) => byAbs.get(path.resolve(abs)))
@@ -344,6 +379,73 @@ export async function lintNotebook(
       .slice(0, max)
       .map((n) => ({ title: n.title, path: n.path }))
     return { total: absPaths.length, items }
+  }
+
+  // `zk graph` 的 snippetStart 是 UTF-8 字节偏移：Links 小节也按字节算，才能直接比较。
+  // 只读有单向边的来源文件（当前库里个位数），不按笔记逐篇读。
+  const sectionCache = new Map<string, { start: number; end: number } | null>()
+  const linksSection = (rel: string): { start: number; end: number } | null => {
+    if (sectionCache.has(rel)) return sectionCache.get(rel) ?? null
+    let text = ''
+    try {
+      text = fs.readFileSync(path.resolve(cfg.notebook, rel), 'utf8')
+    } catch {
+      sectionCache.set(rel, null)
+      return null
+    }
+    const head = /^##[ \t]+(?:Links|链接)[ \t]*\r?$/m.exec(text)
+    if (!head) {
+      sectionCache.set(rel, null)
+      return null
+    }
+    const after = head.index + head[0].length
+    const next = /^#{1,2}[ \t]+\S/m.exec(text.slice(after))
+    const endChar = next ? after + next.index : text.length
+    const section = {
+      start: Buffer.byteLength(text.slice(0, head.index), 'utf8'),
+      end: Buffer.byteLength(text.slice(0, endChar), 'utf8'),
+    }
+    sectionCache.set(rel, section)
+    return section
+  }
+  const whereOf = (rel: string, starts: number[]): 'links' | 'body' => {
+    const section = linksSection(rel)
+    if (!section) return 'body'
+    return starts.some((s) => s >= section.start && s < section.end) ? 'links' : 'body'
+  }
+
+  const oneWayItems: LintOneWayEntry[] = []
+  let oneWayEdges = 0
+  let bodyOnly = 0
+  for (const row of oneWay) {
+    // 目标也不报日记：普通笔记链到日记（"今天做了 X"）同样是正常引用方向，
+    // 要求日记回链每篇被提到的笔记，跟要求笔记回链日记是同一个问题。
+    if (isDaily(path.resolve(cfg.notebook, row.target))) continue
+    const target = byPath.get(row.target)
+    if (!target) continue
+    let links = 0
+    let body = 0
+    for (const source of row.from) {
+      oneWayEdges += 1
+      if (whereOf(source.path, source.snippetStarts) === 'links') links += 1
+      else {
+        body += 1
+        bodyOnly += 1
+      }
+    }
+    oneWayItems.push({
+      title: target.title,
+      path: target.path,
+      from: row.from.map((s) => s.path),
+      where: links === 0 ? 'body' : body === 0 ? 'links' : 'mixed',
+    })
+  }
+  oneWayItems.sort((a, b) => a.path.localeCompare(b.path))
+  const oneWayBucket: LintOneWayBucket = {
+    total: oneWayItems.length,
+    edges: oneWayEdges,
+    bodyOnly,
+    items: oneWayItems.slice(0, MAX_ITEMS),
   }
 
   const parseErrors = parseErrorWarnings(cfg, warnings)
@@ -371,7 +473,7 @@ export async function lintNotebook(
     brokenLinks: bucket(brokenAbs),
     stale,
     tagless: bucket(taglessAbs.filter((abs) => !isDaily(abs))),
-    oneWayLinks: bucket(oneWayAbs),
+    oneWayLinks: oneWayBucket,
     duplicateTitles: duplicateTitles(notes),
     memoryLinks: memoryLinkIssues(cfg, notes),
   }

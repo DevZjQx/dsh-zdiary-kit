@@ -146,7 +146,15 @@ function lintReport(r) {
     lines.push(row('断链', r.brokenLinks.total, r.brokenLinks.items));
     lines.push(row('孤儿', r.orphans.total, r.orphans.items));
     lines.push(row('无标签', r.tagless.total, r.tagless.items));
-    lines.push(row('单向链接', r.oneWayLinks.total, r.oneWayLinks.items));
+    const oneWay = r.oneWayLinks;
+    if (oneWay.total === 0)
+        lines.push('✓ 单向链接：0');
+    else {
+        const items = oneWay.items.slice(0, 5).map((i) => `${i.path} ← ${i.from.join('、')}`);
+        lines.push(`✗ 单向链接：${oneWay.total} 篇 / ${oneWay.edges} 条单向边` +
+            (oneWay.bodyOnly > 0 ? `（正文引用 ${oneWay.bodyOnly} 条）` : '') +
+            ` — ${items.join('；')}${oneWay.total > items.length ? ' …' : ''}`);
+    }
     lines.push(r.stale.total === 0
         ? '✓ 陈旧：0'
         : `✗ 陈旧：${r.stale.total} 篇 — ` + r.stale.items.slice(0, 5).map((s) => `${s.path}（${s.modified}）`).join('、'));
@@ -157,7 +165,7 @@ function lintReport(r) {
     if (memLine)
         lines.push(memLine);
     if (r.truncated)
-        lines.push('⚠️ 笔记数触到扫描上限：结果不完整');
+        lines.push('⚠️ 笔记数触到扫描上限：结果不完整（只会漏报，不会误报）');
     lines.push('（只报告，没有改动任何文件）');
     return lines.join('\n');
 }

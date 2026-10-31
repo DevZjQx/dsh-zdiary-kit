@@ -387,6 +387,11 @@ export async function notesWithFlag(cfg: Config, flag: FlagFilter, signal?: Abor
 export interface GraphEdge {
   sourcePath: string
   targetPath: string
+  /**
+   * 链接所在 snippet 块在源文件 rawContent 里的起点。
+   * **是 UTF-8 字节偏移，不是字符下标**（中文按 3 字节算）；zk graph 没给时是 -1。
+   */
+  snippetStart: number
 }
 
 /** 全部双链边（一次 `zk graph`）。路径是**笔记本相对**的，按路径比对，不缓存 targetId（Z11 之后 id 会变）。 */
@@ -411,7 +416,9 @@ export async function graphEdges(
   for (const link of graph.links ?? []) {
     const sourcePath = String(link.sourcePath ?? '')
     const targetPath = String(link.targetPath ?? '')
-    if (sourcePath && targetPath) out.push({ sourcePath, targetPath })
+    const snippetStart = Number(link.snippetStart)
+    if (sourcePath && targetPath)
+      out.push({ sourcePath, targetPath, snippetStart: Number.isFinite(snippetStart) ? snippetStart : -1 })
   }
   return out
 }

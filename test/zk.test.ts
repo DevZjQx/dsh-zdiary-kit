@@ -1089,6 +1089,8 @@ describe('M3: 巡检与做梦', () => {
     const daily = await zk.ensureDailyNote(m3)
     // 日记 → 笔记是正常引用方向：被日记提过、但没回链日记，不该算「没接上」
     await zk.linkNotes(m3, daily.path, dailyCited.path)
+    // 反过来（笔记 → 日记）也一样：日记不该被要求回链每篇被提到的笔记
+    await zk.linkNotes(m3, cited.path, daily.path)
     await zk.indexNotebook(m3)
 
     const lint = await lintLib.lintNotebook(m3, { staleDays: 90 })
@@ -1100,6 +1102,14 @@ describe('M3: 巡检与做梦', () => {
     // 笔记 → 笔记的单向链接照报；日记来源的不报（否则日记提过的每篇都常年挂在这里）
     expect(lint.oneWayLinks.items.map((i) => i.path)).toContain(cited.path)
     expect(lint.oneWayLinks.items.map((i) => i.path)).not.toContain(dailyCited.path)
+    expect(lint.oneWayLinks.items.map((i) => i.path)).not.toContain(daily.path)
+    // items 是目标 X，from 才是没回链的来源 S；zk_link 写进 ## Links，算 links 不算正文
+    expect(lint.oneWayLinks.total).toBe(1)
+    expect(lint.oneWayLinks.edges).toBe(1)
+    expect(lint.oneWayLinks.bodyOnly).toBe(0)
+    const citedItem = lint.oneWayLinks.items.find((i) => i.path === cited.path)
+    expect(citedItem?.from).toEqual([source.path])
+    expect(citedItem?.where).toBe('links')
     expect(lint.stale.items.map((i) => i.path)).toEqual([stale.path])
     expect(lint.stale.items[0].modified).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     expect(lint.duplicateTitles.total).toBe(1)
@@ -1112,6 +1122,36 @@ describe('M3: 巡检与做梦', () => {
     expect(lint.brokenLinks.total).toBe(1)
     // 没启用记忆层的库：不报这一项（files = 0），别给老 vault 添噪音
     expect(lint.memoryLinks).toEqual({ files: 0, links: 0, total: 0, unlinked: 0, items: [] })
+  })
+
+  it('lint：单向链接带 from，并区分正文与 Links 小节', async () => {
+    const oneWayDir = path.join(home, 'nb-oneway')
+    const cfgOneWay = store.normalizeConfig({ notebook: oneWayDir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfgOneWay)
+    const note2 = (title: string, dirName: string, body: string) =>
+      zk.createNote(cfgOneWay, { title, dir: dirName, content: body })
+    const stem = (p: string): string => path.basename(p, '.md')
+
+    const bodyTarget = await note2('正文目标', 'notes/concepts', '被正文引用。')
+    const linksTarget = await note2('链接目标', 'notes/concepts', '被 Links 引用。')
+    const afterTarget = await note2('小节后的目标', 'notes/concepts', '被小节后的正文引用。')
+    const bodySource = await note2('正文来源', 'notes/sources',
+      `第一段中文，先垫一点字节。\n\n见 [[${stem(bodyTarget.path)}]]。`)
+    const linksSource = await note2('链接来源', 'notes/sources',
+      `## 链接\n\n- [[${stem(linksTarget.path)}]]\n\n## 其他\n\n再看 [[${stem(afterTarget.path)}]]。`)
+    await zk.indexNotebook(cfgOneWay)
+
+    const lint = await lintLib.lintNotebook(cfgOneWay)
+    const byTarget = new Map(lint.oneWayLinks.items.map((i) => [i.path, i]))
+    expect(byTarget.get(bodyTarget.path)?.where).toBe('body')
+    expect(byTarget.get(bodyTarget.path)?.from).toEqual([bodySource.path])
+    expect(byTarget.get(linksTarget.path)?.where).toBe('links')
+    expect(byTarget.get(linksTarget.path)?.from).toEqual([linksSource.path])
+    // 小节结束后的正文不算 Links
+    expect(byTarget.get(afterTarget.path)?.where).toBe('body')
+    expect(lint.oneWayLinks.total).toBe(3)
+    expect(lint.oneWayLinks.edges).toBe(3)
+    expect(lint.oneWayLinks.bodyOnly).toBe(2)
   })
 
   it('lint：frontmatter 写坏的那篇单列一类（zk 只写 stderr，它不在索引里）', async () => {
