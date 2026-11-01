@@ -13,7 +13,7 @@
 | `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要 |
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active） |
 | `zk_read` | 读一篇全文（按路径，或先按词找最相关的一篇）；超长会截断并标注 |
-| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带标签与双链；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面） |
+| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题）；根目录 meta 文件拒写 |
 | `zk_daily` | 打开/创建某天的日记，并追加一条带时间的记录（layered 模板写进 `## Events` 的 `### HH:MM`，flat 追加到文件末尾的 `## HH:MM`） |
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题）；meta 文件不作为来源或目标 |
@@ -244,6 +244,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 双链 | `zk-kit link notes/a.md "某篇标题"` |
 | 指定目录 | `zk-kit new --title 标题 --dir notes/concepts`（layered 下 type 由目录所属 group 决定） |
 | 指定文件名 | `zk-kit new --title 很长的中文结论标题 --name 短文件名`（只换文件名，标题与正文不动；不给就是拼音 slug） |
+| 带摘要 | `zk-kit new --title 标题 --summary "一句话"`（写进模板的 `## Summary`；正文里已写了就不覆盖并告警） |
 | 装 zk | `zk-kit install 0.15.7`（下载约 10 MB → `~/.dsh/zdiary/bin`，不在可跑清单里） |
 
 除 `doctor` / `help` / `config set` 外，其余子命令加 `--json` 输出结构化结果。

@@ -17,7 +17,7 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit doctor                       自检：zk / 笔记本 / 模板 / group / 索引
   zk-kit install [版本]                安装内置 zk（默认取配置里的版本）
   zk-kit init                         建好（或补齐）笔记本
-  zk-kit new --title T [--name 文件名] [--body B] [--tags a,b] [--dir notes]
+  zk-kit new --title T [--name 文件名] [--summary 摘要] [--body B] [--tags a,b] [--dir notes]
   zk-kit search [词] [--tags a,b] [--since 日期] [--limit 5] [--json]
   zk-kit read <路径> | --query 词 [--max-chars n] [--json]
   zk-kit daily [--entry 一段] [--date yesterday]
@@ -297,16 +297,19 @@ async function main() {
         case 'new': {
             const title = str(flags.title) || pos[0] || '';
             if (!title)
-                throw new ZkError('用法：zk-kit new --title 标题 [--name 文件名] [--body 正文] [--tags a,b]');
+                throw new ZkError('用法：zk-kit new --title 标题 [--summary 摘要] [--name 文件名] [--body 正文] [--tags a,b]');
             const tags = [...new Set([...cfg.defaultTags, ...list(flags.tags)])];
             const created = await createNote(cfg, {
                 title,
                 name: str(flags.name) || undefined,
+                summary: str(flags.summary) || undefined,
                 content: withTags(str(flags.body), tags),
                 dir: str(flags.dir) || cfg.notesDir,
             });
             const archived = created.archived;
             print(json ? { ...created, tags } : `已创建 ${created.path}${tags.length ? ' · ' + tags.map((t) => '#' + t).join(' ') : ''}`, json);
+            if (created.summaryWarning)
+                console.error('⚠️ ' + created.summaryWarning);
             for (const hit of archived) {
                 console.error(`⚠️ 归档里有同名旧结论：${hit.path}${hit.reason ? `（废弃原因：${hit.reason}）` : '（没有记录废弃原因）'} —— 先读它，确认不是同一个结论再复用标题`);
             }

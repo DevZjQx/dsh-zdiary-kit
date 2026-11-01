@@ -661,7 +661,26 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
         // 索引里还是 zk 生成的那个文件名：不刷新的话，紧接着的 search / stats 会读到旧路径
         await refreshIndexQuietly(cfg, signal);
     }
-    return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived };
+    // 摘要只能建完之后补：模板里 `## Summary` 天生是空的，`{{content}}` 又落在它下面 —— body 写不进这一节
+    let summaryApplied = false;
+    let summaryWarning;
+    if (input.summary?.trim()) {
+        try {
+            const text = fs.readFileSync(finalAbs, 'utf8');
+            const filled = fillSummary(text, input.summary);
+            summaryApplied = filled.applied;
+            if (filled.text !== text)
+                fs.writeFileSync(finalAbs, filled.text, 'utf8');
+            if (!filled.applied) {
+                summaryWarning = 'summary 没写进去：正文里已经有一节 Summary（没覆盖它），要改就直接编辑那一节';
+            }
+        }
+        catch (err) {
+            // 笔记已经建好：收尾失败只降级成告警，别让人以为这次写入整个失败了
+            summaryWarning = `summary 没写进去：${err instanceof Error ? err.message : String(err)}（文件已建好，可以直接编辑那一节）`;
+        }
+    }
+    return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived, summaryApplied, summaryWarning };
 }
 /** 笔记本相对路径是否在归档目录下（supersede 会把文件搬进去，路径保持不变） */
 function inArchive(cfg, rel) {
@@ -706,6 +725,86 @@ function sectionRange(content, name) {
         }
     }
     return { start: start + 1, end };
+}
+/** 行内 ATX 标题：`## 名称`（收尾井号算装饰，不进食标题） */
+function atxHeading(line) {
+    const m = /^(#{1,6})[ \t]+(.*?)[ \t]*$/.exec(line);
+    if (!m)
+        return null;
+    const title = m[2].replace(/[ \t]+#+$/, '').trim();
+    return title ? { level: m[1].length, title } : null;
+}
+/** 围栏行标记（``` / ~~~）：代码块里的 `## x` 是代码，不是小节 */
+function fencedLines(lines) {
+    const mask = [];
+    let fence = null;
+    for (const line of lines) {
+        const m = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+        if (fence) {
+            mask.push(true);
+            if (m && m[1][0] === fence.char && m[1].length >= fence.len)
+                fence = null;
+        }
+        else {
+            mask.push(Boolean(m));
+            if (m)
+                fence = { char: m[1][0], len: m[1].length };
+        }
+    }
+    return mask;
+}
+/**
+ * 把一句话摘要填进 `## Summary`。
+ *
+ * 模板里这一节天生是空的，之前没有任何写入路径能填它 —— `{{content}}` 落在 `## Content` 下面，
+ * 摘要只能靠人事后手写。这里补上落点，三种情况：
+ *   · 有空着的 `## Summary`（模板）→ 填进去；
+ *   · 没有这一节（flat 的笔记只有 `# 标题`）→ 在一级标题下面补一节；
+ *   · 已经有内容（正文自己写了 Summary）→ 一个字不动，返回 applied=false 让调用方去提醒。
+ *
+ * 只填不删：正文里多写了一节 `## Content` 属于排版噪音，交给调用方去提醒，不在这里静默改正文。
+ */
+export function fillSummary(content, summary) {
+    // 摘要是一段话：换行会在小节里长出第二段，压成一行
+    const body = String(summary ?? '').replace(/\s+/g, ' ').trim();
+    if (!body)
+        return { text: content, applied: false };
+    const lines = String(content ?? '').split('\n');
+    const fenced = fencedLines(lines);
+    const heads = lines.map((line, i) => (fenced[i] ? null : atxHeading(line)));
+    const isSummary = (title) => /^(summary|摘要)$/i.test(title.trim());
+    const target = heads.findIndex((h) => h !== null && isSummary(h.title));
+    if (target >= 0) {
+        const head = heads[target];
+        let end = lines.length;
+        for (let i = target + 1; i < lines.length; i += 1) {
+            const next = heads[i];
+            if (next && next.level <= head.level) {
+                end = i;
+                break;
+            }
+        }
+        if (lines.slice(target + 1, end).some((line) => line.trim() !== ''))
+            return { text: content, applied: false };
+        // 正文自己又写了一份 Summary（模板那一节只是空壳）：那一节已经有主，不覆盖、也不在旁边再长一节
+        const writtenByContent = heads.some((h, k) => k >= end && h !== null && h.level === head.level && isSummary(h.title));
+        if (writtenByContent)
+            return { text: content, applied: false };
+        const out = [...lines.slice(0, target + 1), '', body, '', ...lines.slice(end)];
+        return { text: endDoc(out), applied: true };
+    }
+    // flat / 自定义模板：一级标题下面补一节；没有一级标题就不猜位置
+    const h1 = heads.findIndex((h) => h !== null && h.level === 1);
+    if (h1 < 0)
+        return { text: content, applied: false };
+    const rest = lines.slice(h1 + 1);
+    while (rest.length && rest[0].trim() === '')
+        rest.shift();
+    return { text: endDoc([...lines.slice(0, h1 + 1), '', '## Summary', '', body, '', ...rest]), applied: true };
+}
+/** 结尾只留一个换行（拼完可能多出空行，文件末尾的连续空白没有意义） */
+function endDoc(lines) {
+    return lines.join('\n').replace(/\n+$/, '\n');
 }
 /**
  * 往一篇笔记追加（自动补空行；可选先写一个二级标题）。

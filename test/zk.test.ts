@@ -664,6 +664,79 @@ describe('structure: layered', () => {
   })
 })
 
+describe('建完收尾：摘要', () => {
+  const collideDir = path.join(home, 'nb-collide')
+  const collide = store.normalizeConfig({ notebook: collideDir, zkPath: zkBin, structure: 'layered' })
+  const flatDir = path.join(home, 'nb-summary-flat')
+  const flat = store.normalizeConfig({ notebook: flatDir, zkPath: zkBin })
+
+  it('正文自带 ## Content：原样留着，建完不做静默折叠', async () => {
+    await notebookLib.ensureNotebook(collide)
+    const created = await zk.createNote(collide, {
+      title: '正文带小节',
+      dir: 'notes/concepts',
+      content: '## Content\n\n正文一句',
+    })
+    const raw = fs.readFileSync(created.absPath, 'utf8')
+    // 模板空壳 + 正文那一节都在：重复标题靠 body 的入参说明预防，不靠事后删正文
+    expect(raw.match(/^## Content$/gm)?.length).toBe(2)
+    expect(raw).toContain('正文一句')
+  })
+
+  it('summary 填进模板里空着的 ## Summary', async () => {
+    await notebookLib.ensureNotebook(collide)
+    const created = await zk.createNote(collide, {
+      title: '带摘要',
+      dir: 'notes/concepts',
+      summary: '一句话摘要',
+      content: '正文一句',
+    })
+    expect(created.summaryApplied).toBe(true)
+    expect(created.summaryWarning).toBeUndefined()
+    const raw = fs.readFileSync(created.absPath, 'utf8')
+    expect(raw.match(/^## Summary$/gm)?.length).toBe(1)
+    expect(raw).toContain('## Summary\n\n一句话摘要\n\n## Content')
+    expect(raw).toContain('## Content\n\n正文一句')
+  })
+
+  it('flat：没有这一小节就在一级标题下面补一节', async () => {
+    await notebookLib.ensureNotebook(flat)
+    const created = await zk.createNote(flat, { title: '扁平带摘要', summary: '扁平摘要', content: '正文' })
+    expect(created.summaryApplied).toBe(true)
+    const raw = fs.readFileSync(created.absPath, 'utf8')
+    expect(raw.startsWith('# 扁平带摘要\n\n## Summary\n\n扁平摘要\n\n正文')).toBe(true)
+  })
+
+  it('summary 是空白：当作没给，不写也不告警', async () => {
+    const created = await zk.createNote(collide, {
+      title: '空白摘要',
+      dir: 'notes/concepts',
+      summary: '   ',
+      content: '正文',
+    })
+    expect(created.summaryApplied).toBe(false)
+    expect(created.summaryWarning).toBeUndefined()
+    const raw = fs.readFileSync(created.absPath, 'utf8')
+    expect(raw).toContain('## Summary\n\n## Content')
+  })
+
+  it('正文自己写了 Summary：不覆盖，返回 summaryApplied=false 并给出原因', async () => {
+    const created = await zk.createNote(collide, {
+      title: '正文自带摘要',
+      dir: 'notes/concepts',
+      summary: '参数里的摘要',
+      content: '## Summary\n\n正文里的摘要',
+    })
+    expect(created.summaryApplied).toBe(false)
+    expect(created.summaryWarning).toContain('summary 没写进去')
+    const raw = fs.readFileSync(created.absPath, 'utf8')
+    // 模板那段空壳也留着（只填不删），所以这里是两节 —— 这正是要告警的原因
+    expect(raw.match(/^## Summary$/gm)?.length).toBe(2)
+    expect(raw).toContain('正文里的摘要')
+    expect(raw).not.toContain('参数里的摘要')
+  })
+})
+
 describe('notes', () => {
   it('创建 → 搜索 → 读取', async () => {
     const created = await zk.createNote(cfg, {
@@ -1617,6 +1690,24 @@ describe('tools', () => {
     const long = await read.execute({ query: '卡片盒', maxChars: 1000 }, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
     expect(typeof long.content).toBe('string')
     expect(read.output.render({}, long)[0].text).toContain('笔记')
+  })
+
+  it('zk_new：summary 落进 ## Summary；正文自己写了就告警不覆盖', async () => {
+    const newTool = toolsFeature.buildTools().find((d) => d.name === 'zk_new')!
+    const made = await newTool.execute(
+      { title: '工具摘要', summary: '工具写的摘要', body: '正文' },
+      { signal: AbortSignal.timeout(30_000) },
+    ) as Record<string, unknown>
+    expect(made.summaryApplied).toBe(true)
+    const raw = fs.readFileSync(path.join(String(made.notebook), String(made.path)), 'utf8')
+    expect(raw).toContain('## Summary\n\n工具写的摘要')
+
+    const kept = await newTool.execute(
+      { title: '工具摘要冲突', summary: '参数摘要', body: '## Summary\n\n正文摘要' },
+      { signal: AbortSignal.timeout(30_000) },
+    ) as Record<string, unknown>
+    expect(kept.summaryApplied).toBe(false)
+    expect(newTool.output.render({ summary: '参数摘要' }, kept)[0].text).toContain('summary 没写进去')
   })
 
   it('zk_new：归档同名会提醒并带出原因，但不拦', async () => {

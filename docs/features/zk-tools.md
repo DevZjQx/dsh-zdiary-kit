@@ -42,6 +42,10 @@ layered 同目录同名靠 `{{slug title}}` 文件名拦住，不同目录允许
 （只换文件名，标题和正文不动）。改名后 zk 的 slug 撞名失效，所以给了 `name` 时会在建之前按「同目录 + 同标题」补查一次。
 老笔记不自动改名；**手工 `mv`** 会断路径式入链，要改名用 `zk_rename`（它会重写入链 / meta 来源 / 自身相对链接）。
 `type` / `authority` 只有 layered 模板（`{{extra.*}}`）会写进 frontmatter；flat 的 `default.md` 没有占位符，传了也不会落盘。
+`summary` 写进模板的 `## Summary`：这一节模板里天生是空的，而 `{{content}}` 落在 `## Content` 下面 —— 不给 `summary`，
+它没有任何写入路径能填。flat / 自定义模板没有这一节时，在一级标题下面补一节；正文里自己写了 Summary 就不覆盖，
+一个字都不改，返回 `summaryApplied: false` 和 `summaryWarning`（工具层与 CLI 都据此告警）。
+只填不删：正文里多写一节 `## Content` 之类属于排版噪音，靠 `body` 的入参说明去避免，不在建完收尾时静默改正文。
 `zk_append` 拒写根目录的 meta 文件（AGENTS / USER / MEMORY / DREAMS / INDEX / WORKFLOW，清单来自 `lib/meta.ts`）：追加会把记忆变成流水账，
 也让「这条记忆是谁改的」失去审计线索；子目录里的同名文件是普通笔记，照常可写。
 同一道守卫也覆盖 `zk_new`（不能新建根目录 meta）、`zk_link`（meta 不能作为来源或目标）与 `zk_supersede`（不能废弃 meta，否则会把它搬进 archive/）。

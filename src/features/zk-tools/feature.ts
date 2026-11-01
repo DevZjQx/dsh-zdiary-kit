@@ -439,7 +439,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         properties: {
           title: S.str('笔记标题（会成为一级标题）'),
           name: S.str('文件名（不含扩展名，也不要带目录）；不给就由 zk 按标题生成。中文标题建议给一个短名，否则是长拼音'),
-          body: S.str('正文 Markdown（可空）'),
+          body: S.str('正文 Markdown（可空）。会插在模板的 {{content}} 位置（layered 下在 ## Content 之下、## Links 之前）：不要自己再写 ## Content / ## Summary 这类模板小节，会多出重复标题'),
+          summary: S.str('一句话摘要（填进模板的 ## Summary；正文里已经写了这一节就不动）'),
           tags: S.arr('标签（不写 #）。与设置里的默认标签合并', S.str('标签名')),
           dir: S.str('放到哪个子目录（相对笔记本），默认用设置里的 notesDir'),
           type: S.enum('笔记类型（写进 frontmatter；layered 结构下决定模板的分节）', ['source', 'concept', 'entity', 'pattern']),
@@ -457,6 +458,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           title: { type: 'string' },
           tags: { type: 'array', items: { type: 'string' } },
           links: { type: 'array', items: { type: 'string' } },
+          summaryApplied: { type: 'boolean' },
+          summaryWarning: { type: 'string' },
           archived: {
             type: 'array',
             items: objSchema({
@@ -466,7 +469,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             }, ['path', 'title', 'reason']),
           },
           warnings: { type: 'array', items: { type: 'string' } },
-        }, ['notebook', 'path', 'title', 'tags', 'links', 'archived', 'warnings']),
+        }, ['notebook', 'path', 'title', 'tags', 'links', 'summaryApplied', 'archived', 'warnings']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -475,6 +478,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const created = await createNote(cfg, {
           title: String(args.title),
           name: args.name ? String(args.name) : undefined,
+          summary: args.summary ? String(args.summary) : undefined,
           content: withTags(args.body ? String(args.body) : '', tags),
           dir: args.dir ? String(args.dir) : cfg.notesDir,
           group: args.group ? String(args.group) : undefined,
@@ -495,16 +499,21 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         // 归档同名只是提醒：zk_new 的查重本来就不含 archive，允许复用标题 —— 但要把废弃原因一起交出来
         // （createNote 建之前那次全库扫描已经算好了，这里不再单独跑一次 zk）
         const archived = created.archived
-        return { notebook: cfg.notebook, path: created.path, title: created.title, tags, links, archived, warnings }
+        return {
+          notebook: cfg.notebook, path: created.path, title: created.title, tags, links,
+          summaryApplied: created.summaryApplied, summaryWarning: created.summaryWarning, archived, warnings,
+        }
       },
       render(_args, value) {
         const v = value as {
           notebook: string; path: string; title: string; tags: string[]; links: string[]
+          summaryApplied: boolean; summaryWarning?: string
           archived: Array<{ path: string; title: string; reason: string }>; warnings: string[]
         }
         const lines = [`已记下「${v.title}」→ ${v.path}`]
         if (v.tags.length) lines.push('标签：' + v.tags.map((t) => '#' + t).join(' '))
         if (v.links.length) lines.push('双链：' + v.links.join(' '))
+        if (v.summaryWarning) lines.push('⚠️ ' + v.summaryWarning)
         if (v.archived.length) {
           lines.push('⚠️ 归档里有同名旧结论：' + v.archived.map((h) =>
             h.path + (h.reason ? `（废弃原因：${h.reason}）` : '（没有记录废弃原因）')).join('；') +
