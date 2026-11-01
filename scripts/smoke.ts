@@ -5,7 +5,7 @@
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
  *   · 14 个工具能注册、能执行、能渲染（zk_context 也执行一次）；
- *   · 6 条设置路由 + 4 条只读路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
+ *   · 7 条设置路由 + 4 条只读路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
  */
@@ -93,8 +93,8 @@ for (const tool of tools) checkSchema(tool.output.schema, `${tool.name}.output.s
 console.log('工具：' + tools.map((t) => t.name).join(', '))
 console.log('路由：' + [...routes.keys()].join(', '))
 if (tools.length !== 14) throw new Error('工具数量不对：' + tools.length)
-// 6 条设置页路由 + 4 条只读路由（view / feed.xml / api/notes / api/note）
-if (routes.size !== 10) throw new Error('路由数量不对：' + routes.size)
+// 7 条设置页路由 + 4 条只读路由（view / feed.xml / api/notes / api/note）
+if (routes.size !== 11) throw new Error('路由数量不对：' + routes.size)
 
 const call = async (name: string, args: unknown) => {
   const tool = tools.find((t) => t.name === name)
@@ -127,7 +127,7 @@ await call('zk_stats', {})
 await call('zk_context', {})
 await call('zk_use', {})
 
-// ── 真发 HTTP：设置页 6 条 + 只读视图 4 条 ─────────────────────────────────
+// ── 真发 HTTP：设置页 7 条 + 只读视图 4 条 ─────────────────────────────────
 const server = http.createServer((req, res) => {
   const handler = routes.get(new URL(req.url ?? '/', 'http://127.0.0.1').pathname)
   if (!handler) { res.statusCode = 404; res.end('no route'); return }
@@ -166,6 +166,27 @@ console.log('[POST /init] 幂等 =', JSON.stringify(init.result))
 
 const indexed = await postJson('/index')
 console.log('[POST /index] 计数 =', JSON.stringify(indexed.counts))
+
+// flat 的 opt-in 写模板：回包必须是 result.written（设置页读的就是它），且已存在绝不覆盖
+const fixtureAgents = fs.readFileSync(path.join(notebook, 'AGENTS.md'), 'utf8')
+const agentsKeep = await postJson('/agents')
+if ((agentsKeep.result as { written?: boolean } | undefined)?.written !== false) {
+  throw new Error('POST /agents 对已存在的 AGENTS.md 应该返回 written=false：' + JSON.stringify(agentsKeep.result))
+}
+if (fs.readFileSync(path.join(notebook, 'AGENTS.md'), 'utf8') !== fixtureAgents) {
+  throw new Error('POST /agents 覆盖了已有的 AGENTS.md')
+}
+fs.rmSync(path.join(notebook, 'AGENTS.md'))
+const agentsWrite = await postJson('/agents')
+if ((agentsWrite.result as { written?: boolean } | undefined)?.written !== true) {
+  throw new Error('POST /agents 缺失时应该写入：' + JSON.stringify(agentsWrite.result))
+}
+if (!fs.readFileSync(path.join(notebook, 'AGENTS.md'), 'utf8').includes('<!-- zdiary-template')) {
+  throw new Error('POST /agents 写的不是模板')
+}
+// 还原夹具：后面的「补建不覆盖用户自己的 AGENTS.md」要用它
+fs.writeFileSync(path.join(notebook, 'AGENTS.md'), fixtureAgents)
+console.log('[POST /agents] 已存在不覆盖 ✓ · 缺失才写模板 ✓')
 
 // ── 只读视图：GET 能看、写方法 405、JSON 不吐文件系统路径 ──
 const origin = `http://127.0.0.1:${port}`

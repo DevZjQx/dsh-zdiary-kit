@@ -115,8 +115,18 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 「语义重复」不查。为什么必须有：`zk_supersede` 只重写 `zk graph` 里的入链，meta 文件被 `excludedNames`
 排除在图外 —— 链接不会跟着搬，`--broken-links` 也统计不到；记忆说 X、库里 X 已废弃，这是两层脱节的入口。
 `unlinked` 只数 **MEMORY.md** 的列表条目里没有 `[[链接]]` 的（USER.md 是偏好清单，本来大多没有来源，
-不计；散文段落也不算，避免把自由文本变成告警噪音）。文案由 `lib/lint` 的 `formatMemoryLinks()` 统一生成，
-`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
+不计；散文段落也不算，避免把自由文本变成告警噪音）。
+同一份条目解析还数 `undated`（首行没有 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）
+与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记）—— 都只报告，注入仍按文件原文。
+文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本三个桶）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
+`incomplete`（P2-13）：`type` / `status` / `authority` 缺任一的笔记（**只在 layered 下查**：flat 的笔记
+本来就不写这三个字段，整库标红不是「可发现的状态」而是噪音）。索引把缺失落成空串，
+于是「没写 authority」=「authority 正常」，dream 的 informal 门对它们静默失效。
+只能逐篇读 frontmatter（索引里区分不出「没写」与「空值」）；护栏是只读 live 且非日记，扫描触顶时置 `truncated`。
+`tags`（P2-14）：标签总数 ≥ 30 才报；`caseVariants` 是忽略大小写后同形的组（`#Agent` 3 篇 + `#agent` 2 篇 → 一组、总 5），
+`singletons` 是只出现一次的那批。只报告，不合并 —— 在别的库里它们可能就是两个概念。
+`template`（P2-15）：读根目录 `AGENTS.md` 首行的 `<!-- zdiary-template: vN -->`；无标记按 v0 算，
+与 `TEMPLATE_VERSION` 不等时提示「旧版模板」。只报告，不覆盖（模板允许用户改）。
 `zk_dream` 的拒绝规则只有两条（`authority=informal`、无标签），日记不进候选/拒绝（它的未完成项单独一栏）：
 再加第三条就是语义判断，违反 D5。`topCited` 用一次 `zk graph` 数入链，不按笔记逐条跑。
 **晋升是一道门，门要知道门里有什么。** `zk_dream` 会读 `MEMORY.md`，把「已经晋升过」的移出候选、单列 `alreadyPromoted`：

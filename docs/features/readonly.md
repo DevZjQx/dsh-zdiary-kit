@@ -7,6 +7,7 @@
 
 - `GET /dsh-zdiary-kit/view`：首页（最近更新 / 日记 / 标签）、搜索、标签页、笔记页
   - `?p=note&path=…`：笔记正文 + 反链
+  - `?p=memory`：记忆页 —— `AGENTS.md` / `USER.md` / `MEMORY.md` / `DREAMS.md` 四份固定文件 + 预算行（人周审的入口）
   - `?p=tags` / `?p=tag&tag=…`：标签列表 / 单个标签
   - `?q=…`：搜索（GET 表单，无 JS）
 - `GET /dsh-zdiary-kit/feed.xml`：最近 30 篇的 RSS 2.0
@@ -31,6 +32,7 @@
    **不调** `ensureNotebook` / `init` / `index` / `install`。没初始化就显示提示，不顺手建库。
 3. **面门**：不复用设置页的 `snapshot`，不返回 `zkPath`、配置文件路径、`absPath`；
    `.zk/` 与根目录 meta（`AGENTS.md` / `MEMORY.md` 等）按路径直接打不开。
+   记忆页是唯一的例外，但它是**固定白名单**：文件名来自常量，不接受 `path` 参数，只读这四份。
 4. **地址门**：只认回环 —— `Host` 必须是 127.0.0.1 / localhost / [::1]，对端地址也必须是回环
    （`lib/http` 的 `isLoopback`：设置页判 Host + DSH 的 cookie，只读视图两边都判、不看 cookie）。
    DSH 绑到局域网地址时，只读视图既不会跟着上网，在本机也打不开（那种绑定下 Host 与对端都不是回环）；
@@ -40,6 +42,8 @@
 `X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`，且不发 CORS 头。
 笔记正文一律转义，不解析原始 HTML；markdown 只认标题 / 段落 / 列表 / 引用 / 分隔线 / 围栏代码，
 链接只放行 http(s) / mailto / 站内相对路径 —— `javascript:` / `data:` 只当纯文字。
+独占一行的 `<!-- … -->` 注释整行跳过（不显示、也不切开段落）：`AGENTS.md` 首行是
+`<!-- zdiary-template: vN -->` 版本标记，转义成正文等于把内部约定摆在页面最上面。
 
 **读语义。**
 
@@ -47,6 +51,10 @@
 - 搜索走 `searchNotes`：zk 的 FTS 不切中文，0 命中时自动退回正则子串（和 `zk_search` 同一套兜底）。
   `q` 与 `tag` 同时给就是两个条件一起收（AND），不会静默丢掉其中一个。
 - 笔记页：正文 + 入链（`zk graph`，读不出来就不显示）；`[[目标]]` 按路径 → 去扩展名路径 → 标题 → 文件名解析。
+- 记忆页（`?p=memory`）：顶部一行 `记忆 N/预算 词（AGENTS … · MEMORY …）`，复用 `buildMemoryPayload` /
+  `formatFileShares`；四份文件按常量直接读盘（**不走 `loadNote`** —— 它自己就拒绝 meta），
+  缺失的显示「还没写」而不是 404；正文与笔记页同一套转义 + 双链白名单，
+  `[[…]]` 只在该笔记存在时变成链接，其余保持不可点的 `<span class="wikilink">`。
 - 正文超过 200 000 字符截断并提示；磁盘文件超过 2 MiB 直接拒绝（`readNote` 会整篇读进内存）。
 - 视图没有会话上下文，只能看**插件进程工作区**解析出的笔记本（和设置页一致，不跟某个会话走）。
 - 状态码：笔记不存在 → 404，路径不合法 / meta / 扩展名 / 超大 → 400；

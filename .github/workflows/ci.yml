@@ -34,5 +34,5 @@ jobs:
       # check = typecheck → build → dist 漂移闸 → test（要求 skip = 0）
       - run: bun run check
 
-      # 加载 dist 跑一遍 14 个工具与 10 条路由（设置 6 + 只读 4），再把 README 里的 zk-kit 命令真跑一遍
+      # 加载 dist 跑一遍 14 个工具与 11 条路由（设置 7 + 只读 4），再把 README 里的 zk-kit 命令真跑一遍
       - run: bun run smoke

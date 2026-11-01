@@ -14,7 +14,7 @@ import path from 'node:path';
 import { json, readBody, ROUTE_BASE } from '../../lib/http.js';
 import { CFG_FILE, processWorkspace } from '../../config/paths.js';
 import { config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.js';
-import { ensureNotebook, structureStatus } from '../../lib/notebook.js';
+import { ensureNotebook, structureStatus, writeAgentsTemplate } from '../../lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
 import { installZk, sourceLabel } from '../../lib/install.js';
 import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.js';
@@ -148,6 +148,13 @@ export function registerSettings({ route, isTrusted }) {
         if (exists && st.agents.required && !st.agents.present) {
             warn.push('layered 结构缺 AGENTS.md —— 点「初始化 / 补建」写入模板');
         }
+        // flat 不自动写，但「有 MEMORY 没 AGENTS」意味着约定与周提醒都没生效 —— 只提示，不擅自写
+        if (exists && !st.agents.present && fs.existsSync(path.join(next.notebook, 'MEMORY.md'))) {
+            warn.push('记忆在跑，但缺 AGENTS.md —— 约定与周提醒未启用；点「写入 AGENTS.md 模板」');
+        }
+        if (exists && st.mode === 'flat' && st.extra.length) {
+            warn.push(`盘上有分层目录（${st.extra.join('、')}），但配置是 flat —— 新建笔记会落在 ${next.notesDir}/ 根`);
+        }
         json(res, 200, { ok: true, config: next, configPath: CFG_FILE, stamp: configStamp(), warn: warn.length ? warn.join('；') : null, ...(await snapshot(next)) });
     });
     // ── 状态 ──
@@ -188,6 +195,24 @@ export function registerSettings({ route, isTrusted }) {
         try {
             await indexNotebook(cfg);
             json(res, 200, { ok: true, ...(await snapshot(cfg)) });
+        }
+        catch (err) {
+            json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+    });
+    // ── 写入 AGENTS.md 模板（flat 的 opt-in；已存在不覆盖）──
+    route(`${P}/agents`, async (req, res) => {
+        if (!requireTrusted(req, res))
+            return;
+        if (req.method !== 'POST') {
+            json(res, 405, { ok: false, error: '只支持 POST' });
+            return;
+        }
+        const cfg = config();
+        try {
+            const written = writeAgentsTemplate(cfg);
+            // 和 `/init` 一样把动作结果放进 `result`：设置页读的是 `d.result.written`
+            json(res, 200, { ok: true, result: { written }, ...(await snapshot(cfg)) });
         }
         catch (err) {
             json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -262,6 +287,9 @@ export function registerSettings({ route, isTrusted }) {
             detail: groupOk ? `group."${cfg.dailyGroup}" → ${cfg.dailyDir}/` : '配置里没有这个 group，点「初始化 / 补建」补上',
         });
         const st = structureStatus(cfg);
+        const drift = st.mode === 'flat' && st.extra.length
+            ? `；盘上有分层目录 ${st.extra.join('、')}，新建笔记会落在 ${cfg.notesDir}/ 根`
+            : '';
         items.push({
             name: `结构（${st.mode}）`,
             ok: !exists || (st.ready && (!st.agents.required || st.agents.present)),
@@ -270,8 +298,8 @@ export function registerSettings({ route, isTrusted }) {
                 : st.ready
                     ? st.agents.required
                         ? (st.agents.present ? `${st.dirs.length} 个目录齐全 · AGENTS.md 就绪` : '目录齐全，缺 AGENTS.md —— 点「初始化 / 补建」')
-                        : `${st.dirs.length} 个目录齐全`
-                    : `缺目录：${st.missing.join('、')} —— 点「初始化 / 补建」`,
+                        : `${st.dirs.length} 个目录齐全` + drift
+                    : `缺目录：${st.missing.join('、')} —— 点「初始化 / 补建」` + drift,
         });
         try {
             const payload = buildMemoryPayload(cfg);

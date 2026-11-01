@@ -12,8 +12,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ZkError, zk } from './zk.js';
-import { AGENTS_TEMPLATE, WORKFLOW_TEMPLATE } from './agents-template.js';
-export { AGENTS_TEMPLATE, WORKFLOW_TEMPLATE } from './agents-template.js';
+import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.js';
+export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.js';
 export const DAILY_TEMPLATE = `# {{format-date now "%Y-%m-%d"}}
 
 {{content}}
@@ -167,12 +167,23 @@ export function structureStatus(cfg) {
     const missing = dirs.filter((rel) => !fs.existsSync(path.join(cfg.notebook, rel)));
     const agentsPath = path.join(cfg.notebook, 'AGENTS.md');
     const required = cfg.structure === 'layered';
+    // 只看「会改变新建笔记落点」的目录：分层笔记目录与 raw/inbox。
+    // archive 对两种结构都合法，不参与漂移判断。
+    const drift = cfg.structure === 'flat'
+        ? ['raw', 'inbox', ...Object.values(PLURAL_DIR).map((dir) => `${cfg.notesDir}/${dir}`)]
+        : [];
+    const extra = [...new Set(drift)]
+        .map(normDir)
+        .filter((rel) => !dirs.map(normDir).includes(rel))
+        .filter((rel) => fs.existsSync(path.join(cfg.notebook, rel)))
+        .sort();
     return {
         mode: cfg.structure,
         dirs,
         missing,
+        extra,
         ready: missing.length === 0,
-        agents: { path: agentsPath, required, present: required ? fs.existsSync(agentsPath) : true },
+        agents: { path: agentsPath, required, present: fs.existsSync(agentsPath) },
     };
 }
 function hasGroup(configToml, group) {
@@ -203,8 +214,20 @@ function ensureTemplates(cfg, files) {
     }
     return written;
 }
+/**
+ * 写根目录 AGENTS.md（缺了才写，已存在一律不覆盖 —— 模板允许用户改）。
+ * layered 用完整版；flat 用精简版（不出现 raw / inbox / archive / WORKFLOW 这些 flat 没有的路径）。
+ * 返回 true = 本次真的写了。
+ */
+export function writeAgentsTemplate(cfg) {
+    const file = path.join(cfg.notebook, 'AGENTS.md');
+    if (fs.existsSync(file))
+        return false;
+    fs.writeFileSync(file, cfg.structure === 'layered' ? AGENTS_TEMPLATE : AGENTS_TEMPLATE_FLAT, 'utf8');
+    return true;
+}
 /** 建好（或补好）笔记本；返回每一步各自做了没有，设置页直接展示 */
-export async function ensureNotebook(cfg, signal) {
+export async function ensureNotebook(cfg, signal, opts = {}) {
     const layered = cfg.structure === 'layered';
     fs.mkdirSync(cfg.notebook, { recursive: true });
     const dirsCreated = ensureDirs(cfg, structureDirs(cfg));
@@ -221,14 +244,10 @@ export async function ensureNotebook(cfg, signal) {
             'entry.md': ENTRY_TEMPLATE,
         })
         : ensureTemplates(cfg, { 'daily.md': DAILY_TEMPLATE });
-    // AGENTS.md 是 layered 的工作契约（检索词归宿 / 中文打 tags / 不会被宿主自动加载）。
-    // flat 不写：0.1.0 的 vault 升级过来必须一个文件都不多（M0 的回归承诺）。
-    const agentsFile = path.join(cfg.notebook, 'AGENTS.md');
-    let agentsWritten = false;
-    if (layered && !fs.existsSync(agentsFile)) {
-        fs.writeFileSync(agentsFile, AGENTS_TEMPLATE, 'utf8');
-        agentsWritten = true;
-    }
+    // AGENTS.md 是工作契约（检索词归宿 / 中文打 tags / 不会被宿主自动加载）。
+    // layered 自动写；flat 只有显式 withAgents 才写 —— 0.1.0 的 vault 升级过来必须一个文件都不多（M0）。
+    // 不写的话，默认安装既没有约定、也没有周节奏提醒（P1-6），所以要有一个 opt-in 入口。
+    const agentsWritten = layered || opts.withAgents === true ? writeAgentsTemplate(cfg) : false;
     // WORKFLOW.md 是「动已有笔记」时才读的细则：不注入（省预算），但不进检索（是 meta）
     const workflowFile = path.join(cfg.notebook, 'WORKFLOW.md');
     let workflowWritten = false;

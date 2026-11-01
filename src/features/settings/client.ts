@@ -51,6 +51,8 @@ interface Structure {
   mode: string
   dirs: string[]
   missing: string[]
+  /** 盘上存在、但不属于当前结构的目录（flat 库里的分层目录） */
+  extra: string[]
   ready: boolean
   agents: { path: string; required: boolean; present: boolean }
 }
@@ -262,6 +264,7 @@ interface Field {
             setOkMsg('✓ ' + parts.join(' · '))
           }
           if (name === 'index') setOkMsg('✓ 索引已重建')
+          if (name === 'agents') setOkMsg(d.result?.written === true ? '✓ 已写入 AGENTS.md 模板' : '✓ AGENTS.md 已存在，没有覆盖')
         } catch (e) { setErr(String((e as Error).message || e)) }
         finally { setBusy('') }
       }, [applySnap])
@@ -347,13 +350,16 @@ interface Field {
       const memoryLine = !memory
         ? ''
         : `记忆 ${memory.words}/${memory.budget} 词（${memory.files.filter((f) => f.present).map((f) => f.name).join(' + ') || '三份都空'}）` +
-          (memory.truncatedWords > 0 ? ` · 已截断 ${memory.truncatedWords} 词` : '')
+          (memory.truncatedWords > 0 ? ` · 已截断 ${memory.truncatedWords} 词` : '') +
+          (structure && !structure.agents.present ? ' · ⚠️ 缺 AGENTS.md：约定与周提醒未启用' : '')
       // 结构以配置为准：磁盘不一致只告警，不自动建、不自动删
       const structureWarn = !structure || !snap?.notebook.exists ? '' : !structure.ready
         ? `结构是 ${structure.mode}，但缺目录：${structure.missing.join('、')}`
         : structure.agents.required && !structure.agents.present
           ? '结构是 layered，但根目录缺 AGENTS.md（agent 的工作约定与注入内容）'
-          : ''
+          : structure.mode === 'flat' && structure.extra.length
+            ? `盘上有分层目录（${structure.extra.join('、')}），但配置是 flat —— 新建笔记会落在 notes/ 根，不套模板`
+            : ''
       // 底部只留一个按钮：没建过就叫「初始化」，缺东西就叫「补建」，都带上当前笔记本名。
       // 用已保存的 active 而不是 cfg.active —— 按钮执行的是服务端已落盘的那份配置。
       const savedActive = snap?.config?.active || cfg.active
@@ -440,6 +446,9 @@ interface Field {
         h('div', { className: 'zdk-actions' },
           h('button', { className: 'zdk-btn', onClick: save, disabled: !!busy }, busy === 'save' ? '保存中…' : '保存'),
           h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('init', 'init'), disabled: !!busy }, busy === 'init' ? '处理中…' : initLabel),
+          structure && snap?.notebook.exists && !structure.agents.present
+            ? h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('agents', 'agents'), disabled: !!busy }, busy === 'agents' ? '写入中…' : '写入 AGENTS.md 模板')
+            : null,
           h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('index', 'index'), disabled: !!busy }, busy === 'index' ? '索引进…' : '重建索引'),
           h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('install', 'install'), disabled: !!busy }, busy === 'install' ? '下载中…' : '安装内置 zk'),
           h('button', { className: 'zdk-btn zdk-btn2', onClick: selftest, disabled: !!busy }, busy === 'selftest' ? '自检中…' : '自检'),

@@ -20,7 +20,7 @@
 | `zk_supersede` | 废弃过时结论：标 `superseded` + 写 `reason` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演；meta 文件不能废弃 |
 | `zk_rename` | 改名 / 换目录并修断链：入链（`[[…]]` 与 Markdown 链接，保留 `#锚点` 与 `\|别名`）按实际解析结果改到新路径，根目录 meta 里的 `[[来源]]` 一起改，被搬走那篇自己的相对 Markdown 链接按新位置重算；默认只预演 |
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时记忆每轮已自动带进系统提示 |
-| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 记忆链接失效，每类最多 50 条；只报告不改写 |
+| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本，每类最多 50 条；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、已在 MEMORY 的、窗口外积压、daily 未完成项、被引最多；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded） |
 | `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |
@@ -46,6 +46,11 @@ layered 下每篇笔记都要落在 group 里：`zk_new` 不给 `dir` 就按 `ty
 （数字已含这行提示本身）—— 先合并或退役旧条目，别等第一次截断。
 笔记本提示是单独的一段，不占这 500 词预算。
 DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不会**读笔记本根目录，所以别指望宿主帮你加载 —— 是插件自己读、自己注入。
+记忆条目的格式约定在 `AGENTS.md` 里：每条写 `结论（YYYY-MM-DD）[[来源路径]]`；退役写成
+`- [superseded YYYY-MM-DD] 旧结论 → [[新结论]]`，行留在原处（`zk_lint` 会核对退役行指向的新结论是否还活着，但不会替你删）。
+`flat` 结构默认**不写** `AGENTS.md`（从 0.1.0 升级过来的库一个文件都不多）；要约定与周提醒就显式
+`zk-kit init --with-agents`，或在设置页点「写入 AGENTS.md 模板」—— 已存在的文件绝不覆盖。
+模板首行有 `<!-- zdiary-template: vN -->` 版本标记：老库的 `AGENTS.md` 是旧版时 `zk_lint` 只提示，不自动改。
 
 维护用 `zk_lint`（结构体检 + 记忆链接核对）和 `zk_dream`（晋升候选 / 拒绝原因 / 未完成项）：两个工具都**只读**，
 写 `MEMORY.md` / `DREAMS.md` 由 agent 按 `AGENTS.md` 自己决定 —— 机械活留在插件，语义判断留在可审计的地方。
@@ -117,7 +122,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 
 | 地址 | 内容 |
 |---|---|
-| `GET /dsh-zdiary-kit/view` | 首页：最近更新、日记、标签；`?q=` 搜索，`?p=note&path=…` 正文 + 反链，`?p=tags` / `?p=tag&tag=…` 标签 |
+| `GET /dsh-zdiary-kit/view` | 首页：最近更新、日记、标签；`?q=` 搜索，`?p=note&path=…` 正文 + 反链，`?p=tags` / `?p=tag&tag=…` 标签，`?p=memory` 四份记忆文件 + 预算 |
 | `GET /dsh-zdiary-kit/feed.xml` | 最近 30 篇的 RSS 2.0 |
 | `GET /dsh-zdiary-kit/api/notes?q=&tag=&limit=` | 只读列表（`limit` 1–200，默认 50） |
 | `GET /dsh-zdiary-kit/api/note?path=…` | 单篇正文（笔记本内相对路径） |
@@ -227,6 +232,10 @@ template = "daily.md"
 与 **`WORKFLOW.md`**（改已有笔记前先列受影响清单等确认，再按 temporal / context variant / contradiction 三分类动手）。
 `WORKFLOW.md` 不进每轮注入 —— 它低频但重要，塞进 `AGENTS.md` 会把 500 词预算挤到 MEMORY 没位置。
 **只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` / `WORKFLOW.md` 一律不覆盖。
+`flat` 也可以有工作约定：`zk-kit init --with-agents`（或设置页「写入 AGENTS.md 模板」）写一份精简版
+（≤90 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`），已存在不覆盖；不想要就一个字节都不多。
+反过来，配置是 `flat` 但盘上留着 `notes/concepts` 之类的分层目录时，`doctor` / 设置页 / 每轮注入都会提示
+「新建笔记会落在 `notes/` 根」—— 只报告，不搬文件、不改配置（`archive/` 不算漂移：跑过一次 supersede 就会自建）。
 切回 `flat` 同理：只改配置，已建出来的 `raw/` `archive/` 不会被删 —— 所以切换是「随时可逆」的，代价只是目录留在那里。
 `zk-kit config set` 会把被归一化改掉的值回显出来（例如 `structure=xyz` → 实际 `flat`），不会"命令成功但没生效"。
 注意：从 flat 升级时旧的 `daily.md` 已存在，因此不会自动换成带 Events / Observations / Loose ends 的 layered 日记模板；
@@ -254,6 +263,7 @@ template = "daily.md"
 
 ```bash
 zk-kit init                          # 建库 / 补齐目录、模板、group、AGENTS.md（幂等）
+zk-kit init --with-agents            # flat 库也写一份精简版 AGENTS.md（已存在不覆盖）
 zk-kit new --title "示例笔记" --body "正文" --tags demo --type concept
 zk-kit search --tags demo --limit 5
 zk-kit daily --entry "今天把 zk-kit 跑了一遍"
@@ -320,6 +330,11 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 搜索结果不全 | 索引落后：点「重建索引」（`zk index`），或确认文件没被 `.zk/config.toml` 的 `exclude` 排除 |
 | 自检报「✗ 长期记忆：N/预算 词」 | AGENTS + USER + MEMORY 写太长：先压缩，或在设置页调高「注入预算」（超预算时注入会先丢 MEMORY 尾部，条目 / 段落按条从末尾往前丢） |
 | 体检报「记忆链接：N 条失效」 | `MEMORY.md` / `USER.md` 里的 `[[来源]]` 指向的笔记已归档或删除：改成 `archive/` 下的新路径，或改指活笔记；显式写 `archive/` 的链接不算失效 |
+| 体检报「N 个条目没写日期 / 已退役」 | 按 `AGENTS.md` 的格式补 `结论（YYYY-MM-DD）[[来源路径]]`；退役行写 `- [superseded …] 旧结论 → [[新结论]]`，行留着不删。只报告，注入仍按原文 |
+| 体检报「AGENTS.md 是旧版 / 无版本标记」 | 模板升级过，老库不会自动覆盖（可能有你自己的改动）：对照 `docs/features/memory.md` 的新模板手工合并；不合并也能用，只是少新加的约定 |
+| 体检报「frontmatter 缺字段」（layered） | 缺 `type` / `status` / `authority`：索引把缺失落成空串，`authority=informal` 这类机械门对它们静默失效。按模板补上即可；flat 不查这一项 |
+| `doctor` 提示「记忆在跑，但缺 AGENTS.md」 | `flat` 默认不写工作约定：跑 `zk-kit init --with-agents`，或设置页点「写入 AGENTS.md 模板」（已存在不覆盖） |
+| 提示「盘上有分层目录，但配置是 flat」 | 以前是 layered、后来改成 flat（或手工搬过目录）：新建笔记会落在 `notes/` 根、不套模板。要么把配置改回 layered，要么把这些目录移走；插件只提示，不动文件 |
 | `Read` / `Edit` 笔记本报 `file access denied under workspace-write mode` | 笔记本被指到了工作区外。改用 `zk_*` 工具（不经这层策略），或把目录加进 `additionalWritableRoots`，或开会话到 `danger-full-access` |
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「补建 *名* 的目录」，别手改配置去将就磁盘 |
 | 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |
@@ -333,7 +348,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉，并检查没有顶层声明
   （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：14 个工具各跑一遍 + 6 条设置路由都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
+  `bun run smoke`（加载 dist：14 个工具各跑一遍 + 7 条设置路由都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
   `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。

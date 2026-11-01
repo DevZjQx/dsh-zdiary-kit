@@ -2,17 +2,21 @@
 
 **Purpose.** 让主人看得见、管得住：zk 在哪、笔记本在哪、有多少笔记、怎么重建、怎么装。
 
-**Owns.** 六条路由（全部 `/dsh-zdiary-kit/api/*`）：
+**Owns.** 七条路由（全部 `/dsh-zdiary-kit/api/*`）：
 - `GET/POST /settings`：读写配置（白名单 + 归一化在 `config/store`）；GET 返回快照与 `stamp`，POST 带回 `stamp`
   校验（别人改过就 409），成功返回快照与 `warn`
 - `GET /status`：zk 位置/版本/来源、笔记本是否存在、笔记/标签/断链/孤立计数
 - `POST /init`：`ensureNotebook`（幂等；layered 时一并写 `AGENTS.md`）
+- `POST /agents`：`writeAgentsTemplate` —— flat 库的 opt-in，已存在不覆盖；返回 `result.written` 与最新快照
 - `POST /index`：`zk index`
 - `POST /install`：内置 zk（下载 → 解包 → `--version` 验证）；`detail` 里回显下载源（自定义镜像会点名）
 - `GET /selftest`：七项真检查（zk、笔记本、模板、group、结构、长期记忆、索引）
 
 快照（`GET /settings`、`GET /status`、写操作的回包）除了配置与计数，还带两块**诊断**：
-`structure`（配置的模式、缺哪些目录、`AGENTS.md` 在不在）与 `memory`（三份 meta 的保留词数 / 原词数 / 目录词数 / 预算 / 截断量）。
+`structure`（配置的模式、缺哪些目录、`extra` 盘上多出来的分层目录、`AGENTS.md` 在不在）与
+`memory`（三份 meta 的保留词数 / 原词数 / 目录词数 / 预算 / 截断量）。
+`extra` 只在 `flat` 下非空，命中时不把 `ready` 置 false：它表达的是「盘上有分层目录，新建笔记会落在 `notes/` 根」，
+不是配置错误。
 两者都是纯读：结构不一致只显示告警 + 底部的「初始化 / 补建」（= `POST /init`），**不自动建、不自动删、不改配置**。
 快照里的 `workspace` 与 `notebook.path` 按插件进程工作区解析；agent 工具按各自会话工作区解析 ——
 空 / 相对路径下两者可能不是同一个目录，界面要如实标出来，别让人以为 agent 一定用的是这一份。
@@ -21,6 +25,8 @@
 笔记本那一块不是 `FIELDS`（它是「名字 → {路径, 结构}」的表，字段清单表达不了）：
 当前笔记本下拉 + 每个笔记本一行（路径可改、结构下拉 `flat`/`layered`、可删，至少留一个）+ 新增一行，改完同样靠「保存」落盘。
 结构是**每个笔记本自己的**，就摆在那一行上；`flat → layered` 保存前弹窗明确写「只建目录与模板，不搬已有笔记」。
+`flat` 且缺 `AGENTS.md` 时，操作区多一个「写入 AGENTS.md 模板」按钮（走 `POST /agents`）；记忆状态行同时提示
+「缺 AGENTS.md：约定与周提醒未启用」。已有文件不覆盖，按钮点了也不会动用户的定制。
 分组标题直接标作用范围（「笔记本」是每本自己的，其余是全局）；删除笔记本先确认「只删配置，磁盘目录与笔记保留」。
 切换「当前笔记本」保存后自动建好目标笔记本（`ensureNotebook` 幂等）；改路径 / 新增不自动建（防手滑）。
 但**切的是新会话的默认值**：每个会话第一次用 zk_* 时就把当时的默认值固定下来，之后各走各的 ——

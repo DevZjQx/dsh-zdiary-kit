@@ -9,8 +9,11 @@
   另读 `DREAMS.md` 的「上次做梦」一行（不进正文、不计预算）
 - `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）；`dreamNotebook` 用它算默认窗口
 - `lib/wikilink.ts`：`[[链接]]` 的解析口径（路径 → `.md` → `archive/` → 活笔记标题），lint 与 dream 共用一份
-- `lib/agents-template.ts`：`AGENTS.md` 模板（layered 初始化时写入；当前 187 词，占默认 500 词的 37%，因为它在预算里且永不截断）
-  与 `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
+- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 189 词），flat 用精简版
+  （88 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
+  layered 初始化自动写，flat 只有 `ensureNotebook(cfg, signal, { withAgents: true })` / `zk-kit init --with-agents` /
+  设置页「写入 AGENTS.md 模板」才写；已存在一律不覆盖。
+  `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
 - `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册两段：`zdiary:notebook`（order 5190，一行当前笔记本名字 / 结构 / 路径 + 其余已配置库名，每步跟随会话 pin；**不进记忆预算**）与 `zdiary:memory`（order 5200，`interpolate: false` —— 记忆是文件原文，
   `{{…}}` 一律原样保留：插值会让未注册变量在装配时抛错、`{{model}}` 这类被静默改写），`text` 是函数，每个 step 重新求值（按文件指纹 + 预算 + 日期缓存，变了才重读重算）；
   装配上下文带 `agent.id` 时按**会话工作区 + 该会话固定的笔记本**解析（`config/session`，和 `zk_*` 工具同口径）；
@@ -27,13 +30,18 @@
 `zk_lint` 的 `memoryLinks` 只做机械核对：原路径 → 加 `.md` → `archive/` 下同名 → 活笔记标题 / 文件名，
 旧路径在 `archive/` 下找到同名（或活文件带 `status: superseded`）报 `superseded`，都找不到报 `missing`；
 显式写 `archive/` 的链接是有意引用，不算漂移；另数 MEMORY.md 里有多少列表条目没附链接（USER 不计）。
+P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）、
+`retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记）。注入仍按文件原文，退役行不删、不过滤 ——
+「注入 = 文件原文」这条现状留给 A 案跑一段时间后再评估（B 案）。
 为什么要有：`zk_supersede` 只重写 `zk graph` 里的入链，meta 文件被 `excludedNames` 排除在图外 ——
 链接不会跟着搬，`--broken-links` 也看不见。语义重复仍留给 agent，插件不碰。
 
 **Depends on.** `config/store`（`memoryBudgetWords`，每次现读 —— 设置页保存后下一次工具调用就生效）、
 `lib/meta`、`node:fs`；宿主的 `systemPrompt` 服务（可选，没有就只留 `zk_context`）。
 
-**Public surface.** `buildMemoryPayload(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、`AGENTS_TEMPLATE`、`WORKFLOW_TEMPLATE`。
+**Public surface.** `buildMemoryPayload(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、
+`AGENTS_TEMPLATE` / `AGENTS_TEMPLATE_FLAT`、`TEMPLATE_VERSION` / `TEMPLATE_MARK`、`WORKFLOW_TEMPLATE`。
+笔记本侧：`writeAgentsTemplate(cfg)`（缺才写，返回是否写入）与 `ensureNotebook(cfg, signal, { withAgents })`。
 `WORKFLOW.md` 不进 `META_FILES`（不注入），只在 `META_NAMES` 里（排除出检索、`zk_append` 拒写）。
 
 **Rejected.** 只在会话开始时注入一次 —— 拒绝：改完 MEMORY.md 要等下一次会话才生效，还得自己实现「这条已经注入过」的去重。
@@ -43,7 +51,8 @@
 
 **Exceptions.** 中文按 2 字 1 词计（空白切分在中文上严重低估，预算会变成装饰）；
 `AGENTS.md` 模板自己也得守这条预算：初版 310 词，`bun run docs` 里 `zk-kit doctor` 直接报
-`✗ 记忆：310/300 词` —— 模板吃掉整个预算，MEMORY.md 就永远被截光，所以先压到 160 词（195 词的版本把 USER + MEMORY 压到只剩 105 词），后续补 `name` / `WORKFLOW` / `rename` 规则后为 175 词，再加「新条目写在小节顶部」为 187 词（截断从底部往前丢，写底部等于先丢最新）；
+`✗ 记忆：310/300 词` —— 模板吃掉整个预算，MEMORY.md 就永远被截光，所以先压到 160 词（195 词的版本把 USER + MEMORY 压到只剩 105 词），后续补 `name` / `WORKFLOW` / `rename` 规则后为 175 词，加「截断从底部往前丢」后为 187 词，
+P1-3 的日期 / 退役格式 + P2-15 的版本标记后实测 189 词（单测锁 `≤190`；flat 精简版锁 `≤90`，实测 88）。
 `AGENTS.md` 是硬规则，单独超预算也不截断，只回显告警；文件内容里的 `</system-reminder>` 会被转义，
 截断目录里的段落标题同样转义 —— 不许提前闭合插件自己的框；任何一份文件读不到都当作不存在，笔记本没建好时返回空载荷而不是报错。
 
@@ -82,3 +91,20 @@ README 与模板不要暗示「新条目往下加」而不提这一点。
 永远不生效）；有文件没日期行只说「无法判断」（不猜日期）；日期不合法同样只说明；
 **整段提醒只在根目录有 `AGENTS.md` 时出现** —— 没采用这套工作约定的库不该每步被催。
 这一行**不计入预算**、不参与截断，也不写进 `files` —— 它不是被注入的记忆，是给模型的一个机械提醒。
+
+**条目生命周期（P1-3）。** 只增不减的记忆一定撞上限，撞上之后由三级切分按位置丢弃 —— 那不可审计。
+所以 `AGENTS.md` 约定每条写 `结论（YYYY-MM-DD）[[来源路径]]`，退役写 `- [superseded YYYY-MM-DD] 旧结论 → [[新结论]]`，
+行留在原处：`zk_lint` 数 `undated` / `retired` / `retiredBroken`，但**不删、不改、不过滤**。
+整篇重写会丢掉「这里曾经有过什么、为什么废掉」；退役行是笔记 `supersede + reason + archive` 在记忆层的对应物。
+注入仍按文件原文（B 案「过滤退役行」等退役行真的出现、预算压力可测之后再评估）。
+
+**flat 也能有约定（P1-6）。** `flat` 是默认结构，但自动写 `AGENTS.md` 会破坏 M0 的「升级不多一个文件」，
+于是默认安装既没有约定、也没有周提醒（提醒只在根目录有 AGENTS 时出现）。改成 opt-in：
+`zk-kit init --with-agents`、设置页「写入 AGENTS.md 模板」、`ensureNotebook(..., { withAgents: true })`；
+`doctor` 在「有 MEMORY.md 但没有 AGENTS.md」时给一条 ⚠️（不是错误、不翻退出码）。
+精简版只保留 flat 下成立的四条规则，路径里不出现 `raw/` / `inbox/` / `archive/` / `WORKFLOW.md`。
+
+**模板版本（P2-15）。** 模板是行为契约，每轮注入；老库的 `AGENTS.md` 停在旧版本时，agent 会一直按旧规则写。
+但模板允许用户改，不能自动覆盖 —— 两份模板首行写死 `<!-- zdiary-template: vN -->`，`zk_lint` 读它：
+无标记按 v0 算，与 `TEMPLATE_VERSION` 不等就提示「旧版模板」，只报告、不改文件。
+标记固定 4 词、不带日期（带日期实测 6 词，白花 2 词）；改模板时 `TEMPLATE_VERSION + 1`。

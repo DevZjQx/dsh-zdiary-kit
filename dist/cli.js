@@ -10,13 +10,13 @@ import { NOTE_KINDS, ensureNotebook, newNoteDir, structureStatus } from './lib/n
 import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
 import { installZk, sourceLabel } from './lib/install.js';
 import { resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
-import { formatMemoryLinks, lintNotebook } from './lib/lint.js';
+import { formatLintExtras, formatMemoryLinks, lintNotebook } from './lib/lint.js';
 import { dreamNotebook } from './lib/dream.js';
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
 
   zk-kit doctor                       自检：zk / 笔记本 / 模板 / group / 索引
   zk-kit install [版本]                安装内置 zk（默认取配置里的版本）
-  zk-kit init                         建好（或补齐）笔记本
+  zk-kit init [--with-agents]        建好（或补齐）笔记本；flat 下加 --with-agents 才写 AGENTS.md 模板
   zk-kit new --title T [--name 文件名] [--summary 摘要] [--body B] [--tags a,b] [--dir notes] [--type source|concept|entity|pattern]
   zk-kit search [词] [--tags a,b] [--since 日期] [--limit 5] [--json]
   zk-kit read <路径> | --query 词 [--max-chars n] [--json]
@@ -169,6 +169,7 @@ function lintReport(r) {
     const memLine = formatMemoryLinks(r.memoryLinks);
     if (memLine)
         lines.push(memLine);
+    lines.push(...formatLintExtras(r));
     if (r.truncated)
         lines.push('⚠️ 笔记数触到扫描上限：结果不完整（只会漏报，不会误报）');
     if (oneWay.edgesTruncated)
@@ -249,15 +250,28 @@ async function doctor() {
     rows.push(`${group ? '✓' : '✗'} 日记 group：${cfg.dailyGroup} → ${cfg.dailyDir}/`);
     const st = structureStatus(cfg);
     const structureOk = st.ready && (!st.agents.required || st.agents.present);
+    const drift = st.mode === 'flat' && st.extra.length
+        ? ` · ⚠️ 盘上有分层目录 ${st.extra.join('、')}：新建笔记会落在 ${cfg.notesDir}/ 根`
+        : '';
     rows.push(`${structureOk ? '✓' : '✗'} 结构：${st.mode} · ` +
         (st.ready ? `${st.dirs.length} 个目录齐全` : `缺 ${st.missing.join('、')}（跑 zk-kit init）`) +
-        (st.agents.required ? (st.agents.present ? ' · AGENTS.md 就绪' : ' · 缺 AGENTS.md（跑 zk-kit init）') : ''));
+        (st.agents.required ? (st.agents.present ? ' · AGENTS.md 就绪' : ' · 缺 AGENTS.md（跑 zk-kit init）') : '') +
+        drift);
     const payload = buildMemoryPayload(cfg);
     const present = payload.files.filter((f) => f.present);
     rows.push(present.length === 0
         ? '✓ 记忆：暂未启用（根目录没有 AGENTS.md / USER.md / MEMORY.md）'
         : `${payload.words <= payload.budget ? '✓' : '✗'} 记忆：${payload.words}/${payload.budget} 词（${formatFileShares(payload.files, payload.tocWords)}）` +
             (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : ''));
+    if (exists) {
+        // 记忆在跑、但没有工作约定：默认安装里这是常态（flat 不自动写 AGENTS.md），
+        // 代价是「每条结论附来源 / 中文打 tags / 每周整理」四条约定与周提醒全都不生效。
+        const hasMemory = fs.existsSync(path.join(cfg.notebook, 'MEMORY.md'));
+        const hasAgents = fs.existsSync(path.join(cfg.notebook, 'AGENTS.md'));
+        if (hasMemory && !hasAgents) {
+            rows.push(`⚠️ 记忆在跑，但缺 AGENTS.md：约定与周提醒未启用 —— 跑 zk-kit init --with-agents（或设置页「写入 AGENTS.md 模板」）`);
+        }
+    }
     if (zk && exists) {
         try {
             const s = await notebookStats(cfg);
@@ -303,10 +317,11 @@ async function main() {
             return;
         }
         case 'init': {
-            const r = await ensureNotebook(cfg);
+            const withAgents = flags['with-agents'] === true || flags['with-agents'] === 'true';
+            const r = await ensureNotebook(cfg, undefined, { withAgents });
             print(json ? r : `笔记本 ${r.notebook}（结构 ${cfg.structure}）\n` +
                 `初始化：${r.initialized ? '是' : '已是笔记本'} · 目录：${r.dirsCreated.length ? '新建 ' + r.dirsCreated.join('、') : '已齐全'}\n` +
-                `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')} · WORKFLOW.md：${r.workflowWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')}`, json);
+                `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' || withAgents ? '已存在' : '未写（flat 要 --with-agents）')} · WORKFLOW.md：${r.workflowWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')}`, json);
             return;
         }
         case 'new': {

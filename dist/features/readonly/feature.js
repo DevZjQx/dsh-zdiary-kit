@@ -17,6 +17,7 @@ import { isLoopback, json, ROUTE_BASE } from '../../lib/http.js';
 import { config } from '../../config/store.js';
 import { absPathOf, allNotes, graphEdges, hasNotebook, isUnderDir, localDate, readNote, searchNotes, ZkError } from '../../lib/zk.js';
 import { isMetaPath } from '../../lib/meta.js';
+import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
 import { esc, layout, renderMarkdown } from './html.js';
 const BASE = ROUTE_BASE;
 const VIEW = `${BASE}/view`;
@@ -213,6 +214,48 @@ async function handleSearch(res, cfg, q) {
     ].join('\n');
     sendHtml(res, 200, shell(cfg, `搜索 ${q}`, body));
 }
+/** 记忆页固定的四份文件：只从这个常量取名字，不接受路径参数（meta 仍然不能按路径打开） */
+const MEMORY_PAGE_FILES = ['AGENTS.md', 'USER.md', 'MEMORY.md', 'DREAMS.md'];
+/**
+ * 记忆页（P1-5）：人的周审需要一个入口 —— 当前记忆、预算、哪些被截断，都在这一页。
+ * 不走 `loadNote`：根目录 meta 被 `loadAll` 排除、也被 `loadNote` 明确拒绝；
+ * 这里按常量直接读盘，再复用渲染层的转义与双链白名单。
+ */
+async function handleMemory(res, cfg) {
+    let all = [];
+    try {
+        all = await loadAll(cfg);
+    }
+    catch { /* 索引挂了也能读记忆，双链退化成纯文字 */ }
+    const linkFor = linkResolver(all);
+    const payload = buildMemoryPayload(cfg);
+    const shares = formatFileShares(payload.files, payload.tocWords);
+    const usage = `记忆 ${payload.words}/${payload.budget} 词（${shares || '三份都空'}）` +
+        (payload.truncatedWords > 0 ? ` · 已截断 ${payload.truncatedWords} 词` : '');
+    const sections = MEMORY_PAGE_FILES.map((name) => {
+        let body = '';
+        try {
+            body = fs.readFileSync(path.join(cfg.notebook, name), 'utf8');
+        }
+        catch {
+            body = '';
+        }
+        return [
+            `<h2>${esc(name)}</h2>`,
+            body.trim()
+                ? `<article>${renderMarkdown(body, { linkFor, skipFirstH1: true })}</article>`
+                : '<p class="meta">还没写。</p>',
+        ].join('\n');
+    });
+    const body = [
+        `<p class="crumb"><a href="${VIEW}">首页</a> / 记忆</p>`,
+        '<h1>记忆</h1>',
+        `<p class="meta">${esc(usage)}</p>`,
+        '<p class="meta">这四份文件由人和 agent 直接编辑，不进检索；这里只读。</p>',
+        ...sections,
+    ].join('\n');
+    sendHtml(res, 200, shell(cfg, '记忆', body));
+}
 async function handleTags(res, cfg) {
     const notes = await loadAll(cfg);
     const tags = tagCounts(notes);
@@ -368,6 +411,8 @@ async function handleView(req, res) {
     try {
         if (p === 'note')
             return await handleNote(res, st.cfg, (url.searchParams.get('path') ?? '').trim());
+        if (p === 'memory')
+            return await handleMemory(res, st.cfg);
         if (p === 'tags')
             return await handleTags(res, st.cfg);
         if (p === 'tag')

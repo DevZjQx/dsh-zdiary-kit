@@ -1289,7 +1289,9 @@ describe('M3: 巡检与做梦', () => {
     expect(lint.orphans.total).toBeGreaterThanOrEqual(lint.orphans.items.length)
     expect(lint.brokenLinks.total).toBe(1)
     // 没启用记忆层的库：不报这一项（files = 0），别给老 vault 添噪音
-    expect(lint.memoryLinks).toEqual({ files: 0, links: 0, total: 0, unlinked: 0, items: [] })
+    expect(lint.memoryLinks).toEqual({
+      files: 0, links: 0, total: 0, unlinked: 0, undated: 0, retired: 0, retiredBroken: 0, items: [],
+    })
   })
 
   it('lint：单向链接带 from，并区分正文与 Links 小节', async () => {
@@ -1990,7 +1992,7 @@ describe('M4: 结构设置与记忆预算', () => {
     expect(body).toContain('MEMORY.md')
     expect(body).toContain('WORKFLOW.md')
     // 截断从底部往前丢：模板必须说清新条目写在哪，否则 agent 继续往下追加，最新的结论先没
-    expect(body).toContain('新条目写在小节顶部')
+    expect(body).toContain('新条目写顶部')
 
     fs.writeFileSync(agentsFile, '# 我自己写的\n\n不覆盖我。\n')
     const again = await notebookLib.ensureNotebook(m4)
@@ -2526,6 +2528,221 @@ describe('只读视图', () => {
       fs.writeFileSync(paths.CFG_FILE, before)
       fs.rmSync(nb, { recursive: true, force: true })
       fs.rmSync(path.join(home, 'readonly-empty'), { recursive: true, force: true })
+    }
+  })
+})
+
+describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13–P2-15）', () => {
+  const fresh = (name: string, structure: 'flat' | 'layered' = 'flat') =>
+    store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure })
+
+  it('P1-3：MEMORY 条目的日期 / 退役 / 退役后失效都各自计数', async () => {
+    const cfg = fresh('nb-p13')
+    await notebookLib.ensureNotebook(cfg)
+    const live = await zk.createNote(cfg, { title: '活结论', content: '正文 #x' })
+    await zk.indexNotebook(cfg)
+    fs.writeFileSync(path.join(cfg.notebook, 'MEMORY.md'), [
+      '# 记忆',
+      '',
+      `- 活结论（2026-01-01）[[${live.path}]]`,
+      '- 没日期也没来源的条目',
+      '- [superseded 2026-02-01] 旧结论 → [[notes/已经不存在.md]]',
+      '',
+    ].join('\n'))
+
+    const lint = await lintLib.lintNotebook(cfg)
+    expect(lint.memoryLinks.files).toBe(1)
+    expect(lint.memoryLinks.undated).toBe(1)
+    expect(lint.memoryLinks.unlinked).toBe(1)
+    expect(lint.memoryLinks.retired).toBe(1)
+    expect(lint.memoryLinks.retiredBroken).toBe(1)
+    // 退役行指向的目标也会在「失效链接」里报一次：两句话意思不同，不合并
+    expect(lint.memoryLinks.total).toBe(1)
+    expect(lintLib.formatMemoryLinks(lint.memoryLinks)).toContain('1 条已退役，其中 1 条的新结论不是活笔记')
+  })
+
+  it('P1-3 / P2-15：模板带版本标记，并写清日期与退役格式', () => {
+    for (const body of [notebookLib.AGENTS_TEMPLATE, notebookLib.AGENTS_TEMPLATE_FLAT]) {
+      expect(body.startsWith('<!-- zdiary-template: v')).toBe(true)
+      expect(body).toContain('YYYY-MM-DD')
+      expect(body).toContain('[superseded')
+    }
+    expect(notebookLib.WORKFLOW_TEMPLATE.startsWith('<!-- zdiary-template: v')).toBe(true)
+  })
+
+  it('P1-6：flat 默认不写 AGENTS；显式 withAgents 写精简版且不覆盖', async () => {
+    const cfg = fresh('nb-p16')
+    const first = await notebookLib.ensureNotebook(cfg)
+    expect(first.agentsWritten).toBe(false)
+    expect(fs.existsSync(path.join(cfg.notebook, 'AGENTS.md'))).toBe(false)
+
+    const written = await notebookLib.ensureNotebook(cfg, undefined, { withAgents: true })
+    expect(written.agentsWritten).toBe(true)
+    const body = fs.readFileSync(path.join(cfg.notebook, 'AGENTS.md'), 'utf8')
+    expect(body).toContain('<!-- zdiary-template')
+    // flat 模板不许出现分层结构的路径与 WORKFLOW.md
+    expect(body).not.toContain('notes/sources')
+    expect(body).not.toContain('WORKFLOW.md')
+    expect(memory.countWords(notebookLib.AGENTS_TEMPLATE_FLAT)).toBeLessThanOrEqual(90)
+
+    fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '# 我自己写的\n')
+    const again = await notebookLib.ensureNotebook(cfg, undefined, { withAgents: true })
+    expect(again.agentsWritten).toBe(false)
+    expect(fs.readFileSync(path.join(cfg.notebook, 'AGENTS.md'), 'utf8')).toBe('# 我自己写的\n')
+  })
+
+  it('P1-7：flat 有分层目录时报 extra；archive 不算漂移；layered 不报', async () => {
+    const dir = path.join(home, 'nb-p17')
+    fs.mkdirSync(path.join(dir, 'notes/concepts'), { recursive: true })
+    fs.mkdirSync(path.join(dir, 'archive'), { recursive: true })
+    fs.mkdirSync(path.join(dir, 'journal'), { recursive: true })
+    const flat = store.normalizeConfig({ notebook: dir, structure: 'flat' })
+    const st = notebookLib.structureStatus(flat)
+    expect(st.ready).toBe(true)
+    expect(st.extra).toEqual(['notes/concepts'])
+    expect(st.extra).not.toContain('archive')
+
+    // 只有 archive 的 flat 库（跑过一次 supersede）：不是漂移，不能误报
+    const onlyArchive = path.join(home, 'nb-p17-archive')
+    fs.mkdirSync(path.join(onlyArchive, 'archive'), { recursive: true })
+    fs.mkdirSync(path.join(onlyArchive, 'notes'), { recursive: true })
+    fs.mkdirSync(path.join(onlyArchive, 'journal'), { recursive: true })
+    expect(notebookLib.structureStatus(store.normalizeConfig({ notebook: onlyArchive, structure: 'flat' })).extra).toEqual([])
+
+    // layered 的分层目录本来就在配置里，不算多余
+    expect(notebookLib.structureStatus(store.normalizeConfig({ notebook: dir, structure: 'layered' })).extra).toEqual([])
+  })
+
+  it('P2-13：frontmatter 缺 type / status / authority 单列一桶，日记跳过；flat 不查', async () => {
+    const cfg = fresh('nb-p213', 'layered')
+    await notebookLib.ensureNotebook(cfg)
+    fs.writeFileSync(path.join(cfg.notebook, 'notes/concepts/partial.md'), '---\ntype: concept\ntitle: 部分\n---\n\n正文 #x\n')
+    fs.writeFileSync(path.join(cfg.notebook, 'notes/concepts/full.md'), '---\ntype: concept\ntitle: 完整\nstatus: active\nauthority: expert\n---\n\n正文 #y\n')
+    await zk.ensureDailyNote(cfg)
+    await zk.indexNotebook(cfg)
+
+    const lint = await lintLib.lintNotebook(cfg)
+    expect(lint.incomplete.total).toBe(1)
+    expect(lint.incomplete.truncated).toBe(false)
+    expect(lint.incomplete.items[0]?.path).toBe('notes/concepts/partial.md')
+    expect(lint.incomplete.items[0]?.missing.sort()).toEqual(['authority', 'status'])
+    expect(lint.incomplete.byField).toEqual({ type: 0, status: 1, authority: 1 })
+
+    // flat 的笔记本来就不写这三个字段：整库标红没有信息量
+    const flat = fresh('nb-p213-flat')
+    await notebookLib.ensureNotebook(flat)
+    await zk.createNote(flat, { title: 'flat 笔记', content: '正文 #z' })
+    await zk.indexNotebook(flat)
+    expect((await lintLib.lintNotebook(flat)).incomplete.total).toBe(0)
+  })
+
+  test('P2-14：大小写变体与单例；标签不足 30 个不报', () => {
+    const rec = (tags: string[]) => ({ tags } as unknown as Parameters<typeof lintLib.tagHygiene>[0][number])
+    const few = lintLib.tagHygiene([rec(['Agent']), rec(['agent'])])
+    expect(few.reported).toBe(false)
+
+    const many = [
+      rec(['Agent']), rec(['Agent']), rec(['Agent']), rec(['agent']), rec(['agent']),
+      ...Array.from({ length: 28 }, (_v, i) => rec([`tag-${i}`])),
+    ]
+    const tags = lintLib.tagHygiene(many)
+    expect(tags.reported).toBe(true)
+    expect(tags.total).toBe(30)
+    expect(tags.caseVariants.total).toBe(1)
+    expect(tags.caseVariants.items[0]?.variants).toEqual(['Agent', 'agent'])
+    expect(tags.caseVariants.items[0]?.total).toBe(5)
+    expect(tags.singletons.total).toBe(28)
+  })
+
+  it('P2-15：无标记 / 旧版本都算旧模板，当前版本不算', async () => {
+    const cfg = fresh('nb-p215')
+    await notebookLib.ensureNotebook(cfg)
+    expect(lintLib.templateStatus(cfg)).toEqual({ present: false, version: 0, current: 1, stale: false })
+
+    fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '# 手写规则\n')
+    const old = lintLib.templateStatus(cfg)
+    expect(old.present).toBe(true)
+    expect(old.version).toBe(0)
+    expect(old.stale).toBe(true)
+
+    fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '<!-- zdiary-template: v99 -->\n\n# 未来版本\n')
+    expect(lintLib.templateStatus(cfg).stale).toBe(true)
+
+    fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), notebookLib.AGENTS_TEMPLATE)
+    const now = lintLib.templateStatus(cfg)
+    expect(now.version).toBe(now.current)
+    expect(now.stale).toBe(false)
+  })
+
+  it('P1-5：只读视图记忆页显示四份文件与预算；meta 仍不能按路径打开', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const nb = path.join(home, 'readonly-memory')
+    const routes = new Map<string, (req: never, res: never) => unknown>()
+    readonlyFeature.registerReadOnly({ route: (p, h) => routes.set(p, h) })
+    const call = async (pathname: string, req: Record<string, unknown>): Promise<FakeRes> => {
+      const handler = routes.get(pathname)
+      expect(handler).toBeTruthy()
+      const res = makeRes()
+      await handler!(req as never, res as never)
+      return res
+    }
+
+    try {
+      store.writeConfig({ notebooks: { default: { path: nb, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: [] })
+      await notebookLib.ensureNotebook(store.config())
+      await zk.createNote(store.config(), { title: '记忆双链目标', content: '目标' })
+      fs.writeFileSync(path.join(nb, 'MEMORY.md'), '# 记忆\n\n- 双链 [[记忆双链目标]]\n\n<script>alert(1)</script>\n')
+      // 模板首行是 `<!-- zdiary-template: vN -->`：记忆页要按注释处理，不能当正文显示出来
+      fs.writeFileSync(path.join(nb, 'AGENTS.md'), notebookLib.AGENTS_TEMPLATE)
+
+      const page = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=memory'))
+      expect(page.statusCode).toBe(200)
+      for (const name of ['AGENTS.md', 'USER.md', 'MEMORY.md', 'DREAMS.md']) expect(page.body).toContain(name)
+      expect(page.body).toContain('记忆双链目标</a>')
+      expect(page.body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+      expect(page.body).not.toContain('<script>')
+      expect(page.body).toContain('还没写')
+      expect(page.body).toContain('词（AGENTS')
+      // 版本标记整行不渲染；模板正文照常显示（H1 由 skipFirstH1 让位给页面标题之外的小节）
+      expect(page.body).toContain('zk_supersede')
+      expect(page.body).not.toContain('zdiary-template')
+
+      const meta = await call('/dsh-zdiary-kit/api/note', makeReq('/dsh-zdiary-kit/api/note?path=MEMORY.md'))
+      expect(meta.statusCode).toBe(400)
+      const metaPage = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=note&path=MEMORY.md'))
+      expect(metaPage.statusCode).toBe(400)
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+      fs.rmSync(nb, { recursive: true, force: true })
+    }
+  })
+
+  it('P1-6：zk-kit init --with-agents 写模板，第二次不覆盖', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const dir = path.join(home, 'cli-with-agents')
+    const cli = path.resolve(import.meta.dir, '..', 'src', 'cli.ts')
+    const run = (...args: string[]) =>
+      spawnSync(process.execPath, [cli, ...args], { env: process.env, encoding: 'utf8', timeout: 30_000 })
+    try {
+      store.writeConfig({ notebooks: { default: { path: dir, structure: 'flat' } }, active: 'default', notesDir: 'notes', dailyDir: 'journal', defaultTags: [] })
+      expect(run('init').status).toBe(0)
+      expect(fs.existsSync(path.join(dir, 'AGENTS.md'))).toBe(false)
+
+      const first = run('init', '--with-agents')
+      expect(first.status).toBe(0)
+      expect(first.stdout ?? '').toContain('AGENTS.md：已写入')
+      expect(fs.existsSync(path.join(dir, 'AGENTS.md'))).toBe(true)
+
+      const body = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8')
+      fs.writeFileSync(path.join(dir, 'AGENTS.md'), body + '\n我加的一行\n')
+      const second = run('init', '--with-agents')
+      expect(second.stdout ?? '').toContain('AGENTS.md：已存在')
+      expect(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8')).toContain('我加的一行')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+      fs.rmSync(dir, { recursive: true, force: true })
     }
   })
 })

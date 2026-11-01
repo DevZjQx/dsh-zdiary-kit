@@ -12,7 +12,7 @@
 
 | | 目录 | 模板 | group | 根目录文档 |
 |---|---|---|---|---|
-| `flat`（默认，与 0.1.0 逐字节一致） | `notes/` `journal/` | `daily.md` | 1 个（daily） | 无 |
+| `flat`（默认，与 0.1.0 逐字节一致） | `notes/` `journal/` | `daily.md` | 1 个（daily） | 无（可选 `--with-agents` 写精简版 `AGENTS.md`） |
 | `layered` | 加 `raw/` `inbox/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） | `AGENTS.md` + `WORKFLOW.md` |
 
 切到 `layered` **只建目录与模板，不搬已有笔记**；已存在的模板、`AGENTS.md` 与 `WORKFLOW.md` 不覆盖（用户可能改过），只在缺失时写。
@@ -20,9 +20,13 @@
 不注入（省预算），但和 meta 文件同口径排除出检索，`AGENTS.md` 里只留一行指针。
 因此从 flat 升级时旧 `daily.md` 会保留（没有 Events / Observations / Loose ends 三节）；想要 layered 日记模板，
 先备份并删掉 `<notebook>/.zk/templates/daily.md`，再重跑 `zk-kit init` 或点「初始化 / 补建」。
-`AGENTS.md` 只在 `layered` 写：flat 是从 0.1.0 升级来的 vault，不能因为升级多出一个文件（M0 的逐字节回归）。
-模板 `AGENTS_TEMPLATE` 在 `lib/agents-template.ts`，正文当前约 175 词 —— 它属于注入预算且**永不截断**，
-写长了 USER / MEMORY 就没位置（这条是被 `bun run docs` 里 `zk-kit doctor` 的预算告警逼出来的）。
+`AGENTS.md` 在 `layered` 下自动写；`flat` 默认**不写**（从 0.1.0 升级来的 vault 不能因为升级多出一个文件，M0 的逐字节回归）。
+想要约定与周提醒就显式 opt-in：`zk-kit init --with-agents`、设置页「写入 AGENTS.md 模板」、
+或代码里 `ensureNotebook(cfg, signal, { withAgents: true })`；已存在的文件一律不覆盖。
+`flat` 用精简版 `AGENTS_TEMPLATE_FLAT`（实测 88 词，锁 ≤90）：不出现 `raw/` / `inbox/` / `archive/` / `WORKFLOW.md`。
+`layered` 用完整版 `AGENTS_TEMPLATE`（实测 189 词，锁 ≤190）—— 它属于注入预算且**永不截断**，
+写长了 USER / MEMORY 就没位置。两份模板首行都有 `<!-- zdiary-template: vN -->`（`TEMPLATE_MARK`），
+`zk_lint` 据此报告老库的模板是否过期（只报告、不覆盖）。
 `entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入（Z10）；
 所有模板必须含 `{{content}}`，否则 stdin 的正文会被丢（Z9）。
 
@@ -32,10 +36,14 @@
 **Depends on.** `lib/exec`（`tar` 与 `zk`）、`config/paths`（`BIN_DIR` / `CACHE_DIR`）、`config/store`（版本、目录名）。
 
 **Public surface.** `installZk(version)`（返回 `path` / `version` / `asset` / `url` / `mirror`）、`sourceLabel(mirror)`、`zkAsset(version)`、`ensureNotebook(cfg)`、`DAILY_TEMPLATE` / `DAILY_TEMPLATE_LAYERED`、
-`SOURCE_TEMPLATE`、`ENTRY_TEMPLATE`、`AGENTS_TEMPLATE`、`WORKFLOW_TEMPLATE`；`structureDirs(cfg)` / `structureStatus(cfg)`（只报告，不建不改）。
+`SOURCE_TEMPLATE`、`ENTRY_TEMPLATE`、`AGENTS_TEMPLATE`、`AGENTS_TEMPLATE_FLAT`、`WORKFLOW_TEMPLATE`、
+`TEMPLATE_VERSION` / `TEMPLATE_MARK`、`writeAgentsTemplate(cfg)`；
+`structureDirs(cfg)` / `structureStatus(cfg)`（只报告，不建不改；`extra` 列出 flat 库里多出来的分层目录）。
 `ensureNotebook` 返回 `dirsCreated` / `templatesWritten` / `groupsAdded` / `agentsWritten` / `workflowWritten`，
 设置页据此显示「本次真正做了什么」（第二次调用五项都是空的）。
 `structureStatus` 是设置页「初始化 / 补建」的依据：「配置为准，磁盘只用来显示缺什么」，它自己不建目录。
+`extra` 只收 `raw` / `inbox` / `notes/{四类}`；`archive` 不算 —— flat 库做过一次 supersede 就会自建它，
+放进来会让每本用过 supersede 的 flat 库都被误报。`ready` 不因 `extra` 变 false（配置仍是权威）。
 切换笔记本（`zk-kit notebooks use`、`remove` 的自动切换、设置页保存时换 `active`）会顺手 `ensureNotebook` ——
 幂等所以放心调，切过去即就绪；改路径与新增**不**自动建目录（防手滑把库建到打错的路径上）。
 

@@ -25,7 +25,7 @@ import type { NoteRecord, NoteDoc, SupersedeResult, RenameResult } from '../../l
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
 import { META_NAMES } from '../../lib/meta.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
-import { formatMemoryLinks, lintNotebook } from '../../lib/lint.ts'
+import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.ts'
 import type { LintResult } from '../../lib/lint.ts'
 import { dreamNotebook } from '../../lib/dream.ts'
 import type { DreamResult } from '../../lib/dream.ts'
@@ -92,6 +92,9 @@ const LINT_MEMORY = objSchema(
     links: { type: 'number' },
     total: { type: 'number' },
     unlinked: { type: 'number' },
+    undated: { type: 'number' },
+    retired: { type: 'number' },
+    retiredBroken: { type: 'number' },
     items: {
       type: 'array',
       items: objSchema({
@@ -103,7 +106,59 @@ const LINT_MEMORY = objSchema(
       }, ['source', 'entry', 'link', 'reason', 'path']),
     },
   },
-  ['files', 'links', 'total', 'unlinked', 'items'],
+  ['files', 'links', 'total', 'unlinked', 'undated', 'retired', 'retiredBroken', 'items'],
+)
+/** frontmatter 缺字段（P2-13） */
+const LINT_INCOMPLETE = objSchema(
+  {
+    total: { type: 'number' },
+    truncated: { type: 'boolean' },
+    byField: objSchema({
+      type: { type: 'number' },
+      status: { type: 'number' },
+      authority: { type: 'number' },
+    }, ['type', 'status', 'authority']),
+    items: {
+      type: 'array',
+      items: objSchema({
+        path: { type: 'string' },
+        missing: { type: 'array', items: { type: 'string' } },
+      }, ['path', 'missing']),
+    },
+  },
+  ['total', 'truncated', 'byField', 'items'],
+)
+/** 标签卫生（P2-14） */
+const LINT_TAGS = objSchema(
+  {
+    total: { type: 'number' },
+    reported: { type: 'boolean' },
+    caseVariants: objSchema({
+      total: { type: 'number' },
+      items: {
+        type: 'array',
+        items: objSchema({
+          variants: { type: 'array', items: { type: 'string' } },
+          total: { type: 'number' },
+        }, ['variants', 'total']),
+      },
+    }, ['total', 'items']),
+    singletons: objSchema({
+      total: { type: 'number' },
+      items: { type: 'array', items: { type: 'string' } },
+    }, ['total', 'items']),
+  },
+  ['total', 'reported', 'caseVariants', 'singletons'],
+)
+/** 模板版本（P2-15） */
+const LINT_TEMPLATE = objSchema(
+  {
+    present: { type: 'boolean' },
+    version: { type: 'number' },
+    current: { type: 'number' },
+    stale: { type: 'boolean' },
+  },
+  ['present', 'version', 'current', 'stale'],
 )
 /** 晋升候选的共用形状：newNotes / alreadyPromoted / backlog 三栏一致 */
 const DREAM_CANDIDATE = objSchema({
@@ -897,7 +952,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         '给知识库做体检：断链 / 孤儿 / 无标签 / 单向链接 / 陈旧（N 天没改）/ 重名标题，每类最多 50 条并给总数。' +
         'frontmatter 解析失败的笔记单列一类：它们进不了索引，别的项统计不到，先修它们再看其余。' +
         'memoryLinks 查 MEMORY.md / USER.md 里的 [[来源链接]] 是否还指向活笔记（已废弃 / 不存在）—— ' +
-        'supersede 不会重写 meta 文件里的链接，这类漂移 broken-links 看不见。' +
+        'supersede 不会重写 meta 文件里的链接，这类漂移 broken-links 看不见；另数没附链接（unlinked）、' +
+        '没写日期（undated）、已退役（retired）与退役后新结论失效（retiredBroken）的条目。' +
+        'incomplete 是 frontmatter 缺 type / status / authority 的笔记：缺失被索引落成空串，机械门会静默失效。' +
+        'tags 查标签卫生（大小写变体 / 单例，标签总数 ≥ 30 才报）；template 说根目录 AGENTS.md 是不是当前版本。' +
         '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
         'oneWayLinks.items 是缺回链的目标 X（不是来源），from 是没被 X 回链的来源 S；' +
         'edges 是全部单向边数（items 截到 50 条时仍计全量），bodyOnly 是正文引用（不在 ## Links / ## 链接 小节）的单向边数。' +
@@ -928,7 +986,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           oneWayLinks: LINT_ONE_WAY,
           duplicateTitles: LINT_DUPLICATE,
           memoryLinks: LINT_MEMORY,
-        }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'memoryLinks']),
+          incomplete: LINT_INCOMPLETE,
+          tags: LINT_TAGS,
+          template: LINT_TEMPLATE,
+        }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'memoryLinks', 'incomplete', 'tags', 'template']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -987,6 +1048,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         )
         const memLine = formatMemoryLinks(v.memoryLinks)
         if (memLine) lines.push(memLine)
+        lines.push(...formatLintExtras(v))
         if (v.truncated) lines.push('⚠️ 笔记数触到扫描上限：结果不完整（只会漏报，不会误报），先归档旧笔记再跑一次')
         if (oneWay.edgesTruncated) lines.push('⚠️ 建图笔记载入触到上限：单向链接可能误报（回链边未加载），先归档旧笔记再跑一次')
         lines.push('（只报告，没有改动任何文件）')

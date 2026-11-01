@@ -6,6 +6,7 @@ import { registerZkTools } from '../features/zk-tools/feature.js';
 import { registerReadOnly } from '../features/readonly/feature.js';
 import { registerSettings } from '../features/settings/feature.js';
 import { buildMemoryPayload } from '../lib/memory.js';
+import { structureStatus } from '../lib/notebook.js';
 import { sessionWorkspace } from '../lib/workspace.js';
 /** 系统提示里的段位：5000 是 TOOLS_SDK，9000 是交付物引用 —— 记忆落在两者之间的空档 */
 const NOTEBOOK_SECTION_ORDER = 5190;
@@ -160,7 +161,13 @@ export default {
                 const cfg = configFor(workspace, assemble?.agent?.id);
                 const others = Object.keys(cfg.notebooks).filter((name) => name !== cfg.active);
                 const extra = others.length ? `；另有：${others.join('、')}（zk_use 切换本会话）` : '';
-                return `知识库：当前笔记本「${cfg.active}」（${cfg.structure}）→ ${cfg.notebook}${extra}`;
+                // 配置 flat、盘上却是分层目录：新建笔记会静默落到 notes/ 根（无模板、随机文件名）。
+                // 把这一句写进每轮注入，agent 写之前就能看见（P1-7；只报告，不改结构）。
+                const st = structureStatus(cfg);
+                const drift = st.mode === 'flat' && st.extra.length
+                    ? `；⚠️ 盘上有分层目录（${st.extra.join('、')}），新建笔记会落在 ${cfg.notesDir}/ 根，不套模板`
+                    : '';
+                return `知识库：当前笔记本「${cfg.active}」（${cfg.structure}）→ ${cfg.notebook}${extra}${drift}`;
             }
             catch {
                 return '';

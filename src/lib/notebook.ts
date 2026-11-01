@@ -13,9 +13,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import { ZkError, zk } from './zk.ts'
-import { AGENTS_TEMPLATE, WORKFLOW_TEMPLATE } from './agents-template.ts'
+import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
 
-export { AGENTS_TEMPLATE, WORKFLOW_TEMPLATE } from './agents-template.ts'
+export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
+
+/** ensureNotebook 的可选动作：flat 下是否顺手写 AGENTS.md（默认不写，守住 M0 的「不多一个文件」） */
+export interface EnsureOptions {
+  withAgents?: boolean
+}
 
 export interface EnsureResult {
   notebook: string
@@ -28,7 +33,7 @@ export interface EnsureResult {
   templatesWritten: string[]
   /** 本次追加的 group 名 */
   groupsAdded: string[]
-  /** 本次写了根目录的 AGENTS.md（layered 才写；已存在的不覆盖） */
+  /** 本次写了根目录的 AGENTS.md（layered 自动写；flat 只有 withAgents 才写；已存在的不覆盖） */
   agentsWritten: boolean
   /** 本次写了根目录的 WORKFLOW.md（同上，只在缺失时写） */
   workflowWritten: boolean
@@ -214,8 +219,14 @@ export interface StructureStatus {
   dirs: string[]
   /** 配置要求但磁盘上没有的目录 */
   missing: string[]
+  /**
+   * 盘上存在、但不属于当前结构的目录（只报告，不影响 ready）。
+   * 候选是 raw / inbox / notes/{四类}；`archive/` 不算 —— flat 库做过一次 supersede 就会自建它，
+   * 放进来会让每本用过 supersede 的 flat 库都被误报成「盘上有分层目录」。
+   */
+  extra: string[]
   ready: boolean
-  /** layered 才要求有 AGENTS.md；flat 下 present 恒为 true（不要求） */
+  /** layered 才要求有 AGENTS.md；present 如实反映磁盘（flat 下也可能是用户自己放的） */
   agents: { path: string; required: boolean; present: boolean }
 }
 
@@ -225,12 +236,23 @@ export function structureStatus(cfg: Config): StructureStatus {
   const missing = dirs.filter((rel) => !fs.existsSync(path.join(cfg.notebook, rel)))
   const agentsPath = path.join(cfg.notebook, 'AGENTS.md')
   const required = cfg.structure === 'layered'
+  // 只看「会改变新建笔记落点」的目录：分层笔记目录与 raw/inbox。
+  // archive 对两种结构都合法，不参与漂移判断。
+  const drift = cfg.structure === 'flat'
+    ? ['raw', 'inbox', ...Object.values(PLURAL_DIR).map((dir) => `${cfg.notesDir}/${dir}`)]
+    : []
+  const extra = [...new Set(drift)]
+    .map(normDir)
+    .filter((rel) => !dirs.map(normDir).includes(rel))
+    .filter((rel) => fs.existsSync(path.join(cfg.notebook, rel)))
+    .sort()
   return {
     mode: cfg.structure,
     dirs,
     missing,
+    extra,
     ready: missing.length === 0,
-    agents: { path: agentsPath, required, present: required ? fs.existsSync(agentsPath) : true },
+    agents: { path: agentsPath, required, present: fs.existsSync(agentsPath) },
   }
 }
 
@@ -263,8 +285,24 @@ function ensureTemplates(cfg: Config, files: Record<string, string>): string[] {
   return written
 }
 
+/**
+ * 写根目录 AGENTS.md（缺了才写，已存在一律不覆盖 —— 模板允许用户改）。
+ * layered 用完整版；flat 用精简版（不出现 raw / inbox / archive / WORKFLOW 这些 flat 没有的路径）。
+ * 返回 true = 本次真的写了。
+ */
+export function writeAgentsTemplate(cfg: Config): boolean {
+  const file = path.join(cfg.notebook, 'AGENTS.md')
+  if (fs.existsSync(file)) return false
+  fs.writeFileSync(file, cfg.structure === 'layered' ? AGENTS_TEMPLATE : AGENTS_TEMPLATE_FLAT, 'utf8')
+  return true
+}
+
 /** 建好（或补好）笔记本；返回每一步各自做了没有，设置页直接展示 */
-export async function ensureNotebook(cfg: Config, signal?: AbortSignal): Promise<EnsureResult> {
+export async function ensureNotebook(
+  cfg: Config,
+  signal?: AbortSignal,
+  opts: EnsureOptions = {},
+): Promise<EnsureResult> {
   const layered = cfg.structure === 'layered'
 
   fs.mkdirSync(cfg.notebook, { recursive: true })
@@ -285,14 +323,10 @@ export async function ensureNotebook(cfg: Config, signal?: AbortSignal): Promise
     })
     : ensureTemplates(cfg, { 'daily.md': DAILY_TEMPLATE })
 
-  // AGENTS.md 是 layered 的工作契约（检索词归宿 / 中文打 tags / 不会被宿主自动加载）。
-  // flat 不写：0.1.0 的 vault 升级过来必须一个文件都不多（M0 的回归承诺）。
-  const agentsFile = path.join(cfg.notebook, 'AGENTS.md')
-  let agentsWritten = false
-  if (layered && !fs.existsSync(agentsFile)) {
-    fs.writeFileSync(agentsFile, AGENTS_TEMPLATE, 'utf8')
-    agentsWritten = true
-  }
+  // AGENTS.md 是工作契约（检索词归宿 / 中文打 tags / 不会被宿主自动加载）。
+  // layered 自动写；flat 只有显式 withAgents 才写 —— 0.1.0 的 vault 升级过来必须一个文件都不多（M0）。
+  // 不写的话，默认安装既没有约定、也没有周节奏提醒（P1-6），所以要有一个 opt-in 入口。
+  const agentsWritten = layered || opts.withAgents === true ? writeAgentsTemplate(cfg) : false
 
   // WORKFLOW.md 是「动已有笔记」时才读的细则：不注入（省预算），但不进检索（是 meta）
   const workflowFile = path.join(cfg.notebook, 'WORKFLOW.md')
