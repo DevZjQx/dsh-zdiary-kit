@@ -12,7 +12,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { IncomingMessage } from 'node:http'
-import { json, readBody } from '../../lib/http.ts'
+import { json, readBody, ROUTE_BASE } from '../../lib/http.ts'
 import { CFG_FILE, processWorkspace } from '../../config/paths.ts'
 import { config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.ts'
 import type { Config } from '../../config/store.ts'
@@ -25,7 +25,7 @@ import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/
 import type { ZkLocation } from '../../lib/zk.ts'
 import type { RouteHandler } from '../../lib/dsh.ts'
 
-const P = '/dsh-zdiary-kit/api'
+const P = `${ROUTE_BASE}/api`
 
 export interface SettingsDeps {
   route: (pathname: string, handler: RouteHandler) => void

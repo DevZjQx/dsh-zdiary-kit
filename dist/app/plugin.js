@@ -1,8 +1,9 @@
-import { json } from '../lib/http.js';
+import { isLoopbackHost, json } from '../lib/http.js';
 import { CFG_FILE, processWorkspace } from '../config/paths.js';
 import { config } from '../config/store.js';
 import { configFor } from '../config/session.js';
 import { registerZkTools } from '../features/zk-tools/feature.js';
+import { registerReadOnly } from '../features/readonly/feature.js';
 import { registerSettings } from '../features/settings/feature.js';
 import { buildMemoryPayload } from '../lib/memory.js';
 import { sessionWorkspace } from '../lib/workspace.js';
@@ -35,16 +36,12 @@ export default {
             }
         }
         // ── 信任栅栏 ─────────────────────────────────────────────────────────
-        function isLoopbackReq(req) {
-            const host = String(req.headers?.host ?? '').toLowerCase();
-            const h = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0];
-            return h === '127.0.0.1' || h === 'localhost' || h === '[::1]' || h === '::1';
-        }
         function connection() {
             return service(ctx, 'connection');
         }
         function isTrustedReq(req) {
-            if (isLoopbackReq(req))
+            // 只看 Host：设置页沿用「本机地址 = 可信」的旧口径；只读视图另外再判对端地址
+            if (isLoopbackHost(req))
                 return true;
             try {
                 const conn = connection();
@@ -237,6 +234,20 @@ export default {
             catch (err) {
                 try {
                     console.warn('[zdiary] 设置路由注册失败：' + (err instanceof Error ? err.message : String(err)));
+                }
+                catch { /* ignore */ }
+            }
+            // 只读视图：自己的方法门 / 回环门，不共享设置页的写路由；注册失败不影响工具与设置页
+            try {
+                registerReadOnly({ route });
+                try {
+                    console.log('[zdiary] 只读视图已挂载：/dsh-zdiary-kit/view · /feed.xml · /api/notes · /api/note');
+                }
+                catch { /* ignore */ }
+            }
+            catch (err) {
+                try {
+                    console.warn('[zdiary] 只读视图注册失败：' + (err instanceof Error ? err.message : String(err)));
                 }
                 catch { /* ignore */ }
             }

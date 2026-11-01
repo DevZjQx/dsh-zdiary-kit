@@ -9,11 +9,12 @@
  *     一个恶意网页就能改你的笔记本路径、让插件下载并执行二进制。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { json } from '../lib/http.ts'
+import { isLoopbackHost, json } from '../lib/http.ts'
 import { CFG_FILE, processWorkspace } from '../config/paths.ts'
 import { config } from '../config/store.ts'
 import { configFor } from '../config/session.ts'
 import { registerZkTools } from '../features/zk-tools/feature.ts'
+import { registerReadOnly } from '../features/readonly/feature.ts'
 import { registerSettings } from '../features/settings/feature.ts'
 import { buildMemoryPayload } from '../lib/memory.ts'
 import { sessionWorkspace } from '../lib/workspace.ts'
@@ -49,16 +50,12 @@ export default {
     }
 
     // ── 信任栅栏 ─────────────────────────────────────────────────────────
-    function isLoopbackReq(req: IncomingMessage): boolean {
-      const host = String(req.headers?.host ?? '').toLowerCase()
-      const h = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0]
-      return h === '127.0.0.1' || h === 'localhost' || h === '[::1]' || h === '::1'
-    }
     function connection(): ConnectionLike | undefined {
       return service<ConnectionLike>(ctx, 'connection')
     }
     function isTrustedReq(req: IncomingMessage): boolean {
-      if (isLoopbackReq(req)) return true
+      // 只看 Host：设置页沿用「本机地址 = 可信」的旧口径；只读视图另外再判对端地址
+      if (isLoopbackHost(req)) return true
       try {
         const conn = connection()
         if (conn && typeof conn.isTrusted === 'function') return conn.isTrusted(req) === true
@@ -202,6 +199,13 @@ export default {
         try { console.log('[zdiary] 设置页路由已挂载：/dsh-zdiary-kit/api/*') } catch { /* ignore */ }
       } catch (err) {
         try { console.warn('[zdiary] 设置路由注册失败：' + (err instanceof Error ? err.message : String(err))) } catch { /* ignore */ }
+      }
+      // 只读视图：自己的方法门 / 回环门，不共享设置页的写路由；注册失败不影响工具与设置页
+      try {
+        registerReadOnly({ route })
+        try { console.log('[zdiary] 只读视图已挂载：/dsh-zdiary-kit/view · /feed.xml · /api/notes · /api/note') } catch { /* ignore */ }
+      } catch (err) {
+        try { console.warn('[zdiary] 只读视图注册失败：' + (err instanceof Error ? err.message : String(err))) } catch { /* ignore */ }
       }
     }
     // webServer 是后加载的服务：apply 跑的时候它可能还没上线，用 cordis 的子 fiber 等它

@@ -31,6 +31,8 @@ const workspaceLib = await import('../src/lib/workspace.ts')
 const toolLib = await import('../src/lib/tool.ts')
 const fm = await import('../src/lib/frontmatter.ts')
 const installLib = await import('../src/lib/install.ts')
+const readonlyFeature = await import('../src/features/readonly/feature.ts')
+const readonlyHtml = await import('../src/features/readonly/html.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
@@ -2174,5 +2176,189 @@ describe('install source', () => {
   test('默认从 github.com 下，换了镜像就点名', () => {
     expect(installLib.sourceLabel(null)).toBe('github.com')
     expect(installLib.sourceLabel('https://ghproxy.example.com/https://github.com')).toContain('自定义镜像')
+  })
+})
+
+interface FakeRes {
+  statusCode: number
+  headers: Record<string, string | number>
+  body: string
+  setHeader(name: string, value: string | number): void
+  end(chunk?: unknown): void
+}
+
+function makeRes(): FakeRes {
+  return {
+    statusCode: 200,
+    headers: {},
+    body: '',
+    setHeader(name, value) { this.headers[name.toLowerCase()] = value },
+    end(chunk) { if (chunk !== undefined) this.body += String(chunk) },
+  }
+}
+
+function makeReq(url: string, opts: { method?: string; host?: string; remote?: string } = {}): Record<string, unknown> {
+  return {
+    method: opts.method ?? 'GET',
+    url,
+    headers: { host: opts.host ?? '127.0.0.1:1234' },
+    socket: { remoteAddress: opts.remote ?? '127.0.0.1' },
+  }
+}
+
+describe('只读视图', () => {
+  test('渲染层：文本转义、代码块里的标记不生效、危险链接不放行', () => {
+    expect(readonlyHtml.esc('<a href="x">&')).toBe('&lt;a href=&quot;x&quot;&gt;&amp;')
+    const out = readonlyHtml.renderMarkdown('**粗体** 与 `**不是粗体**`\n\n<script>alert(1)</script>\n\n[坏链接](javascript:alert(1))')
+    expect(out).toContain('<strong>粗体</strong>')
+    expect(out).toContain('<code>**不是粗体**</code>')
+    expect(out).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+    expect(out).not.toContain('<script>')
+    expect(out).not.toContain('javascript:alert(1)')
+    expect(out).toContain('坏链接')
+    const link = readonlyHtml.renderMarkdown('[查询](https://example.test/?a=1&b=2)')
+    expect(link).toContain('href="https://example.test/?a=1&amp;b=2"')
+    expect(link).not.toContain('&amp;amp;')
+    expect(readonlyHtml.renderMarkdown('## 小节\n\n# 正文 H1', { skipFirstH1: true })).toContain('<h1>正文 H1</h1>')
+  })
+
+  test('路由：GET 可看、写方法 405、非回环 403、JSON 不吐路径', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const nb = path.join(home, 'readonly-notebook')
+    const routes = new Map<string, (req: never, res: never) => unknown>()
+    readonlyFeature.registerReadOnly({ route: (p, h) => routes.set(p, h) })
+    const call = async (pathname: string, req: Record<string, unknown>): Promise<FakeRes> => {
+      const handler = routes.get(pathname)
+      expect(handler).toBeTruthy()
+      const res = makeRes()
+      await handler!(req as never, res as never)
+      return res
+    }
+
+    try {
+      store.writeConfig({ notebooks: { default: { path: nb, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: [] })
+      await notebookLib.ensureNotebook(store.config())
+      const first = await zk.createNote(store.config(), { title: '只读样例一', content: '正文 <script>alert(1)</script> 与 **粗体**' })
+      await zk.createNote(store.config(), { title: '只读样例二', content: '第二篇' })
+
+      const view = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view'))
+      expect(view.statusCode).toBe(200)
+      expect(String(view.headers['content-type'])).toContain('text/html')
+      expect(String(view.headers['content-security-policy'])).toContain("frame-ancestors 'none'")
+      expect(view.body).toContain('只读样例一')
+      expect(view.body).not.toContain('<script>')
+
+      const page = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=note&path=' + encodeURIComponent(first.path)))
+      expect(page.statusCode).toBe(200)
+      expect(page.body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+      expect(page.body).toContain('<strong>粗体</strong>')
+
+      const api = await call('/dsh-zdiary-kit/api/notes', makeReq('/dsh-zdiary-kit/api/notes?limit=5'))
+      expect(api.statusCode).toBe(200)
+      const payload = JSON.parse(api.body) as { ok: boolean; notes: Array<Record<string, unknown>> }
+      expect(payload.ok).toBe(true)
+      expect(payload.notes.length).toBeGreaterThanOrEqual(2)
+      expect(payload.notes[0]?.absPath).toBeUndefined()
+      expect(JSON.stringify(payload)).not.toContain(nb)
+
+      const one = await call('/dsh-zdiary-kit/api/note', makeReq('/dsh-zdiary-kit/api/note?path=' + encodeURIComponent(first.path)))
+      expect(one.statusCode).toBe(200)
+      expect(JSON.parse(one.body).note.content).toContain('<script>alert(1)</script>')
+
+      const traversal = await call('/dsh-zdiary-kit/api/note', makeReq('/dsh-zdiary-kit/api/note?path=' + encodeURIComponent('../../etc/passwd')))
+      expect(traversal.statusCode).toBe(400)
+
+      const internal = await call('/dsh-zdiary-kit/api/note', makeReq('/dsh-zdiary-kit/api/note?path=' + encodeURIComponent('.zk/config.toml')))
+      expect(internal.statusCode).toBe(400)
+
+      const post = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view', { method: 'POST' }))
+      expect(post.statusCode).toBe(405)
+      expect(String(post.headers.allow)).toContain('GET')
+
+      const remote = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view', { host: 'evil.example:1234' }))
+      expect(remote.statusCode).toBe(403)
+
+      const feed = await call('/dsh-zdiary-kit/feed.xml', makeReq('/dsh-zdiary-kit/feed.xml'))
+      expect(feed.statusCode).toBe(200)
+      expect(String(feed.headers['content-type'])).toContain('rss+xml')
+      expect(feed.body).toContain('<rss version="2.0">')
+      expect(feed.body).toContain('只读样例一')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+      fs.rmSync(nb, { recursive: true, force: true })
+    }
+  })
+
+  test('详情页反链 / 标签 / 搜索 / HEAD；没初始化时 503 而不是空 200', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const nb = path.join(home, 'readonly-notebook-2')
+    const routes = new Map<string, (req: never, res: never) => unknown>()
+    readonlyFeature.registerReadOnly({ route: (p, h) => routes.set(p, h) })
+    const call = async (pathname: string, req: Record<string, unknown>): Promise<FakeRes> => {
+      const handler = routes.get(pathname)
+      expect(handler).toBeTruthy()
+      const res = makeRes()
+      await handler!(req as never, res as never)
+      return res
+    }
+
+    try {
+      store.writeConfig({ notebooks: { default: { path: nb, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: [] })
+      await notebookLib.ensureNotebook(store.config())
+      // 直接落盘 + index：这样 [[双链]] 和行内 #标签 都进了 zk 的索引（不走 zk new 的模板）
+      fs.mkdirSync(path.join(nb, 'notes'), { recursive: true })
+      fs.writeFileSync(path.join(nb, 'notes/target.md'), '# 反链目标\n\n被指向的一篇 #样板\n')
+      fs.writeFileSync(path.join(nb, 'notes/source.md'), '# 反链来源\n\n指向 [[notes/target]]\n')
+      fs.writeFileSync(path.join(nb, 'notes/material.txt'), '纯文本材料\n')
+      await zk.indexNotebook(store.config())
+
+      const target = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=note&path=notes%2Ftarget.md'))
+      expect(target.statusCode).toBe(200)
+      expect(target.body).toContain('<h2>反链</h2>')
+      expect(target.body).toContain('反链来源')
+
+      const source = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=note&path=notes%2Fsource.md'))
+      expect(source.statusCode).toBe(200)
+      expect(source.body).toContain('notes%2Ftarget.md')
+
+      // txt / org 不在只读视图里：zk 不索引它们，放进来就是「能直连、搜不到」的假入口
+      const txt = await call('/dsh-zdiary-kit/api/note', makeReq('/dsh-zdiary-kit/api/note?path=notes%2Fmaterial.txt'))
+      expect(txt.statusCode).toBe(400)
+      expect(JSON.parse(txt.body).error).toContain('.md')
+
+      const tags = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=tags'))
+      expect(tags.statusCode).toBe(200)
+      expect(tags.body).toContain('样板')
+
+      const tag = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=tag&tag=' + encodeURIComponent('样板')))
+      expect(tag.statusCode).toBe(200)
+      expect(tag.body).toContain('反链目标')
+
+      const search = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?q=' + encodeURIComponent('反链目标')))
+      expect(search.statusCode).toBe(200)
+      expect(search.body).toContain('反链目标')
+
+      const head = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view', { method: 'HEAD' }))
+      expect(head.statusCode).toBe(200)
+      expect(String(head.headers['content-security-policy'])).toContain("frame-ancestors 'none'")
+
+      // 换到没初始化过的目录：页面给提示，机器接口给 503（不是 200 的空列表 / 空频道）
+      store.writeConfig({ notebooks: { default: { path: path.join(home, 'readonly-empty'), structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: [] })
+      const coldView = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view'))
+      expect(coldView.statusCode).toBe(200)
+      expect(coldView.body).toContain('笔记本还没初始化')
+      const coldApi = await call('/dsh-zdiary-kit/api/notes', makeReq('/dsh-zdiary-kit/api/notes'))
+      expect(coldApi.statusCode).toBe(503)
+      expect(JSON.parse(coldApi.body).ok).toBe(false)
+      const coldFeed = await call('/dsh-zdiary-kit/feed.xml', makeReq('/dsh-zdiary-kit/feed.xml'))
+      expect(coldFeed.statusCode).toBe(503)
+      expect(coldFeed.body).not.toContain('<rss')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+      fs.rmSync(nb, { recursive: true, force: true })
+      fs.rmSync(path.join(home, 'readonly-empty'), { recursive: true, force: true })
+    }
   })
 })

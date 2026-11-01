@@ -1,0 +1,56 @@
+# readonly（只读视图 / RSS / JSON）
+
+**Purpose.** 给「人」一个窗口：不经过 agent、不用另装 zk，浏览器里直接读笔记本。
+只读 —— 没有写入、没有初始化、没有安装，所有写操作仍然只走 `zk_*` 工具与 CLI。
+
+**Owns.** 四条 `GET` 路由，全部与 DSH 同端口（不自己 `listen`）：
+
+- `GET /dsh-zdiary-kit/view`：首页（最近更新 / 日记 / 标签）、搜索、标签页、笔记页
+  - `?p=note&path=…`：笔记正文 + 反链
+  - `?p=tags` / `?p=tag&tag=…`：标签列表 / 单个标签
+  - `?q=…`：搜索（GET 表单，无 JS）
+- `GET /dsh-zdiary-kit/feed.xml`：最近 30 篇的 RSS 2.0
+- `GET /dsh-zdiary-kit/api/notes?q=&tag=&limit=`：只读列表（`limit` 1–200，默认 50）
+- `GET /dsh-zdiary-kit/api/note?path=…`：单篇正文（`path` 必须是笔记本内的相对路径）
+
+查询串路由不是偷懒：宿主的 `webServer.register` 只支持 `kind: 'exact'`，拼不出 `/note/:id`。
+设置页「只读视图」按钮直接打开首页。
+
+**只读的四道门**（都在 `features/readonly/feature.ts` 的 `guard` / 各 handler 里）：
+
+1. **方法门**：只放行 `GET` / `HEAD`，其余 `405` + `Allow: GET, HEAD`。默认拒绝，
+   不是「没写 POST handler 就算只读」。
+2. **副作用门**：只调 `hasNotebook` / `allNotes` / `searchNotes` / `readNote` / `graphEdges`；
+   **不调** `ensureNotebook` / `init` / `index` / `install`。没初始化就显示提示，不顺手建库。
+3. **面门**：不复用设置页的 `snapshot`，不返回 `zkPath`、配置文件路径、`absPath`；
+   `.zk/` 与根目录 meta（`AGENTS.md` / `MEMORY.md` 等）按路径直接打不开。
+4. **地址门**：只认回环 —— `Host` 必须是 127.0.0.1 / localhost / [::1]，对端地址也必须是回环
+   （`lib/http` 的 `isLoopback`：设置页只判 Host，只读视图两边都判）。
+   DSH 被配成监听 `0.0.0.0` 时，只读视图也不会跟着上网（不会用 `connection.isTrusted` 放宽）。
+
+响应统一带 `CSP`（`default-src 'none'`、`frame-ancestors 'none'`、`form-action 'self'`）、
+`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`，且不发 CORS 头。
+笔记正文一律转义，不解析原始 HTML；markdown 只认标题 / 段落 / 列表 / 引用 / 分隔线 / 围栏代码，
+链接只放行 http(s) / mailto / 站内相对路径 —— `javascript:` / `data:` 只当纯文字。
+
+**读语义。**
+
+- 首页 / 标签页一次载入最多 2000 篇索引；到顶会在页脚写明，不装作全量。
+- 搜索走 `searchNotes`：zk 的 FTS 不切中文，0 命中时自动退回正则子串（和 `zk_search` 同一套兜底）。
+  `q` 与 `tag` 同时给就是两个条件一起收（AND），不会静默丢掉其中一个。
+- 笔记页：正文 + 入链（`zk graph`，读不出来就不显示）；`[[目标]]` 按路径 → 去扩展名路径 → 标题 → 文件名解析。
+- 正文超过 200 000 字符截断并提示；磁盘文件超过 2 MiB 直接拒绝（`readNote` 会整篇读进内存）。
+- 视图没有会话上下文，只能看**插件进程工作区**解析出的笔记本（和设置页一致，不跟某个会话走）。
+- 状态码：笔记不存在 → 404，路径不合法 / meta / 扩展名 / 超大 → 400；
+  `feed.xml` 与 `api/*` 在没初始化、zk 跑不起来时回 503（页面回带提示的 200，让人看得懂）。
+  不给 200 的空频道：阅读器会把空 feed 当成功缓存，用户只会以为「没有新笔记」。
+
+**Known limits.**
+
+- `zk` 首次查询可能自己建 `.zk/index`（这是 zk 的缓存写盘）—— HTTP 层只读，不代表 zk 进程零写盘。
+- 不支持分页、图片、表格、嵌套列表；这是「Web 1.0 只读浏览」不是 markdown 预览器。
+- 只认 `.md` / `.markdown` —— 和 zk 的索引口径一致。zk 默认不索引 `.org` / `.txt`，
+  放进来只会得到「能直连、搜不到、还被 markdown 渲染坏」的页面；这两种格式 agent 仍可用 `zk_read` 读。
+- 路径判定是词法的（`absPathOf` 只比字符串前缀）：笔记本里一个指向外部的符号链接会被当成笔记本内的文件读。
+  威胁模型是「本机进程 + 回环浏览器」，这不是沙箱边界，别拿它当隔离。
+- 没有登录 / token：回环之外一律拒绝。要在局域网读，是另一个决定（显式开关 + token），不在一期。

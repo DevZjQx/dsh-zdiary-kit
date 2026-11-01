@@ -17,10 +17,16 @@ import { isMetaPath, META_NAMES } from './meta.ts'
 
 export class ZkError extends Error {
   readonly hint: string | undefined
-  constructor(message: string, hint?: string) {
+  /**
+   * 机器可判的类别（'not-found' / 'outside' / 'bad-path' …）。
+   * 调用方要分状态码就读它，别去匹配中文文案 —— 文案一改，匹配就静默失效。
+   */
+  readonly code: string | undefined
+  constructor(message: string, hint?: string, code?: string) {
     super(message)
     this.name = 'ZkError'
     this.hint = hint
+    this.code = code
   }
 }
 
@@ -512,16 +518,16 @@ export async function queryNotes(cfg: Config, argv: string[], signal?: AbortSign
 /** 路径 → 绝对路径；出笔记本直接拒绝 */
 export function absPathOf(cfg: Config, p: string): string {
   const raw = String(p ?? '').trim()
-  if (!raw) throw new ZkError('路径不能为空')
+  if (!raw) throw new ZkError('路径不能为空', undefined, 'bad-path')
   const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(cfg.notebook, raw)
   const nb = path.resolve(cfg.notebook)
   if (abs !== nb && !abs.startsWith(nb + path.sep)) {
-    throw new ZkError(`路径不在笔记本里：${p}`, '只允许读写 ' + nb + ' 下面的文件')
+    throw new ZkError(`路径不在笔记本里：${p}`, '只允许读写 ' + nb + ' 下面的文件', 'outside')
   }
   // .zk/ 是 zk 自己的索引与配置：读没意义，写会直接把笔记本搞坏
   const rel = path.relative(nb, abs)
   if (rel === '.zk' || rel.startsWith('.zk' + path.sep) || rel.startsWith('.zk/')) {
-    throw new ZkError(`不能直接读写 zk 的内部文件：${p}`, '.zk/ 交给 zk 自己管理')
+    throw new ZkError(`不能直接读写 zk 的内部文件：${p}`, '.zk/ 交给 zk 自己管理', 'outside')
   }
   return abs
 }
@@ -592,7 +598,7 @@ function noteFromDisk(cfg: Config, abs: string): NoteDoc {
 /** 按路径读一篇（路径可以是相对笔记本的，也可以是笔记本内的绝对路径） */
 export async function readNote(cfg: Config, p: string, signal?: AbortSignal): Promise<NoteDoc> {
   const abs = absPathOf(cfg, p)
-  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new ZkError(`笔记不存在：${p}`)
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new ZkError(`笔记不存在：${p}`, undefined, 'not-found')
   let record: NoteRecord | null = null
   try {
     const rel = relPathOf(cfg, abs)

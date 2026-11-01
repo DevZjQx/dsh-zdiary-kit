@@ -5,7 +5,7 @@
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
  *   · 14 个工具能注册、能执行、能渲染（zk_context 也执行一次）；
- *   · 6 条设置路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
+ *   · 6 条设置路由 + 4 条只读路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
  */
@@ -91,7 +91,8 @@ for (const tool of tools) checkSchema(tool.output.schema, `${tool.name}.output.s
 console.log('工具：' + tools.map((t) => t.name).join(', '))
 console.log('路由：' + [...routes.keys()].join(', '))
 if (tools.length !== 14) throw new Error('工具数量不对：' + tools.length)
-if (routes.size !== 6) throw new Error('路由数量不对：' + routes.size)
+// 6 条设置页路由 + 4 条只读路由（view / feed.xml / api/notes / api/note）
+if (routes.size !== 10) throw new Error('路由数量不对：' + routes.size)
 
 const call = async (name: string, args: unknown) => {
   const tool = tools.find((t) => t.name === name)
@@ -124,7 +125,7 @@ await call('zk_stats', {})
 await call('zk_context', {})
 await call('zk_use', {})
 
-// ── 真发 HTTP：设置页依赖的 6 条路由 ──────────────────────────────────────
+// ── 真发 HTTP：设置页 6 条 + 只读视图 4 条 ─────────────────────────────────
 const server = http.createServer((req, res) => {
   const handler = routes.get(new URL(req.url ?? '/', 'http://127.0.0.1').pathname)
   if (!handler) { res.statusCode = 404; res.end('no route'); return }
@@ -163,6 +164,30 @@ console.log('[POST /init] 幂等 =', JSON.stringify(init.result))
 
 const indexed = await postJson('/index')
 console.log('[POST /index] 计数 =', JSON.stringify(indexed.counts))
+
+// ── 只读视图：GET 能看、写方法 405、JSON 不吐文件系统路径 ──
+const origin = `http://127.0.0.1:${port}`
+const viewRes = await fetch(origin + '/dsh-zdiary-kit/view')
+const viewHtml = await viewRes.text()
+if (!viewRes.ok || !viewHtml.includes('冒烟测试笔记')) throw new Error('只读首页没列出冒烟笔记')
+const noteRes = await fetch(origin + '/dsh-zdiary-kit/view?p=note&path=' + encodeURIComponent(String(created.path)))
+const noteHtml = await noteRes.text()
+if (!noteRes.ok || !noteHtml.includes('这是冒烟测试写进去的正文')) throw new Error('只读笔记页没显示正文')
+const viewPost = await fetch(origin + '/dsh-zdiary-kit/view', { method: 'POST' })
+if (viewPost.status !== 405) throw new Error('只读视图没有拒绝 POST：' + viewPost.status)
+const notesRes = await fetch(base + '/notes?limit=5')
+const notesBody = await notesRes.json() as { ok: boolean; notes: Array<Record<string, unknown>> }
+if (!notesRes.ok || !notesBody.ok || !notesBody.notes.length) throw new Error('只读 API 没返回笔记')
+if (notesBody.notes.some((note) => 'absPath' in note)) throw new Error('只读 API 吐了 absPath')
+const oneRes = await fetch(origin + '/dsh-zdiary-kit/api/note?path=' + encodeURIComponent(String(created.path)))
+const oneBody = await oneRes.json() as { ok: boolean; note: { content: string; truncated: boolean } }
+if (!oneRes.ok || !oneBody.ok || !oneBody.note.content.includes('这是冒烟测试写进去的正文')) throw new Error('只读单篇 API 没返回正文')
+const tagsRes = await fetch(origin + '/dsh-zdiary-kit/view?p=tags')
+const tagsHtml = await tagsRes.text()
+if (!tagsRes.ok || !tagsHtml.includes('<h1>标签</h1>')) throw new Error('标签页没出来')
+const feedRes = await fetch(origin + '/dsh-zdiary-kit/feed.xml')
+if (!feedRes.ok || !String(feedRes.headers.get('content-type')).includes('rss+xml')) throw new Error('RSS 没出来')
+console.log('[只读视图] 首页 / 笔记页 / 标签页 = 200 ✓ · POST = 405 ✓ · API 无 absPath ✓ · 单篇正文 ✓ · RSS ✓')
 
 // ── 多笔记本：notebooks + active 是真相，notebook / structure 是派生的 ──────────
 const alt = path.join(home, 'alt')

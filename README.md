@@ -64,10 +64,11 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 
 > 从源码跑：`bun install && bun run build`（只在你改过源码时才需要）。
 
-重启后两处可见：
+重启后三处可见：
 
 - **工具**：会话里直接问「用 zk 帮我记一条：……」，模型就能看到 `zk_*` 工具；
-- **设置页**：DSH「设置 → 知识库（zk）」。
+- **设置页**：DSH「设置 → 知识库（zk）」；
+- **只读视图**：`http://127.0.0.1:<DSH 端口>/dsh-zdiary-kit/view`（设置页底部「只读视图」直达）。
 
 > 不想让插件装 zk 也行：系统里有 `zk`（`brew install zk` / `go install github.com/zk-org/zk@latest`）
 > 就直接用；也可以把路径填进设置页的「zk 路径」。
@@ -98,10 +99,31 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 | 写入 | 默认标签 / zk_read 上限 | 新笔记自动带标签；单次读取字符上限 |
 | zk | zk 路径 / 内置版本 | 路径空 = 自动找；版本默认 0.15.7 |
 
-按钮：**保存** · **初始化 / 补建（按钮上带当前笔记本名）** · **重建索引** · **安装内置 zk** · **自检** · **刷新**；
+按钮：**保存** · **初始化 / 补建（按钮上带当前笔记本名）** · **重建索引** · **安装内置 zk** · **自检** · **只读视图** · **刷新**；
 同一个按钮随状态换字：没建过叫「初始化笔记本 *名*」，缺目录 / 缺 `AGENTS.md` 叫「补建 *名* 的目录」。
 分组标题直接标了作用范围：**笔记本**那组是每个笔记本自己的，其余分组都是全局（所有笔记本共用）。
 字段是先改在本地、点保存才落盘 —— 不点保存 = 什么都没发生；保存后工具下一次调用就用新值（配置每次现读）。
+
+## 只读视图（人看的）
+
+笔记本不只是 agent 的：浏览器打开 `/dsh-zdiary-kit/view` 就能读，和 DSH 同一个端口，**不另开端口**。
+页面是服务端渲染的 Web 1.0 风格：无 JS、无前端构建、可打印、`curl` / `lynx` 也能看。
+
+| 地址 | 内容 |
+|---|---|
+| `GET /dsh-zdiary-kit/view` | 首页：最近更新、日记、标签；`?q=` 搜索，`?p=note&path=…` 正文 + 反链，`?p=tags` / `?p=tag&tag=…` 标签 |
+| `GET /dsh-zdiary-kit/feed.xml` | 最近 30 篇的 RSS 2.0 |
+| `GET /dsh-zdiary-kit/api/notes?q=&tag=&limit=` | 只读列表（`limit` 1–200，默认 50） |
+| `GET /dsh-zdiary-kit/api/note?path=…` | 单篇正文（笔记本内相对路径） |
+
+**只读是真的只读**：只放行 GET / HEAD（其余 405），不调 `ensureNotebook` / `init` / `index` / `install`，
+不返回 zk 路径、配置文件路径与文件系统绝对路径，`.zk/` 和根目录 meta 文件按路径也打不开。
+地址上只认回环（Host 与对端地址都要是 127.0.0.1 / ::1）—— 就算 DSH 监听 `0.0.0.0`，这个视图也不会跟着暴露。
+正文全部转义、不解析原始 HTML；markdown 只渲染标题 / 段落 / 列表 / 引用 / 代码块，链接只放行 http(s)、mailto 与站内路径。
+没初始化或 zk 跑不起来时，页面给一句提示，`feed.xml` 与 `api/*` 回 503 —— 不喂 200 的空频道，免得阅读器把「插件坏了」缓存成「没有新笔记」。
+
+视图没有会话，只能看**插件进程工作区**解析出的那本笔记本（与设置页一致）；写入仍然只走 agent 的 `zk_*` 与 CLI。
+细节见 [docs/features/readonly.md](docs/features/readonly.md)。
 
 ## 多个笔记本
 
@@ -332,7 +354,8 @@ src/
 │   └── exec.ts / http.ts / json-file.ts
 ├── features/
 │   ├── zk-tools/feature.ts       # 14 个工具
-│   └── settings/                 # 宿主 API + 浏览器 section
+│   ├── settings/                 # 宿主 API + 浏览器 section
+│   └── readonly/                 # 只读视图：GET-only 路由 + Web 1.0 渲染（无 JS）
 └── cli.ts                        # zk-kit 命令行
 ```
 

@@ -11,14 +11,14 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { json, readBody } from '../../lib/http.js';
+import { json, readBody, ROUTE_BASE } from '../../lib/http.js';
 import { CFG_FILE, processWorkspace } from '../../config/paths.js';
 import { config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.js';
 import { ensureNotebook, structureStatus } from '../../lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
 import { installZk, sourceLabel } from '../../lib/install.js';
 import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.js';
-const P = '/dsh-zdiary-kit/api';
+const P = `${ROUTE_BASE}/api`;
 async function zkStatus(cfg) {
     const loc = await resolveZk(cfg);
     if (!loc) {
