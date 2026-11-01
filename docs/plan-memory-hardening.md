@@ -10,6 +10,12 @@
 §2 的判据与方案不变。另补四项**笔记本侧**缺口（P1-7、P2-13–P2-15，见 §4.1）：它们同属一类失败 ——
 **盘上的状态与配置 / 模板不一致时，插件既不报错也不提示**。四项都只做只读报告，不新增写入口、不改写任何笔记。
 
+**复核修订（2026-11-01 第三轮）**：按 §9 逐条复核后改了六处事实（F1–F6）与七处方案缺口（G1–G7）。
+主要是：P1-4 的提示**不计入预算**（原写「计入」）、P1-3 的提议行实测 **21 词**（原写「≤12」）且会删掉每周仪式、
+「模板 175 词上限」**不存在**（实测 176，且无任何断言）、P2-14 的 59 篇数字**不是** `~/zdiary` 的、
+P2-8 在 flat 下其实**写得进去**（写进去就不见了）、P1-7 的 `extra` 会把 `archive/` 误报。
+受影响的小节已就地改写，改动依据见 §9。
+
 ---
 
 ## 0. 判定口径
@@ -22,6 +28,10 @@
 | 代码 | 源码里可复核的分支、常量、调用 | 附 `文件:行号` |
 | 承诺 | README / docs / 模板里已经写下的行为 | 附文档位置 |
 | 参考 | 只来自参考笔记本的架构观点 | 明确标「参考观点」，不作为验收依据 |
+
+**数字口径**（第三轮补加）：任何「实测」都要写清**哪本笔记本**（`~/zdiary` / 临时夹具路径）+ **命令** + **原样输出**。
+词数一律用 `countWords()`（CJK 2 字 1 词）量，不用「大概多少词」；不同夹具的绝对词数不同是正常的（条目长短不同），
+结论按**形状**判定，不按绝对数字判定。
 
 ### 0.2 每一步必须回答的四件事
 
@@ -48,7 +58,7 @@
 
 | ID | 问题 | 优先级 | 主要改动面 | 风险 | 依赖 |
 |---|---|---|---|---|---|
-| P0-1 | MEMORY.md 无 `##` 小节时预算完全不生效（实测 880/300） | P0 | `lib/memory.ts` + 测试 | 低（只影响超预算的库） | — |
+| P0-1 | MEMORY.md 无 `##` 小节时预算完全不生效（三轮实测 880 / 449 / 895，均为 `/300`、`truncatedWords = 0`） | P0 | `lib/memory.ts` + 测试 | 低（只影响超预算的库） | — |
 | P0-2 | `zk_dream` 不读 MEMORY，候选每周重复；窗口按 created 固定 7 天 | P0 | `lib/dream.ts`、抽 `lib/wikilink.ts` | 中（输出 schema 变化） | 与 P1-3 共用链接解析 |
 | P1-3 | 记忆条目没有生命周期（无日期、无退役） | P1 | `agents-template.ts`、`lib/lint.ts` | 低（先只报告） | P0-2 的解析器 |
 | P1-4 | 写入/接近上限时看不到用量 | P1 | `lib/memory.ts`、`zk_context` | 低（每步多一行） | P0-1 |
@@ -56,7 +66,7 @@
 | P1-6 | `flat` 是默认结构，却永远不写 AGENTS.md | P1 | `lib/notebook.ts`、设置页、CLI | 低（opt-in） | — |
 | P1-7 | 结构漂移只单向检查：配置 flat、盘上 layered 时，新建笔记静默落到 `notes/` 根 | P1 | `lib/notebook.ts`、doctor / 设置页 / 注入行 | 低（只报告） | — |
 | P2-7 | 中文检索只在 0 命中时兜底，部分命中静默不完整 | P2 | `lib/zk.ts`、`zk_search` 描述 | 中（多一次进程） | — |
-| P2-8 | `inbox/` 写不进、搜不到，却在模板里宣传 | P2 | `lib/notebook.ts`、模板、文档 | 低（不删盘上目录） | — |
+| P2-8 | `inbox/`：layered 下写不进，flat 下**写得进却搜不到**（写进去就消失），模板仍在宣传 | P2 | `lib/notebook.ts`、模板、文档 | 低（不删盘上目录） | — |
 | P2-9 | 中文笔记无 tags 也能建，事后才被 dream 拒绝 | P2 | `zk_new` 的 warnings | 低（不阻断） | — |
 | P2-10 | 只查精确标题，改两个字的重复查不出来 | P2 | `lib/lint.ts` | 中（误报 / 性能） | — |
 | P2-11 | 没有浏览面；INDEX.md 承诺了没实现 | P2 | `lib/zk.ts`（stats）、lint 提示 | 低 | — |
@@ -73,30 +83,35 @@
 
 #### 证据
 
-- **代码**：`src/lib/memory.ts:89` 只按 `/^##\s+/` 切段；`memory.ts:250` 的丢弃循环条件是 `split.sections.length > 1`；没有 `##` 时 `sections` 为空，循环一次都不进；`memory.ts:107-111` 的兜底 `firstSection` 在无小节时返回整篇（`head` 就是全文）。
-- **实测**（可复现）：
+- **代码**：`src/lib/memory.ts:93` 只按 `/^##\s+/` 切段（`splitSections` 从 `:89` 开始）；`memory.ts:250` 的丢弃循环条件是 `split.sections.length > 1`；没有 `##` 时 `sections` 为空，循环一次都不进；`memory.ts:107-111` 的兜底 `firstSection` 在无小节时返回整篇（`head` 就是全文）。
+- **实测**（三轮，夹具不同，结论相同）：
 
 ```bash
 cp -r ~/zdiary /tmp/ztest/zdiary
-# 往 MEMORY.md 追加 30 条列表项（模拟正常增长）
-DSH_WORKSPACE=/tmp/ztest bun src/cli.ts doctor
-# → ✗ 记忆：880/300 词（AGENTS 159 · MEMORY 721）
-```
-
-```bash
-DSH_WORKSPACE=/tmp/ztest bun -e '
+for i in $(seq 1 30); do echo "- 追加条目 $i：……二十来个字。" >> /tmp/ztest/zdiary/MEMORY.md; done
+cd ~/dsh-zdiary-kit && bun -e '
 import { buildMemoryPayload } from "./src/lib/memory.ts";
 const p = buildMemoryPayload({ notebook: "/tmp/ztest/zdiary", memoryBudgetWords: 300 });
 console.log(p.words, p.truncatedWords, p.tocWords);'
-# → 880 0 0
+
+# 第一轮（原记录，夹具未留）→ 880 0 0
+# 第二轮（47067f9，30 条短条目）→ 449 0 0
+# 第三轮（ac8f806，30 条长条目）→ 895 0 0
+#   notice: 预算不足：内容 895 词，超出 300 词；AGENTS.md 为硬规则，不截断
+```
+
+```bash
+# 对照：真机原样（不追加）本身在预算内，所以这个 bug 平时看不见
+# → words 280 · AGENTS 159 · MEMORY 121 · truncatedWords 0
 ```
 
 即 `truncatedWords = 0`、`tocWords = 0`：不是「截断后仍超预算」，而是**截断逻辑根本没执行**。
-- **复审复跑**（`47067f9`，另一夹具：30 条短条目，无 `##`）→ `words 449 / 300`、`truncatedWords 0`、`tocWords 0`、
-  `text` 里没有「未注入的段落」。两组夹具的绝对词数不同（条目长短不同），结论相同：**只要没有 `##`，一条都丢不掉**。
-- **承诺被违反**：`README.md:40-43` 与 `docs/features/memory.md:55-59` 都写明「超了先丢 MEMORY 的尾部整段」。
+三组绝对词数不同（条目长短不同）不影响判定：**只要没有 `##`，一条都丢不掉**。
+- **残余缺口**（第三轮补记）：A 案按列表项切分只覆盖「`# 标题` + 要点」这种形状；**整段散文**（无 `##`、无列表项）仍然一条都丢不掉 —— 见方案 1c，必须显式处理或显式声明不覆盖。
+- **phase-2 其实是死代码**（第三轮补记）：`memory.ts:259-265` 的「各自只留首段」在 phase-1 之后不会再减少任何内容（phase-1 已把每份文件压到 ≤1 段，`firstSection` 返回同样文本；只剩 1 段时也无法再压）。不影响方案，但验收别指望它兜底。
+- **承诺被违反**：`README.md:42` 与 `docs/features/memory.md:55-56` 都写明「超了先丢 MEMORY 的尾部整段」。
 - **覆盖缺口**：`test/zk.test.ts:378` 起的用例全部用 `## 一 / ## 二 / ## 三` 构造，没有任何「纯条目」形状的测试。
-- **归因错误**：`memory.ts:294` 在超预算时固定输出「AGENTS.md 为硬规则，不截断」，但本用例里 AGENTS 只占 159/300，真正无法处理的是 MEMORY 的条目形状。
+- **归因错误**：`memory.ts:294` 在超预算时固定输出「AGENTS.md 为硬规则，不截断」，但本用例里 AGENTS 只占 159/300，真正无法处理的是 MEMORY 的条目形状（上一条 notice 已复现）。
 
 #### 为什么
 
@@ -107,11 +122,13 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 #### 方案（A 案，推荐）
 
-1. `splitSections` 改成两级切分：
-   - 先按 `##` 切（现状不变）；
-   - **若该文件一个小节都切不出来**，再按顶层列表项切（`^\s*(?:[-*+]|\d+[.)])\s+`，含缩进续行），`# 标题` 到第一个条目之间作为 `head`；
-   - 跳过 ```` ``` ```` 围栏内的行（`lib/zk.ts:891` 已有同类 `fencedLines` 逻辑，搬到 `memory.ts` 或抽公共函数）。
-2. 丢弃顺序仍为「从尾部整条丢」，`head` 永远保留。
+1. `splitSections` 改成**三级**切分，按顺序降级：
+   - 1a. 先按 `##` 切（现状不变）；
+   - 1b. **若该文件一个小节都切不出来**，再按顶层列表项切（`^\s*(?:[-*+]|\d+[.)])\s+`，含缩进续行），`# 标题` 到第一个条目之间作为 `head`；
+   - 1c. **若连列表项也没有**（整段散文），按空行分段切，首个段落之前作为 `head`。没有这一级的话，散文式 MEMORY 仍然一条都丢不掉 —— 与本项要修的失败是同一个。
+   - 三级都跳过 ```` ``` ```` 围栏内的行（`lib/zk.ts:891` 已有同类 `fencedLines` 逻辑，搬到 `memory.ts` 或抽公共函数）。
+2. 丢弃顺序仍为「从尾部整条 / 整段丢」，`head` 永远保留。
+   - **已知副作用**（第三轮补记）：真机 MEMORY 是追加式增长（新条目在底部），尾部丢弃 = **先丢最新**。0.8.0 单独发时这个中间态会存在；P1-3 的日期约定落地后，应改成「有日期则先丢最旧」（无日期仍退回尾部）。在这之前，README 的截断说明要写明「条目列表按条丢、从末尾往前」，模板不要暗示「新条目往下加」。
 3. 目录（TOC）在条目模式下：标题取首行去掉列表符号、压到 40 字；仍受 `TOC_MAX = 5`（`memory.ts:82`）与 `min(40, 20%)`（`memory.ts:138-140`）双重封顶，多出的写「另有 N 条」。条目太多时不逐条列，避免目录自己吃掉预算。
 4. 归因修正：`finalWords > budget` 时点名「仍有 X 词无法再截：MEMORY.md（没有可再丢的小节 / 只剩一条）」；`AGENTS.md 占 …` 只在 AGENTS 确实超过预算一半时出现（现有条件见 `memory.ts:290`）。
 5. 不做按字符截断：把一句话切成半句，比超预算更难用；单条就超预算时保持现状（注入 + 告警）。
@@ -119,22 +136,23 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 #### 不做 / 备选
 
 - **B 案**：强制 MEMORY 用 `##` 分节，模板 + doctor 提示「无小节的 MEMORY 预算不可控」。缺点是对已有库不生效，需要人工迁移，且把「写对格式」的成本压给用户。可作为 A 案的补充提示（`zk_lint` 在「无小节且 ≥80%」时报一句），不替代 A。
-- **按日期丢最旧**：日期不是 MEMORY 的必填项，解析失败只能退回尾部；这个问题留给 P1-3 的格式约定，P0 不引入新依赖。
+- **按日期丢最旧**：日期不是 MEMORY 的必填项，解析失败只能退回尾部。P0-1 仍按尾部丢（不引入新依赖）；等 P1-3 的日期约定在真机跑出带日期的条目后，再把「有日期 → 丢最旧」作为小改动接上（见方案 2 的已知副作用）。
 
 #### 验收
 
-- 单测（新增）：
+- 单测（新增，先失败再修）：
   - 无 `##`、30 条列表项的 MEMORY → `words <= budget`、`truncatedWords > 0`、`text` 含「另有 N 条」；
-  - 围栏内的 `- ` 不被当条目切分；
-  - 单条就超预算 → 不切、仍告警、告警里点名该条目的词数；
-  - 现有 6 个分节形状用例（`test/zk.test.ts:378-458`）逐条保持通过。
+  - 无 `##`、也**无列表项**的散文 MEMORY → 同样 `words <= budget` 且 `truncatedWords > 0`（覆盖方案 1c）；
+  - 围栏内的 `- ` 与空行不被当条目 / 段落切分；
+  - 单条就超预算 → 不再切（保持整篇注入）、仍告警，且 notice 要点名「MEMORY.md 只剩一条 / 没有可再丢的段落」，不能只说 AGENTS；
+  - 现有分节形状用例（`test/zk.test.ts:378-458`）逐条保持通过。
 - 实测：`/tmp/ztest` 复跑 → `doctor` 记忆项 ≤ 300 词。
 - `bun run check`（含 `docs` / `smoke`）。P0 建议随 **0.8.0** 发布：注入行为有可见变化。
 
 #### 影响面
 
-- 只影响**本来就超预算**的库；预算内的库一个字节都不变。
-- `docs/features/memory.md` 需要补「无小节时的切分规则」；`README.md` 的截断说明补一句「条目列表按条丢」。
+- 只影响**本来就超预算**的库；预算内的库一个字节都不变（切分只在 `over()` 为真时发生）。
+- `docs/features/memory.md` 需要补「无小节时的三级切分规则」；`README.md` 的截断说明补一句「条目列表 / 段落按条（段）丢，从末尾往前 —— 新条目若加在底部会先被丢」。
 
 ---
 
@@ -146,35 +164,46 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 - **后果可推演**：晋升之后，同一批笔记下一周仍然满足「窗口内 / 有标签 / authority ≠ informal」，于是再次出现在 `newNotes`；`topCited`（`dream.ts:244-248`）也不区分是否已晋升。
 - **现有材料**：`DREAMS.md` 的「上次做梦」日期已经被解析（`lib/dream.ts:35-54`），但只用于注入提醒（`memory.ts:178-190`），没有用于 dream 自身的窗口。
 - **实测**：真机 `DREAMS.md` 的标记是 `2026-10-29`，距 2026-11-01 为 3 天 —— 这套周节奏在实际使用中。
+- **晋升的写法不止一种**（第三轮补记）：真机 `MEMORY.md` 7 条里只有 1 条带 `[[来源]]`，其余 6 条是纯文字条目（`zk_lint` 的 `unlinked = 6` 就是它）；
+  `DREAMS.md` 也记着「互动边界与配额 → 写入 `MEMORY.md`（不进 concepts：这是参数不是知识）」。**只按 `[[链接]]` 判「已晋升」，恰好漏掉这 6 条**，
+  而它们正是每周重复出现的候选来源。方案 2 因此改成双条件。
 
 #### 为什么
 
 1. **仪式会死于重复**：每周看到同一份候选清单，人会跳过；跳过几次之后 `DREAMS.md` 的日期不再更新，整个记忆回路断掉。参考笔记里 Karpathy 那条「维护成本涨得比价值快，人就放弃」正是这个失效路径。
 2. **晋升必须是「门」，门要知道门里有什么**：参考观点（`晋升看是否一直被用到`）强调先规则筛选再交给模型合并；「是否已晋升」是最基本的一道机械门，现在完全缺失。
 3. **窗口固定 7 天会永久漏掉笔记**：漏做一周、或者隔了十天再整理，窗口外未晋升的笔记再也不会出现在任何一栏 —— 这不是「本次没选上」，而是「永远消失」。
-4. 这两处都能用**纯机械**方式修（读一个文件 + 解析 `[[...]]`），不需要模型判断，符合「机械活留在插件」。
+4. 这两处都能用**纯机械**方式修（读一个文件 + 链接 / 标题匹配），不需要模型判断，符合「机械活留在插件」。
 
 #### 方案
 
 1. 抽 `src/lib/wikilink.ts`：把 `lib/lint.ts:174` 的 `WIKI_LINK` 与 `lint.ts:241-269` 的路径解析（原路径 → 加 `.md` → `archive/` → 标题 / 文件名）搬出来，供 lint / dream 共用。返回 `{ status: 'live' | 'archived' | 'missing', path }`。
-2. `dreamNotebook` 读 `MEMORY.md`（不读 USER：偏好不是结论来源），解析出已晋升集合。
-3. `DreamCandidate` 增 `promoted: boolean`；`newNotes` 只放未晋升的；新增 `alreadyPromoted` 桶（≤ 50 条，带 `cited`）与 `counts.promoted` —— 不直接丢弃：agent 需要知道「上周提过、这周还在」，否则会以为 dream 漏报了。
+2. `dreamNotebook` 读 `MEMORY.md`（不读 USER：偏好不是结论来源），解析出已晋升集合。命中条件两条，任一成立：
+   - a. MEMORY 里的 `[[链接]]` 解析到候选（走 `wikilink.ts`）；
+   - b. 候选标题归一化后（`normalizeTitle`，`zk.ts:95-98`）**被某个 MEMORY 条目包含**，且标题 ≥ 6 字
+     （短标题如「RAG」不做包含匹配，避免误判）。
+   真机 6/7 条是纯文字条目，只有 b 能覆盖；两条都只做字符串比较，不引入语义判断。
+3. `DreamCandidate` 增 `promoted: boolean` 与 `promotedBy: 'link' | 'title' | ''`；`newNotes` 只放未晋升的；新增 `alreadyPromoted` 桶（≤ 50 条，带 `cited` 与 `promotedBy`）与 `counts.promoted` —— 不直接丢弃：agent 需要知道「上周提过、这周还在」，否则会以为 dream 漏报了。
 4. 窗口默认值：`opts.days` 未给时，若 `DREAMS.md` 有合法日期 → `clamp(daysSinceDream, 1, 365)`；否则 7。显式 `--days` 仍然优先。
 5. 新增 `backlog`：`created < since`、未晋升、过机械门（有标签且 `authority ≠ informal`）的笔记，按 `cited` 降序取前 10，`counts.backlog` 给总数。漏一次不再永久掉队。
+   `backlog` 与窗口同源（同一个 `windowDays`）：`DREAMS.md` 迟迟不更新时窗口会自然变大、`backlog` 相应变小，不需要额外状态。
 6. MEMORY.md 不存在或读失败 → 行为与现在一致（全部候选 + 7 天），不报错。
 
 #### 不做
 
-- 不做「语义去重」（MEMORY 里换个说法写了同一条结论）—— 那是模型的事，插件只按 `[[链接]]` 机械比对。
+- 不做「语义去重」（MEMORY 里换个说法写了同一条结论）—— 那是模型的事，插件只按 `[[链接]]` + 标题包含做机械比对；匹配不上就是没匹配上，宁可重复报，不猜。
 - 不自动写 MEMORY.md —— 守住「晋升由人裁决」的边界。
 
 #### 验收
 
 - 新增测试：
-  - MEMORY 里链了某候选 → 它不在 `newNotes`、`counts.promoted = 1`、出现在 `alreadyPromoted`；
+  - MEMORY 里链了某候选 → 它不在 `newNotes`、`counts.promoted = 1`、出现在 `alreadyPromoted`、`promotedBy = 'link'`；
+  - MEMORY 里**只写了候选标题、没有链接**（真机 6/7 条的主形态）→ 同样判已晋升、`promotedBy = 'title'`；
+  - 反例：标题 < 6 字（如「RAG」）→ 不做包含匹配，仍进 `newNotes`；
   - `DREAMS.md` 写 10 天前 → 默认窗口 10 天，`since` 对应；
   - 无 `DREAMS.md` → 仍 7 天；
   - 窗口外未晋升的笔记进 `backlog`，窗口内不进。
+- 真机验收：`~/zdiary` 复跑，`counts.promoted > 0`（MEMORY 里那 6 条纯文字条目至少命中一部分），不再每周原样重复。
 - `bun run smoke` 需要更新 `zk_dream` 的输出 schema（新增字段在 DSH 支持的子集内）；`zk-kit dream --json` 的字段同步。
 - 现有 M3 用例（`test/zk.test.ts:1382-1406`）不应改动语义，只补断言。
 
@@ -204,11 +233,23 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 #### 方案（A 案：只加约定与报告）
 
-1. `AGENTS_TEMPLATE` 的「每周」段压进一行（目标 ≤ 12 词，现有模板 175 词，预算 300 的库要算这笔账）：
+1. `AGENTS_TEMPLATE` 的「每周」段：**保留仪式一行，另加格式一行**。词数是实测的（`countWords()`）：
+
+   | 部分 | 词数 |
+   |---|---|
+   | 现「每周」段（含「上次做梦」触发说明 + `zk_lint → zk_dream` + 来源链接） | 31 |
+   | 仪式行（下 A，压到最短，但保留 `：YYYY-MM-DD` —— `lastDreamDate` 只认这个格式） | 15 |
+   | 格式行（下 B） | 21 |
+   | 合计 | **36（净 +5，模板 176 → 181）** |
 
    ```text
+   每周：DREAMS.md 写「上次做梦：YYYY-MM-DD」；到期 zk_lint → zk_dream → 人裁决改 MEMORY。
    MEMORY.md 每条：结论（YYYY-MM-DD）[[来源]]；退役写 - [superseded YYYY-MM-DD] 旧结论 → [[新结论]]，行留在原处。
    ```
+
+   注意两点（第三轮修订）：
+   - 原稿写的「压进一行、目标 ≤ 12 词」不成立：单是格式行就 21 词，而且只留格式行会把 `zk_lint → zk_dream → DREAMS.md` 这条每周仪式**删掉** —— 那正是 P0-2 依赖的触发回路，不能删。
+   - 因此本项**不省预算**，模板从 176 涨到 181。真正的上限约束放到 P1-6 / P2-15 的「新增一条 ≤190 词断言」里统一管（现状 176、本项 181、P2-15 标记 +4 → 185）。
 
 2. `lib/lint.ts` 的 `memoryLinks` 扩展三项（都只报告）：
    - `undated`：条目首行没有 `YYYY-MM-DD` 的条数；
@@ -223,7 +264,8 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 #### 验收
 
 - 单测：MEMORY 条目无日期 → `undated` 计数；`[superseded]` 行 → `retired`；退役行指向归档笔记 → `retiredBroken`；现有「未附链接」计数不变。
-- `bun run docs` 校验 AGENTS 模板词数（模板一旦超预算，`doctor` 会报 ✗）。
+- 模板词数**不由 `bun run docs` 管**：`scripts/docs.ts` 只把文档里的 `zk-kit …` 命令真跑一遍看退出码，`doctor` 比的是 `memoryBudgetWords`（默认 500），不是模板长度。
+  改成新增一条单测：`countWords(AGENTS_TEMPLATE) <= 190`（现状 176、本项后 181；P2-15 加标记后 185）。
 - 人工验收：真机 MEMORY 按新格式改一条，`zk_lint` 能读出来。
 
 #### 影响面
@@ -251,6 +293,9 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 1. `lib/memory.ts` 增常量 `MEMORY_NEAR_RATIO = 0.8`。
 2. 未截断且 `finalWords / budget >= 0.8` 时，在 notice 里加 `记忆已用 280/300 词（93%）`；与「已截断」「预算不足」互斥（三者只出现一个）。
+   **预算记账**（第三轮修订）：现状 notice **不计入** `words`（`memory.ts:272-273` 只算正文 + 目录），
+   所以直接加这一行会出现「提示说 280/300，实际注入比 280 多」的矛盾。做法：把该行算进 `finalWords`，
+   并在加之前检查「加上后仍 ≤ budget」，放不下就整条不加（宁可不说，也不让提醒本身把预算吃满）；`ratio` 用加之前的数值。
 3. `zk_context` 的结构化返回值加 `ratio`（0–1，保留两位），供模型和测试使用；设置页已有 `words/budget`（`features/settings/feature.ts:277-281`），不必改。
 4. 不做每步常驻百分比：80% 以下不加，避免把诊断信息变成噪音。
 
@@ -261,7 +306,9 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 #### 影响面
 
-- 只在接近上限的库上多一行（约 10 词），且计入预算 —— 文案要短，避免「提醒本身把预算吃满」。
+- 只在接近上限的库上多一行（约 10 词）。**它必须被算进预算**（见方案 2 的记账说明）：否则 `280/300` 是假的，
+  而这一项存在的全部意义就是让数字可信。因此文案要短，且放不下时宁可整条不出现。
+- 现有「已截断 / 预算不足」两条 notice 同样不计词数（既有事实，不在本项修）；本项只保证新增的这条是准的，并为后续统一记账留好位置。
 
 ---
 
@@ -269,7 +316,7 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 #### 证据
 
-- **代码**：`src/features/readonly/feature.ts:281` 明确拒绝根 meta：`根目录的 meta 文件（…）不在只读视图里显示`；首页只有「最近更新 / 日记 / 标签」（`readonly/feature.ts:217-249`）。
+- **代码**：`src/features/readonly/feature.ts:281` 明确拒绝根 meta：`根目录的 meta 文件（…）不在只读视图里显示`；首页只有「最近更新 / 日记 / 标签」（`readonly/feature.ts:217-222`）。
 - **承诺**：`README.md:107-110` 说这个视图是「人看的」；`docs/plan-memory-layers.md:9` 的原始目标是「agent 负责日常 upkeep，人每周审 30 分钟」。
 - **结果**：人的周审没有入口 —— MEMORY / USER / DREAMS / AGENTS 只能去文件系统里翻；「哪几段被截断了」也只有模型看得到（`memory.ts` 的 notice）。
 
@@ -286,6 +333,8 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
    - 顶部一行用量：`280/300 词（AGENTS 159 · MEMORY 121）`，复用 `buildMemoryPayload` + `formatFileShares`（`memory.ts:55-66`）；
    - 每份文件按现有 markdown 子集渲染，`[[...]]` 只用现有解析判断是否存在，存在才给链接，不存在保持 `<span class="wikilink">`；
    - 缺失的文件显示「还没写」，不是 404。
+   - **实现注意**：meta 被 `excludedNames` / `loadAll` 排除，页面**不能**走 `loadNote`（`feature.ts:281` 就是它自己的拒绝分支）；
+     要按常量直接读盘，再复用 `html.ts` 的转义与链接解析。路由分发在 `feature.ts:387-398`，加一个分支即可。
 2. 首页导航加一个「记忆」入口；`?p=note` 对 meta 的拒绝逻辑**不动**。
 3. 仍然 GET-only、回环门、不返回绝对路径；不新增任何写路由。
 
@@ -338,7 +387,9 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 #### 影响面
 
-- 多维护一份模板；用一条测试保证两份模板都 **≤ 175 词**（现有 layered 模板的上限口径），避免预算被模板吃掉的历史重演（`docs/features/memory.md:43-45` 记过这次教训）。
+- 多维护一份模板；新增一条测试断言两份模板都 **≤ 190 词**（现状：layered 实测 176、flat 目标 ≤90）。
+  注意：此前**没有任何词数断言**，注释和 docs 里的「175」只是目标值 —— 所以这条断言是**新增**，不是「放宽既有上限」。
+  这能避免预算被模板吃掉的历史重演（`docs/features/memory.md:43-45` 记过这次教训）。
 
 ---
 
@@ -386,24 +437,32 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 #### 证据
 
-- **三处互相矛盾**：
+- **四处互相矛盾**：
   - 模板宣传：`agents-template.ts:17` 写「inbox/ 待归类」；
   - 建目录：`notebook.ts:198-205` 在 layered 下创建 `inbox/`；
-  - 检索排除：`zk.ts:299-304` 的 `excludedNames` 把 `inbox` 与 `raw` 一起排除；
-  - 写入拒绝：`notebook.ts:161-176` 要求 layered 的 `dir` 必须落在某个 group 下，而 `inbox` 不是 group。
-- **结论**：agent 写不进去（`zk_new --dir inbox` 会被拒），人手工放进去的文件也搜不到、不进统计、不进 lint。它只贡献了一个目录。
+  - 检索排除：`zk.ts:299-305` 的 `excludedNames` 把 `inbox` 与 `raw` 一起排除；
+  - 写入校验只认 group：`notebook.ts:161-176` 要求 **layered** 的 `dir` 必须落在某个 group 下，而 `inbox` 不是 group。
+- **两种结构都走不通，但失败方式不同**（第三轮修订）：
+  - **layered**：`zk_new --dir inbox` 被 `newNoteDir` 直接拒绝（`notebook.ts:172-174`）—— 至少报错。
+  - **flat**：`newNoteDir` 在非 layered 下**原样返回**传入的 dir（`notebook.ts:163`），而写入守卫 `assertWritablePath` 只拦 `raw/`（`zk.ts:544-552`）→ 笔记**建成功**；
+    但 `excludedNames` 把 `inbox` 排除（`zk.ts:300`），于是它不进索引 / 统计 / lint / 只读视图 —— **写进去就消失，且不报错**。
+    真机就是这种：配置 flat、盘上留着 layered 的 `inbox/`（见 P1-7）。
+- **结论**：它只贡献了一个目录：layered 下是死胡同（报错），flat 下是黑洞（静默）。两种都比「没有这个目录」更糟。
 
 #### 为什么
 
-1. **「说了但做不到」比没有更糟**：AGENTS 每轮都在告诉模型「inbox 是待归类区」，模型会尝试用它，然后拿到一个「不在任何 group」的错误。
+1. **「说了但做不到」比没有更糟**：AGENTS 每轮都在告诉模型「inbox 是待归类区」；layered 下模型拿到「不在任何 group」的报错，
+   flat 下模型拿到成功回执、笔记却从索引里消失了 —— 后者更难查。
 2. **它让结构自检产生错觉**：`structureDirs` 认为目录齐全，`doctor` 报 ✓，但那个目录没有任何功能。
 3. **保留「隔离区」的初衷可以理解**（未分类碎片不该进索引），但正确的做法是不提供这个入口，而不是提供一个死胡同 —— `raw/` 已经承担了「只读、不进索引」的角色。
 
 #### 方案（推荐：移除）
 
 1. `structureDirs` 不再创建 `inbox/`；`AGENTS_TEMPLATE` 的目录行去掉「inbox/ 待归类」；
-2. `excludedNames` **保留** `inbox` 排除：老库已经存在的 `inbox/` 继续不进索引（行为兼容，不删盘上文件）；
-3. README / `docs/features/provisioning.md` / 设置页的结构预览同步删除（`features/settings/client.ts:204` 的结构示意里有它）。
+2. **写入守卫补上 inbox**：`assertWritablePath`（`zk.ts:544-552`）从「只拦 `raw/`」扩到「`raw/` 与 `inbox/`」。
+   只删模板宣传不够 —— 老库盘上还有 `inbox/`，flat 下照样能写进去然后消失。`archive/` **不能**拦（`supersede` 要往里搬）。
+3. `excludedNames` **保留** `inbox` 排除：老库已经存在的 `inbox/` 继续不进索引（行为兼容，不删盘上文件）；
+4. README / `docs/features/provisioning.md` / 设置页的结构预览同步删除（`features/settings/client.ts:204` 的结构示意里有它）。
 
 #### 备选（如果确实需要收件箱）
 
@@ -413,6 +472,7 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 - 新建 layered 库：目录清单不含 `inbox`，`doctor` 结构项仍 ✓；
 - 老库：`inbox/` 原样保留，检索结果不变（排除仍在）；
+- **flat 库 + 已存在 `inbox/`**：`zk_new --dir inbox` 现在应**报错**（不再是「成功但消失」）；
 - `bun run docs`：README 里不再出现使用 inbox 的示例。
 
 #### 影响面
@@ -494,7 +554,7 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 #### 证据
 
 - **承诺**：`docs/plan-memory-layers.md:66` 写 `INDEX.md # 总索引（>150 条才建）`，`:439` 写「INDEX.md 在 150 条时提示生成」；`lib/meta.ts:14` 也把 `INDEX.md` 列进 meta 名单。
-- **实现**：`notebookStats` 只返回 `notes / tags / brokenLinks / orphans / archived / superseded`（`zk.ts:1094-1103`），没有任何生成或提示；全仓库没有写 INDEX.md 的代码。
+- **实现**：`notebookStats` 只返回 `notes / tags / brokenLinks / orphans / archived / superseded`（接口 `zk.ts:1096-1104`、函数 `zk.ts:1105`），没有任何生成或提示；全仓库没有写 INDEX.md 的代码。
 - **现状规模**：18 篇，暂时无痛；这也是它一直没被补上的原因。
 
 #### 为什么
@@ -505,7 +565,7 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 #### 方案
 
-1. `NotebookStats` 增 `byDir`（顶层目录 → 数量，排除 archive）与 `byTag`（前 10 个标签及数量）。数据来自 `notebookStats` 已经加载的 `live`（`zk.ts:1119-1129`），**不新增 zk 进程**。
+1. `NotebookStats` 增 `byDir`（顶层目录 → 数量，排除 archive）与 `byTag`（前 10 个标签及数量）。数据来自 `notebookStats` 已经加载的 `live`（`zk.ts:1122-1124`），**不新增 zk 进程**。
 2. `zk_lint` 在 `notes >= 150` 且根目录没有 `INDEX.md` 时输出一句提示（不改任何文件）。
 3. `zk_stats` 的渲染层多两行分布；`--json` 同步。
 4. 不自动生成 INDEX.md（列入「暂缓」）。
@@ -588,7 +648,10 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 #### 方案
 
-1. `StructureStatus` 增 `extra: string[]`：固定候选（`raw`、`inbox`、`archive`、`notes/{四类}`）中、盘上存在且不属于当前 `structureDirs` 的那些，只报不认。
+1. `StructureStatus` 增 `extra: string[]`：固定候选 **`raw`、`inbox`、`notes/{sources,concepts,entities,patterns}`** 中、盘上存在且不属于当前 `structureDirs` 的那些，只报不认。
+   **`archive` 不进候选**（第三轮修订）：flat 库只要做过一次 `zk_supersede` 就会自建 `archive/`（`zk.ts:1292`），
+   而它不在 flat 的 `structureDirs` 里 —— 放进候选的话，每本用过 supersede 的 flat 库都会被误报「盘上有分层目录」。
+   `archive` 对两种结构都合法，本来就不是漂移信号；`raw` / `inbox` / `notes/{四类}` 才是（flat 库里它们只可能来自手工搬入或旧 layered）。
 2. `ready` **不因 `extra` 变 false**：保持「配置为准」的语义，避免制造假错误、也避免把老库标红。
 3. 三个出口各一句：`zk-kit doctor`、设置页结构行、`zdiary:notebook` 注入行（后者只在 flat 且 `extra` 非空时加「盘上有分层目录，新建笔记会落在 `notes/` 根」）。
 4. 不做自动迁移、不猜用户想要哪个结构。
@@ -596,6 +659,7 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 #### 验收
 
 - 夹具：flat 配置 + 盘上 `notes/concepts/` → `extra` 含该目录、`ready` 仍 true、`doctor` 出现提示；纯 flat 库 → `extra` 为空、无提示。
+- **防误报**：flat 库 + 只有 `archive/`（跑过一次 `zk_supersede`）→ `extra` 为空、无提示。
 - 真机：`~/zdiary` 复跑 `doctor`，提示与「新建笔记落点」一致。
 - 回归：layered 库的 `extra` 为空（分层目录本来就在 `structureDirs` 里）。
 
@@ -624,6 +688,9 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 #### 方案
 
 1. `lint.ts` 新增 `incomplete` 桶：缺 `type` / `status` / `authority` 任一字段的笔记（`parseFrontmatter` 已在 lint 里用过，`lint.ts:209-211`）。
+   **I/O 代价（第三轮补记）**：`toRecord` 把缺失字段压成空串（`zk.ts:269-271`），索引里区分不出「没写」与「空值」，
+   所以这一桶**只能逐篇读 frontmatter**。它与 `lint.ts:5` 的约束不冲突（那条禁的是「按笔记逐条跑 zk 进程」），
+   但确实是 O(n) 次读盘：护栏是「只读 live 且非日记」，条数触到 `MAX_SCAN` 时置 `truncated`，并在实现里复用同一次读（别为三个字段读三遍）。
 2. 跳过日记（daily 模板本来没有 frontmatter，`notebook.ts:37-40`）与 archive。
 3. 按「缺哪个字段」分组计数，最多列 20 条；`zk_lint` 摘要行加一项，`--json` 增字段。
 4. 不自动补写：补 `status: active` 等于替人裁决。
@@ -645,7 +712,9 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 #### 证据
 
 - **代码**：`lint.ts` 只有 `tagless`（走 zk 的 `--tagless`，`lint.ts:379`），没有任何标签质量检查。
-- **实测（只读视图 `?p=tags`，59 篇）**：142 个标签里 **83 个只出现一次（58%）**；`#Agent` 12 篇与 `#agent` 5 篇是两个标签；`#BV12ELn6yEmB` 一类视频号也进了标签空间（4 个）。
+- **实测 A（`~/zdiary`，14 篇有 frontmatter 的笔记；`parseFrontmatter().fields.tags`）**：只有 **6 个标签**，其中 **5 个只出现一次**（`b站运营` 2，其余各 1）—— 规模太小，还看不出分裂，只能当基线。
+- **实测 B（另一个 59 篇的库，只读视图 `?p=tags`）**：142 个标签里 **83 个只出现一次（58%）**；`#Agent` 12 篇与 `#agent` 5 篇是两个标签；`#BV…` 一类视频号也进了标签空间（4 个）。
+  **注意**：这组数字**在本计划基线仓库 `~/zdiary` 上复现不了**（那是 18 篇的库），落地前要用具体库重跑并把库名 / 路径写进验收，否则只能当假设来源。
 - **代价**：`AGENTS.md` 把 tags 当作中文检索的唯一可靠入口（`agents-template.ts:23`），标签一分裂，`--tag` 检索就少一半命中，而且不报错。
 
 #### 为什么
@@ -665,7 +734,7 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 #### 验收
 
 - 夹具：`#Agent` 3 篇 + `#agent` 2 篇 → 一组、总数 5；20 个标签的库 → 不报。
-- 真机：`~/zdiary` 与参考库各跑一次，数字与标签页一致。
+- 真机：用 59 篇那个库重跑一次，把**库名 + 命令 + 输出**写回本节；`~/zdiary`（8 个标签）跑出来应当是「不报」—— 顺带验证 ≥30 的阈值。
 - 现有 `tagless` 计数不变。
 
 #### 影响面
@@ -679,7 +748,7 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 #### 证据
 
 - **代码**：模板写入一律「缺了才写」（`notebook.ts:253-264`、`291-295`），已有文件一字不动 —— 行为正确，但没有任何版本标记。
-- **真机**：`~/zdiary/AGENTS.md` 仍是 159 词那一版（「来源进 sources/，结论进 concepts/」，没有 `name` 短名、`zk_rename`、`WORKFLOW.md` 这些后来的规则），当前模板已是 175 词（`agents-template.ts:11-37`）。
+- **真机**：`~/zdiary/AGENTS.md` 仍是 159 词那一版（「来源进 sources/，结论进 concepts/」，没有 `name` 短名、`zk_rename`、`WORKFLOW.md` 这些后来的规则），当前模板实测 **176 词**（`agents-template.ts:11-37`；注释与 docs 里写的「175」是旧目标值，差 1）。
 - **后果**：模板承载的约定只对新库生效；老库的 agent 继续按旧规则写，人也没有「该看了」的信号。
 
 #### 为什么
@@ -690,7 +759,7 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 #### 方案
 
-1. 两份模板（AGENTS / WORKFLOW）首行加标记：`<!-- zdiary-template: 2026-11-01 · 1 -->`；实现时固定一个常量，版本号随模板改动递增。
+1. 两份模板（AGENTS / WORKFLOW）首行加标记：`<!-- zdiary-template: v1 -->`（实测 4 词；不要带日期 —— 带日期的写法实测 6 词，白花 2 词）。实现时固定一个常量，版本号随模板改动递增。
 2. `lint.ts` 读根目录 `AGENTS.md` 的标记：无标记或版本不等 → 一条提示「AGENTS.md 是旧版模板（或无标记），当前模板 N 词」；只报，不写。
 3. `zk-kit init --with-agents`（P1-6）写模板时带上标记；已有文件不覆盖。
 4. 不做自动迁移、不生成 diff（`git diff` 更可靠）。
@@ -699,11 +768,12 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 - 夹具：无标记 → 提示一次；当前版本 → 不提示；旧版本 → 提示并给出两个版本号。
 - 真机：`~/zdiary` 复跑能提示「旧版 / 无标记」。
-- `bun run docs` 的模板词数上限从 175 放宽到 **180**（标记按空白切分计 5 词），并同步 `docs/features/memory.md` 的口径。
+- `bun run docs` **不管词数**（只跑命令看退出码）；改用新增的单测断言：`countWords(AGENTS_TEMPLATE) <= 190`
+  （现状 176 → P1-3 后 181 → 本项标记 4 词后 185）。同时把 `agents-template.ts` 注释、`docs/features/memory.md:11`、`provisioning.md:24` 的「175」统一改成实测值。
 
 #### 影响面
 
-- 模板多一行注释（5 词预算，AGENTS 不截断，所以从别处压或抬上限，见验收）；
+- 模板多一行注释（4 词；AGENTS 不截断，所以这 4 词直接占预算 —— 由 ≤190 的断言统一管，不在这一项里另设上限）；
 - 不改写入路径：老库不迁移、不自动更新，只多一条 lint 提示。
 
 ---
@@ -712,18 +782,19 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 ```text
 P0-1 ──────────────► P1-4        （同一文件，先改截断再加用量提示）
+       └ 尾部丢 = 先丢最新 ──► P1-3 的日期约定落地后改「丢最旧」（0.8.0 先按尾部，README 写明）
 P0-2 ──► lib/wikilink + 解析 ──► P1-3（lint 复用）  ──► P2-12（dream 复用日期）
 P1-5  独立
 P1-6  独立（但依赖 AGENTS 模板定稿）
 P2-7  zk.ts / 工具描述
-P2-8  结构 + 模板 + 文档（一处改动，四处同步）
+P2-8  结构 + 模板 + 文档（一处改动，四处同步）；与 P2-15 同批（删 inbox 会让老模板再「旧」一次）
 P2-9  依赖 P2-7 的口径文案
 P2-10 lint 内部（与 P1-3 同文件，建议先后落）
 P2-11 stats（独立）
 P1-7  结构（notebook.ts）+ 三处出口文案（独立）
 P2-13 lint 内部（与 P2-10 / P1-3 同文件，建议同批）
 P2-14 lint 内部（独立，纯内存计算）
-P2-15 依赖 P1-6（模板定稿后再加标记）
+P2-15 依赖 P1-6（模板定稿后再加标记）；与 P2-8 同批
 ```
 
 建议落地批次：
@@ -770,14 +841,16 @@ P2-15 依赖 P1-6（模板定稿后再加标记）
 | P1-7 | 结构段 | `provisioning.md` / `settings.md` | 注入行文案 |
 | P2-13 | 体检说明 | `zk-tools.md` | — |
 | P2-14 | 体检说明 / 标签页 | `zk-tools.md` / `readonly.md` | — |
-| P2-15 | 长期记忆段（模板词数上限 175 → 180） | `memory.md` | `agents-template.ts` 头注释 |
+| P2-15 | 长期记忆段（模板词数改成实测值；新增 ≤190 断言，175 只是旧目标） | `memory.md` | `agents-template.ts` 头注释 |
 
 ### 7.2 测试要求
 
 - `bun run check`：`typecheck` + `build` + `test`（**skip = 0**）+ dist 漂移闸；
 - `bun run smoke`：新字段必须落在 DSH 支持的 JSON Schema 子集内（`zk_dream` / `zk_stats` / `zk_search` 的 output 有变化）；
-- `bun run docs`：README 里新增/修改的 `zk-kit …` 命令要能真跑；
-- 新增用例一律走「先失败、再修」：P0-1 的纯条目形状、P0-2 的已晋升判定必须有反例夹具。
+- `bun run docs`：README 里新增/修改的 `zk-kit …` 命令要能真跑（**不校验模板词数**，别再把词数断言挂到它身上）；
+- **模板词数**：新增断言 `countWords(AGENTS_TEMPLATE) <= 190` 与 `countWords(AGENTS_TEMPLATE_FLAT) <= 90`（现状 176；此前**没有**任何词数断言）；
+- **数字口径**：本文的「实测」要么能按 §0.1 复跑，要么删掉 —— P2-14 的 59 篇库是唯一还欠命令与输出的；
+- 新增用例一律走「先失败、再修」：P0-1 的纯条目 / 散文形状、P0-2 的已晋升判定（链接与标题两条路径）必须有反例夹具。
 
 ---
 
@@ -785,7 +858,39 @@ P2-15 依赖 P1-6（模板定稿后再加标记）
 
 一条改动算完成，需要同时满足：
 
-1. **证据闭环**：本文列出的实测/代码依据在改完后能复跑验证（P0-1 的 880/300 变成 ≤300；P0-2 的重复候选消失）；
+1. **证据闭环**：本文列出的实测/代码依据在改完后能复跑验证（P0-1 的 895/300 → ≤300 且 `truncatedWords > 0`；P0-2 的重复候选消失、`counts.promoted > 0`）；
 2. **不变式不破**：0.3 的七条逐条复核；
 3. **失败仍可见**：新增的截断、退役、跳过都必须有计数或提示，不允许出现「静默丢弃」；
-4. **文档与实现同口径**：README / docs 的措辞与代码里的常量、阈值一致（这个仓库已经因为「文档承诺 > 实现」吃过一次亏，见 P0-1）。
+4. **文档与实现同口径**：README / docs 的措辞与代码里的常量、阈值一致（这个仓库已经因为「文档承诺 > 实现」吃过一次亏，见 P0-1）；
+5. **数字可复跑**：文中的词数、行号、阈值都按 §0.1 重跑得出，不写「大概」；改一次代码就重跑一次，不沿用旧数字（第三轮就是靠复跑抓出「175」「≤12 词」「计入预算」三处错的）。
+
+---
+
+## 9. 第三轮复核修订记录（2026-11-01）
+
+复核方式：逐条比对 `文件:行号`、用 `~/zdiary` 复跑实测、按 §2 的命令重做 P0-1、对每个方案做可行性推演（未改动任何源码）。
+
+### 9.1 事实修正（改前 → 改后）
+
+| # | 位置 | 改前 | 实测 / 改后 |
+|---|---|---|---|
+| F1 | P1-4 影响面 | 提示「约 10 词，且计入预算」 | notice **不计入** `words`（`memory.ts:272-273` 只算正文 + 目录）；方案改为「算进 `finalWords`，放不下就不加」 |
+| F2 | P1-3 方案 | 「压进一行，目标 ≤12 词」 | 格式行实测 21 词；只留它会删掉每周仪式。改为「仪式 15 + 格式 21 = 36 词，净 +5，模板 176 → 181」 |
+| F3 | P2-15 / P1-6 | 「`bun run docs` 的模板上限 175 → 180」 | **不存在**该上限：`scripts/docs.ts` 只跑命令看退出码；`doctor` 比的是 `memoryBudgetWords`（默认 500）。改为**新增** ≤190 断言（现状 176 → P1-3 后 181 → 标记后 185） |
+| F4 | P2-14 证据 | 「实测 59 篇 / 142 标签 / 83 单例」 | 不是 `~/zdiary`（那里 14 篇带 frontmatter 的笔记只有 6 个标签、5 个单例）；改为「实测 A（可复跑）+ 实测 B（待补库名与命令）」 |
+| F5 | P2-8 证据 | 「写不进、搜不到」 | layered 写不进；**flat 写得进但被排除**（`notebook.ts:163` + `zk.ts:544-552`）→ 静默黑洞。方案补「写入守卫扩到 `inbox/`」 |
+| F6 | P1-7 方案 | `extra` 候选含 `archive` | flat 库 supersede 会自建 `archive/`（`zk.ts:1292`）→ 必然误报；`archive` 从候选移除 |
+
+行号偏差另修：`memory.ts:89→93`、`readonly/feature.ts:217-249→217-222`、`zk.ts:1094-1103→1096-1104/1105`、`zk.ts:1119-1129→1122-1124`、`docs/features/memory.md:55-59→55-56`、模板「175」→ 实测 176。
+
+### 9.2 方案缺口（已并入正文）
+
+| # | 缺口 | 处置 |
+|---|---|---|
+| G1 | P0-1 只覆盖列表项，散文 MEMORY 仍失效 | 方案改三级切分（`##` → 列表项 → 空行段落），加散文用例 |
+| G2 | 尾部丢弃 = 先丢最新，与 P1-3 冲突 | 方案 2 写明中间态；README 写「从末尾往前丢」；P1-3 落地后再切「丢最旧」 |
+| G3 | P0-2 只按 `[[链接]]` 判已晋升，漏掉真机 6/7 条纯文字条目 | 改双条件（链接 + 标题包含 ≥6 字），新增 `promotedBy` 与反例 |
+| G4 | P2-13 需逐篇读 frontmatter，与 lint 的读盘约束有张力 | 方案补 I/O 代价与护栏（live 非日记、`MAX_SCAN` 置 `truncated`、一次读三个字段） |
+| G5 | P0-1 的 phase-2「只留首段」实际是死代码 | 证据里注明，验收不再依赖它兜底 |
+| G6 | P1-5 未写实现路径（meta 被排除，不能走 `loadNote`） | 方案补「按常量直接读盘 + 复用 `html.ts`」 |
+| G7 | P2-8 与 P2-15 互相影响（删 inbox 会让老模板再「旧」一次） | §5 标注同批 |
