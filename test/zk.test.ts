@@ -2219,6 +2219,9 @@ describe('只读视图', () => {
     const link = readonlyHtml.renderMarkdown('[查询](https://example.test/?a=1&b=2)')
     expect(link).toContain('href="https://example.test/?a=1&amp;b=2"')
     expect(link).not.toContain('&amp;amp;')
+    // 协议相对链接（//host、\\host）不是站内，不能渲染成 <a>
+    expect(readonlyHtml.renderMarkdown('[外站](//evil.example/x)')).not.toContain('<a')
+    expect(readonlyHtml.renderMarkdown('[外站](\\\\evil.example/x)')).not.toContain('<a')
     expect(readonlyHtml.renderMarkdown('## 小节\n\n# 正文 H1', { skipFirstH1: true })).toContain('<h1>正文 H1</h1>')
   })
 
@@ -2278,6 +2281,14 @@ describe('只读视图', () => {
 
       const remote = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view', { host: 'evil.example:1234' }))
       expect(remote.statusCode).toBe(403)
+
+      // Host 看起来是回环、但对端是远程：这才是 isLoopback 比设置页更严的那条主张
+      const remotePeer = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view', { host: '127.0.0.1:1234', remote: '192.168.1.9' }))
+      expect(remotePeer.statusCode).toBe(403)
+
+      // 畸形 Host 不能让 new URL 在路由外抛错（那会变成兜底的 500 JSON）
+      const badHost = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view', { host: '127.0.0.1:80,evil.example' }))
+      expect(badHost.statusCode).toBe(400)
 
       const feed = await call('/dsh-zdiary-kit/feed.xml', makeReq('/dsh-zdiary-kit/feed.xml'))
       expect(feed.statusCode).toBe(200)

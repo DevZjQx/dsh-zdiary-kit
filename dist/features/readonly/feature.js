@@ -48,6 +48,39 @@ function byModified(a, b) {
 function messageOf(err) {
     return err instanceof Error ? err.message : String(err);
 }
+/**
+ * 对外文案：只回插件自己写的校验文案；zk 进程 / 文件系统的原文写日志，不写进页面。
+ * zk 的 stderr 与 spawn 报错常带绝对路径（笔记本、zk 二进制），页面和 JSON 都不该带出去。
+ */
+function publicMessage(err) {
+    if (err instanceof ZkError && err.code !== 'zk-failed')
+        return err.message;
+    try {
+        console.warn('[zdiary] 只读视图：' + messageOf(err));
+    }
+    catch { /* ignore */ }
+    return '读取失败（详细原因见 DSH 日志）';
+}
+/**
+ * 请求自己的 origin。DSH 的 TLS 由 webServer 直接终结（node:https），
+ * 所以 `socket.encrypted` 就是真实协议 —— 别把 RSS 的链接写死成 http。
+ */
+function requestOrigin(req) {
+    const secure = req.socket?.encrypted === true;
+    return `${secure ? 'https' : 'http'}://${String(req.headers.host ?? '127.0.0.1')}`;
+}
+/**
+ * 解析请求 URL。Host 是客户端可控的：畸形值（例如 `127.0.0.1:80,evil`）会让 new URL 抛错，
+ * 在路由外抛出去只会落到兜底的 500 JSON —— 在这里统一收成 400。
+ */
+function parseRequestUrl(req) {
+    try {
+        return new URL(String(req.url ?? '/'), `http://${String(req.headers.host ?? '127.0.0.1')}`);
+    }
+    catch {
+        return null;
+    }
+}
 /** 所有只读响应共用的安全头：无脚本、不可被框、无 referer、不缓存 */
 function secure(res) {
     res.setHeader('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
@@ -259,7 +292,7 @@ async function handleNote(res, cfg, rel) {
     }
     catch (err) {
         const missing = err instanceof ZkError && err.code === 'not-found';
-        errorPage(res, cfg, missing ? 404 : 400, missing ? '没有这篇笔记' : '打不开这篇笔记', messageOf(err));
+        errorPage(res, cfg, missing ? 404 : 400, missing ? '没有这篇笔记' : '打不开这篇笔记', publicMessage(err));
         return;
     }
     let all = [];
@@ -316,9 +349,14 @@ async function handleNote(res, cfg, rel) {
     ].join('\n');
     sendHtml(res, 200, shell(cfg, loaded.doc.title || loaded.rel, body));
 }
-async function handleView(req, res, url) {
+async function handleView(req, res) {
     if (!guard(req, res, 'html'))
         return;
+    const url = parseRequestUrl(req);
+    if (!url) {
+        sendHtml(res, 400, layout({ title: '请求不合法', notebook: '只读视图', body: '<h1>请求不合法</h1><p class="error">Host 头不是合法地址。</p>' }));
+        return;
+    }
     const st = state();
     const p = url.searchParams.get('p') ?? '';
     const q = (url.searchParams.get('q') ?? '').trim();
@@ -339,7 +377,7 @@ async function handleView(req, res, url) {
         return await handleHome(res, st.cfg);
     }
     catch (err) {
-        errorPage(res, st.cfg, err instanceof ZkError ? 503 : 500, '读不出来', messageOf(err));
+        errorPage(res, st.cfg, err instanceof ZkError ? 503 : 500, '读不出来', publicMessage(err));
     }
 }
 // ── JSON / RSS ────────────────────────────────────────────────────────
@@ -362,9 +400,14 @@ function limitOf(url) {
         return 50;
     return Math.min(200, Math.max(1, raw));
 }
-async function handleApiNotes(req, res, url) {
+async function handleApiNotes(req, res) {
     if (!guard(req, res, 'json'))
         return;
+    const url = parseRequestUrl(req);
+    if (!url) {
+        json(res, 400, { ok: false, error: 'Host 头不是合法地址' });
+        return;
+    }
     const st = state();
     if (!st.ready) {
         json(res, 503, { ok: false, error: st.reason });
@@ -377,12 +420,17 @@ async function handleApiNotes(req, res, url) {
         json(res, 200, { ok: true, count: notes.length, notes: notes.map(publicNote) });
     }
     catch (err) {
-        json(res, 503, { ok: false, error: messageOf(err) });
+        json(res, 503, { ok: false, error: publicMessage(err) });
     }
 }
-async function handleApiNote(req, res, url) {
+async function handleApiNote(req, res) {
     if (!guard(req, res, 'json'))
         return;
+    const url = parseRequestUrl(req);
+    if (!url) {
+        json(res, 400, { ok: false, error: 'Host 头不是合法地址' });
+        return;
+    }
     const st = state();
     if (!st.ready) {
         json(res, 503, { ok: false, error: st.reason });
@@ -409,7 +457,7 @@ async function handleApiNote(req, res, url) {
     }
     catch (err) {
         const missing = err instanceof ZkError && err.code === 'not-found';
-        json(res, missing ? 404 : 400, { ok: false, error: messageOf(err) });
+        json(res, missing ? 404 : 400, { ok: false, error: publicMessage(err) });
     }
 }
 function rssDate(iso) {
@@ -434,11 +482,10 @@ async function handleFeed(req, res) {
         notes = (await loadAll(st.cfg)).sort(byModified).slice(0, 30);
     }
     catch (err) {
-        sendText(res, 503, messageOf(err));
+        sendText(res, 503, publicMessage(err));
         return;
     }
-    const host = String(req.headers.host ?? '127.0.0.1');
-    const origin = `http://${host}`;
+    const origin = requestOrigin(req);
     const items = notes.map((note) => [
         '<item>',
         `<title>${esc(note.title || note.path)}</title>`,
@@ -462,19 +509,10 @@ async function handleFeed(req, res) {
 }
 // ── 挂载 ──────────────────────────────────────────────────────────────
 export function registerReadOnly({ route }) {
-    route(VIEW, async (req, res) => {
-        const url = new URL(String(req.url ?? '/'), `http://${String(req.headers.host ?? '127.0.0.1')}`);
-        await handleView(req, res, url);
-    });
-    route(FEED, async (req, res) => {
-        await handleFeed(req, res);
-    });
-    route(API_NOTES, async (req, res) => {
-        const url = new URL(String(req.url ?? '/'), `http://${String(req.headers.host ?? '127.0.0.1')}`);
-        await handleApiNotes(req, res, url);
-    });
-    route(API_NOTE, async (req, res) => {
-        const url = new URL(String(req.url ?? '/'), `http://${String(req.headers.host ?? '127.0.0.1')}`);
-        await handleApiNote(req, res, url);
-    });
+    // handler 自己 guard / 解析 URL：畸形 Host 在 guard 里或 parseRequestUrl 里就被收住，
+    // 不会在路由外抛错落到兜底的 500 JSON
+    route(VIEW, handleView);
+    route(FEED, handleFeed);
+    route(API_NOTES, handleApiNotes);
+    route(API_NOTE, handleApiNote);
 }

@@ -108,10 +108,15 @@ function stripFrontmatter(text: string): string {
   return text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
 }
 
-/** 只放行 http(s) / mailto / 站内相对路径；javascript:、data: 一律当成纯文本 */
+/**
+ * 只放行 http(s) / mailto / 站内相对路径；javascript:、data: 一律当成纯文本。
+ * `//host` 与 `\\host` / `\/host` 是协议相对链接（浏览器会把反斜杠规范成斜杠），
+ * 点下去就离开本地视图了，同样不算站内，直接拒绝。
+ */
 function safeHref(href: string): boolean {
   const value = href.trim()
   if (!value) return false
+  if (/^[\\/]{2}/.test(value)) return false
   if (/^(?:javascript|data|vbscript):/i.test(value)) return false
   const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(value)
   if (!scheme) return true

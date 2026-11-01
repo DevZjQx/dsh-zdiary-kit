@@ -45,13 +45,14 @@
 
 **Depends on.** `lib/http`、`lib/install`、`lib/notebook`、`lib/zk`、`config/store`、`config/paths`；
 app 注入 `route` 与 `isTrusted`（信任栅栏在 app，feature 只消费）。栅栏做三层：
-回环判定 → `connection.requestRejection`（不可用即 503，fail-closed）→ 跨站写请求（Origin / Sec-Fetch-Site）一律 403 ——
+`connection.requestRejection`（Host/Origin + 浏览器会话；不可用即 503，fail-closed）→ 写入口再判 `isTrusted`（回环直通）→
+跨站写请求（Origin / Sec-Fetch-Site）一律 403 ——
 否则任何一个网页都能 POST `/install` 让插件下载并执行二进制。
 
 **Public surface.** `registerSettings({ route, isTrusted })`；`./client` 由包导出。
 
-**Rejected.** 把信任栅栏放进 feature —— 拒绝：路由门必须是唯一的（app 里一个 `route()` 包住所有 handler，
-feature 拿不到"没设防的路由"这个选项）。用已有的 `ctx.configForms` 做表单 —— 拒绝：那套要求插件声明
+**Rejected.** 把信任栅栏放进 feature —— 拒绝：路由门必须集中在 app（settings 只拿到设防的 `route()`；
+绕过栅栏的 `routePublic()` 只给只读视图，且那面的边界由它自己的回环门兜）。用已有的 `ctx.configForms` 做表单 —— 拒绝：那套要求插件声明
 Config schema（schemastery）并走宿主配置编辑器，而本插件的配置热改、路径在 agent 工具里也要读，
 自己一份 JSON 更直接（代价：要自己写字段清单）。
 

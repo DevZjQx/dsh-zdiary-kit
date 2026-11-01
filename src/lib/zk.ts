@@ -202,7 +202,7 @@ export async function zk(
     }
     return r.stdout
   } catch (err) {
-    if (err instanceof ExecError) throw new ZkError(err.message)
+    if (err instanceof ExecError) throw new ZkError(err.message, undefined, 'zk-failed')
     throw err
   }
 }

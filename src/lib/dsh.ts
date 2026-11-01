@@ -41,8 +41,7 @@ export interface ToolsLike {
 }
 
 export interface ConnectionLike {
-  isTrusted?(req: IncomingMessage): boolean
-  /** undefined / null / false = 放行；否则是拒绝码 */
+  /** undefined / null / false = 放行；否则是拒绝码（同时含 Host/Origin 与浏览器会话认证） */
   requestRejection?(req: IncomingMessage): unknown
 }
 

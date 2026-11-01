@@ -4,7 +4,8 @@
  * 只做装配，不放业务：
  *   · 注册 zk_* 工具（features/zk-tools）—— 工具自己每次读配置、自己 ensureNotebook；
  *   · 注册设置/状态/安装路由（features/settings）—— 只在宿主有 webServer 时挂；
- *   · 信任栅栏：回环直通 + connection.requestRejection（fail-closed）—— 所有路由的公共门。
+ *   · 信任栅栏：回环直通 + connection.requestRejection（fail-closed）—— 设置页的公共门；
+ *     只读视图走自己的回环门（Host + 对端），因为它要能被没有 cookie 的 curl / RSS 直接读。
  *     Web 端口在回环地址上，但浏览器里任何页面都能向回环发请求；没有这层栅栏，
  *     一个恶意网页就能改你的笔记本路径、让插件下载并执行二进制。
  */
@@ -54,13 +55,12 @@ export default {
       return service<ConnectionLike>(ctx, 'connection')
     }
     function isTrustedReq(req: IncomingMessage): boolean {
-      // 只看 Host：设置页沿用「本机地址 = 可信」的旧口径；只读视图另外再判对端地址
+      // 只看 Host：设置页沿用「本机地址 = 可信」的旧口径；其余交给 Connection 的公开栅栏
       if (isLoopbackHost(req)) return true
-      try {
-        const conn = connection()
-        if (conn && typeof conn.isTrusted === 'function') return conn.isTrusted(req) === true
-      } catch { /* 栅栏出错 → 不信任 */ }
-      return false
+      const conn = connection()
+      if (!conn || typeof conn.requestRejection !== 'function') return false
+      // requestRejection = Host/Origin 栅栏 + 浏览器会话认证（DSH 的公开口径，别用私有 isTrusted）
+      try { return conn.requestRejection(req) === undefined } catch { return false }
     }
     /**
      * 跨站写请求一律拒绝：Host 是 127.0.0.1 不代表请求来自本页 ——
@@ -83,9 +83,12 @@ export default {
       }
     }
 
-    /** 栅栏不可用 → 拒绝（安全组件的默认值必须是「关」） */
+    /**
+     * 栅栏不可用 → 拒绝（安全组件的默认值必须是「关」）。
+     * Host/Origin 与浏览器会话都交给 Connection 的公开 requestRejection ——
+     * 不再自己先判一遍 Host：两处口径分叉时，先判的那处会静默赢。
+     */
     function rejected(req: IncomingMessage, res: ServerResponse): boolean {
-      if (!isTrustedReq(req)) { json(res, 403, { ok: false, error: '不受信任的访问来源' }); return true }
       if (crossSiteWrite(req)) { json(res, 403, { ok: false, error: '拒绝跨站写请求' }); return true }
       try {
         const conn = connection()
@@ -180,12 +183,16 @@ export default {
         try { console.warn('[zdiary] 没有 webServer：跳过设置页路由（zk_* 工具不受影响）') } catch { /* ignore */ }
         return
       }
-      const route = (pathname: string, handler: RouteHandler): void => {
+      /**
+       * 注册一条 exact 路由。gate=true 时先过信任栅栏（Host/Origin + Connection 的
+       * 浏览器会话认证）；gate=false 只给「公开只读」用，安全边界由路由自己兜。
+       */
+      const mount = (pathname: string, handler: RouteHandler, gate: boolean): void => {
         disposers.push(webServer.register({
           kind: 'exact',
           path: pathname,
           handler: async (req, res) => {
-            if (rejected(req, res)) return
+            if (gate && rejected(req, res)) return
             try {
               await handler(req, res)
             } catch (err) {
@@ -194,6 +201,15 @@ export default {
           },
         }))
       }
+      const route = (pathname: string, handler: RouteHandler): void => mount(pathname, handler, true)
+      /**
+       * 公开只读路由：不套 DSH 的浏览器会话栅栏。
+       * Connection.requestRejection 除了 Host/Origin 还会校验浏览器 cookie，
+       * 而只读视图要能被 curl / RSS 阅读器直接读（它们没有 DSH 的 cookie）。
+       * 这一面由 features/readonly 自己的 guard 兜：Host 与对端地址都必须是回环。
+       * 别拿它挂有副作用或返回敏感配置的路由 —— 那类路由必须走 route()。
+       */
+      const routePublic = (pathname: string, handler: RouteHandler): void => mount(pathname, handler, false)
       try {
         registerSettings({ route, isTrusted: isTrustedReq })
         try { console.log('[zdiary] 设置页路由已挂载：/dsh-zdiary-kit/api/*') } catch { /* ignore */ }
@@ -202,7 +218,7 @@ export default {
       }
       // 只读视图：自己的方法门 / 回环门，不共享设置页的写路由；注册失败不影响工具与设置页
       try {
-        registerReadOnly({ route })
+        registerReadOnly({ route: routePublic })
         try { console.log('[zdiary] 只读视图已挂载：/dsh-zdiary-kit/view · /feed.xml · /api/notes · /api/note') } catch { /* ignore */ }
       } catch (err) {
         try { console.warn('[zdiary] 只读视图注册失败：' + (err instanceof Error ? err.message : String(err))) } catch { /* ignore */ }

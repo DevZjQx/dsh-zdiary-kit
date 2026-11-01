@@ -13,8 +13,15 @@
 - `GET /dsh-zdiary-kit/api/notes?q=&tag=&limit=`：只读列表（`limit` 1–200，默认 50）
 - `GET /dsh-zdiary-kit/api/note?path=…`：单篇正文（`path` 必须是笔记本内的相对路径）
 
-查询串路由不是偷懒：宿主的 `webServer.register` 只支持 `kind: 'exact'`，拼不出 `/note/:id`。
+查询串路由不是偷懒：宿主的 `webServer.register` 只支持 `exact` / `prefix` 两种匹配，拼不出 `/note/:id`。
 设置页「只读视图」按钮直接打开首页。
+
+**与 DSH 信任栅栏的关系。** 设置页路由挂在 app 的 `rejected()` 后面，会经过
+`connection.requestRejection()`；它除了 Host/Origin，还会要求 DSH 的浏览器会话 cookie
+（没有 cookie → 401）。只读视图**故意绕开这层**：`curl`、RSS 阅读器、未登录的新标签页都拿不到 cookie，
+而它们的需求正是「打开就能读」。代价是这一面没有 DSH 的身份认证，安全边界完全由下面第 4 条地址门承担 ——
+所以这 4 条路由必须是只读的，将来也**不要**在这里加写接口或返回敏感配置的路由（那类必须走 app 的 `route()`）。
+这条绕行在 app 里叫 `routePublic()`，和 `route()` 就差一个 gate。
 
 **只读的四道门**（都在 `features/readonly/feature.ts` 的 `guard` / 各 handler 里）：
 
@@ -25,8 +32,9 @@
 3. **面门**：不复用设置页的 `snapshot`，不返回 `zkPath`、配置文件路径、`absPath`；
    `.zk/` 与根目录 meta（`AGENTS.md` / `MEMORY.md` 等）按路径直接打不开。
 4. **地址门**：只认回环 —— `Host` 必须是 127.0.0.1 / localhost / [::1]，对端地址也必须是回环
-   （`lib/http` 的 `isLoopback`：设置页只判 Host，只读视图两边都判）。
-   DSH 被配成监听 `0.0.0.0` 时，只读视图也不会跟着上网（不会用 `connection.isTrusted` 放宽）。
+   （`lib/http` 的 `isLoopback`：设置页判 Host + DSH 的 cookie，只读视图两边都判、不看 cookie）。
+   DSH 绑到局域网地址时，只读视图既不会跟着上网，在本机也打不开（那种绑定下 Host 与对端都不是回环）；
+   要用它，让 DSH 监听回环地址（默认就是）。
 
 响应统一带 `CSP`（`default-src 'none'`、`frame-ancestors 'none'`、`form-action 'self'`）、
 `X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`，且不发 CORS 头。
@@ -53,4 +61,5 @@
   放进来只会得到「能直连、搜不到、还被 markdown 渲染坏」的页面；这两种格式 agent 仍可用 `zk_read` 读。
 - 路径判定是词法的（`absPathOf` 只比字符串前缀）：笔记本里一个指向外部的符号链接会被当成笔记本内的文件读。
   威胁模型是「本机进程 + 回环浏览器」，这不是沙箱边界，别拿它当隔离。
-- 没有登录 / token：回环之外一律拒绝。要在局域网读，是另一个决定（显式开关 + token），不在一期。
+- 没有登录 / token：回环之外一律拒绝。也正因如此，DSH 必须监听回环地址 —— 绑到局域网 IP 时这个视图不可用。
+  要在局域网读，是另一个决定（显式开关 + token），不在一期。

@@ -40,16 +40,19 @@ export default {
             return service(ctx, 'connection');
         }
         function isTrustedReq(req) {
-            // 只看 Host：设置页沿用「本机地址 = 可信」的旧口径；只读视图另外再判对端地址
+            // 只看 Host：设置页沿用「本机地址 = 可信」的旧口径；其余交给 Connection 的公开栅栏
             if (isLoopbackHost(req))
                 return true;
+            const conn = connection();
+            if (!conn || typeof conn.requestRejection !== 'function')
+                return false;
+            // requestRejection = Host/Origin 栅栏 + 浏览器会话认证（DSH 的公开口径，别用私有 isTrusted）
             try {
-                const conn = connection();
-                if (conn && typeof conn.isTrusted === 'function')
-                    return conn.isTrusted(req) === true;
+                return conn.requestRejection(req) === undefined;
             }
-            catch { /* 栅栏出错 → 不信任 */ }
-            return false;
+            catch {
+                return false;
+            }
         }
         /**
          * 跨站写请求一律拒绝：Host 是 127.0.0.1 不代表请求来自本页 ——
@@ -76,12 +79,12 @@ export default {
                 return true;
             }
         }
-        /** 栅栏不可用 → 拒绝（安全组件的默认值必须是「关」） */
+        /**
+         * 栅栏不可用 → 拒绝（安全组件的默认值必须是「关」）。
+         * Host/Origin 与浏览器会话都交给 Connection 的公开 requestRejection ——
+         * 不再自己先判一遍 Host：两处口径分叉时，先判的那处会静默赢。
+         */
         function rejected(req, res) {
-            if (!isTrustedReq(req)) {
-                json(res, 403, { ok: false, error: '不受信任的访问来源' });
-                return true;
-            }
             if (crossSiteWrite(req)) {
                 json(res, 403, { ok: false, error: '拒绝跨站写请求' });
                 return true;
@@ -205,12 +208,16 @@ export default {
                 catch { /* ignore */ }
                 return;
             }
-            const route = (pathname, handler) => {
+            /**
+             * 注册一条 exact 路由。gate=true 时先过信任栅栏（Host/Origin + Connection 的
+             * 浏览器会话认证）；gate=false 只给「公开只读」用，安全边界由路由自己兜。
+             */
+            const mount = (pathname, handler, gate) => {
                 disposers.push(webServer.register({
                     kind: 'exact',
                     path: pathname,
                     handler: async (req, res) => {
-                        if (rejected(req, res))
+                        if (gate && rejected(req, res))
                             return;
                         try {
                             await handler(req, res);
@@ -224,6 +231,15 @@ export default {
                     },
                 }));
             };
+            const route = (pathname, handler) => mount(pathname, handler, true);
+            /**
+             * 公开只读路由：不套 DSH 的浏览器会话栅栏。
+             * Connection.requestRejection 除了 Host/Origin 还会校验浏览器 cookie，
+             * 而只读视图要能被 curl / RSS 阅读器直接读（它们没有 DSH 的 cookie）。
+             * 这一面由 features/readonly 自己的 guard 兜：Host 与对端地址都必须是回环。
+             * 别拿它挂有副作用或返回敏感配置的路由 —— 那类路由必须走 route()。
+             */
+            const routePublic = (pathname, handler) => mount(pathname, handler, false);
             try {
                 registerSettings({ route, isTrusted: isTrustedReq });
                 try {
@@ -239,7 +255,7 @@ export default {
             }
             // 只读视图：自己的方法门 / 回环门，不共享设置页的写路由；注册失败不影响工具与设置页
             try {
-                registerReadOnly({ route });
+                registerReadOnly({ route: routePublic });
                 try {
                     console.log('[zdiary] 只读视图已挂载：/dsh-zdiary-kit/view · /feed.xml · /api/notes · /api/note');
                 }

@@ -146,7 +146,7 @@ export async function zk(cfg, args, opts = {}) {
     }
     catch (err) {
         if (err instanceof ExecError)
-            throw new ZkError(err.message);
+            throw new ZkError(err.message, undefined, 'zk-failed');
         throw err;
     }
 }

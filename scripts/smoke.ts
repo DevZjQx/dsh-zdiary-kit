@@ -39,6 +39,8 @@ type Tool = {
 const tools: Tool[] = []
 const routes = new Map<string, (req: http.IncomingMessage, res: http.ServerResponse) => unknown>()
 const promptSections: Array<{ name: string; order: number; text: string | (() => string) }> = []
+/** 模拟 DSH 的浏览器会话栅栏：打开时没有 cookie 的请求一律 401 */
+let requireCookie = false
 
 const ctx = {
   get(name: string) {
@@ -54,7 +56,7 @@ const ctx = {
         },
       }
     }
-    if (name === 'connection') return { isTrusted: () => true, requestRejection: () => undefined }
+    if (name === 'connection') return { isTrusted: () => true, requestRejection: () => (requireCookie ? 401 : undefined) }
     return undefined
   },
   effect(fn: () => unknown) { fn() },
@@ -188,6 +190,20 @@ if (!tagsRes.ok || !tagsHtml.includes('<h1>标签</h1>')) throw new Error('标�
 const feedRes = await fetch(origin + '/dsh-zdiary-kit/feed.xml')
 if (!feedRes.ok || !String(feedRes.headers.get('content-type')).includes('rss+xml')) throw new Error('RSS 没出来')
 console.log('[只读视图] 首页 / 笔记页 / 标签页 = 200 ✓ · POST = 405 ✓ · API 无 absPath ✓ · 单篇正文 ✓ · RSS ✓')
+
+// ── 信任边界：只读视图不套 DSH 的浏览器 cookie 栅栏（curl / RSS 阅读器没有 cookie），设置路由必须套 ──
+requireCookie = true
+try {
+  const openView = await fetch(origin + '/dsh-zdiary-kit/view')
+  if (!openView.ok) throw new Error('只读视图被 cookie 栅栏挡住了：' + openView.status)
+  const openFeed = await fetch(origin + '/dsh-zdiary-kit/feed.xml')
+  if (!openFeed.ok) throw new Error('RSS 被 cookie 栅栏挡住了：' + openFeed.status)
+  const gatedSettings = await fetch(base + '/settings')
+  if (gatedSettings.status !== 401) throw new Error('设置路由没被 cookie 栅栏挡住：' + gatedSettings.status)
+} finally {
+  requireCookie = false
+}
+console.log('[信任边界] 只读视图 / RSS 不套 cookie 栅栏 ✓ · 设置路由 401 ✓')
 
 // ── 多笔记本：notebooks + active 是真相，notebook / structure 是派生的 ──────────
 const alt = path.join(home, 'alt')
