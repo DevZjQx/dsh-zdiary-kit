@@ -69,6 +69,24 @@ export interface LintDuplicateBucket {
   items: Array<{ title: string; paths: string[] }>
 }
 
+/** 疑似重复（改一两个字）：与全等重名分开报，避免确定的问题和猜测混在一起 */
+export interface LintSimilarGroup {
+  titles: string[]
+  paths: string[]
+  /**
+   * 字符二元组 Jaccard（0–1）；「短串被长串包含」命中时按下限 0.6 记 ——
+   * 否则 0.5 的分数会让「已经报了」看起来自相矛盾。
+   */
+  score: number
+}
+
+export interface LintSimilarBucket {
+  total: number
+  /** true = 候选太多只看了一部分 / 笔记扫描触顶：只漏报，不误报 */
+  truncated: boolean
+  items: LintSimilarGroup[]
+}
+
 export interface LintOneWayEntry extends LintEntry {
   /** 没有回链的来源（笔记本相对路径）；一个目标可以有多条。linksOnly 时只含 Links 小节来源 */
   from: string[]
@@ -192,6 +210,8 @@ export interface LintResult {
   /** S 链 X、X 不回链，且 S 不是日记（日记天然是出边，不算没接上）；items 是 X，from 是 S */
   oneWayLinks: LintOneWayBucket
   duplicateTitles: LintDuplicateBucket
+  /** 标题只差一两个字（疑似同一结论写了两遍）：只报告，合并由人裁决 */
+  similarTitles: LintSimilarBucket
   /** 记忆层体检：MEMORY.md / USER.md 里的 `[[来源]]` 是否还指向活笔记 */
   memoryLinks: LintMemoryBucket
   /** frontmatter 缺 type / status / authority 的笔记（只报告，不替人补） */
@@ -200,6 +220,12 @@ export interface LintResult {
   tags: LintTagBucket
   /** 根目录 AGENTS.md 是不是当前版本的模板（只报告，不覆盖） */
   template: LintTemplateBucket
+  /**
+   * 非日记笔记已到 150 篇、根目录却没有 INDEX.md（P2-11）：只是提示，不生成静态索引。
+   * 实时分布看 zk_stats（byDir / byTag），静态索引会过期、还要决定谁负责更新。
+   * 日记不计入：它按天自动增长，一年就能把任何库顶到 150 篇，可知识量并没有涨。
+   */
+  indexHint: boolean
 }
 
 /** 标题归一化与链接解析在 `lib/wikilink.ts`（dream 也用同一套）；这里保留导出，免得调用方跟着搬 */
@@ -218,6 +244,98 @@ export function duplicateTitles(notes: NoteRecord[], max = MAX_ITEMS): LintDupli
   const dup = [...groups.values()].filter((g) => g.paths.length > 1)
   dup.sort((a, b) => b.paths.length - a.paths.length || a.title.localeCompare(b.title))
   return { total: dup.length, items: dup.slice(0, max) }
+}
+
+/** 相似标题的判定：字符二元组 Jaccard 下限；短串被长串包含时另算（短串至少 6 字） */
+const SIMILAR_RATIO = 0.6
+const SIMILAR_SHORT = 6
+/** 同目录最多两两比较多少篇：超过就截断并置 truncated，别让 1 万篇变成 O(n²) */
+const SIMILAR_GROUP_MAX = 300
+
+/** 比较用的标题：NFKC → 小写 → 去标点 / 空白。中文不改字，只抹掉排版差异 */
+function similarKey(title: string): string {
+  return String(title ?? '').normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '')
+}
+
+function bigrams(key: string): Set<string> {
+  const chars = [...key]
+  const out = new Set<string>()
+  for (let i = 0; i < chars.length - 1; i++) out.add(chars[i] + chars[i + 1])
+  if (out.size === 0 && chars.length > 0) out.add(chars[0])
+  return out
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0
+  let shared = 0
+  for (const gram of a) if (b.has(gram)) shared += 1
+  return shared / (a.size + b.size - shared)
+}
+
+/**
+ * 疑似重复标题（P2-10）：精确查重只能挡住手滑 —— 中文改两个字就绕过去了。
+ *
+ * 纯机械：NFKC + 去标点后按字符二元组算 Jaccard ≥ 0.6，或短串（≥ 6 字）被长串包含。
+ * 只在**同目录**内比较（不同目录的同名本来允许）；全等标题留给 duplicateTitles，这里不重复报。
+ * 只报告：`zk_new` 不用它拦人，误报会挡住正常写作。
+ *
+ * 日记不进来（由调用方按 `isDaily` 过滤）：标题就是日期，`2026-10-01` 与 `2026-10-02`
+ * 的二元组 Jaccard 是 0.86 —— 一年日记会吐出上千组「疑似重复」，真问题全被淹掉。
+ * 纯数字标题（日期 / 编号）同样跳过：那是「按天 / 按号」的记录，不是同一个结论写了两遍。
+ */
+export function similarTitles(notes: NoteRecord[], scanTruncated: boolean, max = MAX_ITEMS): LintSimilarBucket {
+  // size 一律按码点算（`[...key].length`），不混用 `.length`：后者数的是 UTF-16 单元，
+  // 标题里带 emoji / 扩展区汉字时会比码点多一倍，「谁是短串」会判错。
+  interface Item { title: string; path: string; key: string; exact: string; grams: Set<string>; size: number }
+  const groups = new Map<string, Item[]>()
+  for (const note of notes) {
+    const title = note.title || path.basename(note.path, path.extname(note.path))
+    const key = similarKey(title)
+    if (!key) continue
+    // 纯数字：日期 / 编号类标题，相似度只反映「数字挨着」，不反映重复结论
+    if (/^\d+$/.test(key)) continue
+    const dir = path.posix.dirname(note.path)
+    const list = groups.get(dir) ?? []
+    list.push({ title, path: note.path, key, exact: normalizeTitle(title), grams: bigrams(key), size: [...key].length })
+    groups.set(dir, list)
+  }
+
+  let truncated = scanTruncated
+  const found: LintSimilarGroup[] = []
+  for (const group of groups.values()) {
+    let list = group
+    if (list.length > SIMILAR_GROUP_MAX) {
+      truncated = true
+      list = list.slice(0, SIMILAR_GROUP_MAX)
+    }
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i]
+        const b = list[j]
+        // 归一化后完全一样：那是 duplicateTitles 的活（这里报会让同一件事出现两遍）
+        if (a.exact === b.exact) continue
+        // 短标题的二元组太少（RAG / RAG 2 会算出 0.67），噪声大于信号
+        if (a.size < 4 || b.size < 4) continue
+        let score = jaccard(a.grams, b.grams)
+        let hit = score >= SIMILAR_RATIO
+        if (!hit) {
+          const [short, long, shortSize] = a.size <= b.size ? [a.key, b.key, a.size] : [b.key, a.key, b.size]
+          if (shortSize >= SIMILAR_SHORT && long.includes(short)) {
+            hit = true
+            score = SIMILAR_RATIO
+          }
+        }
+        if (!hit) continue
+        found.push({
+          titles: [a.title, b.title],
+          paths: [a.path, b.path],
+          score: Math.round(score * 100) / 100,
+        })
+      }
+    }
+  }
+  found.sort((a, b) => b.score - a.score || a.paths[0].localeCompare(b.paths[0]))
+  return { total: found.length, truncated, items: found.slice(0, max) }
 }
 
 /** 注入的三份 meta 里只有 MEMORY / USER 会写来源链接；AGENTS 是规则，不查 */
@@ -349,7 +467,7 @@ export function formatMemoryLinks(bucket: LintMemoryBucket): string | null {
  * `zk-kit lint` 与 `zk_lint` 各写一遍就会改到一半。返回空数组 = 这一库三项都没问题，不占行。
  */
 export function formatLintExtras(
-  r: Pick<LintResult, 'incomplete' | 'tags' | 'template'>,
+  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'similarTitles' | 'indexHint'>,
 ): string[] {
   const lines: string[] = []
   if (r.incomplete.total > 0) {
@@ -375,6 +493,19 @@ export function formatLintExtras(
       `⚠️ AGENTS.md 是${r.template.version === 0 ? '旧版 / 无版本标记' : `旧版模板 v${r.template.version}`}` +
       `（当前 v${r.template.current}）—— 只报告，不覆盖；要看新版可对比 docs/features/memory.md`,
     )
+  }
+  if (r.similarTitles.total > 0) {
+    const sample = r.similarTitles.items.slice(0, 3)
+      .map((g) => `「${g.titles[0]}」/「${g.titles[1]}」（${g.score.toFixed(2)}）`)
+      .join('；')
+    lines.push(
+      `⚠️ 疑似重复标题：${r.similarTitles.total} 组 — ${sample}` +
+      (r.similarTitles.total > 3 ? ' …' : '') +
+      '｜只报告，合并由人裁决',
+    )
+  }
+  if (r.indexHint) {
+    lines.push('· 笔记已到 150 篇（不含日记）：根目录还没有 INDEX.md —— 需要总索引时再建（zk_stats 有实时目录 / 标签分布）')
   }
   return lines
 }
@@ -652,6 +783,10 @@ export async function lintNotebook(
     })),
   }
 
+  // 日记不参与下面两项：标题就是日期（相似度必然高），篇数又按天自动增长
+  // （一年日记足以把任何库顶到 150 篇，可库里其实只有几十篇知识）。
+  const nonDaily = notes.filter((n) => !isDaily(path.resolve(cfg.notebook, n.path)))
+
   return {
     notebook: cfg.notebook,
     notes: notes.length,
@@ -664,11 +799,15 @@ export async function lintNotebook(
     tagless: bucket(taglessAbs.filter((abs) => !isDaily(abs))),
     oneWayLinks: oneWayBucket,
     duplicateTitles: duplicateTitles(notes),
+    // 日记按天写，标题就是日期：同类比较只会产出一堆误报（见 similarTitles 的注释）
+    similarTitles: similarTitles(nonDaily, scanTruncated),
     memoryLinks: memoryLinkIssues(cfg, notes),
     incomplete: cfg.structure === 'layered'
       ? incompleteFrontmatter(cfg, notes, (rel) => isDaily(path.resolve(cfg.notebook, rel)), scanTruncated)
       : { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
     tags: tagHygiene(notes),
     template: templateStatus(cfg),
+    // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
+    indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
   }
 }

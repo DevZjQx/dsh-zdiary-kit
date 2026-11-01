@@ -13,9 +13,12 @@
 | | 目录 | 模板 | group | 根目录文档 |
 |---|---|---|---|---|
 | `flat`（默认，与 0.1.0 逐字节一致） | `notes/` `journal/` | `daily.md` | 1 个（daily） | 无（可选 `--with-agents` 写精简版 `AGENTS.md`） |
-| `layered` | 加 `raw/` `inbox/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） | `AGENTS.md` + `WORKFLOW.md` |
+| `layered` | 加 `raw/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） | `AGENTS.md` + `WORKFLOW.md` |
 
 切到 `layered` **只建目录与模板，不搬已有笔记**；已存在的模板、`AGENTS.md` 与 `WORKFLOW.md` 不覆盖（用户可能改过），只在缺失时写。
+`inbox/` 从 0.8.2 起不再创建（P2-8）：它在 layered 下不属于任何 group（写不进），flat 下能写进去却会被排除出索引（写进去就消失）。
+盘上已有的 `inbox/` 不删，继续当隔离区；写入口统一拒绝（`assertWritablePath`）。`structureDirs` 也不再列出它，
+所以老库的 `inbox/` 不会让 `ready` 变 false。
 `WORKFLOW.md` 是「改已有笔记」才读的细则（先列受影响清单等确认，再按 temporal / context variant / contradiction 三分类动手）：
 不注入（省预算），但和 meta 文件同口径排除出检索，`AGENTS.md` 里只留一行指针。
 因此从 flat 升级时旧 `daily.md` 会保留（没有 Events / Observations / Loose ends 三节）；想要 layered 日记模板，
@@ -24,7 +27,7 @@
 想要约定与周提醒就显式 opt-in：`zk-kit init --with-agents`、设置页「写入 AGENTS.md 模板」、
 或代码里 `ensureNotebook(cfg, signal, { withAgents: true })`；已存在的文件一律不覆盖。
 `flat` 用精简版 `AGENTS_TEMPLATE_FLAT`（实测 88 词，锁 ≤90）：不出现 `raw/` / `inbox/` / `archive/` / `WORKFLOW.md`。
-`layered` 用完整版 `AGENTS_TEMPLATE`（实测 189 词，锁 ≤190）—— 它属于注入预算且**永不截断**，
+`layered` 用完整版 `AGENTS_TEMPLATE`（实测 186 词，锁 ≤190）—— 它属于注入预算且**永不截断**，
 写长了 USER / MEMORY 就没位置。两份模板首行都有 `<!-- zdiary-template: vN -->`（`TEMPLATE_MARK`），
 `zk_lint` 据此报告老库的模板是否过期（只报告、不覆盖）。
 `entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入（Z10）；

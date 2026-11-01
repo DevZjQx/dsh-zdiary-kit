@@ -6,7 +6,7 @@
  *
  * 两种结构（Config.structure）：
  *   · flat（默认，0.1.0 行为逐字节一致）：notes/ + 日记 + 一个 daily group；
- *   · layered：raw / inbox / notes/{sources,concepts,entities,patterns} / archive + 三套模板（daily / source / entry）+ 五个 group。
+ *   · layered：raw / notes/{sources,concepts,entities,patterns} / archive + 三套模板（daily / source / entry）+ 五个 group。
  * 切到 layered **只建目录与模板，不搬已有笔记**。
  */
 import fs from 'node:fs';
@@ -157,7 +157,7 @@ function layeredGroups(cfg) {
 export function structureDirs(cfg) {
     const rels = [cfg.notesDir, cfg.dailyDir];
     if (cfg.structure === 'layered') {
-        rels.push('raw', 'inbox', ...Object.values(PLURAL_DIR).map((dir) => `${cfg.notesDir}/${dir}`), cfg.archiveDir);
+        rels.push('raw', ...Object.values(PLURAL_DIR).map((dir) => `${cfg.notesDir}/${dir}`), cfg.archiveDir);
     }
     return [...new Set(rels)];
 }

@@ -55,14 +55,24 @@ group 的子目录照旧放行（zk 按路径前缀归组）。理由：`notes/`
 没有告警时输出里不带 `summaryWarning` 这个键：宿主按无损 JSON 校验工具输出，值为 `undefined` 的字段会让整次调用报
 `invalid output` —— 文件已经建好，模型却拿不到 `path`。
 只填不删：正文里多写一节 `## Content` 之类属于排版噪音，靠 `body` 的入参说明去避免，不在建完收尾时静默改正文。
+`tagWarning`（P2-9）：标题或正文含 CJK、而最终标签为空（入参 / 默认标签 / 正文 hashtag 都没有）时给一句提示 ——
+写路径是唯一便宜的修复点；一周后才在 `zk_dream` 里被「无标签」拒绝时，那篇已经进不了晋升候选，只能靠全文检索找回来。
+代价不在搜索：P2-7 之后中文查询会并上子串匹配，正文照样搜得到；问题在标签是唯一能确定性筛选的维度（`zk_query -t`、
+`byTag` 分布都用不上它）。
+只提示、不阻断、不自动打标签：索引页与临时对照本来就不需要标签，自动生成的标签只是新的噪音。
 `zk_append` 拒写根目录的 meta 文件（AGENTS / USER / MEMORY / DREAMS / INDEX / WORKFLOW，清单来自 `lib/meta.ts`）：追加会把记忆变成流水账，
 也让「这条记忆是谁改的」失去审计线索；子目录里的同名文件是普通笔记，照常可写。
 同一道守卫也覆盖 `zk_new`（不能新建根目录 meta）、`zk_link`（meta 不能作为来源或目标）与 `zk_supersede`（不能废弃 meta，否则会把它搬进 archive/）。
-`raw/` 是唯一的只读目录：`zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 的写入入口都走 `assertWritablePath`，
-往里写会直接报错 —— raw 被排除出索引，写进去的笔记不会报错、只是永远搜不到，那比失败更难查。
+`raw/` 与 `inbox/` 是只读目录：`zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 的写入入口都走 `assertWritablePath`，
+往里写会直接报错 —— 两者都被排除出索引，写进去的笔记不会报错、只是永远搜不到，那比失败更难查。
+`inbox/` 从 0.8.2 起不再创建、也不再宣传（P2-8）：layered 下它不属于任何 group，flat 下能写进去但从索引里消失；
+盘上已有的 `inbox/` 不删，继续当隔离区（读得到、搜不到、写不进）。
 `zk_stats` 除笔记 / 标签 / 断链 / 孤立外，还给 `archived`（索引里 archive/ 下的笔记数）与
 `superseded`（全部笔记中 `status: superseded` 的数量，含已归档与手工标的）—— 一次 `allNotes(includeArchived)`
-从索引算，不扫磁盘、也不逐篇读全文。
+从索引算，不扫磁盘、也不逐篇读全文。`byDir` / `byTag`（P2-11）是同一份 live 上算出的实时分布
+（顶层目录 → 篇数，根目录文件记作 `.`；标签取前 10）：静态 `INDEX.md` 会过期，还要决定谁负责更新，
+而 150 篇正是检索开始变糊的拐点 —— 所以 `zk_lint` 只在「≥150 篇且没有 INDEX.md」时提示一句，不生成文件。
+篇数**不含日记**：日记按天自动增长，一年就能把任何库顶到 150 篇，而知识量并没有涨。
 `zk_supersede` 默认 `dry_run: true`：一句「更新一下 wiki」不该让全库漂移。
 `reason` 会做单行规范化（≤200 字）并以 YAML 双引号标量写进归档的 `supersede-reason`：带冒号或引号也不会写坏
 frontmatter；预演也回显，重放返回已记录的原因。双引号值读回来走 JSON 解析（`\"`、`\n` 还原成原字符），
@@ -92,6 +102,11 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 「陈旧」在 JS 里算（`stale_days` 默认 90）—— zk 的 `stale` 不是内置过滤器，只在用户的 `[filter]` 里定义过才存在。
 「重名标题」按「压空白 + 小写」归一化后分组。孤儿与无标签**排除 daily 目录**：日记按天写，天然没入链没标签，
 全报会淹掉真问题；断链仍包含日记。
+`similarTitles`（P2-10）是「改一两个字」的疑似重复：NFKC + 去标点后按字符二元组算 Jaccard ≥ 0.6，
+或短串（≥ 6 字）被长串包含；只在同目录内比较，短于 4 字的标题跳过（`RAG` / `RAG 2` 的二元组太少，噪声大于信号）。
+与 `duplicateTitles` 分开报：全等的直接进重名，不再进疑似；只在内存里比较，同目录超过 300 篇或扫描触顶时置 `truncated`。只报告，合并由人裁决。
+**日记与纯数字标题不参与**：日记标题就是日期（`2026-10-01` / `2026-10-02` 的二元组相似度是 0.86），
+不排除的话一年日记能吐出上千组误报、把真问题淹掉；按日期 / 编号命名的笔记同理（`isDaily` 在调用方过滤，纯数字 key 在函数内跳过）。
 「单向链接」（`oneWayLinks`）在 JS 里按 `zk graph` 的边算：存在 S→X、X 没回链 S，且 **S、X 都不是日记**。
 不用 zk 的 `--missing-backlink`：它的原义是「至少有一条单向链接」，日记天然是一串出边，
 日记提过的每篇笔记都会常年挂在桶里 —— 那不是「没接上」，是正常的引用方向，桶就再也清零不了。
@@ -118,7 +133,7 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 不计；散文段落也不算，避免把自由文本变成告警噪音）。
 同一份条目解析还数 `undated`（首行没有 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）
 与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记）—— 都只报告，注入仍按文件原文。
-文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本三个桶）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
+文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
 `incomplete`（P2-13）：`type` / `status` / `authority` 缺任一的笔记（**只在 layered 下查**：flat 的笔记
 本来就不写这三个字段，整库标红不是「可发现的状态」而是噪音）。索引把缺失落成空串，
 于是「没写 authority」=「authority 正常」，dream 的 informal 门对它们静默失效。
@@ -126,9 +141,16 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `tags`（P2-14）：标签总数 ≥ 30 才报；`caseVariants` 是忽略大小写后同形的组（`#Agent` 3 篇 + `#agent` 2 篇 → 一组、总 5），
 `singletons` 是只出现一次的那批。只报告，不合并 —— 在别的库里它们可能就是两个概念。
 `template`（P2-15）：读根目录 `AGENTS.md` 首行的 `<!-- zdiary-template: vN -->`；无标记按 v0 算，
-与 `TEMPLATE_VERSION` 不等时提示「旧版模板」。只报告，不覆盖（模板允许用户改）。
+与 `TEMPLATE_VERSION` 不等时提示「旧版模板」。只报告，不覆盖（模板允许用户改）。v2 去掉了 `inbox/`（P2-8），
+老库会在下次 `zk_lint` 看到「旧版模板」——这是有意的：它每轮注入，停旧版本等于按旧路径写。
 `zk_dream` 的拒绝规则只有两条（`authority=informal`、无标签），日记不进候选/拒绝（它的未完成项单独一栏）：
 再加第三条就是语义判断，违反 D5。`topCited` 用一次 `zk graph` 数入链，不按笔记逐条跑。
+**使用信号（P2-12）**：入链数衡量的是作者写笔记时的中心性，不是「后来被用到」。日记是这个插件里唯一
+按时间记录真实工作的层，所以从同一次 `zk graph` 里再取「来源在 dailyDir 下的边」：候选与被引排行都带
+`dailyMentions`（被几篇日记提到）、`daysMentioned`（覆盖几个不同日期）、`lastMentioned`（最近日期）。
+日期优先取日记文件名（`YYYY-MM-DD`）—— 补写旧日记时 zk 的 `created` 会全是今天；文件名不是日期形状才退回 `created`。
+`topCited` 排序改为 `daysMentioned → dailyMentions → cited → 标题`（跨天复现比同一天多篇更强）：日记里没写过就是 0，排序自动退回原来的
+「入链降序」，不引入任何新状态，也不需要 recall 日志。局限写在文档里：**空信号不等于没被用过**。
 **晋升是一道门，门要知道门里有什么。** `zk_dream` 会读 `MEMORY.md`，把「已经晋升过」的移出候选、单列 `alreadyPromoted`：
 两条都是字符串比较 —— `[[链接]]` 经 `lib/wikilink` 解析到活笔记（`promotedBy: 'link'`），
 或者候选标题（归一化后 ≥ 6 字）出现在 MEMORY 的某一行里（`promotedBy: 'title'`，真机 7 条里 6 条是这种纯文字条目）。
@@ -141,3 +163,9 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `citedBy` 是同一次 `zk graph` 得到的入链来源前 5 条。给 agent 的是可重放的上下文（谁引了它、摘要是什么），
 不是「这条该晋升」的结论。
 `zk-kit query` 的透传在 0 命中且给了 `-m` 时退回 `-M re`：FTS5 不切中文，不兜底会静默返回空（Z12）。
+`zk_search`（P2-7）更进一步：**查询含 CJK 时 FTS 与 `-M re` 各跑一次**，按路径去重合并，`matchStrategy` 返回
+`fts` / `regex` / `mixed`。只兜 0 命中是不够的 —— FTS 命中 1–2 条时模型会以为「库里只有这些」，然后建重复笔记；
+纯 ASCII 查询仍只跑一个进程，不付这份开销。`mixed` 只在正则补到的笔记**真的进了返回**时才报：FTS 占满 `limit` 时
+两者按 `limit` 合并会把补的分片切掉，那时仍报 `fts`，界面文案不会谎称「已补上」。
+正则这一路单独兜错：子串匹配超时 / 报错时退回 FTS 的结果并按 `fts` 报，不让一次检索整体失败（FTS 0 命中时则返回空）。
+`zk_query` 是 `zk list` 的透传接口，保持原语义。

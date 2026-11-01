@@ -17,7 +17,7 @@ import { fileStamp } from '../lib/file-stamp.ts'
 import { withFileLockSync } from '../lib/lock.ts'
 import { readJson, writeJson } from '../lib/json-file.ts'
 
-/** 结构模式：flat = 只有 notes/ + 日记；layered = raw/inbox/notes 分类目录/archive + 三套模板 */
+/** 结构模式：flat = 只有 notes/ + 日记；layered = raw/notes 分类目录/archive + 三套模板（inbox/ 0.8.2 起不再建） */
 export type Structure = 'flat' | 'layered'
 
 /** 一个笔记本 = 一条记录：路径 + 它自己的结构模式 */

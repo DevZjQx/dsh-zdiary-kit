@@ -10,19 +10,19 @@
 
 | 工具 | 干什么 |
 |---|---|
-| `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要 |
+| `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要；中文查询自动并用子串匹配（`matchStrategy` 说明用了 `fts` / `regex` / `mixed`，补上全文索引漏掉的笔记） |
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active） |
 | `zk_read` | 读一篇全文（按路径，或先按词找最相关的一篇）；超长会截断并标注 |
-| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面） |
+| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/`、`inbox/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面）；中文笔记没有任何标签时在 `tagWarning` 里提示（只提示，不阻断） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题）；根目录 meta 文件拒写 |
 | `zk_daily` | 打开/创建某天的日记，并追加一条带时间的记录（layered 模板写进 `## Events` 的 `### HH:MM`，flat 追加到文件末尾的 `## HH:MM`） |
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题）；meta 文件不作为来源或目标 |
 | `zk_supersede` | 废弃过时结论：标 `superseded` + 写 `reason` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演；meta 文件不能废弃 |
 | `zk_rename` | 改名 / 换目录并修断链：入链（`[[…]]` 与 Markdown 链接，保留 `#锚点` 与 `\|别名`）按实际解析结果改到新路径，根目录 meta 里的 `[[来源]]` 一起改，被搬走那篇自己的相对 Markdown 链接按新位置重算；默认只预演 |
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时记忆每轮已自动带进系统提示 |
-| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本，每类最多 50 条；只报告不改写 |
-| `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、已在 MEMORY 的、窗口外积压、daily 未完成项、被引最多；只报告 |
-| `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded） |
+| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本，每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；只报告不改写 |
+| `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、已在 MEMORY 的、窗口外积压、daily 未完成项、被引最多（先按「被日记提到几天」排）；只报告 |
+| `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded），以及顶层目录与前 10 个标签的实时分布 |
 | `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |
 
 写笔记前 agent 会先 `zk_search` 查重；flat 笔记本的 `zk_new` 还会按标题再查一次，重复直接报错。
@@ -56,7 +56,8 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 写 `MEMORY.md` / `DREAMS.md` 由 agent 按 `AGENTS.md` 自己决定 —— 机械活留在插件，语义判断留在可审计的地方。
 `zk_dream` 会先读一遍 `MEMORY.md`：已经晋升过的（`[[链接]]` 命中，或条目里直接写了标题）移出候选、单列「已在 MEMORY」，
 不会每周原样重复；窗口外仍未晋升的进 `backlog`，漏做一次不会永久掉队；不传 `days` 时窗口 = 距 `DREAMS.md`
-「上次做梦」的天数（没有就 7 天）。
+「上次做梦」的天数（没有就 7 天）。被引排行先按「被日记提到几天」（`daysMentioned`）排，入链数只作并列次序 ——
+日记是这个插件里唯一按时间记录真实工作的层，空信号只说明日记里没写过，不等于没被用过。
 `zk_lint` 会核对 `MEMORY.md` / `USER.md` 里的 `[[来源路径]]` 是否还指向活笔记 ——
 `zk_supersede` 只重写笔记之间的入链，meta 文件不在图里，链接不会跟着搬，`--broken-links` 也看不见。
 改名同理：`zk_rename` 会把 `zk graph` 里的入链和根目录 meta 的 `[[来源]]` 一起改到新路径，被搬走那篇自己的相对 Markdown 链接也按新位置重算 —— 手工 `mv` 会一次断掉这三处。
@@ -215,7 +216,6 @@ template = "daily.md"
 ```
 <notebook>/
 ├── raw/            # 原始材料，只读
-├── inbox/          # 还没想好归属的碎片
 ├── AGENTS.md       # 工作约定（模板由插件写入；agent 每轮读它，DSH 不会自动加载）
 ├── WORKFLOW.md     # 改已有笔记的细则：先列清单、三分类（不注入，按需读）
 ├── notes/
@@ -232,6 +232,8 @@ template = "daily.md"
 与 **`WORKFLOW.md`**（改已有笔记前先列受影响清单等确认，再按 temporal / context variant / contradiction 三分类动手）。
 `WORKFLOW.md` 不进每轮注入 —— 它低频但重要，塞进 `AGENTS.md` 会把 500 词预算挤到 MEMORY 没位置。
 **只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` / `WORKFLOW.md` 一律不覆盖。
+`inbox/`（0.8.2 起）不再创建，也不再接受写入：layered 下它不属于任何 group，flat 下能写进去却会被排除出索引（写进去就消失）。
+盘上已有的 `inbox/` 不删，继续当隔离区 —— 读得到、搜不到，`zk_new` / `zk_append` 会直接拒绝。
 `flat` 也可以有工作约定：`zk-kit init --with-agents`（或设置页「写入 AGENTS.md 模板」）写一份精简版
 （≤90 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`），已存在不覆盖；不想要就一个字节都不多。
 反过来，配置是 `flat` 但盘上留着 `notes/concepts` 之类的分层目录时，`doctor` / 设置页 / 每轮注入都会提示
@@ -332,6 +334,9 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 体检报「记忆链接：N 条失效」 | `MEMORY.md` / `USER.md` 里的 `[[来源]]` 指向的笔记已归档或删除：改成 `archive/` 下的新路径，或改指活笔记；显式写 `archive/` 的链接不算失效 |
 | 体检报「N 个条目没写日期 / 已退役」 | 按 `AGENTS.md` 的格式补 `结论（YYYY-MM-DD）[[来源路径]]`；退役行写 `- [superseded …] 旧结论 → [[新结论]]`，行留着不删。只报告，注入仍按原文 |
 | 体检报「AGENTS.md 是旧版 / 无版本标记」 | 模板升级过，老库不会自动覆盖（可能有你自己的改动）：对照 `docs/features/memory.md` 的新模板手工合并；不合并也能用，只是少新加的约定 |
+| 体检报「疑似重复标题」 | 同目录里有两篇标题只差一两个字（二元组相似度 ≥ 0.6，或短标题被长标题包含）。只报告：确认是同一结论就用 `zk_supersede` 合并，不是就留着 |
+| 体检提示「笔记已到 150 篇（不含日记）」 | 检索开始变糊的拐点，但插件不生成 `INDEX.md`（静态索引会过期）。用 `zk_stats` 看目录 / 标签分布决定先读哪里；真要总索引就自己写，提示会消失 |
+| 中文搜索只回来几条 | `zk_search` 对含中文的查询会 FTS + 子串各跑一次并合并（`matchStrategy: mixed`）；`zk_query` 是 `zk list` 的透传，仍只在 0 命中时兜底 —— 查中文优先用 `zk_search`，或配合 tags |
 | 体检报「frontmatter 缺字段」（layered） | 缺 `type` / `status` / `authority`：索引把缺失落成空串，`authority=informal` 这类机械门对它们静默失效。按模板补上即可；flat 不查这一项 |
 | `doctor` 提示「记忆在跑，但缺 AGENTS.md」 | `flat` 默认不写工作约定：跑 `zk-kit init --with-agents`，或设置页点「写入 AGENTS.md 模板」（已存在不覆盖） |
 | 提示「盘上有分层目录，但配置是 flat」 | 以前是 layered、后来改成 flat（或手工搬过目录）：新建笔记会落在 `notes/` 根、不套模板。要么把配置改回 layered，要么把这些目录移走；插件只提示，不动文件 |
@@ -339,7 +344,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「补建 *名* 的目录」，别手改配置去将就磁盘 |
 | 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |
 | 新建时提示「归档里有同名旧结论」 | 允许复用标题，但先 `zk_read` 归档那篇，确认不是同一个错误；插件只警告、不拦 |
-| 往 `raw/` 写笔记报「只读」 | `raw/` 是原始材料：写进去的笔记会被排除出索引，表现成「写了但搜不到」；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 直接拒绝 | 结论写到 `notes/`；原文留在原位，用 `zk_read raw/xxx.md` 或直接读文件对照 |
+| 往 `raw/` 或 `inbox/` 写笔记报「只读」 | 两者都被排除出索引，写进去的笔记不会报错、只是永远搜不到；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 直接拒绝 | 结论写到 `notes/`；原文留在原位，用 `zk_read raw/xxx.md` 或直接读文件对照。`inbox/` 是停用入口，老目录只读保留 |
 | `config set notebook=…` 报「派生值」 | `notebook` 是 `notebooks[active]` 解析后的派生值、不落盘也不可写：改路径用 `zk-kit notebooks add 名 路径`，切换用 `use` |
 
 ## 开发

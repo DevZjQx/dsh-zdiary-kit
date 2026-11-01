@@ -309,7 +309,38 @@ export function isUnderDir(rel: string, dir: string): boolean {
   return !!d && (rel === d || rel.startsWith(d + '/'))
 }
 
-export async function searchNotes(cfg: Config, opts: SearchOptions = {}, signal?: AbortSignal): Promise<NoteRecord[]> {
+/** FTS5 的 unicode61 只按「连续字母/数字」切词：中文整句是一个 token，子串查询会漏 */
+const CJK_TEXT = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/
+
+/** 正文 hashtag 的唯一口径：`noteFromDisk` 的解析与 `taglessCjkWarning` 的判断共用一份 */
+const HASHTAG_SRC = '(?:^|\\s)#([\\p{L}\\p{N}_-]+)'
+const HASHTAG = new RegExp(HASHTAG_SRC, 'u')
+
+/** 查询里有没有 CJK：有就值得多跑一次正则（中文召回不完整是已知失败模式） */
+export function hasCjk(text: string): boolean {
+  return CJK_TEXT.test(String(text ?? ''))
+}
+
+/** `fts` = 只跑了全文索引；`regex` = 全文检索没结果 / 出错，退回子串；`mixed` = 两者合并且正则真的补到了结果 */
+export type MatchStrategy = 'fts' | 'regex' | 'mixed'
+
+export interface SearchResult {
+  notes: NoteRecord[]
+  matchStrategy: MatchStrategy
+}
+
+/**
+ * 检索 + 用了哪种匹配策略。
+ *
+ * 中文只在 0 命中时兜底是不够的：FTS 命中 1–2 条时模型会以为「库里只有这些」，
+ * 然后建重复笔记。所以**含 CJK 的查询两遍都跑**（FTS + `-M re`），按路径去重合并；
+ * 纯 ASCII 查询保持单进程，不付这份开销。
+ */
+export async function searchNotesDetailed(
+  cfg: Config,
+  opts: SearchOptions = {},
+  signal?: AbortSignal,
+): Promise<SearchResult> {
   const limit = Math.min(200, Math.max(1, Math.trunc(opts.limit ?? 10)))
   const statuses = (opts.status ?? []).filter(Boolean)
   const types = (opts.type ?? []).filter(Boolean)
@@ -346,14 +377,35 @@ export async function searchNotes(cfg: Config, opts: SearchOptions = {}, signal?
 
   try {
     const hits = await runStrategy()
-    // FTS5 的 unicode61 不切中文 → 中文整句会被当成一个 token，命中 0 条。
-    // 结果为空且给了搜索词时退回正则（子串匹配）：宁可慢一次，也别让中文搜索静默失败。
-    if (hits.length === 0 && opts.query) return await runStrategy('re')
-    return hits
+    // 没有查询词 / 纯 ASCII：维持单进程
+    if (!opts.query || !hasCjk(opts.query)) {
+      if (hits.length === 0 && opts.query) return { notes: await runStrategy('re'), matchStrategy: 'regex' }
+      return { notes: hits, matchStrategy: 'fts' }
+    }
+    // 含中文：FTS 与正则各跑一次，合并去重（FTS 的排序在前，正则补漏在后）。
+    // 正则这一路单独兜住：FTS 已经有结果时，子串匹配出错不该把整次检索拖成失败 ——
+    // 退回 hits、按 fts 报告，与「正则没补到东西」是同一个可观测结果。
+    let regex: NoteRecord[] = []
+    try {
+      regex = await runStrategy('re')
+    } catch (err) {
+      if (!(err instanceof ZkError)) throw err
+    }
+    const seen = new Set(hits.map((n) => n.path))
+    const merged = [...hits, ...regex.filter((n) => !seen.has(n.path))].slice(0, limit)
+    // 补漏真的进了结果才算 mixed：FTS 正好占满 limit 时正则那条会被 slice 掉，
+    // 再报 mixed 就是谎报「补上了全文索引漏掉的」（界面文案据此说话）。
+    if (merged.length === hits.length) return { notes: hits, matchStrategy: hits.length ? 'fts' : 'regex' }
+    return { notes: merged, matchStrategy: hits.length ? 'mixed' : 'regex' }
   } catch (err) {
-    if (opts.query && err instanceof ZkError) return await runStrategy('re')
+    if (opts.query && err instanceof ZkError) return { notes: await runStrategy('re'), matchStrategy: 'regex' }
     throw err
   }
+}
+
+/** 只要结果、不要策略的旧入口（绝大多数调用方） */
+export async function searchNotes(cfg: Config, opts: SearchOptions = {}, signal?: AbortSignal): Promise<NoteRecord[]> {
+  return (await searchNotesDetailed(cfg, opts, signal)).notes
 }
 
 /** 巡检 / 做梦一次最多扫多少篇：到顶就告警，不静默截断（静默失败最难查） */
@@ -537,9 +589,10 @@ export function relPathOf(cfg: Config, abs: string): string {
 }
 
 /**
- * raw/ 是只读的原始材料。往里写不会报错，但会被 excludedNames 排除出索引 ——
- * 结果是「写了、没报错、但搜不到」，比直接失败更难查。所以在写入口就拦住。
- * 读不受影响：raw 里的材料照常 zk_read / Read。
+ * raw/ 是只读的原始材料，inbox/ 是被放弃的「待归类区」（P2-8）。
+ * 两者都在 excludedNames 里，写进去不会报错、但会被排除出索引 —— 结果是
+ * 「写了、没报错、但搜不到」，比直接失败更难查。所以在写入口就拦住。
+ * 读不受影响：raw 里的材料照常 zk_read / Read；盘上已有的 inbox/ 原样保留。
  */
 function assertWritablePath(cfg: Config, abs: string): void {
   const rel = relPathOf(cfg, abs)
@@ -547,6 +600,12 @@ function assertWritablePath(cfg: Config, abs: string): void {
     throw new ZkError(
       `raw/ 是只读的原始材料，不能写：${rel}`,
       '结论写到 notes/，观察写进 daily；原始材料只在原位读，不改不搬',
+    )
+  }
+  if (rel === 'inbox' || rel.startsWith('inbox/')) {
+    throw new ZkError(
+      `inbox/ 是已停用的待归类区，写进去会被排除出索引：${rel}`,
+      '直接写到目标目录（layered 下是 notes/sources 等 group）；盘上已有的 inbox/ 只读保留',
     )
   }
 }
@@ -574,7 +633,7 @@ function noteFromDisk(cfg: Config, abs: string): NoteDoc {
   const content = fs.readFileSync(abs, 'utf8')
   const stat = fs.statSync(abs)
   const heading = content.match(/^#\s+(.+)$/m)
-  const tags = [...content.matchAll(/(?:^|\s)#([\p{L}\p{N}_-]+)/gu)].map((m) => m[1])
+  const tags = [...content.matchAll(new RegExp(HASHTAG_SRC, 'gu'))].map((m) => m[1])
   const fields = parseFrontmatter(content).fields
   return {
     title: heading ? heading[1].trim() : path.basename(abs, path.extname(abs)),
@@ -1100,6 +1159,10 @@ export interface NotebookStats {
   archived: number
   /** frontmatter status: superseded 的笔记数（含已归档的，以及手工标了但没搬的） */
   superseded: number
+  /** 顶层目录分布（P2-11）：`notes` → 12 篇；根目录文件记作 `.`；不含 archive */
+  byDir: Array<{ dir: string; count: number }>
+  /** 出现最多的前 10 个标签（同数按字母序） */
+  byTag: Array<{ tag: string; count: number }>
 }
 
 export async function notebookStats(cfg: Config, signal?: AbortSignal): Promise<NotebookStats> {
@@ -1127,7 +1190,30 @@ export async function notebookStats(cfg: Config, signal?: AbortSignal): Promise<
     archived: all.length - live.length,
     // 含已归档的，以及手工标了但没搬进 archive 的（正常流程会搬，这里兜手滑）
     superseded: all.filter((n) => n.status === 'superseded').length,
+    ...distributionOf(live),
   }
+}
+
+/**
+ * 目录 / 标签分布（P2-11）：静态 INDEX.md 会过期，实时分布不需要第二份真相。
+ * 数据来自已经载入的 live，不新增 zk 进程。
+ */
+function distributionOf(live: NoteRecord[]): Pick<NotebookStats, 'byDir' | 'byTag'> {
+  const dirs = new Map<string, number>()
+  const tags = new Map<string, number>()
+  for (const note of live) {
+    const top = note.path.includes('/') ? note.path.slice(0, note.path.indexOf('/')) : '.'
+    dirs.set(top, (dirs.get(top) ?? 0) + 1)
+    for (const tag of note.tags) tags.set(tag, (tags.get(tag) ?? 0) + 1)
+  }
+  const byDir = [...dirs]
+    .map(([dir, count]) => ({ dir, count }))
+    .sort((a, b) => b.count - a.count || a.dir.localeCompare(b.dir))
+  const byTag = [...tags]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+    .slice(0, 10)
+  return { byDir, byTag }
 }
 
 export async function indexNotebook(cfg: Config, signal?: AbortSignal): Promise<void> {
@@ -1637,4 +1723,21 @@ export function withTags(content: string, tags: string[]): string {
   if (!missing.length) return body
   const line = missing.map((t) => `#${t}`).join(' ')
   return body ? `${body}\n\n${line}` : line
+}
+
+/**
+ * 中文笔记没打标签的提示（P2-9）：写路径是唯一便宜的修复点。
+ *
+ * 为什么是「没标签」而不是「搜不到」：P2-7 之后中文查询已经会并上子串匹配，正文照样找得回来；
+ * 真正的代价在下一道门 —— `zk_dream` 的机械门按「无标签」把笔记拒出晋升候选，
+ * `zk_stats` 的 byTag 分布里也没有它。标签仍是唯一能确定性筛选的维度。
+ *
+ * 只提示、不阻断 —— 索引页、临时对照本来就不需要标签；`defaultTags` 非空时也不会走到这里。
+ * 判据用最终标签（入参 + 默认值为空）且正文没有 hashtag，避免误报。
+ */
+export function taglessCjkWarning(title: string, content: string, tags: string[]): string | null {
+  if (tags.length > 0) return null
+  if (HASHTAG.test(String(content ?? ''))) return null
+  if (!CJK_TEXT.test(String(title ?? '')) && !CJK_TEXT.test(String(content ?? ''))) return null
+  return '中文笔记没有 tags：zk_dream 的「无标签」门会把它拒出晋升候选，byTag 分布里也看不到它；补 tags 或设默认标签'
 }

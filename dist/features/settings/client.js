@@ -127,7 +127,7 @@ window.__ModuleLoader__?.load({
                 }
                 catch { /* 基线坏了就当没切 */ }
                 if (switching && !window.confirm('切到 layered 只会新建目录与模板：\n' +
-                    '  raw/ · inbox/ · notes/{sources,concepts,entities,patterns}/ · archive/\n' +
+                    '  raw/ · notes/{sources,concepts,entities,patterns}/ · archive/\n' +
                     '  daily.md / source.md / entry.md 三套模板 · 根目录 AGENTS.md / WORKFLOW.md\n\n' +
                     '**不会**移动、改写或删除任何已有笔记。\n\n' +
                     '保存后点底部的「补建 … 的目录」才会真正建出来。继续？'))

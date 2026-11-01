@@ -11,12 +11,12 @@
  *
  * 长度是设计约束：AGENTS.md 属于注入预算（默认 500 词，中文 2 字 = 1 词）且**永不截断**，
  * 模板自己吃掉过半预算，USER / MEMORY 就没位置了 —— 所以这里只留规则，不写教程。
- * 目标 ≤190 词（AGENTS_TEMPLATE 实测 189、AGENTS_TEMPLATE_FLAT 实测 88），单测里锁住。
+ * 目标 ≤190 词（AGENTS_TEMPLATE 实测 186、AGENTS_TEMPLATE_FLAT 实测 88），单测里锁住。
  * 首行 `<!-- zdiary-template: vN -->` 是版本标记：lint 据此报告「老库的 AGENTS.md 是旧版」，
  * 只报告不覆盖（模板允许用户改）。
  */
-/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧契约 */
-export const TEMPLATE_VERSION = 1;
+/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧契约（v2：去掉 inbox/） */
+export const TEMPLATE_VERSION = 2;
 /** 首行版本标记（实测 4 词）；不许带日期 —— 带日期的写法实测 6 词，白花 2 词 */
 export const TEMPLATE_MARK = `<!-- zdiary-template: v${TEMPLATE_VERSION} -->`;
 export const AGENTS_TEMPLATE = `${TEMPLATE_MARK}
@@ -27,7 +27,7 @@ export const AGENTS_TEMPLATE = `${TEMPLATE_MARK}
 
 ## 目录
 
-raw/ 只读材料 · inbox/ 待归类 · notes/sources/ 来源
+raw/ 只读材料 · notes/sources/ 来源
 notes/{concepts,entities,patterns}/ 原子笔记 · archive/ 废弃（不删）
 
 ## 检索词

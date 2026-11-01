@@ -86,6 +86,12 @@ export interface DreamCandidate {
   promoted: boolean
   /** 怎么判出来的：link = MEMORY 里的 `[[链接]]`；title = 条目里写了标题；'' = 没晋升 */
   promotedBy: 'link' | 'title' | ''
+  /** 被多少篇日记提到过（P2-12：入链衡量作者中心性，日记才接近「被用到」） */
+  dailyMentions: number
+  /** 这些日记覆盖了几个不同日期（跨天复现比连着引用几次更强） */
+  daysMentioned: number
+  /** 最近一次被日记提到的日期（YYYY-MM-DD）；没有就是空串 */
+  lastMentioned: string
 }
 
 export interface DreamRejection {
@@ -105,6 +111,9 @@ export interface DreamCited {
   title: string
   path: string
   cited: number
+  dailyMentions: number
+  daysMentioned: number
+  lastMentioned: string
 }
 
 export interface DreamResult {
@@ -158,11 +167,12 @@ export function looseEndsOf(content: string): string[] {
 /**
  * 机械拒绝规则（只两条，别加语义判断）：
  *   · authority=informal —— 口头/未验证来源，进长期记忆会污染结论；
- *   · 无标签 —— Z12 下中文正文召回不完整，没标签的笔记晋升后照样搜不到。
+ *   · 无标签 —— 标签是唯一能确定性筛选的维度；没标签的笔记晋升后只能靠全文检索找回来
+ *     （P2-7 起中文检索不再漏，但「按主题找」还是得靠标签）。
  */
 export function rejectionReason(note: NoteRecord): string | null {
   if (note.authority === 'informal') return 'authority: informal（口头/未验证来源）'
-  if (note.tags.length === 0) return '无标签（中文正文召回不完整，晋升后也搜不到）'
+  if (note.tags.length === 0) return '无标签（没有可筛选的标签，晋升后只能靠全文检索找回来）'
   return null
 }
 
@@ -268,6 +278,33 @@ export async function dreamNotebook(
     inbound.set(edge.targetPath, sources)
   }
   const citedOf = (n: NoteRecord): number => inbound.get(n.path)?.length ?? 0
+
+  // 使用信号（P2-12）：日记是本插件里唯一「按时间记录真实工作」的层，正好当召回日志用。
+  // 零新增状态：来源路径与日期都在已载入的 notes / edges 里。
+  const byPath = new Map(notes.map((n) => [n.path, n]))
+  const usageCache = new Map<string, Pick<DreamCandidate, 'dailyMentions' | 'daysMentioned' | 'lastMentioned'>>()
+  const usageOf = (rel: string): Pick<DreamCandidate, 'dailyMentions' | 'daysMentioned' | 'lastMentioned'> => {
+    const cached = usageCache.get(rel)
+    if (cached) return cached
+    const sources = (inbound.get(rel) ?? []).filter((p) => isUnder(p, cfg.dailyDir))
+    const dates = new Set<string>()
+    for (const source of sources) {
+      // 日记的文件名就是日期（zk 的 created 是文件创建时间，补写旧日记时会全是今天）；
+      // 文件名不是日期形状（自定义模板）才退回 created。
+      const stem = path.basename(source, path.extname(source))
+      const day = /^\d{4}-\d{2}-\d{2}$/.test(stem) ? stem : localDate(byPath.get(source)?.created ?? '')
+      if (day) dates.add(day)
+    }
+    const sorted = [...dates].sort()
+    const value = {
+      dailyMentions: sources.length,
+      daysMentioned: dates.size,
+      lastMentioned: sorted.length ? sorted[sorted.length - 1] : '',
+    }
+    usageCache.set(rel, value)
+    return value
+  }
+
   const candidateOf = (note: NoteRecord, promotedBy: 'link' | 'title' | ''): DreamCandidate => ({
     title: note.title,
     path: note.path,
@@ -280,6 +317,7 @@ export async function dreamNotebook(
     citedBy: (inbound.get(note.path) ?? []).slice(0, 5),
     promoted: promotedBy !== '',
     promotedBy,
+    ...usageOf(note.path),
   })
 
   const promoted = promotionsOf(cfg, notes)
@@ -336,10 +374,18 @@ export async function dreamNotebook(
     }
   }
 
+  // 排序说明（P2-12）：先看「被日记提过几天」—— 跨天复现比同一天多次更强；同一天多篇日记
+  // 再按 dailyMentions 排，入链数只是最后的次序。没有日记的库两项都是 0，
+  // 排序自动退回原来的 cited 降序（行为兼容）。
   const topCited: DreamCited[] = notes
-    .map((n) => ({ title: n.title, path: n.path, cited: citedOf(n) }))
+    .map((n) => ({ title: n.title, path: n.path, cited: citedOf(n), ...usageOf(n.path) }))
     .filter((x) => x.cited > 0)
-    .sort((a, b) => b.cited - a.cited || a.title.localeCompare(b.title))
+    .sort((a, b) =>
+      b.daysMentioned - a.daysMentioned ||
+      b.dailyMentions - a.dailyMentions ||
+      b.cited - a.cited ||
+      a.title.localeCompare(b.title),
+    )
     .slice(0, TOP_CITED)
 
   return {

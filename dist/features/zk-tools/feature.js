@@ -14,7 +14,7 @@ import { configFor, pinSession, sessionNotebook, sessionState } from '../../conf
 import { defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from '../../config/paths.js';
 import { S, validateArgs } from '../../lib/tool.js';
 import { ensureNotebook, newNoteDir } from '../../lib/notebook.js';
-import { searchNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, ZkError, } from '../../lib/zk.js';
+import { searchNotes, searchNotesDetailed, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, ZkError, } from '../../lib/zk.js';
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.js';
 import { META_NAMES } from '../../lib/meta.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.js';
@@ -57,6 +57,19 @@ const LINT_DUPLICATE = objSchema({
         items: objSchema({ title: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } } }, ['title', 'paths']),
     },
 }, ['total', 'items']);
+/** 疑似重复标题（P2-10）：只差一两个字 */
+const LINT_SIMILAR = objSchema({
+    total: { type: 'number' },
+    truncated: { type: 'boolean' },
+    items: {
+        type: 'array',
+        items: objSchema({
+            titles: { type: 'array', items: { type: 'string' } },
+            paths: { type: 'array', items: { type: 'string' } },
+            score: { type: 'number' },
+        }, ['titles', 'paths', 'score']),
+    },
+}, ['total', 'truncated', 'items']);
 /** 记忆层体检：MEMORY.md / USER.md 里的来源链是否还指向活笔记 */
 const LINT_MEMORY = objSchema({
     files: { type: 'number' },
@@ -133,7 +146,10 @@ const DREAM_CANDIDATE = objSchema({
     citedBy: { type: 'array', items: { type: 'string' } },
     promoted: { type: 'boolean' },
     promotedBy: { type: 'string', enum: ['link', 'title', ''] },
-}, ['title', 'path', 'type', 'authority', 'tags', 'created', 'lead', 'cited', 'citedBy', 'promoted', 'promotedBy']);
+    dailyMentions: { type: 'number' },
+    daysMentioned: { type: 'number' },
+    lastMentioned: { type: 'string' },
+}, ['title', 'path', 'type', 'authority', 'tags', 'created', 'lead', 'cited', 'citedBy', 'promoted', 'promotedBy', 'dailyMentions', 'daysMentioned', 'lastMentioned']);
 /** frontmatter 解析失败：这些笔记不在索引里，所以单列一桶（path 相对笔记本，不带 title） */
 const LINT_PARSE = objSchema({
     total: { type: 'number' },
@@ -219,11 +235,12 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
         t({
             name: 'zk_search',
             description: '在 zk 知识库里搜索笔记（全文 / 标签 / 日期 / 断链 / 孤立笔记），返回标题、相对路径、标签、创建日与摘要。' +
-                '找到后用 zk_read 读全文。写笔记前先用它查重。',
+                '找到后用 zk_read 读全文。写笔记前先用它查重。' +
+                '中文查询会自动并用子串匹配（FTS 不切中文）：matchStrategy 说明这次用了 fts / regex / mixed，mixed 表示补到了全文索引漏掉的笔记。',
             parameters: {
                 type: 'object',
                 properties: {
-                    query: S.str('全文检索词（FTS，支持 "短语" 与 AND / OR）'),
+                    query: S.str('全文检索词（FTS，支持 "短语" 与 AND / OR；含中文时自动并用子串匹配补漏）'),
                     tags: S.arr('按标签过滤（AND：必须同时带这些标签）', S.str('标签名，不带 #')),
                     since: S.str('只看这个日期之后创建的笔记，自然语言或 ISO 日期，如 2026-01-01 / "last week"'),
                     until: S.str('只看这个日期之前创建的笔记'),
@@ -238,6 +255,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 schema: objSchema({
                     notebook: { type: 'string' },
                     count: { type: 'number' },
+                    matchStrategy: { type: 'string', enum: ['fts', 'regex', 'mixed'] },
                     notes: {
                         type: 'array',
                         items: objSchema({
@@ -248,12 +266,12 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             lead: { type: 'string' },
                         }, ['title', 'path', 'tags', 'created', 'lead']),
                     },
-                }, ['notebook', 'count', 'notes']),
+                }, ['notebook', 'count', 'matchStrategy', 'notes']),
             },
             async run(args, env) {
                 const cfg = configFor(env.workspace, env.sessionId);
                 await ensureNotebook(cfg);
-                const notes = await searchNotes(cfg, {
+                const result = await searchNotesDetailed(cfg, {
                     query: args.query ? String(args.query) : undefined,
                     tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
                     since: args.since ? String(args.since) : undefined,
@@ -265,15 +283,19 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 });
                 return {
                     notebook: cfg.notebook,
-                    count: notes.length,
-                    notes: notes.map((n) => ({ title: n.title, path: n.path, tags: n.tags, created: dateOnly(n.created), lead: n.lead })),
+                    count: result.notes.length,
+                    matchStrategy: result.matchStrategy,
+                    notes: result.notes.map((n) => ({ title: n.title, path: n.path, tags: n.tags, created: dateOnly(n.created), lead: n.lead })),
                 };
             },
             render(_args, value) {
                 const v = value;
                 if (!v.count)
                     return text(`没有匹配的笔记（笔记本 ${v.notebook}）`);
-                return text(`${v.count} 条（笔记本 ${v.notebook}）\n` + v.notes.map(noteLine).join('\n'));
+                const how = v.matchStrategy === 'mixed'
+                    ? '（中文：全文 + 子串合并，已补上全文索引漏掉的）'
+                    : v.matchStrategy === 'regex' ? '（全文无结果，已退回子串匹配）' : '';
+                return text(`${v.count} 条（笔记本 ${v.notebook}）${how}\n` + v.notes.map(noteLine).join('\n'));
             },
         }),
         t({
@@ -441,7 +463,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 '要短文件名就传 name（8–14 字中文短语 / 英文小写短横线名）：只换文件名，标题和正文一个字不动。' +
                 '归档里有同名旧结论不会拦，但会放进 archived（带 supersede-reason）：先读它，别把同一个错误结论重新提出来。' +
                 'type / authority 只有 layered 模板会写进 frontmatter。tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。' +
-                '根目录 meta 文件（AGENTS / USER / MEMORY 等）与 raw/ 不能写；写进去一个会被当成人写的工作面、另一个会被排除出索引。',
+                '中文笔记如果没有任何标签（入参 / 默认值 / 正文 hashtag 都没有），会在 tagWarning 里提示 —— 只提示，不阻断。' +
+                '根目录 meta 文件（AGENTS / USER / MEMORY 等）与 raw/ 、inbox/ 不能写：前者会被当成人写的工作面，后两者会被排除出索引。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -468,6 +491,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     links: { type: 'array', items: { type: 'string' } },
                     summaryApplied: { type: 'boolean' },
                     summaryWarning: { type: 'string' },
+                    tagWarning: { type: 'string' },
                     archived: {
                         type: 'array',
                         items: objSchema({
@@ -484,11 +508,14 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 await ensureNotebook(cfg, env.signal);
                 const tags = [...new Set([...(cfg.defaultTags ?? []), ...(Array.isArray(args.tags) ? args.tags.map(String) : [])])];
                 const type = args.type ? String(args.type) : undefined;
+                const title = String(args.title);
+                const body = args.body ? String(args.body) : '';
+                const content = withTags(body, tags);
                 const created = await createNote(cfg, {
-                    title: String(args.title),
+                    title,
                     name: args.name ? String(args.name) : undefined,
                     summary: args.summary ? String(args.summary) : undefined,
-                    content: withTags(args.body ? String(args.body) : '', tags),
+                    content,
                     dir: newNoteDir(cfg, { dir: args.dir ? String(args.dir) : undefined, type }),
                     group: args.group ? String(args.group) : undefined,
                     type,
@@ -506,6 +533,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         warnings.push(`${target}：${err instanceof Error ? err.message : String(err)}`);
                     }
                 }
+                // 中文没标签：写路径是唯一便宜的修复点（P2-9）。只提示，不阻断。
+                const tagWarning = taglessCjkWarning(title, content, tags);
                 // 归档同名只是提醒：zk_new 的查重本来就不含 archive，允许复用标题 —— 但要把废弃原因一起交出来
                 // （createNote 建之前那次全库扫描已经算好了，这里不再单独跑一次 zk）
                 const archived = created.archived;
@@ -515,6 +544,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     notebook: cfg.notebook, path: created.path, title: created.title, tags, links,
                     summaryApplied: created.summaryApplied, archived, warnings,
                     ...(created.summaryWarning ? { summaryWarning: created.summaryWarning } : {}),
+                    ...(tagWarning ? { tagWarning } : {}),
                 };
             },
             render(_args, value) {
@@ -526,6 +556,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     lines.push('双链：' + v.links.join(' '));
                 if (v.summaryWarning)
                     lines.push('⚠️ ' + v.summaryWarning);
+                if (v.tagWarning)
+                    lines.push('⚠️ ' + v.tagWarning);
                 if (v.archived.length) {
                     lines.push('⚠️ 归档里有同名旧结论：' + v.archived.map((h) => h.path + (h.reason ? `（废弃原因：${h.reason}）` : '（没有记录废弃原因）')).join('；') +
                         ' —— 先读它，确认不是同一个结论再复用标题');
@@ -886,6 +918,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 '没写日期（undated）、已退役（retired）与退役后新结论失效（retiredBroken）的条目。' +
                 'incomplete 是 frontmatter 缺 type / status / authority 的笔记：缺失被索引落成空串，机械门会静默失效。' +
                 'tags 查标签卫生（大小写变体 / 单例，标签总数 ≥ 30 才报）；template 说根目录 AGENTS.md 是不是当前版本。' +
+                'similarTitles 是「改一两个字」的疑似重复（同目录、二元组相似度 ≥ 0.6）：与全等重名分开，只报告。' +
+                'indexHint=true 表示笔记（不含日记）已到 150 篇而根目录还没有 INDEX.md（只是提示，不生成静态索引）。' +
                 '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
                 'oneWayLinks.items 是缺回链的目标 X（不是来源），from 是没被 X 回链的来源 S；' +
                 'edges 是全部单向边数（items 截到 50 条时仍计全量），bodyOnly 是正文引用（不在 ## Links / ## 链接 小节）的单向边数。' +
@@ -915,11 +949,13 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     tagless: LINT_BUCKET,
                     oneWayLinks: LINT_ONE_WAY,
                     duplicateTitles: LINT_DUPLICATE,
+                    similarTitles: LINT_SIMILAR,
                     memoryLinks: LINT_MEMORY,
                     incomplete: LINT_INCOMPLETE,
                     tags: LINT_TAGS,
                     template: LINT_TEMPLATE,
-                }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'memoryLinks', 'incomplete', 'tags', 'template']),
+                    indexHint: { type: 'boolean' },
+                }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'indexHint']),
             },
             async run(args, env) {
                 const cfg = configFor(env.workspace, env.sessionId);
@@ -972,6 +1008,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 if (memLine)
                     lines.push(memLine);
                 lines.push(...formatLintExtras(v));
+                if (v.similarTitles.truncated)
+                    lines.push('⚠️ 疑似重复只比较了部分笔记（同目录超过 300 篇或扫描触顶）：可能漏报');
                 if (v.truncated)
                     lines.push('⚠️ 笔记数触到扫描上限：结果不完整（只会漏报，不会误报），先归档旧笔记再跑一次');
                 if (oneWay.edgesTruncated)
@@ -984,6 +1022,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
             name: 'zk_dream',
             description: '整理晋升材料：最近 N 天新增的笔记（机械筛掉 authority=informal 与无标签的，其余作为候选）、' +
                 'daily 里没划掉的 Loose ends、被引用最多的笔记。候选带正文摘要（lead）与入链来源（citedBy），方便重放上下文。' +
+                'topCited 先按「被日记提到几天」排（使用信号），入链数只作并列次序；没有日记时退化为原排序。' +
                 '会读 MEMORY.md：已经晋升过的（`[[链接]]` 命中或条目里写了标题）移出候选、进 alreadyPromoted —— 不会每周原样重复。' +
                 'backlog 是窗口外仍未晋升的笔记（按被引数），漏做一次不会永久掉队。' +
                 'days 省略时窗口 = 距 DREAMS.md「上次做梦」的天数（没有则 7 天）。' +
@@ -1019,7 +1058,14 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     },
                     topCited: {
                         type: 'array',
-                        items: objSchema({ title: { type: 'string' }, path: { type: 'string' }, cited: { type: 'number' } }, ['title', 'path', 'cited']),
+                        items: objSchema({
+                            title: { type: 'string' },
+                            path: { type: 'string' },
+                            cited: { type: 'number' },
+                            dailyMentions: { type: 'number' },
+                            daysMentioned: { type: 'number' },
+                            lastMentioned: { type: 'string' },
+                        }, ['title', 'path', 'cited', 'dailyMentions', 'daysMentioned', 'lastMentioned']),
                     },
                     dailyLooseEnds: {
                         type: 'array',
@@ -1049,9 +1095,10 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         const badges = [n.type || '—', n.authority || '—'].join(' · ');
                         const lead = n.lead ? '\n     ' + n.lead : '';
                         const citedBy = n.citedBy.length ? '\n     被引：' + n.citedBy.join('、') : '';
+                        const used = n.daysMentioned > 0 ? ' · 日记 ' + n.daysMentioned + ' 天' : '';
                         lines.push('  ' + (i + 1) + '. ' + (n.title || n.path) + '  [' + badges + ']  ' + n.path +
                             (n.tags.length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : '') +
-                            ' · 被引 ' + n.cited + lead + citedBy);
+                            ' · 被引 ' + n.cited + used + lead + citedBy);
                     }
                     if (v.newNotes.length > 10)
                         lines.push('  …还有 ' + (v.newNotes.length - 10) + ' 篇');
@@ -1085,8 +1132,10 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 }
                 if (v.topCited.length) {
                     lines.push('被引用最多：');
-                    for (const [i, c] of v.topCited.slice(0, 5).entries())
-                        lines.push('  ' + (i + 1) + '. ' + (c.title || c.path) + '（' + c.path + '）· ' + c.cited + ' 次');
+                    for (const [i, c] of v.topCited.slice(0, 5).entries()) {
+                        lines.push('  ' + (i + 1) + '. ' + (c.title || c.path) + '（' + c.path + '）· 被引 ' + c.cited + ' 次' +
+                            (c.daysMentioned > 0 ? ' · 日记 ' + c.daysMentioned + ' 天（最近 ' + c.lastMentioned + '）' : ''));
+                    }
                 }
                 if (!v.newNotes.length && !v.dailyLooseEnds.length && !v.topCited.length)
                     lines.push('这个窗口里没有新材料。');
@@ -1098,7 +1147,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
         }),
         t({
             name: 'zk_stats',
-            description: '看一眼知识库现状：笔记数、标签数、断链数、孤立笔记数、已归档（superseded）数。适合开始工作前了解上下文规模。',
+            description: '看一眼知识库现状：笔记数、标签数、断链数、孤立笔记数、已归档（superseded）数，以及顶层目录 / 前 10 个标签的分布（byDir / byTag）。' +
+                '适合开始工作前了解上下文规模；笔记多了以后用它判断该先看哪里（不是排行榜）。',
             parameters: { type: 'object', properties: {}, additionalProperties: false },
             output: {
                 schema: objSchema({
@@ -1111,7 +1161,15 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     orphans: { type: 'number' },
                     archived: { type: 'number' },
                     superseded: { type: 'number' },
-                }, ['notebook', 'defaultNotebook', 'pinned', 'notes', 'tags', 'brokenLinks', 'orphans', 'archived', 'superseded']),
+                    byDir: {
+                        type: 'array',
+                        items: objSchema({ dir: { type: 'string' }, count: { type: 'number' } }, ['dir', 'count']),
+                    },
+                    byTag: {
+                        type: 'array',
+                        items: objSchema({ tag: { type: 'string' }, count: { type: 'number' } }, ['tag', 'count']),
+                    },
+                }, ['notebook', 'defaultNotebook', 'pinned', 'notes', 'tags', 'brokenLinks', 'orphans', 'archived', 'superseded', 'byDir', 'byTag']),
             },
             async run(_args, env) {
                 const cfg = configFor(env.workspace, env.sessionId);
@@ -1130,8 +1188,15 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 const drift = v.pinned && v.pinned !== v.defaultNotebook
                     ? `\n本会话固定在「${v.pinned}」；全局默认是「${v.defaultNotebook}」（要跟随用 zk_use ${v.defaultNotebook}）`
                     : '';
+                const dirs = v.byDir.length
+                    ? '\n目录：' + v.byDir.map((d) => `${d.dir === '.' ? '（根目录）' : d.dir} ${d.count}`).join(' · ')
+                    : '';
+                const tags = v.byTag.length
+                    ? '\n标签：' + v.byTag.map((t) => `#${t.tag} ${t.count}`).join(' · ')
+                    : '';
                 return text(`笔记本 ${v.notebook}${drift}\n` +
-                    `笔记 ${v.notes} 篇 · 标签 ${v.tags} 个 · 断链 ${v.brokenLinks} 篇 · 孤立 ${v.orphans} 篇 · 归档 ${v.archived} 篇（superseded ${v.superseded}）`);
+                    `笔记 ${v.notes} 篇 · 标签 ${v.tags} 个 · 断链 ${v.brokenLinks} 篇 · 孤立 ${v.orphans} 篇 · 归档 ${v.archived} 篇（superseded ${v.superseded}）` +
+                    dirs + tags);
             },
         }),
         t({

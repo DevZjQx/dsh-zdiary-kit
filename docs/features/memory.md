@@ -9,7 +9,7 @@
   另读 `DREAMS.md` 的「上次做梦」一行（不进正文、不计预算）
 - `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）；`dreamNotebook` 用它算默认窗口
 - `lib/wikilink.ts`：`[[链接]]` 的解析口径（路径 → `.md` → `archive/` → 活笔记标题），lint 与 dream 共用一份
-- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 189 词），flat 用精简版
+- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 186 词），flat 用精简版
   （88 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
   layered 初始化自动写，flat 只有 `ensureNotebook(cfg, signal, { withAgents: true })` / `zk-kit init --with-agents` /
   设置页「写入 AGENTS.md 模板」才写；已存在一律不覆盖。
@@ -52,7 +52,7 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 **Exceptions.** 中文按 2 字 1 词计（空白切分在中文上严重低估，预算会变成装饰）；
 `AGENTS.md` 模板自己也得守这条预算：初版 310 词，`bun run docs` 里 `zk-kit doctor` 直接报
 `✗ 记忆：310/300 词` —— 模板吃掉整个预算，MEMORY.md 就永远被截光，所以先压到 160 词（195 词的版本把 USER + MEMORY 压到只剩 105 词），后续补 `name` / `WORKFLOW` / `rename` 规则后为 175 词，加「截断从底部往前丢」后为 187 词，
-P1-3 的日期 / 退役格式 + P2-15 的版本标记后实测 189 词（单测锁 `≤190`；flat 精简版锁 `≤90`，实测 88）。
+P1-3 的日期 / 退役格式 + P2-15 的版本标记后为 189 词；P2-8 去掉 `inbox/` 后实测 186 词（单测锁 `≤190`；flat 精简版锁 `≤90`，实测 88）。
 `AGENTS.md` 是硬规则，单独超预算也不截断，只回显告警；文件内容里的 `</system-reminder>` 会被转义，
 截断目录里的段落标题同样转义 —— 不许提前闭合插件自己的框；任何一份文件读不到都当作不存在，笔记本没建好时返回空载荷而不是报错。
 

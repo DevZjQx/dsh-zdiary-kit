@@ -680,9 +680,11 @@ describe('structure: layered', () => {
     expect(first.initialized).toBe(true)
     expect(first.groupsAdded).toEqual(['daily', 'source', 'concept', 'entity', 'pattern'])
     expect(first.templatesWritten.sort()).toEqual(['daily.md', 'entry.md', 'source.md'])
-    for (const dir of ['raw', 'inbox', 'notes/sources', 'notes/concepts', 'notes/entities', 'notes/patterns', 'archive']) {
+    for (const dir of ['raw', 'notes/sources', 'notes/concepts', 'notes/entities', 'notes/patterns', 'archive']) {
       expect(fs.existsSync(path.join(layeredDir, dir))).toBe(true)
     }
+    // inbox/ 是已停用的入口（P2-8）：新建库不再建它，盘上已有的老目录原样保留
+    expect(fs.existsSync(path.join(layeredDir, 'inbox'))).toBe(false)
     const toml = fs.readFileSync(path.join(layeredDir, '.zk', 'config.toml'), 'utf8')
     for (const group of ['daily', 'source', 'concept', 'entity', 'pattern']) expect(toml).toContain(`[group."${group}"]`)
     // group 的 paths 必须跟实际建的目录逐字对上（entity → entities，不是 entitys）
@@ -2657,7 +2659,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
   it('P2-15：无标记 / 旧版本都算旧模板，当前版本不算', async () => {
     const cfg = fresh('nb-p215')
     await notebookLib.ensureNotebook(cfg)
-    expect(lintLib.templateStatus(cfg)).toEqual({ present: false, version: 0, current: 1, stale: false })
+    expect(lintLib.templateStatus(cfg)).toEqual({ present: false, version: 0, current: 2, stale: false })
 
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '# 手写规则\n')
     const old = lintLib.templateStatus(cfg)
@@ -2744,5 +2746,158 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
       fs.writeFileSync(paths.CFG_FILE, before)
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('0.8.2：检索 / inbox / 标签提示 / 相似标题 / 分布 / 使用信号（P2-7 – P2-12）', () => {
+  const fresh = (name: string, structure: 'flat' | 'layered' = 'flat') =>
+    store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure })
+
+  it('P2-7：中文查询 FTS + 子串合并；纯 ASCII 仍是单策略', async () => {
+    const cfg = fresh('nb-p27')
+    await notebookLib.ensureNotebook(cfg)
+    // 只有第一篇的「记忆系统」是独立词元（FTS 命中）；另两篇是更长的连续词元（FTS 漏）
+    const exact = await zk.createNote(cfg, { title: '系统甲', content: '记忆系统 #m' })
+    const longer1 = await zk.createNote(cfg, { title: '系统乙', content: '记忆系统很好 #m' })
+    const longer2 = await zk.createNote(cfg, { title: '系统丙', content: '记忆系统实践 #m' })
+    await zk.indexNotebook(cfg)
+
+    const r = await zk.searchNotesDetailed(cfg, { query: '记忆系统', limit: 10 })
+    expect(r.notes.map((n) => n.path).sort()).toEqual([exact.path, longer1.path, longer2.path].sort())
+    expect(r.matchStrategy).toBe('mixed')
+
+    // FTS 已占满 limit：正则补的那条会被 slice 掉，不能还报 mixed（否则界面谎称「补上了」）
+    const full = await zk.searchNotesDetailed(cfg, { query: '记忆系统', limit: 1 })
+    expect(full.notes.map((n) => n.path)).toEqual([exact.path])
+    expect(full.matchStrategy).toBe('fts')
+
+    const ascii = await zk.searchNotesDetailed(cfg, { query: 'xyzzynotfound', limit: 10 })
+    expect(ascii.notes).toEqual([])
+    expect(ascii.matchStrategy).toBe('regex')
+  })
+
+  it('P2-8：inbox 不再建、不接受写入；盘上已有的仍不进检索', async () => {
+    const flat = fresh('nb-p28-flat')
+    await notebookLib.ensureNotebook(flat)
+    fs.mkdirSync(path.join(flat.notebook, 'inbox'), { recursive: true })
+    await expect(zk.createNote(flat, { title: '不该进收件箱', dir: 'inbox', content: 'x' }))
+      .rejects.toThrow(/inbox/)
+    expect(fs.readdirSync(path.join(flat.notebook, 'inbox'))).toEqual([])
+
+    const layered = fresh('nb-p28-layered', 'layered')
+    await notebookLib.ensureNotebook(layered)
+    expect(fs.existsSync(path.join(layered.notebook, 'inbox'))).toBe(false)
+    // 老库盘上留着的 inbox/：不删，但仍是隔离区
+    fs.mkdirSync(path.join(layered.notebook, 'inbox'), { recursive: true })
+    fs.writeFileSync(path.join(layered.notebook, 'inbox', 'frag.md'), '# 碎片\n\nINBOX-TOKEN #x\n')
+    await zk.indexNotebook(layered)
+    expect((await zk.searchNotes(layered, { query: 'INBOX-TOKEN' })).length).toBe(0)
+  })
+
+  test('P2-9：中文没标签才提示，标签 / 正文 hashtag / 英文都不提示', () => {
+    expect(zk.taglessCjkWarning('中文标题', '正文', [])).toContain('tags')
+    expect(zk.taglessCjkWarning('中文标题', '正文', ['已有'])).toBeNull()
+    expect(zk.taglessCjkWarning('中文标题', '正文 #已有', [])).toBeNull()
+    expect(zk.taglessCjkWarning('English title', 'english body', [])).toBeNull()
+  })
+
+  it('P2-10：相似标题单独报；全等归 duplicateTitles；短标题不报', async () => {
+    const cfg = fresh('nb-p210', 'layered')
+    await notebookLib.ensureNotebook(cfg)
+    const a = await zk.createNote(cfg, { title: '记忆系统的瓶颈在写路径', dir: 'notes/concepts', content: '正文 #x' })
+    const b = await zk.createNote(cfg, { title: '记忆系统的瓶颈是写路径', dir: 'notes/concepts', content: '正文 #x' })
+    await zk.createNote(cfg, { title: 'RAG', dir: 'notes/concepts', content: '正文 #x' })
+    await zk.createNote(cfg, { title: 'RAG 2', dir: 'notes/concepts', content: '正文 #x' })
+    await zk.indexNotebook(cfg)
+
+    const lint = await lintLib.lintNotebook(cfg)
+    expect(lint.duplicateTitles.total).toBe(0)
+    expect(lint.similarTitles.total).toBe(1)
+    expect(lint.similarTitles.items[0].paths.sort()).toEqual([a.path, b.path].sort())
+    expect(lint.similarTitles.items[0].score).toBeGreaterThanOrEqual(0.6)
+    expect(lintLib.formatLintExtras(lint).join('\n')).toContain('疑似重复标题')
+
+    // 日记标题就是日期（0.86 的相似度）：不排除的话一年日记能吐出上千组误报
+    for (const day of ['2026-10-01', '2026-10-02', '2026-10-03']) await zk.ensureDailyNote(cfg, { date: day })
+    // 非日记目录里的纯数字标题（按日期 / 编号命名）同样不算疑似重复
+    await zk.createNote(cfg, { title: '2026-10-01', dir: 'notes/concepts', content: '正文 #x' })
+    await zk.createNote(cfg, { title: '2026-10-02', dir: 'notes/concepts', content: '正文 #x' })
+    await zk.indexNotebook(cfg)
+
+    const withDailies = await lintLib.lintNotebook(cfg)
+    expect(withDailies.similarTitles.total).toBe(1)
+    expect(withDailies.similarTitles.items[0].paths.sort()).toEqual([a.path, b.path].sort())
+  })
+
+  it('P2-11：stats 给目录 / 标签分布；非日记 150 篇且没有 INDEX.md 才提示', async () => {
+    const cfg = fresh('nb-p211', 'flat')
+    await notebookLib.ensureNotebook(cfg)
+    await zk.createNote(cfg, { title: '甲', content: '正文 #one #two' })
+    await zk.createNote(cfg, { title: '乙', content: '正文 #one' })
+    await zk.ensureDailyNote(cfg)
+    await zk.indexNotebook(cfg)
+
+    const stats = await zk.notebookStats(cfg)
+    expect(stats.byDir).toEqual([
+      { dir: 'notes', count: 2 },
+      { dir: 'journal', count: 1 },
+    ])
+    expect(stats.byTag[0]).toEqual({ tag: 'one', count: 2 })
+    expect(stats.byTag.map((t) => t.tag)).toContain('two')
+
+    const big = fresh('nb-p211-big')
+    await notebookLib.ensureNotebook(big)
+    const notesDir = path.join(big.notebook, big.notesDir)
+    for (let i = 0; i < 150; i++) fs.writeFileSync(path.join(notesDir, `bulk-${i}.md`), `# 批量 ${i}\n\n#t${i % 5}\n`)
+    await zk.indexNotebook(big)
+    expect((await lintLib.lintNotebook(big)).indexHint).toBe(true)
+    fs.writeFileSync(path.join(big.notebook, 'INDEX.md'), '# 索引\n')
+    expect((await lintLib.lintNotebook(big)).indexHint).toBe(false)
+
+    // 日记按天自动增长：160 篇日记 + 2 篇真笔记不该冒出「该建总索引」
+    const dailyHeavy = fresh('nb-p211-daily')
+    await notebookLib.ensureNotebook(dailyHeavy)
+    const journalDir = path.join(dailyHeavy.notebook, dailyHeavy.dailyDir)
+    fs.mkdirSync(journalDir, { recursive: true })
+    const day0 = Date.parse('2026-01-01')
+    for (let i = 0; i < 160; i++) {
+      const day = new Date(day0 + i * 86_400_000).toISOString().slice(0, 10)
+      fs.writeFileSync(path.join(journalDir, `${day}.md`), `# ${day}\n\n内容 #d\n`)
+    }
+    await zk.createNote(dailyHeavy, { title: '真笔记甲', content: '正文 #x' })
+    await zk.createNote(dailyHeavy, { title: '真笔记乙', content: '正文 #x' })
+    await zk.indexNotebook(dailyHeavy)
+    const dailyHeavyLint = await lintLib.lintNotebook(dailyHeavy)
+    expect(dailyHeavyLint.notes).toBe(162)
+    expect(dailyHeavyLint.indexHint).toBe(false)
+  })
+
+  it('P2-12：topCited 先按日记提及天数排，入链数只作次序', async () => {
+    const cfg = fresh('nb-p212', 'layered')
+    await notebookLib.ensureNotebook(cfg)
+    const conceptCited = await zk.createNote(cfg, { title: '被概念反复引用', dir: 'notes/concepts', content: '正文 #x' })
+    const dailyUsed = await zk.createNote(cfg, { title: '日记里反复用到', dir: 'notes/concepts', content: '正文 #x' })
+    for (let i = 0; i < 3; i++) {
+      const source = await zk.createNote(cfg, { title: `概念来源 ${i}`, dir: 'notes/sources', content: '正文 #x' })
+      await zk.linkNotes(cfg, source.path, conceptCited.path)
+    }
+    for (const day of ['2026-10-01', '2026-10-05', '2026-10-09', '2026-10-20']) {
+      const daily = await zk.ensureDailyNote(cfg, { date: day })
+      await zk.linkNotes(cfg, daily.path, dailyUsed.path)
+    }
+    await zk.indexNotebook(cfg)
+
+    const dream = await dreamLib.dreamNotebook(cfg, { days: 365 })
+    const top = dream.topCited.map((x) => x.path)
+    expect(top.indexOf(dailyUsed.path)).toBeLessThan(top.indexOf(conceptCited.path))
+    const used = dream.topCited.find((x) => x.path === dailyUsed.path)
+    expect(used?.cited).toBe(4)
+    expect(used?.dailyMentions).toBe(4)
+    expect(used?.daysMentioned).toBe(4)
+    expect(used?.lastMentioned).toBe('2026-10-20')
+    const concept = dream.topCited.find((x) => x.path === conceptCited.path)
+    expect(concept?.dailyMentions).toBe(0)
+    // 候选上也带同样的字段（视图一致）
+    expect(dream.newNotes.find((n) => n.path === dailyUsed.path)?.daysMentioned).toBe(4)
   })
 })

@@ -11,8 +11,8 @@ import { NOTE_KINDS, ensureNotebook, newNoteDir, structureStatus } from './lib/n
 import { buildMemoryPayload, formatFileShares } from './lib/memory.ts'
 import { installZk, sourceLabel } from './lib/install.ts'
 import {
-  resolveZk, searchNotes, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
-  appendDaily, linkNotes, notebookStats, indexNotebook, withTags, hasNotebook, localDate, ZkError,
+  resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
+  appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError,
   allNotes, parseErrorWarnings,
 } from './lib/zk.ts'
 import type { NoteRecord } from './lib/zk.ts'
@@ -177,6 +177,7 @@ function lintReport(r: LintResult): string {
   const memLine = formatMemoryLinks(r.memoryLinks)
   if (memLine) lines.push(memLine)
   lines.push(...formatLintExtras(r))
+  if (r.similarTitles.truncated) lines.push('⚠️ 疑似重复只比较了部分笔记（同目录超过 300 篇或扫描触顶）：可能漏报')
   if (r.truncated) lines.push('⚠️ 笔记数触到扫描上限：结果不完整（只会漏报，不会误报）')
   if (oneWay.edgesTruncated) lines.push('⚠️ 建图笔记载入触到上限：单向链接可能误报（回链边未加载）')
   lines.push('（只报告，没有改动任何文件）')
@@ -193,7 +194,8 @@ function dreamReport(r: DreamResult): string {
       const tags = n.tags.length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : ''
       const lead = n.lead ? `\n     ${n.lead}` : ''
       const citedBy = n.citedBy.length ? `\n     被引：${n.citedBy.join('、')}` : ''
-      lines.push(`  ${i + 1}. ${n.title || n.path}  [${n.type || '—'} · ${n.authority || '—'}]  ${n.path}${tags} · 被引 ${n.cited}${lead}${citedBy}`)
+      const used = n.daysMentioned > 0 ? ` · 日记 ${n.daysMentioned} 天` : ''
+      lines.push(`  ${i + 1}. ${n.title || n.path}  [${n.type || '—'} · ${n.authority || '—'}]  ${n.path}${tags} · 被引 ${n.cited}${used}${lead}${citedBy}`)
     }
     if (r.newNotes.length > 10) lines.push(`  …还有 ${r.newNotes.length - 10} 篇`)
   }
@@ -220,7 +222,10 @@ function dreamReport(r: DreamResult): string {
   }
   if (r.topCited.length) {
     lines.push('被引用最多：')
-    for (const [i, c] of r.topCited.slice(0, 5).entries()) lines.push(`  ${i + 1}. ${c.title || c.path}（${c.path}）· ${c.cited} 次`)
+    for (const [i, c] of r.topCited.slice(0, 5).entries()) {
+      lines.push(`  ${i + 1}. ${c.title || c.path}（${c.path}）· 被引 ${c.cited} 次` +
+        (c.daysMentioned > 0 ? ` · 日记 ${c.daysMentioned} 天（最近 ${c.lastMentioned}）` : ''))
+    }
   }
   if (!r.newNotes.length && !r.dailyLooseEnds.length && !r.topCited.length) lines.push('这个窗口里没有新材料。')
   if (r.truncated) lines.push('⚠️ 笔记数触到扫描上限：窗口与排名都不完整')
@@ -338,17 +343,20 @@ async function main(): Promise<void> {
         throw new ZkError(`--type 只能是：${NOTE_KINDS.join(' / ')}`)
       }
       const tags = [...new Set([...cfg.defaultTags, ...list(flags.tags)])]
+      const body = str(flags.body)
       const created = await createNote(cfg, {
         title,
         name: str(flags.name) || undefined,
         summary: str(flags.summary) || undefined,
-        content: withTags(str(flags.body), tags),
+        content: withTags(body, tags),
         dir: newNoteDir(cfg, { dir: str(flags.dir) || undefined, type }),
         type,
       })
       const archived = created.archived
       print(json ? { ...created, tags } : `已创建 ${created.path}${tags.length ? ' · ' + tags.map((t) => '#' + t).join(' ') : ''}`, json)
       if (created.summaryWarning) console.error('⚠️ ' + created.summaryWarning)
+      const tagWarning = taglessCjkWarning(title, withTags(body, tags), tags)
+      if (tagWarning) console.error('⚠️ ' + tagWarning)
       for (const hit of archived) {
         console.error(`⚠️ 归档里有同名旧结论：${hit.path}${hit.reason ? `（废弃原因：${hit.reason}）` : '（没有记录废弃原因）'} —— 先读它，确认不是同一个结论再复用标题`)
       }
@@ -356,14 +364,17 @@ async function main(): Promise<void> {
     }
 
     case 'search': {
-      const notes = await searchNotes(cfg, {
+      const result = await searchNotesDetailed(cfg, {
         query: pos[0] || str(flags.query) || undefined,
         tags: list(flags.tags),
         since: str(flags.since) || undefined,
         limit: Number(str(flags.limit)) || 10,
         sort: str(flags.sort) || 'created-desc',
       })
-      print(json ? notes : noteList(notes), json)
+      const how = result.matchStrategy === 'mixed'
+        ? '\n（中文查询：全文 + 子串合并，已补上全文索引漏掉的）'
+        : result.matchStrategy === 'regex' ? '\n（全文无结果，已退回子串匹配）' : ''
+      print(json ? result.notes : noteList(result.notes) + how, json)
       return
     }
 
