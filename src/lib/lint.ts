@@ -26,7 +26,7 @@ import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import type { GraphEdge, NoteRecord } from './zk.ts'
 import { allNotes, graphEdges, localDate, MAX_SCAN, notesWithFlag, parseErrorWarnings } from './zk.ts'
-import { parseFrontmatter } from './frontmatter.ts'
+import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
 
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50
@@ -147,10 +147,8 @@ export interface LintResult {
   memoryLinks: LintMemoryBucket
 }
 
-/** 标题归一化只压空白与大小写，不改字（中文不受影响，也不会把「A B」和「AB」当成同一个） */
-export function normalizeTitle(title: string): string {
-  return String(title ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
-}
+/** 标题归一化与链接解析在 `lib/wikilink.ts`（dream 也用同一套）；这里保留导出，免得调用方跟着搬 */
+export { normalizeTitle }
 
 /** 同一标题出现在多篇里（slug 命名下不同目录可以同名，检索时容易挑错） */
 export function duplicateTitles(notes: NoteRecord[], max = MAX_ITEMS): LintDuplicateBucket {
@@ -169,9 +167,6 @@ export function duplicateTitles(notes: NoteRecord[], max = MAX_ITEMS): LintDupli
 
 /** 注入的三份 meta 里只有 MEMORY / USER 会写来源链接；AGENTS 是规则，不查 */
 const MEMORY_LINK_FILES = ['MEMORY.md', 'USER.md'] as const
-
-/** `[[路径]]` / `[[路径|别名]]` / `[[路径#小节]]` 都认，取路径部分 */
-const WIKI_LINK = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g
 
 /** 按列表条目切分（含缩进续行）：只有条目才谈得上「没附来源」 */
 function listEntries(body: string): string[] {
@@ -200,20 +195,6 @@ function collapse(text: string, max = 100): string {
   return one.length > max ? one.slice(0, max) + '…' : one
 }
 
-function insideNotebook(cfg: Config, abs: string): boolean {
-  const root = path.resolve(cfg.notebook)
-  const p = path.resolve(abs)
-  return p === root || p.startsWith(root + path.sep)
-}
-
-function statusOf(abs: string): string {
-  try { return parseFrontmatter(fs.readFileSync(abs, 'utf8')).fields.status ?? '' } catch { return '' }
-}
-
-function relOf(cfg: Config, abs: string): string {
-  return path.relative(cfg.notebook, abs).split(path.sep).join('/')
-}
-
 /**
  * 记忆层体检：MEMORY.md / USER.md 里的 `[[来源]]` 是否还指向活笔记。
  *
@@ -225,48 +206,13 @@ function relOf(cfg: Config, abs: string): string {
  * 归档标题不反查 —— 归档默认不进检索，这里再造一套索引就成了第二真相。「语义重复」也不查。
  */
 export function memoryLinkIssues(cfg: Config, notes: NoteRecord[], max = MAX_ITEMS): LintMemoryBucket {
-  const titles = new Set<string>()
-  for (const n of notes) {
-    titles.add(normalizeTitle(n.title))
-    titles.add(normalizeTitle(path.basename(n.path, path.extname(n.path))))
-  }
+  const index = wikiIndex(notes)
 
   const items: LintMemoryLink[] = []
   const seen = new Set<string>()
   let files = 0
   let links = 0
   let unlinked = 0
-
-  /** null = 活着 / 没问题；否则给出失效原因与命中路径 */
-  const resolve = (target: string): { reason: 'missing' | 'superseded'; path: string } | null => {
-    const rel = target.replace(/\\/g, '/').replace(/^\.\//, '').trim()
-    if (!rel) return null
-    const candidates = /\.md$/i.test(rel) ? [rel] : [rel, `${rel}.md`]
-
-    for (const candidate of candidates) {
-      const abs = path.resolve(cfg.notebook, candidate)
-      if (!insideNotebook(cfg, abs) || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue
-      const hit = relOf(cfg, abs)
-      // 显式写 archive/ 路径 = 有意引用旧结论（supersede 就是这样重写入链的），不算漂移
-      if (hit === cfg.archiveDir || hit.startsWith(`${cfg.archiveDir}/`)) return null
-      return statusOf(abs) === 'superseded'
-        ? { reason: 'superseded', path: hit }
-        : null
-    }
-
-    // 链接还停在废弃前的路径：文件已经搬进 archive/ —— 这正是要抓的漂移
-    if (!rel.startsWith(`${cfg.archiveDir}/`)) {
-      for (const candidate of candidates) {
-        const abs = path.resolve(cfg.notebook, cfg.archiveDir, candidate)
-        if (!insideNotebook(cfg, abs) || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue
-        return { reason: 'superseded', path: relOf(cfg, abs) }
-      }
-    }
-
-    // 标题式链接只在活笔记里找（zk 的 wiki 链接两种写法都认）
-    if (titles.has(normalizeTitle(rel))) return null
-    return { reason: 'missing', path: '' }
-  }
 
   for (const name of MEMORY_LINK_FILES) {
     let body = ''
@@ -277,8 +223,12 @@ export function memoryLinkIssues(cfg: Config, notes: NoteRecord[], max = MAX_ITE
       for (const match of line.matchAll(WIKI_LINK)) {
         links += 1
         const target = String(match[1] ?? '').trim()
-        const issue = resolve(target)
-        if (!issue) continue
+        // `[[   ]]` 这种空目标不是链接，也不该算「失效」：解析器对它返回 missing
+        if (!target) continue
+        const resolved = resolveWikiTarget(cfg, target, index)
+        // 显式写 archive/ 路径的链接是有意引用旧结论（supersede 重写入链就是这个形状），不算漂移
+        if (resolved.status === 'live' || resolved.explicit) continue
+        const issue = { reason: resolved.status === 'archived' ? 'superseded' : 'missing', path: resolved.path } as const
         const key = `${name}\u0000${target}`
         if (seen.has(key)) continue
         seen.add(key)

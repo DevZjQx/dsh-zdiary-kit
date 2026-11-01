@@ -6,7 +6,7 @@
  *
  * 长度是设计约束：AGENTS.md 属于注入预算（默认 500 词，中文 2 字 = 1 词）且**永不截断**，
  * 模板自己吃掉过半预算，USER / MEMORY 就没位置了 —— 所以这里只留规则，不写教程。
- * 目标 ~175 词（195 → 160 → 175）：每多 10 词，MEMORY 就少 10 词的正文，规则能紧就紧。
+ * 目标 ~185 词（195 → 160 → 176 → 187）：每多 10 词，MEMORY 就少 10 词的正文，规则能紧就紧。
  */
 export const AGENTS_TEMPLATE = `# 知识库工作约定
 
@@ -33,7 +33,7 @@ notes/{concepts,entities,patterns}/ 原子笔记 · archive/ 废弃（不删）
 
 把「上次做梦：YYYY-MM-DD」写进 DREAMS.md；到期或缺这行时：
 zk_lint → zk_dream → 写 DREAMS.md → 人裁决后改 MEMORY.md。
-MEMORY.md 每条结论附 [[来源路径]]，zk_lint 核对。
+MEMORY.md 每条结论附 [[来源路径]]，zk_lint 核对；新条目写在小节顶部，超预算从底部往前丢。
 `
 
 /**

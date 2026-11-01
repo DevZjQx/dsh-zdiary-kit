@@ -34,7 +34,7 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit link <来源路径> <目标路径或标题>
   zk-kit lint [--stale-days 90] [--links-only]
                                       体检：断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名（只读）
-  zk-kit dream [--days 7]             晋升材料：窗口新增 / daily 未完成 / 被引最多（只读）
+  zk-kit dream [--days N]             晋升材料：窗口新增 / daily 未完成 / 被引最多（只读；不传 days 就按 DREAMS.md 的上次做梦算窗口）
   zk-kit query [-- <zk list 参数>]     透传 zk list（--notebook-dir / --format / -x 会被替换掉）
   zk-kit index                        重建索引
   zk-kit notebooks                    列出所有笔记本（* 是当前那个；[flat/layered] 是各自的结构）
@@ -184,7 +184,7 @@ function lintReport(r: LintResult): string {
 
 function dreamReport(r: DreamResult): string {
   const lines = [
-    `做梦：近 ${r.windowDays} 天（自 ${r.since}）— 窗口 ${r.counts.window} 篇（日记 ${r.counts.daily}）· 候选 ${r.counts.candidates} · 拒绝 ${r.counts.rejected} · 未完成 ${r.counts.looseEnds}`,
+    `做梦：近 ${r.windowDays} 天（自 ${r.since}）— 窗口 ${r.counts.window} 篇（日记 ${r.counts.daily}）· 候选 ${r.counts.candidates} · 拒绝 ${r.counts.rejected} · 未完成 ${r.counts.looseEnds} · 已晋升 ${r.counts.promoted} · 积压 ${r.counts.backlog}`,
   ]
   if (r.newNotes.length) {
     lines.push('晋升候选：')
@@ -195,6 +195,18 @@ function dreamReport(r: DreamResult): string {
       lines.push(`  ${i + 1}. ${n.title || n.path}  [${n.type || '—'} · ${n.authority || '—'}]  ${n.path}${tags} · 被引 ${n.cited}${lead}${citedBy}`)
     }
     if (r.newNotes.length > 10) lines.push(`  …还有 ${r.newNotes.length - 10} 篇`)
+  }
+  if (r.alreadyPromoted.length) {
+    lines.push('已在 MEMORY（不再重复提）：')
+    for (const n of r.alreadyPromoted.slice(0, 10)) {
+      lines.push(`  · ${n.title || n.path}（${n.path}）· ${n.promotedBy === 'link' ? '按链接命中' : '标题出现在条目里'}`)
+    }
+    if (r.alreadyPromoted.length > 10) lines.push(`  …还有 ${r.alreadyPromoted.length - 10} 篇`)
+  }
+  if (r.backlog.length) {
+    lines.push('窗口外仍未晋升（按被引数）：')
+    for (const n of r.backlog.slice(0, 10)) lines.push(`  · ${n.title || n.path}（${n.path}）· 被引 ${n.cited}`)
+    if (r.counts.backlog > r.backlog.length) lines.push(`  …还有 ${r.counts.backlog - r.backlog.length} 篇`)
   }
   if (r.rejected.length) {
     lines.push('机械拒绝（不进候选）：')
@@ -385,7 +397,9 @@ async function main(): Promise<void> {
 
     case 'dream': {
       await ensureNotebook(cfg)
-      const r = await dreamNotebook(cfg, { days: Number(str(flags.days)) || 7 })
+      // 没给 --days 就不传：窗口要跟着 DREAMS.md 的「上次做梦」走，别在这里钉死 7 天
+      const days = Number(str(flags.days))
+      const r = await dreamNotebook(cfg, Number.isFinite(days) && days > 0 ? { days } : {})
       print(json ? r : dreamReport(r), json)
       return
     }

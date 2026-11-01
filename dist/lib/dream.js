@@ -6,15 +6,24 @@
  *   · daily 里 `## Loose ends` 小节还没划掉的项；
  *   · 被引用最多的笔记（一次 `zk graph` 数入链）。
  * 「rejected」是机械规则，不是相关性判断：authority=informal 与无标签两条，别再加。
+ *
+ * 晋升是一道**门**，门得知道门里已经有什么（P0-2）：读 MEMORY.md 判「这条已经晋升过」，
+ * 已经进去的移出候选、单列一栏 —— 否则同一批笔记每周原样重复，仪式几次之后就没人再看了。
+ * 窗口默认也不再固定 7 天，而是跟着 DREAMS.md 的「上次做梦」走：漏做一周不会把笔记永久甩出窗口。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { allNotes, graphEdges, localDate, MAX_SCAN } from './zk.js';
 import { parseFrontmatter } from './frontmatter.js';
+import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
 export const MAX_ITEMS = 50;
 /** topCited 只取前几名：给 agent 一个「本周被反复引用」的提示，不是排行榜 */
 export const TOP_CITED = 10;
+/** 窗口之外、还没晋升的笔记最多回多少条：漏做一周不该让它们永久掉队 */
+export const MAX_BACKLOG = 10;
+/** 标题包含匹配的最短长度：短标题（「RAG」「额度」）容易在任意句子里撞上 */
+export const MIN_TITLE_MATCH = 6;
 /** `## Loose ends` / `## 未完成` / `## 待办` 都算（大小写不敏感，单复数都认） */
 const LOOSE_HEADING = /^##\s+(loose ends?|未完成|待办(?:事项)?)\s*$/i;
 /** 周节奏：AGENTS.md 的「每周」就按这个天数算。没有定时器，只在记忆注入里提醒到期 */
@@ -119,9 +128,66 @@ function excerptOf(cfg, note) {
     }
     return parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 200) || note.lead;
 }
+/**
+ * 窗口默认跟着 DREAMS.md 走：距上次做梦多少天，窗口就是多少天。
+ * 固定 7 天的话，漏做一周、或隔十天再整理，窗口外的笔记就再也不会出现在任何一栏 ——
+ * 那不是「这次没选上」，是「永远消失」。没有 DREAMS.md / 日期不合法 → 退回 7 天（旧行为）。
+ * 显式 `--days` 仍然优先：调用方说要看几天就看几天。
+ */
+function windowDaysOf(cfg, now, explicit) {
+    const clamp = (n) => Math.min(365, Math.max(1, Math.trunc(n)));
+    if (explicit !== undefined)
+        return clamp(explicit);
+    let body = '';
+    try {
+        body = fs.readFileSync(path.join(cfg.notebook, 'DREAMS.md'), 'utf8');
+    }
+    catch {
+        return DREAM_INTERVAL_DAYS;
+    }
+    const last = lastDreamDate(body);
+    const days = last ? daysSinceDream(last, now) : null;
+    return days === null ? DREAM_INTERVAL_DAYS : clamp(days);
+}
+/**
+ * 已晋升集合：MEMORY.md 里的 `[[链接]]` + 纯文字条目里出现的标题。
+ *
+ * 为什么要有第二条：真机 MEMORY.md 7 条里 6 条是纯文字（没有链接），只按链接判会漏掉它们，
+ * 而它们正是每周重复出现的候选来源。标题包含只做字符串比较、且要求标题 ≥ 6 字 ——
+ * 短标题（「RAG」「额度」）在任意句子里都可能撞上，宁可重复报，不猜。
+ */
+function promotionsOf(cfg, notes) {
+    const out = new Map();
+    let body = '';
+    try {
+        body = fs.readFileSync(path.join(cfg.notebook, 'MEMORY.md'), 'utf8');
+    }
+    catch {
+        return out;
+    }
+    if (!body.trim())
+        return out;
+    const index = wikiIndex(notes);
+    for (const match of body.matchAll(WIKI_LINK)) {
+        const hit = resolveWikiTarget(cfg, String(match[1] ?? '').trim(), index);
+        if (hit.status === 'live' && hit.path)
+            out.set(hit.path, 'link');
+    }
+    const lines = body.split('\n').map((line) => normalizeTitle(line)).filter(Boolean);
+    for (const note of notes) {
+        if (out.has(note.path))
+            continue;
+        const key = normalizeTitle(note.title);
+        if ([...key].length < MIN_TITLE_MATCH)
+            continue;
+        if (lines.some((line) => line.includes(key)))
+            out.set(note.path, 'title');
+    }
+    return out;
+}
 export async function dreamNotebook(cfg, opts = {}, signal) {
-    const windowDays = Math.min(365, Math.max(1, Math.trunc(opts.days ?? 7)));
     const now = opts.now ?? new Date();
+    const windowDays = windowDaysOf(cfg, now, opts.days);
     const sinceMs = now.getTime() - windowDays * 86_400_000;
     // 顺序跑：两个 zk 进程同时补索引会撞 SQLite 写锁（lint 里同样处理）
     const notes = await allNotes(cfg, {}, signal);
@@ -137,6 +203,20 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         inbound.set(edge.targetPath, sources);
     }
     const citedOf = (n) => inbound.get(n.path)?.length ?? 0;
+    const candidateOf = (note, promotedBy) => ({
+        title: note.title,
+        path: note.path,
+        type: note.type,
+        authority: note.authority,
+        tags: note.tags,
+        created: localDate(note.created),
+        lead: excerptOf(cfg, note),
+        cited: citedOf(note),
+        citedBy: (inbound.get(note.path) ?? []).slice(0, 5),
+        promoted: promotedBy !== '',
+        promotedBy,
+    });
+    const promoted = promotionsOf(cfg, notes);
     const windowNotes = notes
         .filter((n) => {
         const at = Date.parse(n.created);
@@ -144,28 +224,38 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
     })
         .sort((a, b) => Date.parse(b.created) - Date.parse(a.created));
     const newNotes = [];
+    const alreadyPromoted = [];
     const rejected = [];
     for (const note of windowNotes) {
         // 日记不是晋升候选：它的「未完成项」走 dailyLooseEnds，报成「无标签」只会制造噪音
         if (isUnder(note.path, cfg.dailyDir))
             continue;
+        // 已经进 MEMORY 的先说：否则每周原样重复，仪式几次之后就没人看了
+        const by = promoted.get(note.path);
+        if (by) {
+            alreadyPromoted.push(candidateOf(note, by));
+            continue;
+        }
         const reason = rejectionReason(note);
         if (reason) {
             rejected.push({ title: note.title, path: note.path, reason });
             continue;
         }
-        newNotes.push({
-            title: note.title,
-            path: note.path,
-            type: note.type,
-            authority: note.authority,
-            tags: note.tags,
-            created: localDate(note.created),
-            lead: excerptOf(cfg, note),
-            cited: citedOf(note),
-            citedBy: (inbound.get(note.path) ?? []).slice(0, 5),
-        });
+        newNotes.push(candidateOf(note, ''));
     }
+    // 窗口外仍未晋升、且过机械门的：按被引数排，别让「漏做一次」变成永久掉队
+    const backlogNotes = notes
+        .filter((n) => {
+        if (isUnder(n.path, cfg.dailyDir))
+            return false;
+        const at = Date.parse(n.created);
+        if (Number.isFinite(at) && at >= sinceMs)
+            return false;
+        if (promoted.has(n.path))
+            return false;
+        return rejectionReason(n) === null;
+    })
+        .sort((a, b) => citedOf(b) - citedOf(a) || a.title.localeCompare(b.title));
     const dailyLooseEnds = [];
     let looseEndCount = 0;
     for (const note of windowNotes) {
@@ -202,8 +292,12 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
             candidates: newNotes.length,
             rejected: rejected.length,
             looseEnds: looseEndCount,
+            promoted: alreadyPromoted.length,
+            backlog: backlogNotes.length,
         },
         newNotes: newNotes.slice(0, MAX_ITEMS),
+        alreadyPromoted: alreadyPromoted.slice(0, MAX_ITEMS),
+        backlog: backlogNotes.slice(0, MAX_BACKLOG).map((n) => candidateOf(n, '')),
         rejected: rejected.slice(0, MAX_ITEMS),
         topCited,
         dailyLooseEnds,

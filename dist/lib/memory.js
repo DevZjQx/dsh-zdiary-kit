@@ -5,7 +5,9 @@
  *
  * 硬约定（与 docs/plan-memory-layers.md §3 D6 一致）：
  *   · 预算按**总载荷**算，不是只卡 MEMORY.md；
- *   · 截断顺序纯机械：先丢 MEMORY 的尾部 `##` 整段，再丢 USER 的尾部整段，
+ *   · 切分按三级降级：`##` 小节 → 顶层列表项 → 空行段落。只有 `##` 一级时，
+ *     `# 记忆` + 要点列表（最常见的写法）一个小节都切不出来，预算会整个失效 —— 见 P0-1；
+ *   · 截断顺序纯机械：先丢 MEMORY 的尾部整条，再丢 USER 的尾部整段，
  *     最后各自只留首段；AGENTS.md 是硬规则，永不截断（单独超预算时只告警）；
  *   · 丢掉的段落留一份**目录**（段落标题，计入预算），agent 用 zk_read 取回正文 ——
  *     选哪段是 agent 按当前任务判断，插件只搬运目录，不猜相关性；
@@ -48,33 +50,116 @@ export function countWords(text) {
 }
 /** 目录最多列几段：再多就只给「还有 N 段」，免得目录自己把预算吃掉 */
 const TOC_MAX = 5;
+/** 目录里单条标题最多多长（条目可能是一整句结论） */
+const TOC_TITLE_MAX = 40;
+/** 到预算的这个比例就回显用量：等到截断才说，已经是最坏的时刻 */
+const MEMORY_NEAR_RATIO = 0.8;
+/** 围栏代码块：里面的 `- ` 与空行都不是条目 / 段落边界 */
+const FENCED = /^\s*(?:```|~~~)/;
+/** 二级小节（原有切分口径） */
+const SECTION = /^##\s+/;
+/** 顶层列表项；缩进的子项算续行，不另起一条 */
+const LIST_ITEM = /^(?:[-*+]|\d+[.)])\s+/;
+function finishSplit(head, sections, mode) {
+    return {
+        head: head.join('\n').trim(),
+        sections: sections.map((s) => s.join('\n').trim()).filter(Boolean),
+        mode,
+    };
+}
+/**
+ * 三级降级切分（P0-1）：`##` 小节 → 顶层列表项 → 空行段落。
+ * 只按 `##` 切时，「`# 记忆` + 要点列表」这种形状切不出任何小节，丢弃循环一次都不进，
+ * 预算于是完全不生效（真机 880 / 449 / 895 词都是这个形状）。降级只影响超预算的库：
+ * 预算内不调用这个函数的结果做任何改写。
+ *
+ * 三级都跳过围栏里的行 —— 代码块里的 `- ` 或空行不该被当成可丢弃的条目。
+ */
 function splitSections(body) {
+    const lines = String(body ?? '').split('\n');
+    let fenced = false;
+    // 1a) `##` 小节
     const head = [];
     const sections = [];
-    for (const line of body.split('\n')) {
-        if (/^##\s+/.test(line))
+    for (const line of lines) {
+        if (FENCED.test(line))
+            fenced = !fenced;
+        if (!fenced && SECTION.test(line))
             sections.push([line]);
         else if (sections.length > 0)
             sections[sections.length - 1].push(line);
         else
             head.push(line);
     }
-    return {
-        head: head.join('\n').trim(),
-        sections: sections.map((s) => s.join('\n').trim()).filter(Boolean),
-    };
+    if (sections.length > 0)
+        return finishSplit(head, sections, 'sections');
+    // 1b) 顶层列表项：`# 标题` + 若干 `- 结论` 是 MEMORY.md 最常见的形状。
+    // 至少两条才走这一级：只有一条时它更像散文里的一个符号，交给段落切分更不容易整篇卡死。
+    const itemHead = [];
+    const items = [];
+    let current = null;
+    fenced = false;
+    for (const line of lines) {
+        if (FENCED.test(line))
+            fenced = !fenced;
+        if (!fenced && LIST_ITEM.test(line)) {
+            if (current)
+                items.push(current);
+            current = [line];
+        }
+        else if (current) {
+            current.push(line);
+        }
+        else {
+            itemHead.push(line);
+        }
+    }
+    if (current)
+        items.push(current);
+    if (items.length >= 2)
+        return finishSplit(itemHead, items, 'items');
+    // 1c) 空行段落：整篇散文也能按段丢。首段作为 head（通常是标题 / 开场），永远保留。
+    const paragraphs = [];
+    let para = null;
+    fenced = false;
+    for (const line of lines) {
+        if (FENCED.test(line))
+            fenced = !fenced;
+        if (!fenced && !line.trim()) {
+            if (para)
+                paragraphs.push(para);
+            para = null;
+            continue;
+        }
+        if (!para)
+            para = [line];
+        else
+            para.push(line);
+    }
+    if (para)
+        paragraphs.push(para);
+    const [first, ...rest] = paragraphs;
+    return finishSplit(first ?? [], rest, 'paragraphs');
 }
 function joinSections(split) {
     return [split.head, ...split.sections].filter(Boolean).join('\n\n');
 }
-/** 只留首段（preamble + 第一个 `##` 段） */
+/** 只留首段（preamble + 第一个切出来的段） */
 function firstSection(body) {
     const split = splitSections(body);
-    return joinSections({ head: split.head, sections: split.sections.slice(0, 1) });
+    return joinSections({ head: split.head, sections: split.sections.slice(0, 1), mode: split.mode });
 }
-function sectionTitle(section) {
+function sectionTitle(section, mode) {
     const first = section.split('\n', 1)[0] ?? '';
-    return first.replace(/^##\s+/, '').trim() || '（无标题）';
+    const raw = mode === 'sections'
+        ? first.replace(/^##\s+/, '')
+        : mode === 'items'
+            ? first.replace(LIST_ITEM, '')
+            : first;
+    const one = raw.replace(/\s+/g, ' ').trim();
+    if (!one)
+        return '（无标题）';
+    return one.length > TOC_TITLE_MAX ? one.slice(0, TOC_TITLE_MAX) + '…' : one;
 }
 /**
  * 被截掉段落的目录：代替「按位置丢尾段」的不可见性。
@@ -216,7 +301,7 @@ function computePayload(cfg) {
         const over = () => total() + countWords(tocText([...dropped, ...mine], tocCap)) > budget;
         while (over() && split.sections.length > 1) {
             const section = split.sections.pop();
-            mine.unshift({ name, title: sectionTitle(section) });
+            mine.unshift({ name, title: sectionTitle(section, split.mode) });
             const body = joinSections(split);
             original.set(name, body);
             words.set(name, countWords(body));
@@ -236,7 +321,7 @@ function computePayload(cfg) {
     const present = files.filter((f) => (original.get(f.name) ?? '').length > 0);
     const bodies = present.map((f) => `## ${f.name}\n\n${escapeFrame(original.get(f.name) ?? '')}`);
     const keptWords = total();
-    const finalWords = keptWords + countWords(toc);
+    let finalWords = keptWords + countWords(toc);
     const originalWords = files.reduce((sum, f) => sum + (pristineWords.get(f.name) ?? 0), 0);
     // 报「正文被截掉多少」，不是净减少：目录也会占词，混在一起会让人以为没丢多少
     const truncatedWords = Math.max(0, originalWords - keptWords);
@@ -257,7 +342,30 @@ function computePayload(cfg) {
             notes.push(`AGENTS.md 占 ${agentsWords}/${budget} 词且不参与截断，留给 USER / MEMORY 的只有 ${Math.max(0, budget - agentsWords)} 词`);
         }
         if (finalWords > budget) {
-            notes.push(`预算不足：内容 ${finalWords} 词，超出 ${budget} 词；AGENTS.md 为硬规则，不截断`);
+            // 超预算时点名「谁已经没法再丢」：只说「AGENTS 不截断」会把 MEMORY 的条目形状问题藏在后面
+            const stuck = [];
+            if (agentsWords > 0)
+                stuck.push(`AGENTS.md 为硬规则不截断（${agentsWords} 词）`);
+            for (const name of ['MEMORY.md', 'USER.md']) {
+                const left = words.get(name) ?? 0;
+                if (left <= 0)
+                    continue;
+                const what = splitSections(original.get(name) ?? '').mode;
+                stuck.push(`${name} ${left} 词（已无更多可丢的${what === 'items' ? '条目' : what === 'paragraphs' ? '段落' : '小节'}）`);
+            }
+            notes.push(`预算不足：内容 ${finalWords} 词，超出 ${budget} 词；${stuck.join('、')}`);
+        }
+        // 接近上限就回显用量：增长是连续的，等到第一次截断才说，正好是最坏的时刻。
+        // 这一行算进 finalWords（否则「280/300」是假的）；放不下就整条不加 —— 宁可不说，
+        // 也不让提醒本身把预算吃满。与「已截断 / 预算不足」互斥。
+        if (notes.length === 0 && budget > 0 && finalWords >= budget * MEMORY_NEAR_RATIO) {
+            // 两遍：先量这一行本身占多少词，再把它算进 finalWords 后重报数字 ——
+            // 否则会说着「280/300」却实际注入 285 词（提示自己也要吃饭）
+            const cost = countWords(`记忆已用 ${finalWords}/${budget} 词（100%）`);
+            if (finalWords + cost <= budget) {
+                finalWords += cost;
+                notes.push(`记忆已用 ${finalWords}/${budget} 词（${Math.round((finalWords / budget) * 100)}%）`);
+            }
         }
         const notice = notes.length > 0 ? `\n\n（注入预算 ${budget} 词：${notes.join('；')}）` : '';
         // 只有用了这套约定的库（根目录有 AGENTS.md）才提醒周节奏
@@ -275,6 +383,7 @@ function computePayload(cfg) {
         text,
         words: finalWords,
         budget,
+        ratio: budget > 0 ? Math.round((finalWords / budget) * 100) / 100 : 0,
         truncatedWords,
         tocWords: countWords(toc),
         files: files.map((f) => ({

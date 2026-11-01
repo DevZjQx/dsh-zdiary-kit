@@ -105,6 +105,20 @@ const LINT_MEMORY = objSchema(
   },
   ['files', 'links', 'total', 'unlinked', 'items'],
 )
+/** 晋升候选的共用形状：newNotes / alreadyPromoted / backlog 三栏一致 */
+const DREAM_CANDIDATE = objSchema({
+  title: { type: 'string' },
+  path: { type: 'string' },
+  type: { type: 'string' },
+  authority: { type: 'string' },
+  tags: { type: 'array', items: { type: 'string' } },
+  created: { type: 'string' },
+  lead: { type: 'string' },
+  cited: { type: 'number' },
+  citedBy: { type: 'array', items: { type: 'string' } },
+  promoted: { type: 'boolean' },
+  promotedBy: { type: 'string', enum: ['link', 'title', ''] },
+}, ['title', 'path', 'type', 'authority', 'tags', 'created', 'lead', 'cited', 'citedBy', 'promoted', 'promotedBy'])
 /** frontmatter 解析失败：这些笔记不在索引里，所以单列一桶（path 相对笔记本，不带 title） */
 const LINT_PARSE = objSchema(
   {
@@ -816,6 +830,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           text: { type: 'string' },
           words: { type: 'number' },
           budget: { type: 'number' },
+          ratio: { type: 'number' },
           truncatedWords: { type: 'number' },
           tocWords: { type: 'number' },
           notebook: { type: 'string' },
@@ -839,7 +854,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               originalWords: { type: 'number' },
             }, ['name', 'present', 'words', 'originalWords']),
           },
-        }, ['text', 'words', 'budget', 'truncatedWords', 'tocWords', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
+        }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'tocWords', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
       },
       async run(_args, env) {
         // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
@@ -984,11 +999,14 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       description:
         '整理晋升材料：最近 N 天新增的笔记（机械筛掉 authority=informal 与无标签的，其余作为候选）、' +
         'daily 里没划掉的 Loose ends、被引用最多的笔记。候选带正文摘要（lead）与入链来源（citedBy），方便重放上下文。' +
+        '会读 MEMORY.md：已经晋升过的（`[[链接]]` 命中或条目里写了标题）移出候选、进 alreadyPromoted —— 不会每周原样重复。' +
+        'backlog 是窗口外仍未晋升的笔记（按被引数），漏做一次不会永久掉队。' +
+        'days 省略时窗口 = 距 DREAMS.md「上次做梦」的天数（没有则 7 天）。' +
         '只返回材料：写 MEMORY.md / DREAMS.md 由你按 AGENTS.md 决定，这个工具不写任何文件。',
       parameters: {
         type: 'object',
         properties: {
-          days: S.num('看最近多少天（1-365，默认 7）'),
+          days: S.num('看最近多少天（1-365）；省略时 = 距 DREAMS.md「上次做梦」的天数，没有这行才退回 7'),
         },
         additionalProperties: false,
       },
@@ -1004,21 +1022,12 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             candidates: { type: 'number' },
             rejected: { type: 'number' },
             looseEnds: { type: 'number' },
-          }, ['window', 'daily', 'candidates', 'rejected', 'looseEnds']),
-          newNotes: {
-            type: 'array',
-            items: objSchema({
-              title: { type: 'string' },
-              path: { type: 'string' },
-              type: { type: 'string' },
-              authority: { type: 'string' },
-              tags: { type: 'array', items: { type: 'string' } },
-              created: { type: 'string' },
-              lead: { type: 'string' },
-              cited: { type: 'number' },
-              citedBy: { type: 'array', items: { type: 'string' } },
-            }, ['title', 'path', 'type', 'authority', 'tags', 'created', 'lead', 'cited', 'citedBy']),
-          },
+            promoted: { type: 'number' },
+            backlog: { type: 'number' },
+          }, ['window', 'daily', 'candidates', 'rejected', 'looseEnds', 'promoted', 'backlog']),
+          newNotes: { type: 'array', items: DREAM_CANDIDATE },
+          alreadyPromoted: { type: 'array', items: DREAM_CANDIDATE },
+          backlog: { type: 'array', items: DREAM_CANDIDATE },
           rejected: {
             type: 'array',
             items: objSchema({ title: { type: 'string' }, path: { type: 'string' }, reason: { type: 'string' } }, ['title', 'path', 'reason']),
@@ -1035,7 +1044,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               items: { type: 'array', items: { type: 'string' } },
             }, ['path', 'date', 'items']),
           },
-        }, ['notebook', 'windowDays', 'since', 'truncated', 'counts', 'newNotes', 'rejected', 'topCited', 'dailyLooseEnds']),
+        }, ['notebook', 'windowDays', 'since', 'truncated', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -1047,7 +1056,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const lines = [
           '做梦：近 ' + v.windowDays + ' 天（自 ' + v.since + '）— 窗口 ' + v.counts.window +
           ' 篇（日记 ' + v.counts.daily + '）· 候选 ' + v.counts.candidates + ' · 拒绝 ' + v.counts.rejected +
-          ' · 未完成 ' + v.counts.looseEnds,
+          ' · 未完成 ' + v.counts.looseEnds + ' · 已晋升 ' + v.counts.promoted + ' · 积压 ' + v.counts.backlog,
         ]
         if (v.newNotes.length) {
           lines.push('晋升候选：')
@@ -1060,6 +1069,18 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               ' · 被引 ' + n.cited + lead + citedBy)
           }
           if (v.newNotes.length > 10) lines.push('  …还有 ' + (v.newNotes.length - 10) + ' 篇')
+        }
+        if (v.alreadyPromoted.length) {
+          lines.push('已在 MEMORY（不再重复提）：')
+          for (const n of v.alreadyPromoted.slice(0, 10)) {
+            lines.push('  · ' + (n.title || n.path) + '（' + n.path + '）· ' + (n.promotedBy === 'link' ? '按链接命中' : '标题出现在条目里'))
+          }
+          if (v.alreadyPromoted.length > 10) lines.push('  …还有 ' + (v.alreadyPromoted.length - 10) + ' 篇')
+        }
+        if (v.backlog.length) {
+          lines.push('窗口外仍未晋升（按被引数）：')
+          for (const n of v.backlog.slice(0, 10)) lines.push('  · ' + (n.title || n.path) + '（' + n.path + '）· 被引 ' + n.cited)
+          if (v.counts.backlog > v.backlog.length) lines.push('  …还有 ' + (v.counts.backlog - v.backlog.length) + ' 篇')
         }
         if (v.rejected.length) {
           lines.push('机械拒绝（不进候选）：')

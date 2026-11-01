@@ -425,6 +425,78 @@ describe('memory', () => {
     expect(p.text.match(/<\/system-reminder>/g)?.length).toBe(1)
   })
 
+  test('P0-1：无 ##、只有条目时也要截断（否则预算整个失效）', () => {
+    const body = [
+      '# 记忆',
+      ...Array.from({ length: 30 }, (_, i) => `- 第 ${i + 1} 条结论：这是一条用于验证预算的记忆条目，内容不长。`),
+    ].join('\n')
+    const p = build({ 'AGENTS.md': 'rule '.repeat(5), 'MEMORY.md': body }, 120)
+    expect(p.words).toBeLessThanOrEqual(120)
+    expect(p.truncatedWords).toBeGreaterThan(0)
+    expect(p.text).not.toContain('第 30 条结论')
+    // 丢掉的是尾部，且必须留下可发现性：目录，或至少一句 zk_read 指路
+    expect(p.text).toMatch(/未注入的段落|用 zk_read 读/)
+    // 截断时不再叠加用量提示（两者互斥）
+    expect(p.text).not.toContain('记忆已用')
+  })
+
+  test('P0-1：无 ##、无列表项的整段散文也按段丢，首段保留', () => {
+    const body = [
+      '# 记忆',
+      ...Array.from({ length: 12 }, (_, i) => `第 ${i + 1} 段：没有列表符号的一整段记忆文字，用来验证段落切分真的生效。`),
+    ].join('\n\n')
+    const p = build({ 'MEMORY.md': body }, 100)
+    expect(p.words).toBeLessThanOrEqual(100)
+    expect(p.truncatedWords).toBeGreaterThan(0)
+    expect(p.text).toContain('第 1 段')
+    expect(p.text).not.toContain('第 12 段')
+  })
+
+  test('P0-1：围栏里的 - 与空行不算可丢的条目 / 段落', () => {
+    const body = [
+      '# 记忆',
+      '',
+      '```',
+      '- 代码里的条目',
+      '## 也不是小节',
+      '',
+      'still code',
+      '```',
+      '',
+      ...Array.from({ length: 6 }, (_, i) => `- 真条目${i + 1}：内容内容内容。`),
+    ].join('\n')
+    // 预算宽裕：一个字都不动
+    const roomy = build({ 'MEMORY.md': body }, 500)
+    expect(roomy.truncatedWords).toBe(0)
+    expect(roomy.text).toContain('代码里的条目')
+    // 紧预算：围栏整块在 head 里（永远保留），只丢真正的条目
+    const tight = build({ 'MEMORY.md': body }, 50)
+    expect(tight.text).toContain('代码里的条目')
+    expect(tight.truncatedWords).toBeGreaterThan(0)
+    expect(tight.text).not.toContain('真条目六')
+  })
+
+  test('P0-1：单条就超预算时不再切，点名「已无更多可丢」而不是只怪 AGENTS', () => {
+    const p = build({ 'MEMORY.md': '# 记忆\n\n- 唯一一条：' + '很长 '.repeat(120) }, 50)
+    expect(p.words).toBeGreaterThan(50)
+    expect(p.text).toContain('预算不足')
+    expect(p.text).toContain('MEMORY.md')
+    expect(p.text).toMatch(/已无更多可丢的(条目|段落|小节)/)
+  })
+
+  test('P1-4：接近上限回显用量，且这一行算进预算', () => {
+    const near = build({ 'MEMORY.md': '# 记忆\n' + 'w '.repeat(79) }, 100)
+    expect(near.text).toContain('记忆已用')
+    expect(near.words).toBeLessThanOrEqual(100)
+    expect(near.ratio).toBeGreaterThanOrEqual(0.8)
+    expect(near.ratio).toBeLessThanOrEqual(1)
+
+    // 80% 以下不加：别把诊断信息变成每步的噪音
+    const roomy = build({ 'MEMORY.md': '# 记忆\n' + 'w '.repeat(60) }, 100)
+    expect(roomy.text).not.toContain('记忆已用')
+    expect(roomy.ratio).toBeLessThan(0.8)
+  })
+
   test('截断归因：AGENTS 吃掉大半预算时点名，预算宽裕时一个字都不加', () => {
     const memoryBody = ['## 一', 'x '.repeat(40), '## 二', 'y '.repeat(40), '## 三', 'z '.repeat(40)].join('\n')
     const tight = build({ 'AGENTS.md': 'rule '.repeat(120), 'MEMORY.md': memoryBody }, 200)
@@ -1468,6 +1540,59 @@ describe('M3: 巡检与做梦', () => {
   })
 })
 
+describe('M3.1: dream 读 MEMORY（已晋升 / 窗口 / 积压）', () => {
+  const dir = path.join(home, 'nb-dream-promoted')
+  const cfgP = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+  const note = (title: string, dirName: string, body: string) =>
+    zk.createNote(cfgP, { title, dir: dirName, content: body })
+
+  it('已晋升的不再进候选（链接 / 标题两条路径），窗口跟着 DREAMS.md', async () => {
+    await notebookLib.ensureNotebook(cfgP)
+    const byLink = await note('已链接的结论条目', 'notes/concepts', '正文 #keep')
+    const byTitle = await note('记忆瓶颈在写入路径', 'notes/concepts', '正文 #keep')
+    const shortTitle = await note('RAG', 'notes/concepts', '正文 #keep')
+    const oldish = await note('漏做一次的概念', 'notes/concepts', '正文 #keep')
+
+    fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+      '# 记忆',
+      '',
+      `- 结论一：见 [[${byLink.path}]]`,
+      '- 记忆瓶颈在写入路径 —— 这条只有文字，没有链接。',
+      '- RAG 也是纯文字。',
+      '',
+    ].join('\n'))
+
+    // 没有 DREAMS.md：窗口仍是 7 天（旧行为），但已经知道 MEMORY 里有什么
+    const first = await dreamLib.dreamNotebook(cfgP)
+    expect(first.windowDays).toBe(7)
+    expect(first.counts.promoted).toBe(2)
+    expect(first.alreadyPromoted.map((n) => n.path)).toEqual(expect.arrayContaining([byLink.path, byTitle.path]))
+    expect(first.alreadyPromoted.find((n) => n.path === byLink.path)?.promotedBy).toBe('link')
+    expect(first.alreadyPromoted.find((n) => n.path === byTitle.path)?.promotedBy).toBe('title')
+    expect(first.alreadyPromoted.every((n) => n.promoted)).toBe(true)
+    // 已晋升的从候选里移出；短标题（< 6 字）不做包含匹配，仍在候选里
+    expect(first.newNotes.map((n) => n.path)).not.toContain(byLink.path)
+    expect(first.newNotes.map((n) => n.path)).not.toContain(byTitle.path)
+    expect(first.newNotes.map((n) => n.path)).toContain(shortTitle.path)
+
+    // DREAMS.md 写 10 天前：默认窗口 = 10 天
+    const tenDaysAgo = new Date(Date.now() - 10 * 86_400_000)
+    const stamp = `${tenDaysAgo.getFullYear()}-${String(tenDaysAgo.getMonth() + 1).padStart(2, '0')}-${String(tenDaysAgo.getDate()).padStart(2, '0')}`
+    fs.writeFileSync(path.join(dir, 'DREAMS.md'), `# 梦\n\n上次做梦：${stamp}\n`)
+    const tens = await dreamLib.dreamNotebook(cfgP)
+    expect(tens.windowDays).toBe(10)
+    // 显式 --days 仍然优先
+    expect((await dreamLib.dreamNotebook(cfgP, { days: 3 })).windowDays).toBe(3)
+
+    // 窗口外仍未晋升的进 backlog：漏做一次不会永久掉队
+    const later = await dreamLib.dreamNotebook(cfgP, { days: 10, now: new Date(Date.now() + 40 * 86_400_000) })
+    expect(later.counts.window).toBe(0)
+    expect(later.counts.backlog).toBeGreaterThan(0)
+    expect(later.backlog.map((n) => n.path)).toContain(oldish.path)
+    expect(later.backlog.map((n) => n.path)).not.toContain(byLink.path)
+  })
+})
+
 describe('记忆层体检', () => {
   const dir = path.join(home, 'nb-memlint')
   const memCfg = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
@@ -1507,6 +1632,23 @@ describe('记忆层体检', () => {
     expect(lint.memoryLinks.items.some((i) => i.link === done.archivePath)).toBe(false)
     // 只数 MEMORY 里那条「没附来源」的列表项；USER 的偏好条目不计
     expect(lint.memoryLinks.unlinked).toBe(1)
+  })
+
+  it('空链接 [[   ]] 不算失效：解析器对空目标返回 missing，lint 不该照单全收', async () => {
+    await notebookLib.ensureNotebook(memCfg)
+    fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+      '# 记忆',
+      '',
+      '- 空目标：[[   ]]',
+      '- 真的不存在：[[notes/concepts/也没有]]',
+      '',
+    ].join('\n'))
+    fs.writeFileSync(path.join(dir, 'USER.md'), '# 偏好\n\n- 说话短一点\n')
+
+    const lint = await lintLib.lintNotebook(memCfg)
+    expect(lint.memoryLinks.items.some((i) => i.link === '')).toBe(false)
+    expect(lint.memoryLinks.items.map((i) => i.link)).toEqual(['notes/concepts/也没有'])
+    expect(lint.memoryLinks.total).toBe(1)
   })
 })
 
@@ -1600,6 +1742,14 @@ describe('tools', () => {
     expect(toolLib.validateArgs(query.parameters, { type: 'nonsense' }).length).toBe(1)
     const supersede = defs.find((d) => d.name === 'zk_supersede')!
     expect(toolLib.validateArgs(supersede.parameters, { by: 'x' }).some((i) => i.includes('path'))).toBe(true)
+  })
+
+  it('zk_dream 的 days 文案与行为一致：不传就按 DREAMS.md 算窗口，别写「默认 7」', () => {
+    const dream = toolsFeature.buildTools().find((d) => d.name === 'zk_dream')!
+    const props = dream.parameters.properties as Record<string, { description?: string }>
+    expect(props.days?.description ?? '').toContain('DREAMS.md')
+    expect(props.days?.description ?? '').not.toContain('默认 7')
+    expect(dream.description).toContain('DREAMS.md')
   })
 
   it('zk_new：layered 不给 dir 就按 type 落位；不在 group 里的落点一律拒绝', async () => {
@@ -1839,11 +1989,17 @@ describe('M4: 结构设置与记忆预算', () => {
     expect(body).toContain('不会')
     expect(body).toContain('MEMORY.md')
     expect(body).toContain('WORKFLOW.md')
+    // 截断从底部往前丢：模板必须说清新条目写在哪，否则 agent 继续往下追加，最新的结论先没
+    expect(body).toContain('新条目写在小节顶部')
 
     fs.writeFileSync(agentsFile, '# 我自己写的\n\n不覆盖我。\n')
     const again = await notebookLib.ensureNotebook(m4)
     expect(again.agentsWritten).toBe(false)
     expect(fs.readFileSync(agentsFile, 'utf8')).toBe('# 我自己写的\n\n不覆盖我。\n')
+  })
+
+  it('AGENTS 模板守预算：≤ 190 词（它不参与截断，多 10 词 MEMORY 就少 10 词）', () => {
+    expect(memory.countWords(notebookLib.AGENTS_TEMPLATE)).toBeLessThanOrEqual(190)
   })
 
   it('structureStatus 只报告：缺目录 / 缺 AGENTS.md 时 ready=false，不自己补', () => {

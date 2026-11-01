@@ -83,7 +83,8 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 用一次读换一条「不会静默复用的错误结论」；zk 跑不起来时 layered 照建（归档提醒降级），flat 直接报错（标题查重是写入前的硬门槛，fail-closed）。
 `zk_read` 的"没找到"走 throw（isError），不返回 `found:false` —— 模型看到错误比看到空字段更容易改对。
 `zk_read` 也能读根目录 meta 文件（`MEMORY.md` / `USER.md`）：注入截断时留下的目录就是让 agent 用这个取回原文。
-`zk_context` 的 `files[].originalWords`（截断前词数）与 `tocWords`（目录占的词数）只用于解释预算，不改变注入内容。
+`zk_context` 的 `files[].originalWords`（截断前词数）、`tocWords`（目录占的词数）与 `ratio`（用量 = `words / budget`，
+两位小数，> 1 表示超预算）只用于解释预算，不改变注入内容。
 
 `zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关（D7）。
 `zk_lint` = 1 次 `zk list` + 三个 zk 原生过滤器（`--orphan` / `--broken-links` / `--tagless`）+ 1 次 `zk graph`，
@@ -118,6 +119,14 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
 `zk_dream` 的拒绝规则只有两条（`authority=informal`、无标签），日记不进候选/拒绝（它的未完成项单独一栏）：
 再加第三条就是语义判断，违反 D5。`topCited` 用一次 `zk graph` 数入链，不按笔记逐条跑。
+**晋升是一道门，门要知道门里有什么。** `zk_dream` 会读 `MEMORY.md`，把「已经晋升过」的移出候选、单列 `alreadyPromoted`：
+两条都是字符串比较 —— `[[链接]]` 经 `lib/wikilink` 解析到活笔记（`promotedBy: 'link'`），
+或者候选标题（归一化后 ≥ 6 字）出现在 MEMORY 的某一行里（`promotedBy: 'title'`，真机 7 条里 6 条是这种纯文字条目）。
+短标题（「RAG」）不做包含匹配：任意句子里都可能撞上，宁可重复报，不猜。归档链接不算晋升。
+不这样做的后果是可推演的：同一批笔记每周原样重复，人跳过几次之后 `DREAMS.md` 的日期不再更新，整套回路就断了。
+窗口默认也不再固定 7 天：`days` 省略时 = 距 `DREAMS.md`「上次做梦」的日历天数（1–365，没有或日期不合法才退回 7），
+所以漏做一周窗口会自然变大；窗口外仍未晋升、且过机械门的笔记进 `backlog`（按被引数取前 10，`counts.backlog` 给总数），
+漏一次不会永久掉队。显式 `days` 仍然优先。
 候选的 `lead` 是 frontmatter 之后第一段正文（200 字内）—— 不是 zk 的 `lead`（那只是标题行）；
 `citedBy` 是同一次 `zk graph` 得到的入链来源前 5 条。给 agent 的是可重放的上下文（谁引了它、摘要是什么），
 不是「这条该晋升」的结论。
