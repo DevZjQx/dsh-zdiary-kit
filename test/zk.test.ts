@@ -2656,9 +2656,11 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(tags.singletons.total).toBe(28)
   })
 
-  it('P2-15：无标记 / 旧版本都算旧模板，当前版本不算', async () => {
-    const cfg = fresh('nb-p215')
+  it('P2-15：无标记 / 旧版本都算旧模板，当前版本不算；旧模板结果直接带新版全文', async () => {
+    const cfg = fresh('nb-p215', 'layered')
     await notebookLib.ensureNotebook(cfg)
+    // layered 初始化会写 AGENTS.md；先删掉，验证「没有文件」不是旧模板
+    fs.rmSync(path.join(cfg.notebook, 'AGENTS.md'))
     expect(lintLib.templateStatus(cfg)).toEqual({ present: false, version: 0, current: 2, stale: false })
 
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '# 手写规则\n')
@@ -2666,14 +2668,37 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(old.present).toBe(true)
     expect(old.version).toBe(0)
     expect(old.stale).toBe(true)
+    // 插件装进 DSH 后 docs 在包内、agent 读不到：新版全文必须跟着结果走，不能只给相对路径
+    expect(old.currentText).toBe(notebookLib.AGENTS_TEMPLATE)
+    const extras = lintLib.formatLintExtras({ ...(await lintLib.lintNotebook(cfg)) }).join('\n')
+    expect(extras).toContain('新版模板全文')
+    expect(extras).toContain('<!-- zdiary-template: v2 -->')
+    expect(extras).not.toContain('docs/features/memory.md')
 
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '<!-- zdiary-template: v99 -->\n\n# 未来版本\n')
-    expect(lintLib.templateStatus(cfg).stale).toBe(true)
+    // 插件比库旧：仍然报（不然升过插件又降级的人永远看不见），但不能把当前版本的模板递过去
+    // —— agent 会照着合并、把标记改成 v2，等于把规则回退
+    const future = lintLib.templateStatus(cfg)
+    expect(future.stale).toBe(true)
+    expect(future.currentText).toBeUndefined()
+    const futureExtras = lintLib.formatLintExtras({ ...(await lintLib.lintNotebook(cfg)) }).join('\n')
+    expect(futureExtras).toContain('模板版本比插件新')
+    expect(futureExtras).not.toContain('新版模板全文')
+    expect(futureExtras).not.toContain('--- 新版模板开始 ---')
 
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), notebookLib.AGENTS_TEMPLATE)
     const now = lintLib.templateStatus(cfg)
     expect(now.version).toBe(now.current)
     expect(now.stale).toBe(false)
+    expect(now.currentText).toBeUndefined()
+
+    // flat 库拿 flat 模板：不能把 raw/ archive/ WORKFLOW.md 这些它没有的路径塞回去
+    const flat = fresh('nb-p215-flat')
+    await notebookLib.ensureNotebook(flat)
+    fs.writeFileSync(path.join(flat.notebook, 'AGENTS.md'), '# 手写规则\n')
+    const flatOld = lintLib.templateStatus(flat)
+    expect(flatOld.currentText).toBe(notebookLib.AGENTS_TEMPLATE_FLAT)
+    expect(flatOld.currentText).not.toContain('raw/')
   })
 
   it('P1-5：只读视图记忆页显示四份文件与预算；meta 仍不能按路径打开', async () => {

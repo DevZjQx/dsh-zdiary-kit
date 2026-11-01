@@ -107,4 +107,8 @@ README 与模板不要暗示「新条目往下加」而不提这一点。
 **模板版本（P2-15）。** 模板是行为契约，每轮注入；老库的 `AGENTS.md` 停在旧版本时，agent 会一直按旧规则写。
 但模板允许用户改，不能自动覆盖 —— 两份模板首行写死 `<!-- zdiary-template: vN -->`，`zk_lint` 读它：
 无标记按 v0 算，与 `TEMPLATE_VERSION` 不等就提示「旧版模板」，只报告、不改文件。
+提示里**直接带上当前结构对应的新版模板全文**（`template.currentText`），不再让 agent 去找 `docs/features/memory.md`：
+插件装进 DSH 后文档躺在 profile 的 `node_modules` 里，工作区外的读取可能被策略拦掉，给路径等于让它多搜几次。
+反过来，标记**高于** `TEMPLATE_VERSION` 时（用户升过更新的插件又降级 / 手写了更大的号）照样报，但不给 `currentText`：
+那是插件该升级，递旧模板等于让 agent 把规则改回去。
 标记固定 4 词、不带日期（带日期实测 6 词，白花 2 词）；改模板时 `TEMPLATE_VERSION + 1`。

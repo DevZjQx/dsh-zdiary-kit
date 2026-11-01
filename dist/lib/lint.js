@@ -26,7 +26,7 @@ import path from 'node:path';
 import { allNotes, graphEdges, localDate, MAX_SCAN, notesWithFlag, parseErrorWarnings } from './zk.js';
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 import { parseFrontmatter } from './frontmatter.js';
-import { TEMPLATE_VERSION } from './agents-template.js';
+import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_VERSION } from './agents-template.js';
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50;
 /** 标题归一化与链接解析在 `lib/wikilink.ts`（dream 也用同一套）；这里保留导出，免得调用方跟着搬 */
@@ -295,8 +295,24 @@ export function formatLintExtras(r) {
                 `；单例 ${sg.total} 个`);
     }
     if (r.template.stale) {
-        lines.push(`⚠️ AGENTS.md 是${r.template.version === 0 ? '旧版 / 无版本标记' : `旧版模板 v${r.template.version}`}` +
-            `（当前 v${r.template.current}）—— 只报告，不覆盖；要看新版可对比 docs/features/memory.md`);
+        const t = r.template;
+        if (t.version > t.current) {
+            // 插件比库旧（用户降级过插件 / 手写了更高标记）：给旧模板等于让 agent 把规则改回去
+            lines.push(`⚠️ AGENTS.md 的模板版本比插件新（v${t.version} > 当前 v${t.current}）—— ` +
+                '插件是旧的那个，别改文件去配它；升级插件后再看。这里不给旧模板，免得把规则改回去。');
+        }
+        else {
+            lines.push(`⚠️ AGENTS.md 是${t.version === 0 ? '旧版 / 无版本标记' : `旧版模板 v${t.version}`}` +
+                `（当前 v${t.current}）—— 只报告，不覆盖。` +
+                (t.currentText
+                    ? `新版模板全文如下：按需合并，别整篇覆盖你改过的规则；合并后把首行标记更新为 v${t.current}。`
+                    : ''));
+            if (t.currentText) {
+                lines.push('--- 新版模板开始 ---');
+                lines.push(t.currentText.trimEnd());
+                lines.push('--- 新版模板结束 ---');
+            }
+        }
     }
     if (r.similarTitles.total > 0) {
         const sample = r.similarTitles.items.slice(0, 3)
@@ -426,7 +442,13 @@ export function templateStatus(cfg) {
     }
     const hit = TEMPLATE_MARK_RE.exec(body);
     const version = hit ? Number(hit[1]) : 0;
-    return { present: true, version, current: TEMPLATE_VERSION, stale: version !== TEMPLATE_VERSION };
+    const stale = version !== TEMPLATE_VERSION;
+    const base = { present: true, version, current: TEMPLATE_VERSION, stale };
+    // 不 stale 时不要留下 currentText: undefined —— 宿主按无损 JSON 校验，undefined 会让整次调用 invalid；
+    // 版本比插件新时也不给：那是插件该升级，不是用户该回退
+    return stale && version < TEMPLATE_VERSION
+        ? { ...base, currentText: cfg.structure === 'flat' ? AGENTS_TEMPLATE_FLAT : AGENTS_TEMPLATE }
+        : base;
 }
 export async function lintNotebook(cfg, opts = {}, signal) {
     const staleDays = Math.min(3650, Math.max(1, Math.trunc(opts.staleDays ?? 90)));

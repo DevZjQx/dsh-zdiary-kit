@@ -132,6 +132,7 @@ const LINT_TEMPLATE = objSchema({
     version: { type: 'number' },
     current: { type: 'number' },
     stale: { type: 'boolean' },
+    currentText: { type: 'string' },
 }, ['present', 'version', 'current', 'stale']);
 /** 晋升候选的共用形状：newNotes / alreadyPromoted / backlog 三栏一致 */
 const DREAM_CANDIDATE = objSchema({

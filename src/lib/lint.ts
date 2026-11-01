@@ -29,7 +29,7 @@ import { allNotes, graphEdges, localDate, MAX_SCAN, notesWithFlag, parseErrorWar
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
 import { parseFrontmatter } from './frontmatter.ts'
 import type { FrontmatterFields } from './frontmatter.ts'
-import { TEMPLATE_VERSION } from './agents-template.ts'
+import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_VERSION } from './agents-template.ts'
 
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50
@@ -180,6 +180,17 @@ export interface LintTemplateBucket {
   current: number
   /** true = 有 AGENTS.md，但版本不是当前模板 */
   stale: boolean
+  /**
+   * `version < current`（旧版 / 无标记）时给出当前结构对应的模板全文。
+   *
+   * 为什么塞进结果：插件装进 DSH 后，docs 在 profile 的 node_modules 里，agent 的 Read 未必够得着
+   * （工作区外的读会被策略拦掉），而旧通知里的相对路径会逼它先搜几次。模板全文跟着工具结果走，
+   * 模型一次就能拿到要合并的内容，不依赖任何文件路径。
+   *
+   * `version > current` 时不给：那说明用户升过更新的插件（或手写了更高标记），这时插件才是旧的那个，
+   * 把当前版本的模板递过去等于让 agent 把规则改回去。
+   */
+  currentText?: string
 }
 
 export interface LintOptions {
@@ -489,10 +500,27 @@ export function formatLintExtras(
         `；单例 ${sg.total} 个`)
   }
   if (r.template.stale) {
-    lines.push(
-      `⚠️ AGENTS.md 是${r.template.version === 0 ? '旧版 / 无版本标记' : `旧版模板 v${r.template.version}`}` +
-      `（当前 v${r.template.current}）—— 只报告，不覆盖；要看新版可对比 docs/features/memory.md`,
-    )
+    const t = r.template
+    if (t.version > t.current) {
+      // 插件比库旧（用户降级过插件 / 手写了更高标记）：给旧模板等于让 agent 把规则改回去
+      lines.push(
+        `⚠️ AGENTS.md 的模板版本比插件新（v${t.version} > 当前 v${t.current}）—— ` +
+        '插件是旧的那个，别改文件去配它；升级插件后再看。这里不给旧模板，免得把规则改回去。',
+      )
+    } else {
+      lines.push(
+        `⚠️ AGENTS.md 是${t.version === 0 ? '旧版 / 无版本标记' : `旧版模板 v${t.version}`}` +
+        `（当前 v${t.current}）—— 只报告，不覆盖。` +
+        (t.currentText
+          ? `新版模板全文如下：按需合并，别整篇覆盖你改过的规则；合并后把首行标记更新为 v${t.current}。`
+          : ''),
+      )
+      if (t.currentText) {
+        lines.push('--- 新版模板开始 ---')
+        lines.push(t.currentText.trimEnd())
+        lines.push('--- 新版模板结束 ---')
+      }
+    }
   }
   if (r.similarTitles.total > 0) {
     const sample = r.similarTitles.items.slice(0, 3)
@@ -641,7 +669,13 @@ export function templateStatus(cfg: Config): LintTemplateBucket {
   }
   const hit = TEMPLATE_MARK_RE.exec(body)
   const version = hit ? Number(hit[1]) : 0
-  return { present: true, version, current: TEMPLATE_VERSION, stale: version !== TEMPLATE_VERSION }
+  const stale = version !== TEMPLATE_VERSION
+  const base = { present: true, version, current: TEMPLATE_VERSION, stale }
+  // 不 stale 时不要留下 currentText: undefined —— 宿主按无损 JSON 校验，undefined 会让整次调用 invalid；
+  // 版本比插件新时也不给：那是插件该升级，不是用户该回退
+  return stale && version < TEMPLATE_VERSION
+    ? { ...base, currentText: cfg.structure === 'flat' ? AGENTS_TEMPLATE_FLAT : AGENTS_TEMPLATE }
+    : base
 }
 
 export async function lintNotebook(

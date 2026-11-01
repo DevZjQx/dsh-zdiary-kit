@@ -174,6 +174,7 @@ const LINT_TEMPLATE = objSchema(
     version: { type: 'number' },
     current: { type: 'number' },
     stale: { type: 'boolean' },
+    currentText: { type: 'string' },
   },
   ['present', 'version', 'current', 'stale'],
 )

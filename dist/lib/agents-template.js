@@ -8,6 +8,8 @@
  *
  * 为什么单独一个文件：它是「给人读的文档」，不是逻辑；放在这里也方便直接对照
  * docs/features/memory.md 的三条口径（检索词归宿 / 中文必打 tags / 宿主不会自动加载）。
+ * 注意别让运行期消息只指向 docs/：插件发布后文档在 profile 的 node_modules 里，agent 够不着；
+ * lint 的旧版提示直接带模板全文（见 lib/lint.ts 的 LintTemplateBucket.currentText）。
  *
  * 长度是设计约束：AGENTS.md 属于注入预算（默认 500 词，中文 2 字 = 1 词）且**永不截断**，
  * 模板自己吃掉过半预算，USER / MEMORY 就没位置了 —— 所以这里只留规则，不写教程。
