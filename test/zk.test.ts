@@ -45,6 +45,18 @@ if (!available) {
   })
 }
 
+/** 宿主按无损 JSON 快照校验工具输出：undefined / 函数 / 非有限数都会让整次调用报 invalid output */
+function lossyPaths(value: unknown, at = 'value'): string[] {
+  if (value === undefined) return [at]
+  if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') return [at]
+  if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0))) return [at]
+  if (Array.isArray(value)) return value.flatMap((item, i) => lossyPaths(item, `${at}[${i}]`))
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).flatMap(([key, item]) => lossyPaths(item, `${at}.${key}`))
+  }
+  return []
+}
+
 afterAll(() => {
   try { fs.rmSync(home, { recursive: true, force: true }) } catch { /* 临时目录，删不掉也无所谓 */ }
 })
@@ -738,6 +750,13 @@ describe('建完收尾：摘要', () => {
 })
 
 describe('notes', () => {
+  it('withTags：正文里已经写过的标签不再重复追加', () => {
+    expect(zk.withTags('正文\n\n#素材 #来源', ['素材', '来源'])).toBe('正文\n\n#素材 #来源')
+    expect(zk.withTags('正文 #素材', ['素材', '来源'])).toBe('正文 #素材\n\n#来源')
+    // 边界：#素材库 不是 #素材
+    expect(zk.withTags('正文 #素材库', ['素材'])).toBe('正文 #素材库\n\n#素材')
+  })
+
   it('创建 → 搜索 → 读取', async () => {
     const created = await zk.createNote(cfg, {
       title: '卡片盒笔记法',
@@ -1581,6 +1600,69 @@ describe('tools', () => {
     expect(toolLib.validateArgs(supersede.parameters, { by: 'x' }).some((i) => i.includes('path'))).toBe(true)
   })
 
+  it('zk_new：layered 不给 dir 就按 type 落位；不在 group 里的落点一律拒绝', async () => {
+    const layeredDir = path.join(home, 'newdir-layered')
+    store.writeConfig({
+      notebooks: { default: { path: notebook, structure: 'flat' }, work: { path: layeredDir, structure: 'layered' } },
+      active: 'work',
+      notesDir: 'notes',
+      dailyDir: 'journal',
+      defaultTags: ['default'],
+    })
+    try {
+      const newTool = toolsFeature.buildTools(() => layeredDir).find((d) => d.name === 'zk_new')!
+      const made = await newTool.execute(
+        { title: '按类型落位', type: 'source', body: '正文' },
+        { signal: AbortSignal.timeout(30_000) },
+      ) as Record<string, unknown>
+      expect(String(made.path).startsWith('notes/sources/')).toBe(true)
+      const raw = fs.readFileSync(path.join(layeredDir, String(made.path)), 'utf8')
+      expect(raw).toContain('type: source')
+      expect(raw).toContain('## Key claims')
+      // 没有 dir 也没有 type：notes/ 根不属于任何 group，直接拒绝而不是静默建出无模板笔记
+      await expect(newTool.execute(
+        { title: '没有落点', body: '正文' },
+        { signal: AbortSignal.timeout(30_000) },
+      )).rejects.toThrow(/要给 dir/)
+      // 显式给了 dir 也要在 group 里：agent 最容易顺手写 dir: 'notes'，放过去就又是无模板笔记
+      await expect(newTool.execute(
+        { title: '显式根目录', dir: 'notes', body: '正文' },
+        { signal: AbortSignal.timeout(30_000) },
+      )).rejects.toThrow(/不在任何 group/)
+      await expect(newTool.execute(
+        { title: '写错的目录', dir: 'notes/concept', type: 'concept', body: '正文' },
+        { signal: AbortSignal.timeout(30_000) },
+      )).rejects.toThrow(/不在任何 group/)
+      // group 下的子目录照常放行（zk 按路径前缀归组）
+      const nested = await newTool.execute(
+        { title: '子目录落位', dir: 'notes/concepts/papers/', body: '正文' },
+        { signal: AbortSignal.timeout(30_000) },
+      ) as Record<string, unknown>
+      expect(String(nested.path).startsWith('notes/concepts/papers/')).toBe(true)
+      expect(fs.readFileSync(path.join(layeredDir, String(nested.path)), 'utf8')).toContain('## Summary')
+    } finally {
+      store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
+    }
+  })
+
+  it('zk_new 的输出能无损 JSON（没有 undefined 字段）', async () => {
+    const newTool = toolsFeature.buildTools().find((d) => d.name === 'zk_new')!
+    const plain = await newTool.execute(
+      { title: '输出无告警', body: '正文' },
+      { signal: AbortSignal.timeout(30_000) },
+    ) as Record<string, unknown>
+    // 没给 summary 就没有告警：这个键不能以 undefined 出现在输出里
+    expect(Object.hasOwn(plain, 'summaryWarning')).toBe(false)
+    expect(lossyPaths(plain)).toEqual([])
+
+    const warned = await newTool.execute(
+      { title: '输出有告警', summary: '参数摘要', body: '## Summary\n\n正文摘要' },
+      { signal: AbortSignal.timeout(30_000) },
+    ) as Record<string, unknown>
+    expect(typeof warned.summaryWarning).toBe('string')
+    expect(lossyPaths(warned)).toEqual([])
+  })
+
   it('zk_use：不带参数只列；没有会话 id 时拒绝切换', async () => {
     const defs = toolsFeature.buildTools()
     const use = defs.find((d) => d.name === 'zk_use')!
@@ -1955,6 +2037,47 @@ describe('cli: zk-kit config', () => {
     const nbs = run('config', 'set', 'notebooks=x')
     expect(nbs.status).not.toBe(0)
     expect(nbs.stderr ?? '').toContain('整体映射')
+  })
+})
+
+describe('cli: zk-kit new', () => {
+  const cli = path.resolve(import.meta.dir, '..', 'src', 'cli.ts')
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, [cli, ...args], { env: process.env, encoding: 'utf8', timeout: 30_000 })
+
+  it('layered 下按 --type 落位；dir 和 type 都没有、或 dir 不在 group 里就报错', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const dir = path.join(home, 'cli-layered')
+    try {
+      store.writeConfig({
+        notebooks: { default: { path: dir, structure: 'layered' } },
+        active: 'default',
+        notesDir: 'notes',
+        dailyDir: 'journal',
+        defaultTags: [],
+      })
+      expect(run('init').status).toBe(0)
+      const made = run('new', '--title', 'CLI 类型落位', '--type', 'source', '--body', '正文')
+      expect(made.status).toBe(0)
+      expect(made.stdout ?? '').toContain('notes/sources/')
+
+      const bad = run('new', '--title', 'CLI 没有落点')
+      expect(bad.status).not.toBe(0)
+      expect(bad.stderr ?? '').toContain('要给 dir')
+
+      const offGroup = run('new', '--title', 'CLI 显式根目录', '--dir', 'notes', '--body', '正文')
+      expect(offGroup.status).not.toBe(0)
+      expect(offGroup.stderr ?? '').toContain('不在任何 group')
+      // 被拒的调用不留文件：notes/ 根上一个 .md 都不该有
+      expect(fs.readdirSync(path.join(dir, 'notes')).filter((f) => f.endsWith('.md'))).toEqual([])
+
+      const wrong = run('new', '--title', 'CLI 类型写错', '--type', 'nonsense')
+      expect(wrong.status).not.toBe(0)
+      expect(wrong.stderr ?? '').toContain('--type 只能是')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+    }
   })
 })
 

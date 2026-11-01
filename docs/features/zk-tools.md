@@ -42,9 +42,18 @@ layered 同目录同名靠 `{{slug title}}` 文件名拦住，不同目录允许
 （只换文件名，标题和正文不动）。改名后 zk 的 slug 撞名失效，所以给了 `name` 时会在建之前按「同目录 + 同标题」补查一次。
 老笔记不自动改名；**手工 `mv`** 会断路径式入链，要改名用 `zk_rename`（它会重写入链 / meta 来源 / 自身相对链接）。
 `type` / `authority` 只有 layered 模板（`{{extra.*}}`）会写进 frontmatter；flat 的 `default.md` 没有占位符，传了也不会落盘。
+layered 的落点必须在某个 group 里：`zk_new` 不给 `dir` 就按 `type` 选目录（source → notes/sources、concept → notes/concepts…），
+连 `type` 都没有直接报错；显式给的 `dir` 也不再信任 —— 不在任何 group 的 `paths` 下（`notes/` 根、`notes/concept` 这种错字）同样报错，
+group 的子目录照旧放行（zk 按路径前缀归组）。理由：`notes/` 根不属于任何 group，zk 会退回内置模板 ——
+没有 frontmatter、文件名是随机 `{{id}}`，以前会静默建出来，只有回头看路径才发现。
+校验用的是 `layeredGroups()` 这份唯一真相，所以 `journal/`（日记 group）也在白名单里。
+`tags` 只追加正文里还没出现过的 `#tag`：正文自己写了一行标签、入参又给一遍时，以前末尾会多出一行一模一样的；
+边界按标签字符判断，`#素材库` 不会挡住 `#素材`。
 `summary` 写进模板的 `## Summary`：这一节模板里天生是空的，而 `{{content}}` 落在 `## Content` 下面 —— 不给 `summary`，
 它没有任何写入路径能填。flat / 自定义模板没有这一节时，在一级标题下面补一节；正文里自己写了 Summary 就不覆盖，
 一个字都不改，返回 `summaryApplied: false` 和 `summaryWarning`（工具层与 CLI 都据此告警）。
+没有告警时输出里不带 `summaryWarning` 这个键：宿主按无损 JSON 校验工具输出，值为 `undefined` 的字段会让整次调用报
+`invalid output` —— 文件已经建好，模型却拿不到 `path`。
 只填不删：正文里多写一节 `## Content` 之类属于排版噪音，靠 `body` 的入参说明去避免，不在建完收尾时静默改正文。
 `zk_append` 拒写根目录的 meta 文件（AGENTS / USER / MEMORY / DREAMS / INDEX / WORKFLOW，清单来自 `lib/meta.ts`）：追加会把记忆变成流水账，
 也让「这条记忆是谁改的」失去审计线索；子目录里的同名文件是普通笔记，照常可写。

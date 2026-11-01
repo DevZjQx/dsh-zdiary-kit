@@ -1346,11 +1346,21 @@ export async function renameNote(cfg, opts, signal) {
         selfRewritten: self.changed,
     };
 }
-/** 把标签拼成 zk 认的 hashtags 行 */
+/** 正文里是否已有这个 #tag（前后不能紧贴标签字符：#素材库 不算 #素材） */
+function hasHashtag(body, tag) {
+    if (!tag)
+        return false;
+    const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^\\p{L}\\p{N}_-])#${escaped}(?![\\p{L}\\p{N}_-])`, 'u').test(body);
+}
 export function withTags(content, tags) {
     const body = String(content ?? '').replace(/\s+$/, '');
     if (!tags.length)
         return body;
-    const line = tags.map((t) => `#${t}`).join(' ');
+    // 正文里已经写过的标签跳过：以前正文写了 #tag、入参又给 tags，末尾会多出一行一模一样的
+    const missing = tags.filter((tag) => !hasHashtag(body, tag));
+    if (!missing.length)
+        return body;
+    const line = missing.map((t) => `#${t}`).join(' ');
     return body ? `${body}\n\n${line}` : line;
 }

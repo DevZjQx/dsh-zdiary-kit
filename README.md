@@ -13,7 +13,7 @@
 | `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要 |
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active） |
 | `zk_read` | 读一篇全文（按路径，或先按词找最相关的一篇）；超长会截断并标注 |
-| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面） |
+| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题）；根目录 meta 文件拒写 |
 | `zk_daily` | 打开/创建某天的日记，并追加一条带时间的记录（layered 模板写进 `## Events` 的 `### HH:MM`，flat 追加到文件末尾的 `## HH:MM`） |
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题）；meta 文件不作为来源或目标 |
@@ -27,6 +27,7 @@
 
 写笔记前 agent 会先 `zk_search` 查重；flat 笔记本的 `zk_new` 还会按标题再查一次，重复直接报错。
 layered 笔记本的文件名是标题的 slug：英文标题自然得到英文文件名，短不短看标题本身；中文标题会变成很长的拼音名，要短名就在 `zk_new` 时传 `name`；老笔记不自动改名，**手工 `mv` 会断入链**，要改名用 `zk_rename`（默认预演，会重写引用）。
+layered 下每篇笔记都要落在 group 里：`zk_new` 不给 `dir` 就按 `type` 选目录（source → notes/sources），没给 `type` 会直接报错；显式给的 `dir` 也要在某个 group 下（`notes/sources` 及其子目录，写 `notes/concept` 这种错字一样拦）—— `notes/` 根不属于任何 group，建在那里的笔记不套模板（没有 frontmatter，文件名是随机 id），所以这条路径一律不放过。
 双链用相对路径（zk 的 `link-format = "wiki"` 认这个），所以 `--broken-links` 不会因为「按标题链接」而误报。
 
 **多会话**：每个会话第一次调工具时，会把当时配置里的默认笔记本**固定**下来（落在 `~/.dsh/zdiary/sessions/`，
@@ -223,7 +224,7 @@ template = "daily.md"
 
 ```bash
 zk-kit init                          # 建库 / 补齐目录、模板、group、AGENTS.md（幂等）
-zk-kit new --title "示例笔记" --body "正文" --tags demo
+zk-kit new --title "示例笔记" --body "正文" --tags demo --type concept
 zk-kit search --tags demo --limit 5
 zk-kit daily --entry "今天把 zk-kit 跑了一遍"
 zk-kit lint --stale-days 90          # 体检（只读）
@@ -242,7 +243,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 读 | `zk-kit read notes/f2sj.md`，或 `zk-kit read --query 搜索词`；`--max-chars` 可调 |
 | 续写 | `zk-kit append notes/f2sj.md --text "追一段" --heading 后续` |
 | 双链 | `zk-kit link notes/a.md "某篇标题"` |
-| 指定目录 | `zk-kit new --title 标题 --dir notes/concepts`（layered 下 type 由目录所属 group 决定） |
+| 指定目录 | `zk-kit new --title 标题 --dir notes/concepts`（layered 下 type 由目录所属 group 决定，目录必须在 group 下）；也可以只给 `--type concept`，目录跟着类型走；两者都没有、或目录不在 group 里都会报错 |
 | 指定文件名 | `zk-kit new --title 很长的中文结论标题 --name 短文件名`（只换文件名，标题与正文不动；不给就是拼音 slug） |
 | 带摘要 | `zk-kit new --title 标题 --summary "一句话"`（写进模板的 `## Summary`；正文里已写了就不覆盖并告警） |
 | 装 zk | `zk-kit install 0.15.7`（下载约 10 MB → `~/.dsh/zdiary/bin`，不在可跑清单里） |

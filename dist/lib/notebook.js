@@ -11,7 +11,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { zk } from './zk.js';
+import { ZkError, zk } from './zk.js';
 import { AGENTS_TEMPLATE, WORKFLOW_TEMPLATE } from './agents-template.js';
 export { AGENTS_TEMPLATE, WORKFLOW_TEMPLATE } from './agents-template.js';
 export const DAILY_TEMPLATE = `# {{format-date now "%Y-%m-%d"}}
@@ -94,6 +94,8 @@ function dailyGroup(cfg) {
         comment: 'dsh-zdiary-kit：日记笔记组（一天一篇，文件名就是日期）',
     };
 }
+/** layered 的四种笔记类型（顺序与目录 / group 一致） */
+export const NOTE_KINDS = ['source', 'concept', 'entity', 'pattern'];
 /** type → 目录名的复数（entity 不规则，不能直接加 s） */
 const PLURAL_DIR = {
     source: 'sources',
@@ -101,6 +103,38 @@ const PLURAL_DIR = {
     entity: 'entities',
     pattern: 'patterns',
 };
+/** type 对应的笔记目录（相对笔记本）；不认识的 type 返回 null */
+export function noteKindDir(notesDir, kind) {
+    return Object.hasOwn(PLURAL_DIR, kind) ? `${notesDir}/${PLURAL_DIR[kind]}` : null;
+}
+/** 目录比较前的归一化：去掉开头的 ./、结尾的 /、重复的 /，反斜杠当分隔符 */
+function normDir(rel) {
+    const clean = rel.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/').replace(/\/+$/, '');
+    return clean === '.' ? '' : clean;
+}
+/**
+ * 新建笔记的落点目录。flat 就是 notesDir；layered 必须落在某个 group 的 paths 里
+ * （group 下的子目录也算，zk 按路径前缀归组）。
+ * 不给 dir 就按 type 落位（source → notes/sources）；连 type 都没有、或者显式给的 dir
+ * 不在任何 group 里，都直接报错 —— notes/ 根不属于任何 group，zk 会退回内置模板：
+ * 没有 frontmatter、文件名是随机 {{id}}。
+ */
+export function newNoteDir(cfg, input = {}) {
+    const given = input.dir ? normDir(input.dir) : '';
+    if (cfg.structure !== 'layered')
+        return given || normDir(cfg.notesDir);
+    const groups = layeredGroups(cfg).flatMap((group) => group.paths.map(normDir));
+    const hint = `可选目录：${groups.join(' / ')}（group 下的子目录也行）；` +
+        `落在 ${cfg.notesDir}/ 根不会套模板，没有 frontmatter，文件名是随机 id`;
+    const dir = given || (input.type ? noteKindDir(cfg.notesDir, input.type) : null);
+    if (!dir) {
+        throw new ZkError('layered 笔记本新建笔记要给 dir（notes/sources 等），或者给 type 让目录跟着类型走', hint);
+    }
+    if (!groups.some((base) => dir === base || dir.startsWith(`${base}/`))) {
+        throw new ZkError(`${dir}/ 不在任何 group 里：layered 下笔记必须落在 group 里才套模板`, hint);
+    }
+    return dir;
+}
 function layeredGroups(cfg) {
     const base = cfg.notesDir;
     const named = (kind, template, authority) => ({

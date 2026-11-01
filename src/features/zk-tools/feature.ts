@@ -16,7 +16,7 @@ import type { ToolsLike, ToolDefinitionLike, ContentBlockLike, ToolRunContextLik
 import { defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from '../../config/paths.ts'
 import { S, validateArgs } from '../../lib/tool.ts'
 import type { SchemaNode } from '../../lib/tool.ts'
-import { ensureNotebook } from '../../lib/notebook.ts'
+import { ensureNotebook, newNoteDir } from '../../lib/notebook.ts'
 import {
   searchNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily,
   linkNotes, withTags, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, ZkError,
@@ -430,6 +430,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         '新建一篇笔记（zk 负责生成文件名、套用模板、写入索引）。适合记下一个概念、决定、来源或想法；' +
         '写前先 zk_search 查重。标题重复会直接报错（flat 按标题查重，layered 同目录同名 slug 也会被 zk 拒绝）。' +
         'layered 的文件名默认来自标题（{{slug title}}）：中文标题会生成很长的拼音文件名。' +
+        'layered 不给 dir 就按 type 落到 notes/sources 之类；两者都没有、或给的 dir 不在任何 group 里都会报错，' +
+        '不会默默建到 notes/ 根（那里不套模板，没有 frontmatter，文件名是随机 id）。' +
         '要短文件名就传 name（8–14 字中文短语 / 英文小写短横线名）：只换文件名，标题和正文一个字不动。' +
         '归档里有同名旧结论不会拦，但会放进 archived（带 supersede-reason）：先读它，别把同一个错误结论重新提出来。' +
         'type / authority 只有 layered 模板会写进 frontmatter。tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。' +
@@ -441,9 +443,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           name: S.str('文件名（不含扩展名，也不要带目录）；不给就由 zk 按标题生成。中文标题建议给一个短名，否则是长拼音'),
           body: S.str('正文 Markdown（可空）。会插在模板的 {{content}} 位置（layered 下在 ## Content 之下、## Links 之前）：不要自己再写 ## Content / ## Summary 这类模板小节，会多出重复标题'),
           summary: S.str('一句话摘要（填进模板的 ## Summary；正文里已经写了这一节就不动）'),
-          tags: S.arr('标签（不写 #）。与设置里的默认标签合并', S.str('标签名')),
-          dir: S.str('放到哪个子目录（相对笔记本），默认用设置里的 notesDir'),
-          type: S.enum('笔记类型（写进 frontmatter；layered 结构下决定模板的分节）', ['source', 'concept', 'entity', 'pattern']),
+          tags: S.arr('标签（不写 #）。与设置里的默认标签合并；正文里已经写过的标签不会再追加一行', S.str('标签名')),
+          dir: S.str('放到哪个子目录（相对笔记本）。flat 默认 notesDir；layered 必须落在某个 group（notes/sources 等，子目录也行），不给就按 type 落位；两者都没有、或不在 group 里都会报错'),
+          type: S.enum('笔记类型（写进 frontmatter；layered 结构下决定模板的分节，不给 dir 时也决定目录）', ['source', 'concept', 'entity', 'pattern']),
           authority: S.enum('可信度（写进 frontmatter，给未来的自己判断该不该引用）', ['official', 'expert', 'informal']),
           group: S.str('zk 的 group 名（一般不用给：目录会自动匹配 group）'),
           links: S.arr('要链接到的笔记（相对路径或标题）', S.str('目标笔记')),
@@ -475,14 +477,15 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const cfg = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         const tags = [...new Set([...(cfg.defaultTags ?? []), ...(Array.isArray(args.tags) ? args.tags.map(String) : [])])]
+        const type = args.type ? String(args.type) : undefined
         const created = await createNote(cfg, {
           title: String(args.title),
           name: args.name ? String(args.name) : undefined,
           summary: args.summary ? String(args.summary) : undefined,
           content: withTags(args.body ? String(args.body) : '', tags),
-          dir: args.dir ? String(args.dir) : cfg.notesDir,
+          dir: newNoteDir(cfg, { dir: args.dir ? String(args.dir) : undefined, type }),
           group: args.group ? String(args.group) : undefined,
-          type: args.type ? String(args.type) : undefined,
+          type,
           authority: args.authority ? String(args.authority) : undefined,
         }, env.signal)
         const links: string[] = []
@@ -499,9 +502,12 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         // 归档同名只是提醒：zk_new 的查重本来就不含 archive，允许复用标题 —— 但要把废弃原因一起交出来
         // （createNote 建之前那次全库扫描已经算好了，这里不再单独跑一次 zk）
         const archived = created.archived
+        // 没有告警就不要写 summaryWarning: undefined —— 宿主按无损 JSON 快照校验输出，
+        // 值为 undefined 的字段会让整次调用报 INVALID_TOOL_OUTPUT（文件其实已经建好）。
         return {
           notebook: cfg.notebook, path: created.path, title: created.title, tags, links,
-          summaryApplied: created.summaryApplied, summaryWarning: created.summaryWarning, archived, warnings,
+          summaryApplied: created.summaryApplied, archived, warnings,
+          ...(created.summaryWarning ? { summaryWarning: created.summaryWarning } : {}),
         }
       },
       render(_args, value) {
