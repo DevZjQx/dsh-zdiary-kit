@@ -127,7 +127,7 @@ await call('zk_stats', {})
 await call('zk_context', {})
 await call('zk_use', {})
 
-// ── 真发 HTTP：设置页 7 条 + 只读视图 4 条 ─────────────────────────────────
+// ── 真发 HTTP：设置页 8 条 + 只读视图 4 条 ─────────────────────────────────
 const server = http.createServer((req, res) => {
   const handler = routes.get(new URL(req.url ?? '/', 'http://127.0.0.1').pathname)
   if (!handler) { res.statusCode = 404; res.end('no route'); return }
@@ -187,6 +187,24 @@ if (!fs.readFileSync(path.join(notebook, 'AGENTS.md'), 'utf8').includes('<!-- zd
 // 还原夹具：后面的「补建不覆盖用户自己的 AGENTS.md」要用它
 fs.writeFileSync(path.join(notebook, 'AGENTS.md'), fixtureAgents)
 console.log('[POST /agents] 已存在不覆盖 ✓ · 缺失才写模板 ✓')
+
+// 契约模板：同样是 opt-in + 缺了才写；写完再删掉，让后面的记忆注入仍按「无契约」夹具跑
+const contractWrite = await postJson('/contract')
+const cw = contractWrite.result as { personaWritten?: boolean; policyWritten?: boolean } | undefined
+if (cw?.personaWritten !== true || cw.policyWritten !== true) {
+  throw new Error('POST /contract 缺失时应该写入两份模板：' + JSON.stringify(contractWrite.result))
+}
+if (!fs.readFileSync(path.join(notebook, 'PERSONA.md'), 'utf8').includes('<!-- zdiary-persona')) {
+  throw new Error('POST /contract 写的不是 PERSONA 模板')
+}
+const contractKeep = await postJson('/contract')
+const ck = contractKeep.result as { personaWritten?: boolean; policyWritten?: boolean } | undefined
+if (ck?.personaWritten !== false || ck.policyWritten !== false) {
+  throw new Error('POST /contract 对已存在的契约应该返回 false：' + JSON.stringify(contractKeep.result))
+}
+fs.rmSync(path.join(notebook, 'PERSONA.md'))
+fs.rmSync(path.join(notebook, 'POLICY.md'))
+console.log('[POST /contract] 缺失才写模板 ✓ · 已存在不覆盖 ✓')
 
 // ── 只读视图：GET 能看、写方法 405、JSON 不吐文件系统路径 ──
 const origin = `http://127.0.0.1:${port}`

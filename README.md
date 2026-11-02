@@ -58,10 +58,12 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 `auto | ask | forbidden` 与审批入口）。两份与 `MEMORY.md` 同级：人和 agent 直接编辑，`zk_append` / `zk_new` 一律拒写，
 **缺文件 = 未启用**（旧库行为一个词不变）。它们单独成段、永远在记忆段之前注入，**不参与记忆预算的截断**：
 契约是硬规则，超了只告警（`zk_context` / `doctor` / 记忆页都会点名），不会静默丢掉半份人设。
-三个预算可以分开调（设置页「记忆」组）：记忆 500 · 契约 240 · 场景 80，总 prompt 默认 900（超了只告警点名）。
+三个预算可以分开调（设置页「记忆」组）：记忆 500 · 契约 240 · 场景 80，总 prompt 默认 900（启用契约后按实际载荷检查，超了只告警点名；没有契约的库不多一个词）。
 写入是 opt-in：`zk-kit init --with-contract` 或设置页「写入契约模板」，已存在的文件绝不覆盖。
 `POLICY.md` 的解析与强制执行属于下一批（M3）；本批只存契约、注入、体检、展示 ——
 `publish` / `spend` 这类外部动作由 `bili_*` 等工具自己读同一份契约执行，插件不假装能管住别的插件。
+**边界**：M1 是「一本笔记本一份」契约；多个 agent 共用一个库时先别启用，等 M4 的 per-agent persona ——
+否则 A 的人格会串到 B。
 
 维护用 `zk_lint`（结构体检 + 记忆链接核对）和 `zk_dream`（晋升候选 / 拒绝原因 / 未完成项）：两个工具都**只读**，
 写 `MEMORY.md` / `DREAMS.md` 由 agent 按 `AGENTS.md` 自己决定 —— 机械活留在插件，语义判断留在可审计的地方。
@@ -301,6 +303,8 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 ```bash
 zk-kit init                          # 建库 / 补齐目录、模板、group、AGENTS.md（幂等）
 zk-kit init --with-agents            # flat 库也写一份精简版 AGENTS.md（已存在不覆盖）
+zk-kit init --with-contract          # 写 PERSONA.md / POLICY.md 契约模板（缺了才写，已存在不覆盖）
+zk-kit contract                      # 契约状态：用量 / 预算 / 体检（只读）
 zk-kit groups                        # 对照配置与 .zk/config.toml 的 group（默认 dry-run）
 zk-kit groups --fix                  # 只改插件建的 group 的 paths / 组头（写前备份 .zk/config.toml.bak）
 zk-kit new --title "示例笔记" --body "正文" --tags demo --type concept

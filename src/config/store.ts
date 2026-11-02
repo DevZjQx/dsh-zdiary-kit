@@ -55,7 +55,8 @@ export interface Config {
   contractBudgetWords: number
   /** 场景预算（词）：运行时场景块（STATE，M3 起注入；M1 只落配置） */
   sceneBudgetWords: number
-  /** 总 prompt 预算（词）：契约 + 记忆 + 场景合计；超了只告警并点名，不自动截断契约 */
+  /** 总 prompt 预算（词）：启用契约后按实际载荷（含框与提示）检查；超了只告警并点名，不自动截断契约。
+   *  没有契约的库不生成这条告警，保证 0.9 的 payload 逐字不变。 */
   totalPromptBudgetWords: number
   /** 归档目录（supersede 后的笔记搬到这里，保留原相对路径） */
   archiveDir: string

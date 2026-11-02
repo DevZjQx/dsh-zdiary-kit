@@ -1,6 +1,6 @@
 # 计划：角色契约与自主权（「赋予」层，v0.10 候选）
 
-**状态**：M1 已实施（2026-11-02，提交 `9f365b2`；基线 v0.9.0 → 0.10 候选）；M2 / M3 / M4 待实施
+**状态**：M1 已实施（2026-11-02，提交 `9f365b2`；词数 / 模板口径修复随本批提交；基线 v0.9.0 → 0.10 候选）；M2 / M3 / M4 待实施
 **目标批次**：0.10（若与 0.9 / 质量计划同批，则并入 0.10.0，不抢跑）
 **关系**：不重复 Q1 / Q3 / Q8 / Q10 / Q11；Q12 只借用 `origin` / `via` 两个字段做可信度检查，
 不重复完整的三段来源链设计。本计划只做「契约层 / 状态层 / 可信层」，
@@ -59,7 +59,10 @@
 
 这些笔记说明：角色一致性不是「写得更多」，而是**稳定的不变量 + 可追溯的记忆 + 明确的边界**。
 
-### 1.2 当前实现的事实
+### 1.2 M1 前（0.9）的实现事实
+
+> 这一节是起草时的基线，保留用于说明「为什么要做」；M1 已落地的部分见 §3。
+> 不要在实现 M2 / M3 时把这里当成当前状态。
 
 - `src/lib/meta.ts`：`MEMORY_META_FILES = ['AGENTS.md', 'USER.md', 'MEMORY.md']`；
   `META_NAMES` 只多 `DREAMS.md` / `INDEX.md` / `WORKFLOW.md`。没有 persona / policy / state。
@@ -169,9 +172,11 @@ AGENTS 已经是 187 词硬规则，再加就会挤掉 MEMORY；人设和事实�
 
 ### D6：自主权契约
 
-`POLICY.md` 用「frontmatter + 一张表」的形状，既可读也可机读：
+`POLICY.md` 用「首行版本标记 + 紧跟 frontmatter + 一张表」的形状，既可读也可机读。
+版本标记必须在 frontmatter 之前（与 `PERSONA.md` 同一套模板规则），解析前先 `stripContractMarker()`：
 
-```yaml
+```markdown
+<!-- zdiary-policy: v2 -->
 ---
 version: 1
 updated: 2026-11-02
@@ -258,6 +263,15 @@ updated: 2026-11-02
 **已落地的事实**（与下列落点的差异都记在这里，实现时以这一节为准）
 - `originalWords` 语义没改（仍是磁盘原词数、含退役条目）：`formatFileShares` 展示时先减 `retiredWords`，
   所以「原 X」只反映截断、退役单列一项，同时 payload 与 0.9 逐字一致（已用 HEAD worktree 逐字节比对验证）。
+- 契约词数拆成 `contentWords`（正文，含文件标题，预算只看它）/ `noticeWords`（告警行）/ `words`（整段注入量）/ `overWords`；
+  所有展示统一用 `overWords`，不再拿 `words - budget`（否则告警行会把自己算进超出量）。
+- `memoryUsage` 的 `headroom` 只按记忆侧算（`totalWords - contractWords`）；`zk_dream` 单列契约段，
+  不再把契约误叫成「提示」、也不让它吃掉记忆预算。
+- 版本标记后**紧跟 frontmatter**；`persona-template.ts` 提供 `stripContractMarker()`，M3 解析前先剥标记再复用 `lib/frontmatter`。
+  模板形状变了，`PERSONA_TEMPLATE_VERSION` / `POLICY_TEMPLATE_VERSION` 从 1 升到 2；M1 初版生成的 v1 模板会被 `contractStatus` 报 old，不自动覆盖。
+- 总 prompt 预算按「还没加契约告警」的完整载荷量（框 / 做梦提醒 / 记忆 notice 都算）；没有契约的库不生成这条告警。
+- 两份契约都缺 = 未启用：`zk_lint` 不占行，`doctor` 只留一行 `·`；只启用一半 / 旧版 / 占位符才体检提醒。
+- **多 agent 边界**：M1 仍是「一本笔记本一份」；多 agent 共库会共用同一份 `PERSONA.md`。M4 之前不要在多 agent 共库里启用。
 - `doctor` 的「契约：未启用」行用 `·` 前缀，退出码判定同时接受 `·`（未启用 / 未配置不算装坏）。
 - 三个新预算都进了 payload 缓存键 —— 漏一个就会在改配置后拿到旧预算的载荷（实现时踩过）。
 - 场景段本批只落形状（`scene.present` 恒 false、`words` 恒 0），等 M3。
@@ -342,6 +356,8 @@ updated: 2026-11-02
 |---|---|
 | 契约读取 | 无文件 = 空；有文件 = 按 `PERSONA → POLICY → AGENTS → USER → MEMORY` 顺序；读不到 = 不存在 |
 | 契约预算 | 240 词内完整；超了只告警、不截断；`totalPromptBudgetWords` 超了点名 |
+| 契约词数 | `contentWords` / `noticeWords` / `words` / `overWords` 分开；注入提示与 doctor / contract / 设置页 / 记忆页 / `zk_context` 报同一个超出量；`memoryUsage.headroom` 不扣契约 |
+| 模板解析 | 版本标记后紧跟 frontmatter；`stripContractMarker()` 后 `parseFrontmatter()` 能读到 name / role / version / audit |
 | 退役 / 截断 | `retiredWords` 与 `truncatedWords` 分开；`formatFileShares` 不再把退役写成「原 X」 |
 | 记忆页 | 退役行有徽标；`<script>` 被转义；`PERSONA`/`POLICY` 不能按 `path` 打开；载荷预览与 payload 同源 |
 | 写入守卫 | `zk_append` / `zk_new` / `zk_link` / `zk_supersede` 拒绝 `PERSONA` / `POLICY`；根目录同名普通笔记迁移提示 |
@@ -355,7 +371,7 @@ updated: 2026-11-02
 **手工验收**
 
 1. 复制参考库一份，写入 `PERSONA.md` / `POLICY.md`：记忆页出现契约段，用量行三项对得上。
-2. 把 `PERSONA.md` 改到超预算：只出现告警，MEMORY 仍按原预算截断。
+2. 把 `PERSONA.md` 改到超预算：只出现告警，MEMORY 仍按原预算截断；注入提示、`doctor`、`zk-kit contract`、记忆页报同一个超出量。
 3. 在 `POLICY.md` 加一条 `publish: ask`：`zk_context` 能看到；`bili_*` 仍按自己的实现执行（本插件不越权）。
 4. 写一个 `STATE` JSON，TTL 60 秒：第一轮有场景，过期后不再注入，`zk_context` 说明已过期。
 5. 把一个 source 的 `via` 写成「中配」，`authority` 写 `expert`：`zk_lint` 报 `sourceTrust`。
@@ -417,6 +433,8 @@ updated: 2026-11-02
 6. `sourceTrust` 只能抓显式的 `via` 关键词；没有 `via` 的二手来源无法机械识别，是否接受这个边界？
 7. `MEMORY.md` 的 `[user|agent|persona]` 标记会占词；是否只在 `zk_context` 显示、不写入文件？如果写入，预算怎么算？
 8. 角色一致性与「在场」冲突时怎么取舍：是宁可不召回（保持当前场景），还是宁可召回（保持长期一致）？这应由运行时策略决定，插件只提供开关。
+9. `personaDrift` 的对照物：D1 规定 `MEMORY.md` 不放人设，那 `PERSONA.md` 的 name / role 该和 `USER.md` 比，
+   还是只保留「MEMORY 里出现 `[persona]` 标记」这一条？M2 实施前定，避免两边都写才比却永远比不到。
 
 ---
 
@@ -426,6 +444,8 @@ updated: 2026-11-02
 - [x] `PERSONA.md` / `POLICY.md` 是 meta：工具不能写、不能搬；根目录同名普通笔记迁移说明存在。
 - [x] 记忆页分契约 / 用户 / 工作约定 / 记忆 / 周审 / 场景，能解释每一项词数；退役行有徽标；载荷预览与 `zk_context` 同源。
 - [x] 契约超预算只告警、不截断；总预算超限点名；MEMORY 截断行为不变。
+- [x] 契约词数口径一致：`contentWords` / `noticeWords` / `words` / `overWords` 分开；doctor / contract / 设置页 / 记忆页 / `zk_context` 报同一个超出量。
+- [x] 契约模板的 frontmatter 能被现有 `parseFrontmatter` 读取（版本标记后紧跟）；`memoryUsage` 不把契约算进记忆余量。
 - [ ] 新 source 默认 `authority=informal`；`origin` / `via` 可写；`sourceTrust` 能报「中配 + expert」。
 - [ ] MEMORY 条目的 `[user|agent|persona]` / `[scope]` / `有效至` 能被解析；旧格式不报错。
 - [ ] `POLICY.md` 的 `auto / ask / forbidden` 能解析；解析失败只告警；插件不替动作工具执行。

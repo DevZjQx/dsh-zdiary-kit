@@ -2302,10 +2302,13 @@ describe('tools', () => {
       active: 'default',
     })
     try {
+      fs.writeFileSync(path.join(notebook, 'PERSONA.md'), personaTpl.PERSONA_TEMPLATE)
+      fs.writeFileSync(path.join(notebook, 'POLICY.md'), personaTpl.POLICY_TEMPLATE)
       const defs = toolsFeature.buildTools()
       const ctxTool = defs.find((d) => d.name === 'zk_context')!
       const value = await ctxTool.execute({}, { signal: AbortSignal.timeout(10_000) }) as {
         notebook: string
+        contract: { present: boolean; contentWords: number; overWords: number }
         notebooks: Array<{ name: string; path: string; structure: string; active: boolean }>
       }
       expect(value.notebook).toBe('default')
@@ -2313,10 +2316,17 @@ describe('tools', () => {
         { name: 'default', path: notebook, structure: 'flat', active: true },
         { name: 'work', path: work, structure: 'layered', active: false },
       ])
+      // 契约字段必须真的出现在 zk_context 里（schema 与 render 各走一遍）
+      expect(value.contract.present).toBe(true)
+      expect(value.contract.contentWords).toBeGreaterThan(0)
+      expect(value.contract.overWords).toBe(0)
       const blocks = ctxTool.output.render({}, value)
       expect(blocks[0].text).toContain(`笔记本「default」（flat）→ ${notebook}`)
       expect(blocks[0].text).toContain('另有：work（layered）')
+      expect(blocks[0].text).toContain('正文（含标题）')
     } finally {
+      fs.rmSync(path.join(notebook, 'PERSONA.md'), { force: true })
+      fs.rmSync(path.join(notebook, 'POLICY.md'), { force: true })
       store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
     }
   })
@@ -3509,16 +3519,22 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     const plain = memory.buildMemoryPayload(cfg)
     expect(plain.contract.present).toBe(false)
     expect(plain.contract.words).toBe(0)
+    expect(plain.contract.contentWords).toBe(0)
+    expect(plain.contract.overWords).toBe(0)
     expect(plain.text).not.toContain('PERSONA.md')
     expect(plain.text).not.toContain('POLICY.md')
     expect(plain.totalWords).toBe(memory.countWords(plain.text))
-    expect(plain.overheadWords).toBe(plain.totalWords - plain.words - plain.contract.words - plain.scene.words)
+    expect(plain.overheadWords).toBe(plain.totalWords - plain.words - plain.contract.contentWords - plain.scene.words)
 
-    fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), '<!-- zdiary-persona: v1 -->\n\n# 角色\n\n- name: 小z\n- role: 助手\n- updated: 2026-11-02\n')
-    fs.writeFileSync(path.join(cfg.notebook, 'POLICY.md'), '<!-- zdiary-policy: v1 -->\n\n# 自主权\n\n| action | level |\n|---|---|\n| publish | ask |\n')
+    fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), '<!-- zdiary-persona: v2 -->\n\n# 角色\n\n- name: 小z\n- role: 助手\n- updated: 2026-11-02\n')
+    fs.writeFileSync(path.join(cfg.notebook, 'POLICY.md'), '<!-- zdiary-policy: v2 -->\n\n# 自主权\n\n| action | level |\n|---|---|\n| publish | ask |\n')
     const withContract = memory.buildMemoryPayload(cfg)
     expect(withContract.contract.present).toBe(true)
     expect(withContract.contract.files.filter((f) => f.present).length).toBe(2)
+    // 预算只看正文（含文件标题），告警行单列；overWords 是所有展示的唯一来源
+    expect(withContract.contract.contentWords).toBeGreaterThan(0)
+    expect(withContract.contract.noticeWords).toBe(withContract.contract.words - withContract.contract.contentWords)
+    expect(withContract.contract.overWords).toBe(Math.max(0, withContract.contract.contentWords - withContract.contract.budget))
     const personaAt = withContract.text.indexOf('## PERSONA.md')
     const policyAt = withContract.text.indexOf('## POLICY.md')
     const agentsAt = withContract.text.indexOf('## AGENTS.md')
@@ -3532,7 +3548,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
   test('契约预算：超了只告警不截断；总 prompt 超限点名', () => {
     const cfg = fresh('nb-m1-budget')
     fs.mkdirSync(cfg.notebook, { recursive: true })
-    const longPersona = '<!-- zdiary-persona: v1 -->\n\n# 角色契约\n\n- name: 小z\n\n' +
+    const longPersona = '<!-- zdiary-persona: v2 -->\n\n# 角色契约\n\n- name: 小z\n\n' +
       Array.from({ length: 40 }, (_, i) => `- 一条非常长的角色设定条目编号${i}\n`).join('')
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), longPersona)
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '# 规则\n')
@@ -3540,14 +3556,25 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     const p = memory.buildMemoryPayload(c)
     expect(p.contract.present).toBe(true)
     expect(p.contract.overBudget).toBe(true)
+    expect(p.contract.overWords).toBe(p.contract.contentWords - p.contract.budget)
+    expect(p.contract.overWords).toBeGreaterThan(0)
     expect(p.text).toContain('契约不截断')
+    // 注入提示里的「已用 / 超出」必须和 overWords 同源，不能把告警行自己算进去
+    expect(p.text).toContain(`已用 ${p.contract.contentWords}，超出 ${p.contract.overWords} 词`)
     // 文件没被截：契约词数还是全文（trim 后）
     expect(p.contract.files[0]?.words).toBe(memory.countWords(longPersona.trim()))
     expect(memory.countWords(p.text)).toBe(p.totalWords)
 
+    // dream 的余量只按记忆侧算：契约段整段（含它的告警）不该占记忆预算
+    const u = memory.memoryUsage(c)
+    expect(u.contractWords).toBe(p.contract.words)
+    expect(u.headroom).toBe(c.memoryBudgetWords - (p.totalWords - p.contract.words))
+
     const c2 = store.normalizeConfig({ notebook: cfg.notebook, zkPath: zkBin, contractBudgetWords: 800, totalPromptBudgetWords: 200 })
     const p2 = memory.buildMemoryPayload(c2)
     expect(p2.text).toContain('总 prompt 预算')
+    // 总 prompt 用实际载荷量（框 / 做梦提醒 / 记忆 notice 都算），不是只加两个正文词数
+    expect(p2.text).toContain('框与提示')
   })
 
   test('退役/截断分解：formatFileShares 不再把退役写成「原 X」', () => {
@@ -3587,6 +3614,24 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     const missing = lintLib.contractStatus(cfg)
     expect(missing.total).toBe(2)
     expect(missing.items.map((i) => i.kind).sort()).toEqual(['missing', 'missing'])
+    // 两份都没有 = 未启用：lint 不再永久打一条 ⚠️；只缺一份才算「启用到一半」
+    expect(lintLib.formatLintExtras({
+      incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
+      tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
+      template: { present: false, version: 0, current: 3, stale: false },
+      contract: missing,
+      similarTitles: { total: 0, truncated: false, items: [] },
+      indexHint: false,
+    }).some((line) => line.includes('契约'))).toBe(false)
+    const half = { total: 1, items: [{ file: 'POLICY.md' as const, kind: 'missing' as const, detail: '根目录没有这份文件' }] }
+    expect(lintLib.formatLintExtras({
+      incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
+      tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
+      template: { present: false, version: 0, current: 3, stale: false },
+      contract: half,
+      similarTitles: { total: 0, truncated: false, items: [] },
+      indexHint: false,
+    }).some((line) => line.includes('POLICY.md'))).toBe(true)
 
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), personaTpl.PERSONA_TEMPLATE)
     fs.writeFileSync(path.join(cfg.notebook, 'POLICY.md'), '<!-- zdiary-policy: v0 -->\n\n# 旧契约\n')
@@ -3614,6 +3659,14 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     }).some((line) => line.includes('契约'))).toBe(true)
   })
 
+  test('模板：版本标记后紧跟 frontmatter，现有解析器可直接读', () => {
+    const persona = fm.parseFrontmatter(personaTpl.stripContractMarker(personaTpl.PERSONA_TEMPLATE)).fields
+    expect(persona).toMatchObject({ name: '{{name}}', role: '{{role}}', updated: '{{updated}}' })
+    const policy = fm.parseFrontmatter(personaTpl.stripContractMarker(personaTpl.POLICY_TEMPLATE)).fields
+    expect(policy).toMatchObject({ version: '1', updated: '{{updated}}', audit: 'DREAMS.md' })
+    expect(personaTpl.stripContractMarker(personaTpl.POLICY_TEMPLATE).startsWith('---')).toBe(true)
+  })
+
   test('config：契约 / 场景 / 总 prompt 预算默认值与夹紧', () => {
     const d = store.normalizeConfig({})
     expect(d.contractBudgetWords).toBe(240)
@@ -3635,8 +3688,8 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     const withC = await notebookLib.ensureNotebook(cfg, undefined, { withContract: true })
     expect(withC.personaWritten).toBe(true)
     expect(withC.policyWritten).toBe(true)
-    expect(fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')).toContain('<!-- zdiary-persona: v1 -->')
-    expect(fs.readFileSync(path.join(cfg.notebook, 'POLICY.md'), 'utf8')).toContain('<!-- zdiary-policy: v1 -->')
+    expect(fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')).toContain('<!-- zdiary-persona: v2 -->')
+    expect(fs.readFileSync(path.join(cfg.notebook, 'POLICY.md'), 'utf8')).toContain('<!-- zdiary-policy: v2 -->')
     expect(fs.readFileSync(path.join(cfg.notebook, 'POLICY.md'), 'utf8')).toContain('publish')
 
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), '# 我自己写的\n')
@@ -3668,7 +3721,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
         '- 活条目',
         '- [superseded 2026-01-01] 旧结论 → [[notes/x.md]]',
       ].join('\n'))
-      fs.writeFileSync(path.join(nb, 'PERSONA.md'), '# 人写的角色\n')
+      fs.writeFileSync(path.join(nb, 'PERSONA.md'), personaTpl.PERSONA_TEMPLATE.replace('{{name}}', '小z'))
 
       const page = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=memory'))
       expect(page.statusCode).toBe(200)
@@ -3679,6 +3732,8 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       // 载荷预览与 payload 同源（转义后的 <system-reminder>）
       expect(page.body).toContain('载荷预览')
       expect(page.body).toContain('&lt;system-reminder&gt;')
+      // 版本标记 / frontmatter 不显示成正文，改成一行字段
+      expect(page.body).toContain('name: 小z')
 
       const persona = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=note&path=PERSONA.md'))
       expect(persona.statusCode).toBe(400)

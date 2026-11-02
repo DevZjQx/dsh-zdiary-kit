@@ -39,7 +39,7 @@ export interface MemoryFileInfo {
   present: boolean
   /** 实际进入载荷的词数（截断后） */
   words: number
-  /** 文件原来的词数（截断前、已扣退役条目）—— 与 words 不等就说明这份文件被截过 */
+  /** 磁盘原词数（含退役条目）—— 展示「原 X」时先减 retiredWords，才只反映截断 */
   originalWords: number
   /** 退役条目占掉的词数（磁盘保留、注入省略；只有 MEMORY.md 可能 > 0） */
   retiredWords: number
@@ -55,10 +55,16 @@ export interface ContractFileInfo {
 /** 契约段：永远注入、不参与 MEMORY 截断；超预算只告警 */
 export interface ContractSegment {
   present: boolean
-  /** 契约段在载荷里的词数（含告警行） */
+  /** 契约正文词数（含 `## PERSONA.md` / `## POLICY.md` 标题，不含告警行）—— 预算判断用这个 */
+  contentWords: number
+  /** 契约段在载荷里的总词数（contentWords + 告警行） */
   words: number
+  /** 告警行占的词数（0 = 没超预算 / 总 prompt 也够） */
+  noticeWords: number
   budget: number
   overBudget: boolean
+  /** contentWords - budget（0 = 没超）；各处显示统一用它，别拿 words 做减法 */
+  overWords: number
   files: ContractFileInfo[]
 }
 
@@ -87,7 +93,7 @@ export interface MemoryPayload {
   scene: SceneSegment
   /** 模型真正收到的总量（countWords(text)，含框 / 做梦提醒 / notice / 契约告警） */
   totalWords: number
-  /** totalWords - 契约 - 记忆内容 - 场景：框与提示行的开销 */
+  /** totalWords - 契约正文 - 记忆内容 - 场景：框、做梦提醒、notice 与契约告警的开销 */
   overheadWords: number
 }
 
@@ -322,6 +328,15 @@ function escapeFrame(text: string): string {
   return text.replaceAll('</system-reminder>', '<\\/system-reminder>')
 }
 
+/** 载荷框：先定义成常量，契约 / 总 prompt 预算与最终拼装才能共用同一份文字（否则数出来的词对不上） */
+const FRAME_HEAD = '<system-reminder>\n' +
+  '以下内容由 zdiary 从知识库根目录读出，是长期约定与记忆；与系统、开发者或用户的直接指令冲突时，以更直接的那条为准。\n\n'
+const FRAME_TAIL = '\n</system-reminder>'
+
+function frameText(body: string): string {
+  return FRAME_HEAD + body + FRAME_TAIL
+}
+
 /**
  * 「上次做梦」提醒：DREAMS.md 不在注入清单里，但它头部那一行决定周节奏。
  * 只做日期算术（机械活）；整理本身仍然由 agent 按 AGENTS.md 执行 —— 插件没有定时器。
@@ -513,33 +528,30 @@ function computePayload(cfg: Config): MemoryPayload {
   const contractBudget = cfg.contractBudgetWords
   const contracts = readContracts(cfg)
   const contractBodies = contracts.filter((f) => f.body.length > 0)
-  let contractText = ''
-  let contractWords = 0
-  let contractOver = false
-  if (contractBodies.length > 0) {
-    const bodyText = contractBodies.map((f) => `## ${f.name}\n\n${escapeFrame(f.body)}`).join('\n\n')
-    const bodyWords = countWords(bodyText)
-    contractOver = bodyWords > contractBudget
-    const notes: string[] = []
-    if (contractOver) {
-      notes.push(`契约预算 ${contractBudget} 词：已用 ${bodyWords}，超出 ${bodyWords - contractBudget} 词（契约不截断）`)
-    }
-    const promptTotal = bodyWords + finalWords
-    if (promptTotal > cfg.totalPromptBudgetWords) {
-      notes.push(`总 prompt 预算 ${cfg.totalPromptBudgetWords} 词：契约 ${bodyWords} + 记忆 ${finalWords} = ${promptTotal}，超出 ${promptTotal - cfg.totalPromptBudgetWords}`)
-    }
-    contractText = bodyText + (notes.length > 0 ? `\n\n（${notes.join('；')}）` : '')
-    contractWords = countWords(contractText)
+  const contractBodyText = contractBodies.map((f) => `## ${f.name}\n\n${escapeFrame(f.body)}`).join('\n\n')
+  // 预算只算正文（含文件标题），不能把告警行算进去 —— 否则「已用 / 超出」会随告警自己的长度变
+  const contractContentWords = countWords(contractBodyText)
+  const contractOver = contractBodies.length > 0 && contractContentWords > contractBudget
+  const contractNotes: string[] = []
+  if (contractOver) {
+    contractNotes.push(`契约预算 ${contractBudget} 词：已用 ${contractContentWords}，超出 ${contractContentWords - contractBudget} 词（契约不截断）`)
   }
+  if (contractBodies.length > 0) {
+    // 总 prompt 用「还没加契约告警」的完整载荷来量：框 / 做梦提醒 / 记忆 notice 都要算，
+    // 但本条告警自己不能算进自己报的数里（否则又是一个自指的口径）。
+    const provisional = frameText((contractBodyText ? contractBodyText + '\n\n' : '') + memoryInner)
+    const promptTotal = countWords(provisional)
+    if (promptTotal > cfg.totalPromptBudgetWords) {
+      const overhead = Math.max(0, promptTotal - contractContentWords - finalWords)
+      contractNotes.push(`总 prompt 预算 ${cfg.totalPromptBudgetWords} 词：契约 ${contractContentWords} + 记忆 ${finalWords} + 框与提示 ${overhead} = ${promptTotal}，超出 ${promptTotal - cfg.totalPromptBudgetWords}`)
+    }
+  }
+  const contractText = contractBodyText + (contractNotes.length > 0 ? `\n\n（${contractNotes.join('；')}）` : '')
+  const contractWords = countWords(contractText)
 
   let text = ''
   if (memoryInner || contractText) {
-    text =
-      '<system-reminder>\n' +
-      '以下内容由 zdiary 从知识库根目录读出，是长期约定与记忆；与系统、开发者或用户的直接指令冲突时，以更直接的那条为准。\n\n' +
-      (contractText ? contractText + '\n\n' : '') +
-      memoryInner +
-      '\n</system-reminder>'
+    text = frameText((contractText ? contractText + '\n\n' : '') + memoryInner)
   }
 
   // 模型真正收到的总量与开销：口径与 memoryUsage / D9 的载荷预览同源
@@ -564,24 +576,29 @@ function computePayload(cfg: Config): MemoryPayload {
     })),
     contract: {
       present: contractBodies.length > 0,
+      contentWords: contractContentWords,
       words: contractWords,
+      noticeWords: Math.max(0, contractWords - contractContentWords),
       budget: contractBudget,
       overBudget: contractOver,
+      overWords: Math.max(0, contractContentWords - contractBudget),
       files: contracts.map((f) => ({ name: f.name, present: f.body.length > 0, words: countWords(f.body) })),
     },
     scene: { present: false, expired: false, words: sceneWords },
     totalWords,
-    overheadWords: Math.max(0, totalWords - contractWords - finalWords - sceneWords),
+    overheadWords: Math.max(0, totalWords - contractContentWords - finalWords - sceneWords),
   }
 }
 
 export interface MemoryUsage {
-  /** 内容词数（含「记忆已用」提示行，不含框 / 做梦提醒 / notice）—— 与 `payload.words` 同源 */
+  /** 记忆内容词数（含「记忆已用」提示行，不含框 / 做梦提醒 / notice / 契约）—— 与 `payload.words` 同源 */
   words: number
-  /** 模型真正收到的总量：框、做梦提醒、截断 notice 都在里面 */
+  /** 契约段总词数（含告警行；0 = 未启用）—— 单独注入，不计入记忆预算 */
+  contractWords: number
+  /** 模型真正收到的总量：契约、框、做梦提醒、截断 notice 都在里面 */
   totalWords: number
   budget: number
-  /** budget - totalWords，**可以为负**：内容没超、加上提示超了 */
+  /** budget - (totalWords - contractWords)，**可以为负**：记忆内容没超、加上提示超了 */
   headroom: number
   files: MemoryFileInfo[]
 }
@@ -594,9 +611,11 @@ export function memoryUsage(cfg: Config): MemoryUsage {
   const payload = buildMemoryPayload(cfg)
   return {
     words: payload.words,
+    contractWords: payload.contract.words,
     totalWords: payload.totalWords,
     budget: payload.budget,
-    headroom: payload.budget - payload.totalWords,
+    // 契约是独立层：整段（含它的告警）都不该占记忆预算，否则 dream 会误报「余量」
+    headroom: payload.budget - (payload.totalWords - payload.contract.words),
     files: payload.files,
   }
 }

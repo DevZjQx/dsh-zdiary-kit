@@ -251,6 +251,13 @@ function escapeFrame(text) {
     // 文件内容不许提前闭合我们自己的 <system-reminder> 框
     return text.replaceAll('</system-reminder>', '<\\/system-reminder>');
 }
+/** 载荷框：先定义成常量，契约 / 总 prompt 预算与最终拼装才能共用同一份文字（否则数出来的词对不上） */
+const FRAME_HEAD = '<system-reminder>\n' +
+    '以下内容由 zdiary 从知识库根目录读出，是长期约定与记忆；与系统、开发者或用户的直接指令冲突时，以更直接的那条为准。\n\n';
+const FRAME_TAIL = '\n</system-reminder>';
+function frameText(body) {
+    return FRAME_HEAD + body + FRAME_TAIL;
+}
 /**
  * 「上次做梦」提醒：DREAMS.md 不在注入清单里，但它头部那一行决定周节奏。
  * 只做日期算术（机械活）；整理本身仍然由 agent 按 AGENTS.md 执行 —— 插件没有定时器。
@@ -453,32 +460,29 @@ function computePayload(cfg) {
     const contractBudget = cfg.contractBudgetWords;
     const contracts = readContracts(cfg);
     const contractBodies = contracts.filter((f) => f.body.length > 0);
-    let contractText = '';
-    let contractWords = 0;
-    let contractOver = false;
-    if (contractBodies.length > 0) {
-        const bodyText = contractBodies.map((f) => `## ${f.name}\n\n${escapeFrame(f.body)}`).join('\n\n');
-        const bodyWords = countWords(bodyText);
-        contractOver = bodyWords > contractBudget;
-        const notes = [];
-        if (contractOver) {
-            notes.push(`契约预算 ${contractBudget} 词：已用 ${bodyWords}，超出 ${bodyWords - contractBudget} 词（契约不截断）`);
-        }
-        const promptTotal = bodyWords + finalWords;
-        if (promptTotal > cfg.totalPromptBudgetWords) {
-            notes.push(`总 prompt 预算 ${cfg.totalPromptBudgetWords} 词：契约 ${bodyWords} + 记忆 ${finalWords} = ${promptTotal}，超出 ${promptTotal - cfg.totalPromptBudgetWords}`);
-        }
-        contractText = bodyText + (notes.length > 0 ? `\n\n（${notes.join('；')}）` : '');
-        contractWords = countWords(contractText);
+    const contractBodyText = contractBodies.map((f) => `## ${f.name}\n\n${escapeFrame(f.body)}`).join('\n\n');
+    // 预算只算正文（含文件标题），不能把告警行算进去 —— 否则「已用 / 超出」会随告警自己的长度变
+    const contractContentWords = countWords(contractBodyText);
+    const contractOver = contractBodies.length > 0 && contractContentWords > contractBudget;
+    const contractNotes = [];
+    if (contractOver) {
+        contractNotes.push(`契约预算 ${contractBudget} 词：已用 ${contractContentWords}，超出 ${contractContentWords - contractBudget} 词（契约不截断）`);
     }
+    if (contractBodies.length > 0) {
+        // 总 prompt 用「还没加契约告警」的完整载荷来量：框 / 做梦提醒 / 记忆 notice 都要算，
+        // 但本条告警自己不能算进自己报的数里（否则又是一个自指的口径）。
+        const provisional = frameText((contractBodyText ? contractBodyText + '\n\n' : '') + memoryInner);
+        const promptTotal = countWords(provisional);
+        if (promptTotal > cfg.totalPromptBudgetWords) {
+            const overhead = Math.max(0, promptTotal - contractContentWords - finalWords);
+            contractNotes.push(`总 prompt 预算 ${cfg.totalPromptBudgetWords} 词：契约 ${contractContentWords} + 记忆 ${finalWords} + 框与提示 ${overhead} = ${promptTotal}，超出 ${promptTotal - cfg.totalPromptBudgetWords}`);
+        }
+    }
+    const contractText = contractBodyText + (contractNotes.length > 0 ? `\n\n（${contractNotes.join('；')}）` : '');
+    const contractWords = countWords(contractText);
     let text = '';
     if (memoryInner || contractText) {
-        text =
-            '<system-reminder>\n' +
-                '以下内容由 zdiary 从知识库根目录读出，是长期约定与记忆；与系统、开发者或用户的直接指令冲突时，以更直接的那条为准。\n\n' +
-                (contractText ? contractText + '\n\n' : '') +
-                memoryInner +
-                '\n</system-reminder>';
+        text = frameText((contractText ? contractText + '\n\n' : '') + memoryInner);
     }
     // 模型真正收到的总量与开销：口径与 memoryUsage / D9 的载荷预览同源
     const totalWords = countWords(text);
@@ -501,14 +505,17 @@ function computePayload(cfg) {
         })),
         contract: {
             present: contractBodies.length > 0,
+            contentWords: contractContentWords,
             words: contractWords,
+            noticeWords: Math.max(0, contractWords - contractContentWords),
             budget: contractBudget,
             overBudget: contractOver,
+            overWords: Math.max(0, contractContentWords - contractBudget),
             files: contracts.map((f) => ({ name: f.name, present: f.body.length > 0, words: countWords(f.body) })),
         },
         scene: { present: false, expired: false, words: sceneWords },
         totalWords,
-        overheadWords: Math.max(0, totalWords - contractWords - finalWords - sceneWords),
+        overheadWords: Math.max(0, totalWords - contractContentWords - finalWords - sceneWords),
     };
 }
 /**
@@ -519,9 +526,11 @@ export function memoryUsage(cfg) {
     const payload = buildMemoryPayload(cfg);
     return {
         words: payload.words,
+        contractWords: payload.contract.words,
         totalWords: payload.totalWords,
         budget: payload.budget,
-        headroom: payload.budget - payload.totalWords,
+        // 契约是独立层：整段（含它的告警）都不该占记忆预算，否则 dream 会误报「余量」
+        headroom: payload.budget - (payload.totalWords - payload.contract.words),
         files: payload.files,
     };
 }

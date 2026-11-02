@@ -887,9 +887,12 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     overheadWords: { type: 'number' },
                     contract: objSchema({
                         present: { type: 'boolean' },
+                        contentWords: { type: 'number' },
                         words: { type: 'number' },
+                        noticeWords: { type: 'number' },
                         budget: { type: 'number' },
                         overBudget: { type: 'boolean' },
+                        overWords: { type: 'number' },
                         files: {
                             type: 'array',
                             items: objSchema({
@@ -898,7 +901,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                                 words: { type: 'number' },
                             }, ['name', 'present', 'words']),
                         },
-                    }, ['present', 'words', 'budget', 'overBudget', 'files']),
+                    }, ['present', 'contentWords', 'words', 'noticeWords', 'budget', 'overBudget', 'overWords', 'files']),
                     scene: objSchema({
                         present: { type: 'boolean' },
                         expired: { type: 'boolean' },
@@ -956,8 +959,9 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 if (!v.text)
                     return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md / POLICY.md 契约。`);
                 const contract = v.contract?.present
-                    ? `\n\n契约：${v.contract.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}` +
-                        (v.contract.overBudget ? `（超预算 ${v.contract.budget}，契约不截断）` : `（预算 ${v.contract.budget}）`)
+                    ? `\n\n契约：正文（含标题）${v.contract.contentWords}/${v.contract.budget} 词` +
+                        `（${v.contract.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
+                        (v.contract.overBudget ? `，超 ${v.contract.overWords} 词（契约不截断）` : '')
                     : '\n\n契约：未启用（根目录没有 PERSONA.md / POLICY.md）';
                 return text(drift + head + contract + '\n\n' + v.text);
             },
@@ -1099,10 +1103,11 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     truncated: { type: 'boolean' },
                     memory: objSchema({
                         words: { type: 'number' },
+                        contractWords: { type: 'number' },
                         totalWords: { type: 'number' },
                         budget: { type: 'number' },
                         headroom: { type: 'number' },
-                    }, ['words', 'totalWords', 'budget', 'headroom']),
+                    }, ['words', 'contractWords', 'totalWords', 'budget', 'headroom']),
                     counts: objSchema({
                         window: { type: 'number' },
                         daily: { type: 'number' },
@@ -1161,9 +1166,13 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         ' 篇（日记 ' + v.counts.daily + '）· 候选 ' + v.counts.candidates + ' · 拒绝 ' + v.counts.rejected +
                         ' · 未完成 ' + v.counts.looseEnds + ' · 已晋升 ' + v.counts.promoted + ' · 积压 ' + v.counts.backlog,
                 ];
-                // 余量按总词算（框 + 提示 + notice 都算）：只报内容词等于说「还有 15 词」，而提示早把它吃完了
-                lines.push('记忆：内容 ' + v.memory.words + '/' + v.memory.budget + ' 词 + 提示 ' +
-                    (v.memory.totalWords - v.memory.words) + ' = ' + v.memory.totalWords + ' 词（余 ' + v.memory.headroom + '）');
+                // 余量按记忆侧总词算（框 + 提示 + notice 都算）：只报内容词等于说「还有 15 词」，而提示早把它吃完了。
+                // 契约单独注入，先从 totalWords 里扣掉 —— 它不占记忆预算，也不该被叫成「提示」。
+                const memoryTotal = v.memory.totalWords - v.memory.contractWords;
+                const promptWords = Math.max(0, memoryTotal - v.memory.words);
+                lines.push('记忆：内容 ' + v.memory.words + '/' + v.memory.budget + ' 词 + 提示 ' + promptWords +
+                    ' = ' + memoryTotal + ' 词（余 ' + v.memory.headroom + '）' +
+                    (v.memory.contractWords > 0 ? ' · 契约 ' + v.memory.contractWords + ' 词（单独注入，不计入记忆预算）' : ''));
                 if (v.retireCandidates.length) {
                     lines.push('可考虑退役：');
                     for (const c of v.retireCandidates.slice(0, 10)) {

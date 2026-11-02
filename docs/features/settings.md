@@ -40,7 +40,7 @@
 笔记本存在时操作区常驻「写入契约模板」按钮（走 `POST /contract`）：缺 `PERSONA.md` / `POLICY.md` 时写入，
 已存在就只回「已存在，没有覆盖」（契约允许人改，插件不做第二份真相）。
 「记忆」分组里多三行配置：契约预算（`contractBudgetWords`，默认 240）、场景预算（`sceneBudgetWords`，80）、
-总 prompt 预算（`totalPromptBudgetWords`，900，只告警）。
+总 prompt 预算（`totalPromptBudgetWords`，900，启用契约后按实际载荷检查，只告警）。
 分组标题直接标作用范围（「笔记本」是每本自己的，其余是全局）；删除笔记本先确认「只删配置，磁盘目录与笔记保留」。
 切换「当前笔记本」保存后自动建好目标笔记本（`ensureNotebook` 幂等）；改路径 / 新增不自动建（防手滑）。
 但**切的是新会话的默认值**：每个会话第一次用 zk_* 时就把当时的默认值固定下来，之后各走各的 ——
@@ -64,7 +64,7 @@
 「字段加在哪」：labels/hints 加在 `client.ts` 的 `FIELDS`，键加在 `config/store.ts` 的 `DEFAULTS` ——
 白名单直接取 `DEFAULTS` 的键，不存在第三处。
 
-**Depends on.** `lib/http`、`lib/install`、`lib/notebook`、`lib/zk`、`config/store`、`config/paths`；
+**Depends on.** `lib/http`、`lib/install`、`lib/notebook`、`lib/zk`、`lib/lint`、`config/store`、`config/paths`；
 app 注入 `route` 与 `isTrusted`（信任栅栏在 app，feature 只消费）。栅栏做三层：
 `connection.requestRejection`（Host/Origin + 浏览器会话；不可用即 503，fail-closed）→ 写入口再判 `isTrusted`（回环直通）→
 跨站写请求（Origin / Sec-Fetch-Site）一律 403 ——

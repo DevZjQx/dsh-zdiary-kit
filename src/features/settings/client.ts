@@ -150,7 +150,7 @@ interface Field {
       { group: '记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 500（中文按 2 字 1 词）。超了先丢 MEMORY 里日期最旧的条目（一条日期都没有才退回从尾部丢），并回显截断了多少' },
       { group: '记忆', key: 'contractBudgetWords', label: '契约预算（词）', hint: 'PERSONA.md + POLICY.md 的合计上限，默认 240（50-800）。契约是硬规则，永远注入、不参与截断；超了只告警' },
       { group: '记忆', key: 'sceneBudgetWords', label: '场景预算（词）', hint: '运行时场景块（STATE）的上限，默认 80；不计入记忆预算，过期不注入' },
-      { group: '记忆', key: 'totalPromptBudgetWords', label: '总 prompt 预算（词）', hint: '契约 + 记忆 + 场景的合计，默认 900；超了只告警并点名，不自动截契约' },
+      { group: '记忆', key: 'totalPromptBudgetWords', label: '总 prompt 预算（词）', hint: '启用契约后按实际载荷（含框与提示）检查，默认 900；超了只告警并点名，不自动截契约。没有契约的库不产生这条告警' },
       { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
       { group: '写入', key: 'maxReadChars', label: 'zk_read 单次上限（字符）', hint: '默认 20000；超了会截断并明确告知模型' },
       { group: 'zk', key: 'zkPath', label: 'zk 路径（可空）', hint: '空 = 自动找：配置 → $ZK_BIN → PATH → 插件内置（~/.dsh/zdiary/bin）' },

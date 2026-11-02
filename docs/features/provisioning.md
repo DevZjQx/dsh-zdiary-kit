@@ -39,8 +39,9 @@
 写入口只在缺失时生效，已存在的文件一字不改（契约允许人改）。
 首行是独立版本标记 `<!-- zdiary-persona: vN -->` / `<!-- zdiary-policy: vN -->`（`PERSONA_TEMPLATE_VERSION` /
 `POLICY_TEMPLATE_VERSION`）：不复用 `TEMPLATE_VERSION` —— 改 `AGENTS.md` 只升旧的，不该让契约误报旧版。
-`POLICY.md` 形状是 frontmatter + 一张表（`action / level / approval / reversible`），
-level 只认 `auto / ask / forbidden`；解析与强制执行归 M3，这里只负责写入模板。
+`POLICY.md` 形状是「首行版本标记 + 紧跟 frontmatter + 一张表」（`action / level / approval / reversible`），
+level 只认 `auto / ask / forbidden`；解析前先 `stripContractMarker()`，再复用 `lib/frontmatter`。
+解析与强制执行归 M3，这里只负责写入模板。
 两个文件都进 `META_NAMES`：不进检索、`zk_append` 等写入一律拒绝。
 **迁移说明**：根目录曾有同名普通笔记的库，升级后它们会从检索里消失 —— 需要改名或移入子目录。
 

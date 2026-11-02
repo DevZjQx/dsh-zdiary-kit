@@ -37,13 +37,20 @@
 **契约层（0.10 M1）。** `PERSONA.md` / `POLICY.md` 与 `MEMORY.md` 同级：根目录 meta，人类所有，
 `zk_append` / `zk_new` / `zk_link` / `zk_supersede` 一律拒绝写入或搬移。
 **缺文件 = 未启用，不报错**（payload 不多一个词，0.9 的库逐字一致）；`doctor` 给一条 `·`（不算装坏），
-`zk_lint` 的 `contract` 桶给 missing / old / placeholder 三项只读提示。
+`zk_lint` 的 `contract` 桶给 missing / old / placeholder 三项数据；渲染时两份都缺（未启用）不占行，
+只启用一半、旧版或占位符才提醒 —— 默认库不该每次 lint 都多一条永久 ⚠️。
 写入入口只有 opt-in：`zk-kit init --with-contract`、设置页「写入契约模板」、
 `ensureNotebook(cfg, signal, { withContract: true })` —— flat 与 layered 都不会自动多两个文件。
 **注入顺序**：契约段永远在记忆段之前、**不参与记忆预算的截断**（超了只告警，点名 `contractBudgetWords`）。
 三个新预算：`contractBudgetWords`（默认 240，范围 50–800）、`sceneBudgetWords`（80，M3 起生效）、
-`totalPromptBudgetWords`（900，只告警点名）。三个都进 payload 缓存键 —— 漏一个就会拿到旧预算的载荷。
-`retiredWords` 与 `truncatedWords` 在 `files[]` 里分开报：`原 X` 从此只反映截断，退役单列一项。
+`totalPromptBudgetWords`（900，启用契约后按实际载荷检查，含框与提示；只告警点名）。
+三个都进 payload 缓存键 —— 漏一个就会拿到旧预算的载荷。
+`truncatedWords` 在顶层、`retiredWords` 在 `files[]` 里分开报：`原 X` 从此只反映截断，退役单列一项。
+契约段再拆 `contentWords`（正文，含文件标题，预算只看它）/ `noticeWords`（告警行）/ `words`（整段注入量）/ `overWords`；
+`memoryUsage` 的 `headroom` 只按记忆侧算（`totalWords - contractWords`），dream 不再把契约误叫成「提示」。
+`PERSONA.md` / `POLICY.md` 首行版本标记后**紧跟 frontmatter**；M3 解析前先 `stripContractMarker()`，再复用现有解析器。
+**多 agent 边界**：M1 只做「一本笔记本一份」；多个 agent 共库时它们会共用同一份 `PERSONA.md`，
+所以 M4 的 per-agent persona 落地前先别在多 agent 共库里启用 —— 否则 A 的人格会串到 B。
 为什么不分层不行：人设与事实混在 `MEMORY.md` 时，「我是谁」会跟「事实」一起被按日期丢、被预算截；
 而 `AGENTS.md` 已是硬规则且永不截断，再往里塞 persona 只会挤掉 MEMORY。
 
@@ -61,7 +68,7 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 `lib/meta`、`lib/persona-template`、`node:fs`；宿主的 `systemPrompt` 服务（可选，没有就只留 `zk_context`）。
 
 **Public surface.** `buildMemoryPayload(cfg)`、`memoryUsage(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、
-`CONTRACT_META_FILES`、`PERSONA_TEMPLATE` / `POLICY_TEMPLATE`、
+`CONTRACT_META_FILES`、`PERSONA_TEMPLATE` / `POLICY_TEMPLATE`、`stripContractMarker`、
 `AGENTS_TEMPLATE` / `AGENTS_TEMPLATE_FLAT`、`TEMPLATE_VERSION` / `TEMPLATE_MARK`、`WORKFLOW_TEMPLATE`。
 笔记本侧：`writeAgentsTemplate(cfg)` / `writeContractTemplates(cfg)`（缺才写，返回是否写入）与
 `ensureNotebook(cfg, signal, { withAgents, withContract })`。
@@ -133,8 +140,9 @@ dream 的判重分两步（顺序不能反）：`[[链接]]` 匹配用**原文**
 标题包含匹配用 strip 之后的正文（退役行里的旧标题不该再算已晋升，否则归档后复用同一标题永远进不了候选）。
 
 **用量与退役材料（D4）。** `memoryUsage(cfg)` 只是 `buildMemoryPayload` 的投影：`words` 与 `payload.words` 同源
-（含「记忆已用」提示行），`totalWords = countWords(payload.text)`（框 / 做梦提醒 / notice 都在里面），
-`headroom = budget - totalWords` **可以为负**。`zk_dream` 的结果因此多两栏：`memory`（上面四个数）与
+（含「记忆已用」提示行），`totalWords = countWords(payload.text)`（契约 / 框 / 做梦提醒 / notice 都在里面），
+`contractWords` 是整段契约注入量，`headroom = budget - (totalWords - contractWords)` **可以为负**
+（契约未启用时退化为 0.9 的旧口径：契约是独立层，不占记忆预算）。`zk_dream` 的结果因此多两栏：`memory`（上面五个数）与
 `retireCandidates`（有日期且 > 90 天 → `stale`；`[[来源]]` 指向归档 / 不存在 → `source-superseded` / `source-missing`，
 显式写 `archive/` 的链接是有意引用、不算来源断了 —— 与 lint 同口径；无日期无链接的不算候选）。只给材料，不自动退役、不写 MEMORY。
 

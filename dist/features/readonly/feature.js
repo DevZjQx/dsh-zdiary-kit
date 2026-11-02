@@ -19,6 +19,8 @@ import { absPathOf, allNotes, graphEdges, hasNotebook, isUnderDir, localDate, re
 import { isMetaPath } from '../../lib/meta.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
 import { RETIRED_ENTRY_RE } from '../../lib/memory-format.js';
+import { parseFrontmatter } from '../../lib/frontmatter.js';
+import { stripContractMarker } from '../../lib/persona-template.js';
 import { esc, layout, renderMarkdown } from './html.js';
 const BASE = ROUTE_BASE;
 const VIEW = `${BASE}/view`;
@@ -287,16 +289,21 @@ async function handleMemory(res, cfg) {
     const c = payload.contract;
     const contractSummary = c.present
         ? c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ') +
-            ` · 预算 ${c.budget} 词` + (c.overBudget ? ' · ⚠️ 超预算（契约不截断，请缩减或调 contractBudgetWords）' : '')
+            ` · 正文（含标题）${c.contentWords}/${c.budget} 词` +
+            (c.overBudget ? ` · ⚠️ 超 ${c.overWords} 词（契约不截断，请缩减或调 contractBudgetWords）` : '')
         : '未启用：根目录没有 PERSONA.md / POLICY.md —— 初始化带 --with-contract 或在设置页写入模板；缺文件不算错。';
     const contractSections = ['PERSONA.md', 'POLICY.md'].map((name) => {
-        const body = read(name);
+        // 版本标记与 frontmatter 是机器元数据：页面像笔记页一样剥掉，改成一行可读的字段
+        const body = stripContractMarker(read(name));
+        const fields = parseFrontmatter(body).fields;
+        const meta = Object.entries(fields).map(([key, value]) => `${key}: ${value}`).join(' · ');
         return [
             `<h3>${esc(name)}</h3>`,
+            meta ? `<p class="meta">${esc(meta)}</p>` : '',
             body.trim()
                 ? `<article>${renderMarkdown(body, { linkFor, skipFirstH1: true })}</article>`
                 : '<p class="meta">还没写。</p>',
-        ].join('\n');
+        ].filter(Boolean).join('\n');
     });
     // 记忆段：退役行删除线 + 徽标（不再看起来像活条目）
     const memoryBody = read('MEMORY.md');
@@ -305,7 +312,7 @@ async function handleMemory(res, cfg) {
         : '<p class="meta">还没写。</p>';
     const dreamBody = read('DREAMS.md');
     const scene = payload.scene;
-    const counts = `契约 ${c.words} 词 · 记忆 ${payload.words} 词 · 场景 ${scene.words} 词 · 开销 ${payload.overheadWords} 词 = 总 ${payload.totalWords} 词`;
+    const counts = `契约正文 ${c.contentWords} 词 · 记忆 ${payload.words} 词 · 场景 ${scene.words} 词 · 开销 ${payload.overheadWords} 词 = 总 ${payload.totalWords} 词`;
     const body = [
         `<p class="crumb"><a href="${VIEW}">首页</a> / 记忆</p>`,
         '<h1>记忆</h1>',

@@ -282,9 +282,13 @@ export function formatMemoryLinks(bucket) {
  */
 export function formatLintExtras(r) {
     const lines = [];
-    if (r.contract.total > 0) {
+    // 两份都没有 = 契约未启用（默认状态）：不报错、不占行。只启用一半（缺一份）或
+    // 有旧版 / 占位符时才提醒 —— 否则每个老库每次 lint 都多一条永久 ⚠️，反而训练人忽略告警。
+    const missing = r.contract.items.filter((i) => i.kind === 'missing');
+    const bothMissing = missing.length > 1 && missing.length === r.contract.items.length;
+    if (!bothMissing && r.contract.items.length > 0) {
         lines.push(`⚠️ 契约：${r.contract.items.map((i) => `${i.file} ${i.detail}`).join('；')}` +
-            '｜只报告：缺文件 = 未启用（不算错），占位符与旧版由人按需处理');
+            '｜只报告：缺一份 = 尚未启用完整契约，占位符与旧版由人按需处理');
     }
     if (r.incomplete.total > 0) {
         lines.push(`✗ frontmatter 缺字段：${r.incomplete.total} 篇 — ` +
@@ -456,7 +460,7 @@ export function contractStatus(cfg) {
             body = fs.readFileSync(path.join(cfg.notebook, f.name), 'utf8');
         }
         catch {
-            items.push({ file: f.name, kind: 'missing', detail: `根目录没有 ${f.name}：契约未启用（zk-kit init --with-contract 或设置页可写入模板）` });
+            items.push({ file: f.name, kind: 'missing', detail: '根目录没有这份文件（zk-kit init --with-contract 或设置页可写入模板）' });
             continue;
         }
         const hit = f.mark.exec(body);
@@ -466,13 +470,13 @@ export function contractStatus(cfg) {
                 file: f.name,
                 kind: 'old',
                 detail: version === 0
-                    ? `${f.name} 没有版本标记（当前 v${f.current}）`
-                    : `${f.name} 是旧版 v${version}（当前 v${f.current}）`,
+                    ? `没有版本标记（当前 v${f.current}）`
+                    : `是旧版 v${version}（当前 v${f.current}）`,
             });
         }
         const placeholders = [...new Set(body.match(PLACEHOLDER_RE) ?? [])];
         if (placeholders.length > 0) {
-            items.push({ file: f.name, kind: 'placeholder', detail: `${f.name} 还有未填的占位符：${placeholders.join('、')}` });
+            items.push({ file: f.name, kind: 'placeholder', detail: `还有未填的占位符：${placeholders.join('、')}` });
         }
     }
     return { total: items.length, items };

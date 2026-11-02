@@ -192,8 +192,14 @@ function dreamReport(r: DreamResult): string {
   const lines = [
     `做梦：近 ${r.windowDays} 天（自 ${r.since}）— 窗口 ${r.counts.window} 篇（日记 ${r.counts.daily}）· 候选 ${r.counts.candidates} · 拒绝 ${r.counts.rejected} · 未完成 ${r.counts.looseEnds} · 已晋升 ${r.counts.promoted} · 积压 ${r.counts.backlog}`,
   ]
-  // 余量按总词算：只报内容词等于说「还有 10 词」，而框与提示早就把它吃完了
-  lines.push(`记忆：内容 ${r.memory.words}/${r.memory.budget} 词 + 提示 ${r.memory.totalWords - r.memory.words} = ${r.memory.totalWords} 词（余 ${r.memory.headroom}）`)
+  // 余量按记忆侧总词算：只报内容词等于说「还有 10 词」，而框与提示早就把它吃完了；
+  // 契约单独注入、不占记忆预算，所以先从 totalWords 里扣掉，别把它叫成「提示」。
+  const memoryTotal = r.memory.totalWords - r.memory.contractWords
+  const promptWords = Math.max(0, memoryTotal - r.memory.words)
+  lines.push(
+    `记忆：内容 ${r.memory.words}/${r.memory.budget} 词 + 提示 ${promptWords} = ${memoryTotal} 词（余 ${r.memory.headroom}）` +
+    (r.memory.contractWords > 0 ? ` · 契约 ${r.memory.contractWords} 词（单独注入，不计入记忆预算）` : ''),
+  )
   if (r.retireCandidates.length) {
     lines.push('可考虑退役：')
     for (const c of r.retireCandidates.slice(0, 10)) {
@@ -364,13 +370,16 @@ async function doctor(): Promise<boolean> {
   const c = payload.contract
   rows.push(
     c.present
-      ? `${c.overBudget ? '⚠️' : '✓'} 契约：${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')} / ${c.budget} 词` +
-        (c.overBudget ? `（超 ${c.words - c.budget} 词，契约不截断）` : '')
+      ? `${c.overBudget ? '⚠️' : '✓'} 契约：正文（含标题）${c.contentWords}/${c.budget} 词（${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
+        (c.overBudget ? `，超 ${c.overWords} 词（契约不截断）` : '')
       : '· 契约：未启用（根目录没有 PERSONA.md / POLICY.md —— 跑 zk-kit init --with-contract）',
   )
-  const contractIssues = contractStatus(cfg).items
-  if (contractIssues.length > 0) {
-    rows.push(`⚠️ 契约体检：${contractIssues.map((i) => `${i.file} ${i.detail}`).join('；')}`)
+  // 两份都没有 = 未启用，不值得再用一条 ⚠️ 重复上面那行；只启用一半 / 旧版 / 占位符才体检
+  if (c.present) {
+    const contractIssues = contractStatus(cfg).items
+    if (contractIssues.length > 0) {
+      rows.push(`⚠️ 契约体检：${contractIssues.map((i) => `${i.file} ${i.detail}`).join('；')}`)
+    }
   }
 
   if (exists) {
@@ -450,10 +459,12 @@ async function main(): Promise<void> {
         if (!c.present) {
           print(`契约：未启用（根目录没有 PERSONA.md / POLICY.md）\n写入模板：zk-kit init --with-contract；写入后缺文件 = 未启用、不算错，占位符 {{...}} 由人填。`, false)
         } else {
+          const files = c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')
           const lines = [
-            `契约：${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')} / ${c.budget} 词`,
-            `注入：${c.words} 词${c.overBudget ? `（超预算 ${c.words - c.budget}，契约不截断）` : ''} · 记忆段之前、永远注入、不参与截断`,
-            `总量：契约 ${c.words} + 记忆 ${payload.words} = ${c.words + payload.words} 词（总 prompt 预算 ${cfg.totalPromptBudgetWords}，超了只告警）`,
+            `契约：正文（含标题）${c.contentWords}/${c.budget} 词（${files}）` +
+              (c.overBudget ? ` · 超 ${c.overWords} 词（契约不截断）` : ''),
+            `注入：${c.words} 词${c.noticeWords > 0 ? `（正文 ${c.contentWords} + 提示 ${c.noticeWords}）` : ''} · 记忆段之前、永远注入、不参与截断`,
+            `总量：正文 契约 ${c.contentWords} + 记忆 ${payload.words} = ${c.contentWords + payload.words} 词；模型实际收到 ${payload.totalWords} 词（总 prompt 预算 ${cfg.totalPromptBudgetWords}，超了只告警）`,
           ]
           for (const i of issues.items) lines.push(`⚠️ ${i.file} ${i.detail}`)
           print(lines.join('\n'), false)

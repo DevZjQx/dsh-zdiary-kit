@@ -16,6 +16,7 @@ import { CFG_FILE, processWorkspace } from '../../config/paths.js';
 import { ArchiveDirChangeError, config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.js';
 import { ensureNotebook, structureStatus, writeAgentsTemplate, writeContractTemplates } from '../../lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
+import { contractStatus } from '../../lib/lint.js';
 import { installZk, sourceLabel } from '../../lib/install.js';
 import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.js';
 const P = `${ROUTE_BASE}/api`;
@@ -360,13 +361,17 @@ export function registerSettings({ route, isTrusted }) {
                         (payload.retiredWords > 0 ? `，退役省略 ${payload.retiredWords} 词` : ''),
             });
             const c = payload.contract;
+            // 缺文件 = 未启用（不算错）；只有超预算才是 ✗（契约不截断）。
+            // 只启用一半 / 旧版 / 占位符不翻转 ok，但必须在 detail 里说出来 —— 自检不能比 doctor 还宽。
+            const contractIssues = c.present ? contractStatus(cfg).items : [];
+            const contractIssueText = contractIssues.map((i) => `${i.file} ${i.detail}`).join('；');
             items.push({
                 name: '角色契约',
-                // 缺文件 = 未启用（不算错）；只有超预算才是 ✗（契约不截断）
                 ok: !c.overBudget,
                 detail: c.present
-                    ? `${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')} / ${c.budget} 词` +
-                        (c.overBudget ? `，超 ${c.words - c.budget} 词（契约不截断，请缩减或调大契约预算）` : '')
+                    ? `正文（含标题）${c.contentWords}/${c.budget} 词（${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
+                        (c.overBudget ? `，超 ${c.overWords} 词（契约不截断，请缩减或调大契约预算）` : '') +
+                        (contractIssueText ? `；⚠️ ${contractIssueText}` : '')
                     : '未启用：根目录没有 PERSONA.md / POLICY.md（点「写入契约模板」，缺文件不算错）',
             });
         }
