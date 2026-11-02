@@ -10,14 +10,16 @@ import { NOTE_KINDS, ensureNotebook, fixGroupConfig, groupOverlapNotes, newNoteD
 import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
 import { installZk, sourceLabel } from './lib/install.js';
 import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
-import { formatLintExtras, formatMemoryLinks, lintNotebook } from './lib/lint.js';
+import { formatLintExtras, formatMemoryLinks, lintNotebook, contractStatus } from './lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from './lib/dream.js';
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
 
   zk-kit doctor                       自检：zk / 笔记本 / 模板 / group / 索引
   zk-kit install [版本]                安装内置 zk（默认取配置里的版本）
-  zk-kit init [--with-agents]        建好（或补齐）笔记本；flat 下加 --with-agents 才写 AGENTS.md 模板
+  zk-kit init [--with-agents] [--with-contract]
+                                      建好（或补齐）笔记本；flat 下加 --with-agents 才写 AGENTS.md 模板；--with-contract 写 PERSONA.md / POLICY.md 契约模板（缺了才写）
   zk-kit groups [--fix] [--dry-run]  对照配置与 .zk/config.toml 的 group（默认 dry-run；--fix 只改插件建的 paths，写前备份）
+  zk-kit contract                    契约状态：PERSONA.md / POLICY.md 的用量 / 预算 / 体检（只读）
   zk-kit new --title T [--name 文件名] [--summary 摘要] [--body B] [--tags a,b] [--dir notes] [--type source|concept|entity|pattern]
   zk-kit search [词] [--tags a,b] [--since 日期] [--limit 5] [--json]
   zk-kit read <路径> | --query 词 [--max-chars n] [--json]
@@ -355,7 +357,17 @@ async function doctor() {
     rows.push(present.length === 0
         ? '✓ 记忆：暂未启用（根目录没有 AGENTS.md / USER.md / MEMORY.md）'
         : `${payload.words <= payload.budget ? '✓' : '✗'} 记忆：${payload.words}/${payload.budget} 词（${formatFileShares(payload.files, payload.tocWords)}）` +
-            (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : ''));
+            (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : '') +
+            (payload.retiredWords > 0 ? `，退役省略 ${payload.retiredWords} 词` : ''));
+    const c = payload.contract;
+    rows.push(c.present
+        ? `${c.overBudget ? '⚠️' : '✓'} 契约：${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')} / ${c.budget} 词` +
+            (c.overBudget ? `（超 ${c.words - c.budget} 词，契约不截断）` : '')
+        : '· 契约：未启用（根目录没有 PERSONA.md / POLICY.md —— 跑 zk-kit init --with-contract）');
+    const contractIssues = contractStatus(cfg).items;
+    if (contractIssues.length > 0) {
+        rows.push(`⚠️ 契约体检：${contractIssues.map((i) => `${i.file} ${i.detail}`).join('；')}`);
+    }
     if (exists) {
         // 记忆在跑、但没有工作约定：默认安装里这是常态（flat 不自动写 AGENTS.md），
         // 代价是「每条结论附来源 / 中文打 tags / 每周整理」四条约定与周提醒全都不生效。
@@ -384,8 +396,9 @@ async function doctor() {
         }
     }
     console.log(rows.join('\n'));
-    // ⚠️ 是内容问题（笔记写坏了），不是装坏了 —— 别让它把 doctor 的退出码翻掉
-    return rows.every((r) => r.startsWith('✓') || r.startsWith('⚠️'));
+    // ⚠️ 是内容问题（笔记写坏了），不是装坏了 —— 别让它把 doctor 的退出码翻掉；
+    // · 是「未启用 / 未配置」（如契约文件缺失）：同样不算装坏
+    return rows.every((r) => r.startsWith('✓') || r.startsWith('⚠️') || r.startsWith('·'));
 }
 async function main() {
     const argv = process.argv.slice(2);
@@ -411,11 +424,36 @@ async function main() {
         }
         case 'init': {
             const withAgents = flags['with-agents'] === true || flags['with-agents'] === 'true';
-            const r = await ensureNotebook(cfg, undefined, { withAgents });
+            const withContract = flags['with-contract'] === true || flags['with-contract'] === 'true';
+            const r = await ensureNotebook(cfg, undefined, { withAgents, withContract });
             print(json ? r : `笔记本 ${r.notebook}（结构 ${cfg.structure}）\n` +
                 `初始化：${r.initialized ? '是' : '已是笔记本'} · 目录：${r.dirsCreated.length ? '新建 ' + r.dirsCreated.join('、') : '已齐全'}\n` +
-                `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' || withAgents ? '已存在' : '未写（flat 要 --with-agents）')} · WORKFLOW.md：${r.workflowWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')}` +
+                `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' || withAgents ? '已存在' : '未写（flat 要 --with-agents）')} · WORKFLOW.md：${r.workflowWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')} · 契约：${withContract ? (r.personaWritten ? '已写 PERSONA.md' : 'PERSONA.md 已存在') + ' / ' + (r.policyWritten ? '已写 POLICY.md' : 'POLICY.md 已存在') : '未写（要 --with-contract）'}` +
                 (r.groupWarnings.length ? `\n⚠️ ${r.groupWarnings.join('\n⚠️ ')}` : ''), json);
+            return;
+        }
+        case 'contract': {
+            const payload = buildMemoryPayload(cfg);
+            const c = payload.contract;
+            const issues = contractStatus(cfg);
+            if (!json) {
+                if (!c.present) {
+                    print(`契约：未启用（根目录没有 PERSONA.md / POLICY.md）\n写入模板：zk-kit init --with-contract；写入后缺文件 = 未启用、不算错，占位符 {{...}} 由人填。`, false);
+                }
+                else {
+                    const lines = [
+                        `契约：${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')} / ${c.budget} 词`,
+                        `注入：${c.words} 词${c.overBudget ? `（超预算 ${c.words - c.budget}，契约不截断）` : ''} · 记忆段之前、永远注入、不参与截断`,
+                        `总量：契约 ${c.words} + 记忆 ${payload.words} = ${c.words + payload.words} 词（总 prompt 预算 ${cfg.totalPromptBudgetWords}，超了只告警）`,
+                    ];
+                    for (const i of issues.items)
+                        lines.push(`⚠️ ${i.file} ${i.detail}`);
+                    print(lines.join('\n'), false);
+                }
+            }
+            else {
+                print({ contract: c, issues }, true);
+            }
             return;
         }
         case 'groups': {

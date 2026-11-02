@@ -51,6 +51,12 @@ export interface Config {
   maxReadChars: number
   /** 注入预算（词）：AGENTS.md + USER.md + MEMORY.md 的总载荷，中文按 2 字 1 词 */
   memoryBudgetWords: number
+  /** 契约预算（词）：PERSONA.md + POLICY.md 合计上限；超了只告警，不截断 */
+  contractBudgetWords: number
+  /** 场景预算（词）：运行时场景块（STATE，M3 起注入；M1 只落配置） */
+  sceneBudgetWords: number
+  /** 总 prompt 预算（词）：契约 + 记忆 + 场景合计；超了只告警并点名，不自动截断契约 */
+  totalPromptBudgetWords: number
   /** 归档目录（supersede 后的笔记搬到这里，保留原相对路径） */
   archiveDir: string
   /** 内置 zk 的版本（安装/升级用，不带 v） */
@@ -85,6 +91,9 @@ export const DEFAULTS: Config = {
   defaultTags: [],
   maxReadChars: 20_000,
   memoryBudgetWords: 500,
+  contractBudgetWords: 240,
+  sceneBudgetWords: 80,
+  totalPromptBudgetWords: 900,
   archiveDir: 'archive',
   zkVersion: '0.15.7',
   zkPath: '',
@@ -183,6 +192,9 @@ export function normalizeConfig(raw: unknown, workspace: string = processWorkspa
     defaultTags: tags(src.defaultTags),
     maxReadChars: clamp(Number(src.maxReadChars), 1000, 200_000, DEFAULTS.maxReadChars),
     memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
+    contractBudgetWords: clamp(Number(src.contractBudgetWords), 50, 800, DEFAULTS.contractBudgetWords),
+    sceneBudgetWords: clamp(Number(src.sceneBudgetWords), 20, 400, DEFAULTS.sceneBudgetWords),
+    totalPromptBudgetWords: clamp(Number(src.totalPromptBudgetWords), 200, 5000, DEFAULTS.totalPromptBudgetWords),
     archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
     zkVersion: /^\d+\.\d+\.\d+$/.test(String(src.zkVersion ?? '').trim().replace(/^v/i, ''))
       ? String(src.zkVersion).trim().replace(/^v/i, '')

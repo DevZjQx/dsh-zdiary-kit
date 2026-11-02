@@ -28,6 +28,7 @@ import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikil
 import { parseFrontmatter } from './frontmatter.js';
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './memory-format.js';
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_VERSION } from './agents-template.js';
+import { PERSONA_TEMPLATE_VERSION, POLICY_TEMPLATE_VERSION } from './persona-template.js';
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50;
 /** 标题归一化与链接解析在 `lib/wikilink.ts`（dream 也用同一套）；这里保留导出，免得调用方跟着搬 */
@@ -281,6 +282,10 @@ export function formatMemoryLinks(bucket) {
  */
 export function formatLintExtras(r) {
     const lines = [];
+    if (r.contract.total > 0) {
+        lines.push(`⚠️ 契约：${r.contract.items.map((i) => `${i.file} ${i.detail}`).join('；')}` +
+            '｜只报告：缺文件 = 未启用（不算错），占位符与旧版由人按需处理');
+    }
     if (r.incomplete.total > 0) {
         lines.push(`✗ frontmatter 缺字段：${r.incomplete.total} 篇 — ` +
             r.incomplete.items.slice(0, 5).map((i) => `${i.path}（缺 ${i.missing.join('/')}）`).join('、') +
@@ -431,6 +436,47 @@ export function tagHygiene(notes, max = 20) {
     };
 }
 const TEMPLATE_MARK_RE = /<!--\s*zdiary-template:\s*v(\d+)\s*-->/;
+const PERSONA_MARK_RE = /<!--\s*zdiary-persona:\s*v(\d+)\s*-->/;
+const POLICY_MARK_RE = /<!--\s*zdiary-policy:\s*v(\d+)\s*-->/;
+const PLACEHOLDER_RE = /\{\{\s*[^}]+\s*\}\}/g;
+/**
+ * 契约体检（M1）：缺文件 = 未启用（不算错，但要让 zk_lint 可见）；
+ * 旧版 = 版本标记比当前模板旧（只报告，不覆盖 —— 契约允许人改）；
+ * 占位符 = 模板里的 {{...}} 还没填（“未填”是机械可发现的“未启用一半”状态）。
+ */
+export function contractStatus(cfg) {
+    const items = [];
+    const files = [
+        { name: 'PERSONA.md', mark: PERSONA_MARK_RE, current: PERSONA_TEMPLATE_VERSION },
+        { name: 'POLICY.md', mark: POLICY_MARK_RE, current: POLICY_TEMPLATE_VERSION },
+    ];
+    for (const f of files) {
+        let body = '';
+        try {
+            body = fs.readFileSync(path.join(cfg.notebook, f.name), 'utf8');
+        }
+        catch {
+            items.push({ file: f.name, kind: 'missing', detail: `根目录没有 ${f.name}：契约未启用（zk-kit init --with-contract 或设置页可写入模板）` });
+            continue;
+        }
+        const hit = f.mark.exec(body);
+        const version = hit ? Number(hit[1]) : 0;
+        if (version !== f.current) {
+            items.push({
+                file: f.name,
+                kind: 'old',
+                detail: version === 0
+                    ? `${f.name} 没有版本标记（当前 v${f.current}）`
+                    : `${f.name} 是旧版 v${version}（当前 v${f.current}）`,
+            });
+        }
+        const placeholders = [...new Set(body.match(PLACEHOLDER_RE) ?? [])];
+        if (placeholders.length > 0) {
+            items.push({ file: f.name, kind: 'placeholder', detail: `${f.name} 还有未填的占位符：${placeholders.join('、')}` });
+        }
+    }
+    return { total: items.length, items };
+}
 /**
  * 模板版本（P2-15）：模板是行为契约，不是静态文档 —— 它每轮注入，写错一句就是每轮都在执行错规则。
  * 但模板允许用户改，不能自动覆盖；版本标记把「过期」变成可发现状态，只报告。
@@ -609,6 +655,7 @@ export async function lintNotebook(cfg, opts = {}, signal) {
             : { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
         tags: tagHygiene(notes),
         template: templateStatus(cfg),
+        contract: contractStatus(cfg),
         // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
         indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
     };

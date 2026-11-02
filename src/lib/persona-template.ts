@@ -1,0 +1,67 @@
+/**
+ * 根目录 PERSONA.md / POLICY.md 模板：opt-in 写入（`zk-kit init --with-contract`、
+ * 设置页「写入角色契约模板」、ensureNotebook(..., { withContract: true })），已存在绝不覆盖。
+ *
+ * 与 AGENTS.md 模板同一条规矩：首行版本标记独立（`zdiary-persona` / `zdiary-policy`，
+ * 不复用 zdiary-template —— AGENTS 改版不该让契约误报旧版）。
+ * 缺文件 = 未启用，不报错；doctor / zk_lint 只给只读提示。
+ *
+ * 长度是设计约束：两份合计默认预算 240 词（contractBudgetWords，中文 2 字 = 1 词），
+ * 契约不参与截断，超了只告警 —— 所以模板只留骨架，占位符 `{{...}}` 由人填，
+ * lint 据此报告「未填」。
+ */
+
+/** PERSONA.md 模板版本：改模板就 +1（独立于 TEMPLATE_VERSION） */
+export const PERSONA_TEMPLATE_VERSION = 1
+
+/** POLICY.md 模板版本：改模板就 +1 */
+export const POLICY_TEMPLATE_VERSION = 1
+
+export const PERSONA_TEMPLATE = `<!-- zdiary-persona: v${PERSONA_TEMPLATE_VERSION} -->
+
+# 角色契约
+
+> zdiary 生成；人类所有。永远注入、不参与截断。git diff 可审。
+
+## 身份
+
+- name: {{name}}
+- role: {{role}}
+- updated: {{updated}}
+
+## 语气与边界
+
+- 语气：{{tone}}
+- 边界：{{boundaries}}
+
+## 口头禅
+
+- 待填
+
+## 禁用表达
+
+- 待填
+`
+
+export const POLICY_TEMPLATE = `<!-- zdiary-policy: v${POLICY_TEMPLATE_VERSION} -->
+
+# 自主权契约
+
+> zdiary 生成；人类所有。插件只做最小检查；publish / spend 等动作工具自己读、自己执行。
+
+---
+version: 1
+updated: {{updated}}
+audit: DREAMS.md
+---
+
+| action | level | approval | reversible |
+|---|---|---|---|
+| read-note | auto | none | yes |
+| write-note | auto | none | yes |
+| publish | ask | human | no |
+| spend | ask | human | no |
+| edit-persona | forbidden | human | yes |
+| edit-memory | forbidden | human | yes |
+| impersonate-human | forbidden | human | no |
+`

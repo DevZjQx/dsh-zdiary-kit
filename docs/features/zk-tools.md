@@ -5,7 +5,7 @@
 **Owns.** 14 个工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
 `zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
-`zk_context` 例外：它只读根目录三份 meta 文件并列出已配置笔记本（另读 `DREAMS.md` 的「上次做梦」一行用于周节奏提醒），**不** `ensureNotebook`（读记忆不该依赖 zk）。
+`zk_context` 例外：它只读根目录三份 meta 文件与两份契约（`PERSONA.md` / `POLICY.md`）并列出已配置笔记本（另读 `DREAMS.md` 的「上次做梦」一行用于周节奏提醒），**不** `ensureNotebook`（读记忆不该依赖 zk）。
 
 **多会话与笔记本归属.** 工具拿配置走 `config/session.ts` 的 `configFor(workspace, sessionId)`，不是直接 `config()`：
 会话第一次调用时把当时的 `active`（默认值）快照成自己的 pin，之后设置页 / CLI / 别的会话切库都不带动它；
@@ -93,8 +93,12 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 用一次读换一条「不会静默复用的错误结论」；zk 跑不起来时 layered 照建（归档提醒降级），flat 直接报错（标题查重是写入前的硬门槛，fail-closed）。
 `zk_read` 的"没找到"走 throw（isError），不返回 `found:false` —— 模型看到错误比看到空字段更容易改对。
 `zk_read` 也能读根目录 meta 文件（`MEMORY.md` / `USER.md`）：注入截断时留下的目录就是让 agent 用这个取回原文。
-`zk_context` 的 `files[].originalWords`（截断前词数）、`tocWords`（目录占的词数）与 `ratio`（用量 = `words / budget`，
-两位小数，> 1 表示超预算）只用于解释预算，不改变注入内容。
+`zk_context` 的 `files[].originalWords`（截断前词数）、`files[].retiredWords`（退役条目占的词数，只算在 `MEMORY.md` 上）、
+`tocWords`（目录占的词数）与 `ratio`（用量 = `words / budget`，两位小数，> 1 表示超预算）只用于解释预算，不改变注入内容。
+`originalWords` 含退役条目；展示层的「原 X」会先减掉 `retiredWords`，所以退役不会再被当成截断报出来。
+契约单独一组：`contract.present / words / budget / overBudget / files[]`，外加 `totalWords`（`countWords(payload.text)`）与
+`overheadWords`（框 / 做梦提醒 / notice 等开销）；场景段本批只落形状（`scene.present` 恒 false），M3 起由 `STATE` 填。
+契约**不参与** `memoryBudgetWords` 的截断，超了只告警；总 prompt 超 `totalPromptBudgetWords` 时只点名，不自动截契约。
 
 `zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关（D7）。
 `zk_lint` = 1 次 `zk list` + 三个 zk 原生过滤器（`--orphan` / `--broken-links` / `--tagless`）+ 1 次 `zk graph`，

@@ -12,8 +12,8 @@
 
 | | 目录 | 模板 | group | 根目录文档 |
 |---|---|---|---|---|
-| `flat`（默认，与 0.1.0 逐字节一致） | `notes/` `journal/` | `daily.md` | 1 个（daily） | 无（可选 `--with-agents` 写精简版 `AGENTS.md`） |
-| `layered` | 加 `raw/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） | `AGENTS.md` + `WORKFLOW.md` |
+| `flat`（默认，与 0.1.0 逐字节一致） | `notes/` `journal/` | `daily.md` | 1 个（daily） | 无（可选 `--with-agents` 写精简版 `AGENTS.md`；可选 `--with-contract` 写契约） |
+| `layered` | 加 `raw/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） | `AGENTS.md` + `WORKFLOW.md`（契约同样只在 `--with-contract` 时写） |
 
 切到 `layered` **只建目录与模板，不搬已有笔记**；已存在的模板、`AGENTS.md` 与 `WORKFLOW.md` 不覆盖（用户可能改过），只在缺失时写。
 `inbox/` 从 0.8.2 起不再创建（P2-8）：它在 layered 下不属于任何 group（写不进），flat 下能写进去却会被排除出索引（写进去就消失）。
@@ -32,6 +32,17 @@
 `zk_lint` 据此报告老库的模板是否过期（只报告、不覆盖）。
 `entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入（Z10）；
 所有模板必须含 `{{content}}`，否则 stdin 的正文会被丢（Z9）。
+
+**契约模板（`PERSONA.md` / `POLICY.md`）。** 只走显式 opt-in：`zk-kit init --with-contract`、
+设置页「写入契约模板」、或 `ensureNotebook(cfg, signal, { withContract: true })`。
+两种结构**都不自动写** —— 升级不多两个文件（D10），缺文件 = 契约未启用、不报错。
+写入口只在缺失时生效，已存在的文件一字不改（契约允许人改）。
+首行是独立版本标记 `<!-- zdiary-persona: vN -->` / `<!-- zdiary-policy: vN -->`（`PERSONA_TEMPLATE_VERSION` /
+`POLICY_TEMPLATE_VERSION`）：不复用 `TEMPLATE_VERSION` —— 改 `AGENTS.md` 只升旧的，不该让契约误报旧版。
+`POLICY.md` 形状是 frontmatter + 一张表（`action / level / approval / reversible`），
+level 只认 `auto / ask / forbidden`；解析与强制执行归 M3，这里只负责写入模板。
+两个文件都进 `META_NAMES`：不进检索、`zk_append` 等写入一律拒绝。
+**迁移说明**：根目录曾有同名普通笔记的库，升级后它们会从检索里消失 —— 需要改名或移入子目录。
 
 ### group 收敛（配置改了之后）
 

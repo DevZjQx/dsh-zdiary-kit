@@ -12,6 +12,8 @@
 const LIST_ITEM = /^(?:[-*+]|\d+[.)])\s+/
 /** 退役条目：`- [superseded 2026-01-01] 旧结论 → [[新结论]]`。必须带 `i`，与 lint 同口径 */
 const RETIRED = /^\s*(?:[-*+]|\d+[.)])\s+\[superseded\b/i
+/** 行级口径（记忆页徽标用）；与 RETIRED 同一份 */
+export const RETIRED_ENTRY_RE = RETIRED
 /** 只认能机械解析的日期：`YYYY-MM-DD` 且真校验（不是正则通过就算） */
 const DATE = /\b(\d{4})-(\d{2})-(\d{2})\b/
 

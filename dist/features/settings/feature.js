@@ -14,7 +14,7 @@ import path from 'node:path';
 import { json, readBody, ROUTE_BASE } from '../../lib/http.js';
 import { CFG_FILE, processWorkspace } from '../../config/paths.js';
 import { ArchiveDirChangeError, config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.js';
-import { ensureNotebook, structureStatus, writeAgentsTemplate } from '../../lib/notebook.js';
+import { ensureNotebook, structureStatus, writeAgentsTemplate, writeContractTemplates } from '../../lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
 import { installZk, sourceLabel } from '../../lib/install.js';
 import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.js';
@@ -52,8 +52,10 @@ async function snapshot(cfg) {
             words: payload.words,
             budget: payload.budget,
             truncatedWords: payload.truncatedWords,
+            retiredWords: payload.retiredWords,
             tocWords: payload.tocWords,
             files: payload.files,
+            contract: payload.contract,
         };
     }
     catch {
@@ -235,6 +237,23 @@ export function registerSettings({ route, isTrusted }) {
             json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }
     });
+    // ── 写入契约模板（PERSONA.md / POLICY.md；opt-in，已存在不覆盖）──
+    route(`${P}/contract`, async (req, res) => {
+        if (!requireTrusted(req, res))
+            return;
+        if (req.method !== 'POST') {
+            json(res, 405, { ok: false, error: '只支持 POST' });
+            return;
+        }
+        const cfg = config();
+        try {
+            const result = writeContractTemplates(cfg);
+            json(res, 200, { ok: true, result, ...(await snapshot(cfg)) });
+        }
+        catch (err) {
+            json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+    });
     // ── 安装内置 zk（官方 release → 插件 bin 目录 → 真跑一次）──
     route(`${P}/install`, async (req, res) => {
         if (!requireTrusted(req, res))
@@ -337,7 +356,18 @@ export function registerSettings({ route, isTrusted }) {
                 detail: present.length === 0
                     ? '未启用：根目录没有 AGENTS.md / USER.md / MEMORY.md（layered 初始化会写一份 AGENTS.md 模板）'
                     : `${payload.words}/${payload.budget} 词 · ${formatFileShares(payload.files, payload.tocWords)}` +
-                        (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : ''),
+                        (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : '') +
+                        (payload.retiredWords > 0 ? `，退役省略 ${payload.retiredWords} 词` : ''),
+            });
+            const c = payload.contract;
+            items.push({
+                name: '角色契约',
+                // 缺文件 = 未启用（不算错）；只有超预算才是 ✗（契约不截断）
+                ok: !c.overBudget,
+                detail: c.present
+                    ? `${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')} / ${c.budget} 词` +
+                        (c.overBudget ? `，超 ${c.words - c.budget} 词（契约不截断，请缩减或调大契约预算）` : '')
+                    : '未启用：根目录没有 PERSONA.md / POLICY.md（点「写入契约模板」，缺文件不算错）',
             });
         }
         catch (err) {

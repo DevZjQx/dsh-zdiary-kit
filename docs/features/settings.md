@@ -2,22 +2,26 @@
 
 **Purpose.** 让主人看得见、管得住：zk 在哪、笔记本在哪、有多少笔记、怎么重建、怎么装。
 
-**Owns.** 七条路由（全部 `/dsh-zdiary-kit/api/*`）：
+**Owns.** 八条路由（全部 `/dsh-zdiary-kit/api/*`）：
 - `GET/POST /settings`：读写配置（白名单 + 归一化在 `config/store`）；GET 返回快照与 `stamp`，POST 带回 `stamp`
   校验（别人改过就 409），成功返回快照与 `warn`；旧 `archiveDir` 非空时改它返回 **400**
   （`ArchiveDirChangeError`，不迁移文件）
 - `GET /status`：zk 位置/版本/来源、笔记本是否存在、笔记/标签/断链/孤立计数
 - `POST /init`：`ensureNotebook`（幂等；layered 时一并写 `AGENTS.md`）
 - `POST /agents`：`writeAgentsTemplate` —— flat 库的 opt-in，已存在不覆盖；返回 `result.written` 与最新快照
+- `POST /contract`：`writeContractTemplates` —— `PERSONA.md` / `POLICY.md` 的 opt-in，缺了才写，已存在不覆盖；
+  返回 `result.personaWritten` / `result.policyWritten` 与最新快照
 - `POST /index`：`zk index`
 - `POST /install`：内置 zk（下载 → 解包 → `--version` 验证）；`detail` 里回显下载源（自定义镜像会点名）
-- `GET /selftest`：七项真检查（zk、笔记本、模板、group、结构、长期记忆、索引）
+- `GET /selftest`：八项真检查（zk、笔记本、模板、group、结构、长期记忆、角色契约、索引）
 
 快照（`GET /settings`、`GET /status`、写操作的回包）除了配置与计数，还带两块**诊断**：
 `structure`（配置的模式、缺哪些目录、`extra` 盘上多出来的分层目录、`AGENTS.md` 在不在，
 以及 `groups` / `groupsOk` / `groupWarnings` —— 每个期望 group 的 paths 与 `.zk/config.toml` 的对照，
 `expectedOverlaps` / `actualOverlaps` —— 两个 group 用同一条路径（父子目录不算））与
-`memory`（三份 meta 的保留词数 / 原词数 / 目录词数 / 预算 / 截断量）。
+`memory`（三份 meta 的保留词数 / 原词数 / 退役词数 / 目录词数 / 预算 / 截断量 / `contract`）。
+`contract` 不参与记忆预算：它单独报 `present` / `words` / `budget` / `overBudget` / `files[]`；
+缺文件 = 未启用（不算错），只有超预算才是 ✗。
 保存后 `groupsOk === false` 时 `warn` 会点名不一致的 group 并建议 `zk-kit groups --fix`；页面顶部也常驻这条告警
 （只有路径撞车、没有坏组时改为原样显示 `groupWarnings` 的第一条，因为 `--fix` 修不了配置本身）。
 自检的「日记 group」项用同一份解析结果：期望 / 实际不一致即为 ✗；其它 group 不一致会在 detail 里提一句。
@@ -33,6 +37,10 @@
 结构是**每个笔记本自己的**，就摆在那一行上；`flat → layered` 保存前弹窗明确写「只建目录与模板，不搬已有笔记」。
 `flat` 且缺 `AGENTS.md` 时，操作区多一个「写入 AGENTS.md 模板」按钮（走 `POST /agents`）；记忆状态行同时提示
 「缺 AGENTS.md：约定与周提醒未启用」。已有文件不覆盖，按钮点了也不会动用户的定制。
+笔记本存在时操作区常驻「写入契约模板」按钮（走 `POST /contract`）：缺 `PERSONA.md` / `POLICY.md` 时写入，
+已存在就只回「已存在，没有覆盖」（契约允许人改，插件不做第二份真相）。
+「记忆」分组里多三行配置：契约预算（`contractBudgetWords`，默认 240）、场景预算（`sceneBudgetWords`，80）、
+总 prompt 预算（`totalPromptBudgetWords`，900，只告警）。
 分组标题直接标作用范围（「笔记本」是每本自己的，其余是全局）；删除笔记本先确认「只删配置，磁盘目录与笔记保留」。
 切换「当前笔记本」保存后自动建好目标笔记本（`ensureNotebook` 幂等）；改路径 / 新增不自动建（防手滑）。
 但**切的是新会话的默认值**：每个会话第一次用 zk_* 时就把当时的默认值固定下来，之后各走各的 ——

@@ -7,7 +7,7 @@
 
 - `GET /dsh-zdiary-kit/view`：首页（最近更新 / 日记 / 标签）、搜索、标签页、笔记页
   - `?p=note&path=…`：笔记正文 + 反链
-  - `?p=memory`：记忆页 —— `AGENTS.md` / `USER.md` / `MEMORY.md` / `DREAMS.md` 四份固定文件 + 预算行（人周审的入口）
+  - `?p=memory`：记忆页 —— 契约 / 用户 / 工作约定 / 记忆 / 周审 / 场景六段 + 载荷预览（人周审的入口）
   - `?p=tags` / `?p=tag&tag=…`：标签列表 / 单个标签
   - `?q=…`：搜索（GET 表单，无 JS）
 - `GET /dsh-zdiary-kit/feed.xml`：最近 30 篇的 RSS 2.0
@@ -32,7 +32,8 @@
    **不调** `ensureNotebook` / `init` / `index` / `install`。没初始化就显示提示，不顺手建库。
 3. **面门**：不复用设置页的 `snapshot`，不返回 `zkPath`、配置文件路径、`absPath`；
    `.zk/` 与根目录 meta（`AGENTS.md` / `MEMORY.md` 等）按路径直接打不开。
-   记忆页是唯一的例外，但它是**固定白名单**：文件名来自常量，不接受 `path` 参数，只读这四份。
+   记忆页是唯一的例外，但它是**固定白名单**：文件名来自常量（`PERSONA.md` / `POLICY.md` /
+   `AGENTS.md` / `USER.md` / `MEMORY.md` / `DREAMS.md`），不接受 `path` 参数，只读这几份。
 4. **地址门**：只认回环 —— `Host` 必须是 127.0.0.1 / localhost / [::1]，对端地址也必须是回环
    （`lib/http` 的 `isLoopback`：设置页判 Host + DSH 的 cookie，只读视图两边都判、不看 cookie）。
    DSH 绑到局域网地址时，只读视图既不会跟着上网，在本机也打不开（那种绑定下 Host 与对端都不是回环）；
@@ -51,10 +52,15 @@
 - 搜索走 `searchNotes`：zk 的 FTS 不切中文，0 命中时自动退回正则子串（和 `zk_search` 同一套兜底）。
   `q` 与 `tag` 同时给就是两个条件一起收（AND），不会静默丢掉其中一个。
 - 笔记页：正文 + 入链（`zk graph`，读不出来就不显示）；`[[目标]]` 按路径 → 去扩展名路径 → 标题 → 文件名解析。
-- 记忆页（`?p=memory`）：顶部一行 `记忆 N/预算 词（AGENTS … · MEMORY …）`，复用 `buildMemoryPayload` /
-  `formatFileShares`；四份文件按常量直接读盘（**不走 `loadNote`** —— 它自己就拒绝 meta），
+- 记忆页（`?p=memory`）：分**契约 / 用户 / 工作约定 / 记忆 / 周审 / 场景**六段 + 载荷预览，
+  顶部一行 `记忆 N/预算 词（AGENTS … · MEMORY …（退役 N））`，复用 `buildMemoryPayload` /
+  `formatFileShares`；文件按常量直接读盘（**不走 `loadNote`** —— 它自己就拒绝 meta），
   缺失的显示「还没写」而不是 404；正文与笔记页同一套转义 + 双链白名单，
   `[[…]]` 只在该笔记存在时变成链接，其余保持不可点的 `<span class="wikilink">`。
+  记忆段的退役条目整条加删除线 + `retired` 徽标（磁盘保留、注入省略），不再看起来像活条目；
+  场景段只显示「有 / 已过期 / 未配置」，不含敏感值；载荷预览是这一轮模型实际收到的文本
+  （`&lt;system-reminder&gt;` 整段转义、折叠、只读），与 `zk_context` 同源，含
+  `契约 / 记忆 / 场景 / 开销 = 总` 的词数拆解。
 - 正文超过 200 000 字符截断并提示；磁盘文件超过 2 MiB 直接拒绝（`readNote` 会整篇读进内存）。
 - 视图没有会话上下文，只能看**插件进程工作区**解析出的笔记本（和设置页一致，不跟某个会话走）。
 - 状态码：笔记不存在 → 404，路径不合法 / meta / 扩展名 / 超大 → 400；

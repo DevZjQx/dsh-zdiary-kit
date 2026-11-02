@@ -16,7 +16,7 @@ import { json, readBody, ROUTE_BASE } from '../../lib/http.ts'
 import { CFG_FILE, processWorkspace } from '../../config/paths.ts'
 import { ArchiveDirChangeError, config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.ts'
 import type { Config } from '../../config/store.ts'
-import { ensureNotebook, structureStatus, writeAgentsTemplate } from '../../lib/notebook.ts'
+import { ensureNotebook, structureStatus, writeAgentsTemplate, writeContractTemplates } from '../../lib/notebook.ts'
 import type { StructureStatus } from '../../lib/notebook.ts'
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
@@ -66,15 +66,17 @@ async function snapshot(cfg: Config) {
   }
   // 结构一致性只做检查：以配置为准，磁盘不一致就如实说缺哪个目录（不自动建、不自动删）
   const structure: StructureStatus = structureStatus(cfg)
-  let memory: Pick<MemoryPayload, 'words' | 'budget' | 'truncatedWords' | 'tocWords' | 'files'> | null = null
+  let memory: Pick<MemoryPayload, 'words' | 'budget' | 'truncatedWords' | 'retiredWords' | 'tocWords' | 'files' | 'contract'> | null = null
   try {
     const payload = buildMemoryPayload(cfg)
     memory = {
       words: payload.words,
       budget: payload.budget,
       truncatedWords: payload.truncatedWords,
+      retiredWords: payload.retiredWords,
       tocWords: payload.tocWords,
       files: payload.files,
+      contract: payload.contract,
     }
   } catch { memory = null }
   return {
@@ -232,6 +234,19 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
     }
   })
 
+  // ── 写入契约模板（PERSONA.md / POLICY.md；opt-in，已存在不覆盖）──
+  route(`${P}/contract`, async (req, res) => {
+    if (!requireTrusted(req, res)) return
+    if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return }
+    const cfg = config()
+    try {
+      const result = writeContractTemplates(cfg)
+      json(res, 200, { ok: true, result, ...(await snapshot(cfg)) })
+    } catch (err) {
+      json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
   // ── 安装内置 zk（官方 release → 插件 bin 目录 → 真跑一次）──
   route(`${P}/install`, async (req, res) => {
     if (!requireTrusted(req, res)) return
@@ -330,7 +345,18 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
         detail: present.length === 0
           ? '未启用：根目录没有 AGENTS.md / USER.md / MEMORY.md（layered 初始化会写一份 AGENTS.md 模板）'
           : `${payload.words}/${payload.budget} 词 · ${formatFileShares(payload.files, payload.tocWords)}` +
-            (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : ''),
+            (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : '') +
+            (payload.retiredWords > 0 ? `，退役省略 ${payload.retiredWords} 词` : ''),
+      })
+      const c = payload.contract
+      items.push({
+        name: '角色契约',
+        // 缺文件 = 未启用（不算错）；只有超预算才是 ✗（契约不截断）
+        ok: !c.overBudget,
+        detail: c.present
+          ? `${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')} / ${c.budget} 词` +
+            (c.overBudget ? `，超 ${c.words - c.budget} 词（契约不截断，请缩减或调大契约预算）` : '')
+          : '未启用：根目录没有 PERSONA.md / POLICY.md（点「写入契约模板」，缺文件不算错）',
       })
     } catch (err) {
       items.push({ name: '长期记忆', ok: false, detail: err instanceof Error ? err.message : String(err) })

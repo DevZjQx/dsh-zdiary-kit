@@ -5,7 +5,7 @@
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
  *   · 14 个工具能注册、能执行、能渲染（zk_context 也执行一次）；
- *   · 7 条设置路由 + 4 条只读路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
+ *   · 8 条设置路由 + 4 条只读路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
  */
@@ -93,8 +93,8 @@ for (const tool of tools) checkSchema(tool.output.schema, `${tool.name}.output.s
 console.log('工具：' + tools.map((t) => t.name).join(', '))
 console.log('路由：' + [...routes.keys()].join(', '))
 if (tools.length !== 14) throw new Error('工具数量不对：' + tools.length)
-// 7 条设置页路由 + 4 条只读路由（view / feed.xml / api/notes / api/note）
-if (routes.size !== 11) throw new Error('路由数量不对：' + routes.size)
+// 8 条设置页路由 + 4 条只读路由（view / feed.xml / api/notes / api/note）
+if (routes.size !== 12) throw new Error('路由数量不对：' + routes.size)
 
 const call = async (name: string, args: unknown) => {
   const tool = tools.find((t) => t.name === name)

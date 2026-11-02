@@ -42,6 +42,9 @@ export const DEFAULTS = {
     defaultTags: [],
     maxReadChars: 20_000,
     memoryBudgetWords: 500,
+    contractBudgetWords: 240,
+    sceneBudgetWords: 80,
+    totalPromptBudgetWords: 900,
     archiveDir: 'archive',
     zkVersion: '0.15.7',
     zkPath: '',
@@ -137,6 +140,9 @@ export function normalizeConfig(raw, workspace = processWorkspace()) {
         defaultTags: tags(src.defaultTags),
         maxReadChars: clamp(Number(src.maxReadChars), 1000, 200_000, DEFAULTS.maxReadChars),
         memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
+        contractBudgetWords: clamp(Number(src.contractBudgetWords), 50, 800, DEFAULTS.contractBudgetWords),
+        sceneBudgetWords: clamp(Number(src.sceneBudgetWords), 20, 400, DEFAULTS.sceneBudgetWords),
+        totalPromptBudgetWords: clamp(Number(src.totalPromptBudgetWords), 200, 5000, DEFAULTS.totalPromptBudgetWords),
         archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
         zkVersion: /^\d+\.\d+\.\d+$/.test(String(src.zkVersion ?? '').trim().replace(/^v/i, ''))
             ? String(src.zkVersion).trim().replace(/^v/i, '')

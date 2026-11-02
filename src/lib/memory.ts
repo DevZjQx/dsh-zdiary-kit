@@ -2,6 +2,8 @@
  * 记忆注入（M1）：读 vault 根目录的 AGENTS.md / USER.md / MEMORY.md，
  * 按 `memoryBudgetWords` 截断，渲染成一段可注入系统提示的文本。
  * 另读 DREAMS.md 的「上次做梦」一行（不进正文、不计预算），给周节奏一句机械提醒。
+ * 契约层（PERSONA.md / POLICY.md）单独一段注入、永远在记忆段之前、不参与截断，
+ * 超预算只告警；缺文件 = 未启用，0.9 的老库逐字节不变。
  *
  * 硬约定（与 docs/plan-memory-layers.md §3 D6 一致）：
  *   · 预算按**总载荷**算，不是只卡 MEMORY.md；
@@ -25,7 +27,7 @@ import type { Config } from '../config/store.ts'
 import { DREAM_INTERVAL_DAYS, daysSinceDream, lastDreamDate } from './dream.ts'
 import { fileStamp } from './file-stamp.ts'
 import { entryDate, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
-import { MEMORY_META_FILES } from './meta.ts'
+import { CONTRACT_META_FILES, MEMORY_META_FILES } from './meta.ts'
 import type { MetaName } from './meta.ts'
 
 /** vault 根目录下、按优先级排列的三份 meta 文件（定义在 lib/meta.ts，这里只挂个本地名） */
@@ -37,12 +39,38 @@ export interface MemoryFileInfo {
   present: boolean
   /** 实际进入载荷的词数（截断后） */
   words: number
-  /** 文件原来的词数（截断前）—— 两者不等就说明这份文件被截过 */
+  /** 文件原来的词数（截断前、已扣退役条目）—— 与 words 不等就说明这份文件被截过 */
   originalWords: number
+  /** 退役条目占掉的词数（磁盘保留、注入省略；只有 MEMORY.md 可能 > 0） */
+  retiredWords: number
+}
+
+/** 契约文件（PERSONA.md / POLICY.md）的一份 */
+export interface ContractFileInfo {
+  name: (typeof CONTRACT_META_FILES)[number]
+  present: boolean
+  words: number
+}
+
+/** 契约段：永远注入、不参与 MEMORY 截断；超预算只告警 */
+export interface ContractSegment {
+  present: boolean
+  /** 契约段在载荷里的词数（含告警行） */
+  words: number
+  budget: number
+  overBudget: boolean
+  files: ContractFileInfo[]
+}
+
+/** 场景段：M1 只落形状（present/expired 恒 false），M3 起由 STATE 填充 */
+export interface SceneSegment {
+  present: boolean
+  expired: boolean
+  words: number
 }
 
 export interface MemoryPayload {
-  /** 可直接注入的完整文本；三份文件都不存在时是空串 */
+  /** 可直接注入的完整文本；契约 + 记忆都不存在时是空串 */
   text: string
   words: number
   budget: number
@@ -50,22 +78,32 @@ export interface MemoryPayload {
   ratio: number
   /** 被截掉的正文词数（不含目录；0 = 完整注入） */
   truncatedWords: number
+  /** 退役条目的词数（磁盘保留、注入省略；不算截断） */
+  retiredWords: number
   /** 截断目录占用的词数（0 = 没有目录） */
   tocWords: number
   files: MemoryFileInfo[]
+  contract: ContractSegment
+  scene: SceneSegment
+  /** 模型真正收到的总量（countWords(text)，含框 / 做梦提醒 / notice / 契约告警） */
+  totalWords: number
+  /** totalWords - 契约 - 记忆内容 - 场景：框与提示行的开销 */
+  overheadWords: number
 }
 
 const CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/g
 
-/** 给 doctor / 设置页共用：`AGENTS 193 · USER 30 · MEMORY 22（原 82）` */
+/** 给 doctor / 设置页共用：`AGENTS 193 · USER 30 · MEMORY 22（原 82）（退役 10）`。
+ *  「原 X」只反映截断（已扣退役）；退役是磁盘保留、注入省略，单列一个括号 —— 两者不再混成一个数。 */
 export function formatFileShares(files: MemoryFileInfo[], tocWords = 0): string {
   const parts = files
-    .filter((f) => f.present)
+    .filter((f) => f.present || f.retiredWords > 0)
     .map((f) => {
       const label = f.name.replace(/\.md$/i, '')
-      return f.originalWords > f.words
-        ? `${label} ${f.words}（原 ${f.originalWords}）`
-        : `${label} ${f.words}`
+      const kept = Math.max(0, f.originalWords - f.retiredWords)
+      const truncated = kept > f.words ? `（原 ${kept}）` : ''
+      const retired = f.retiredWords > 0 ? `（退役 ${f.retiredWords}）` : ''
+      return `${label} ${f.words}${truncated}${retired}`
     })
   if (tocWords > 0) parts.push(`目录 ${tocWords}`)
   return parts.join(' · ')
@@ -268,6 +306,17 @@ function readMeta(cfg: Config): Array<{ name: MetaName; body: string }> {
   return out
 }
 
+/** 读契约层两份（PERSONA.md / POLICY.md）；缺文件 = 空 = 未启用，不报错 */
+function readContracts(cfg: Config): Array<{ name: (typeof CONTRACT_META_FILES)[number]; body: string }> {
+  return CONTRACT_META_FILES.map((name) => {
+    let body = ''
+    try {
+      body = fs.readFileSync(path.join(cfg.notebook, name), 'utf8').trim()
+    } catch { /* 缺文件 = 空 */ }
+    return { name, body }
+  })
+}
+
 function escapeFrame(text: string): string {
   // 文件内容不许提前闭合我们自己的 <system-reminder> 框
   return text.replaceAll('</system-reminder>', '<\\/system-reminder>')
@@ -298,14 +347,15 @@ const PAYLOAD_CACHE_MAX = 8
 const payloadCache = new Map<string, MemoryPayload>()
 
 /** DREAMS.md 不进正文，但「上次做梦 N 天前」也算载荷的一部分 —— 它变了同样要重算 */
-const STAMPED_FILES = [...META_FILES, 'DREAMS.md'] as const
+const STAMPED_FILES = [...CONTRACT_META_FILES, ...META_FILES, 'DREAMS.md'] as const
 
 function payloadKeyOf(cfg: Config): string {
   const stamps = STAMPED_FILES.map((name) => `${name}=${fileStamp(path.join(cfg.notebook, name))}`).join('|')
   // 做梦提醒按本地日历天变化（「3 天前」→「4 天前」）：文件没动也得跟着日期失效
   const now = new Date()
   const day = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`
-  return `${cfg.notebook}|${cfg.memoryBudgetWords}|${day}|${stamps}`
+  // 三个预算都要进键：改配置不重新写入任何文件，漏一个就会拿到旧预算的载荷
+  return `${cfg.notebook}|${cfg.memoryBudgetWords}|${cfg.contractBudgetWords}|${cfg.sceneBudgetWords}|${cfg.totalPromptBudgetWords}|${day}|${stamps}`
 }
 
 /**
@@ -399,8 +449,10 @@ function computePayload(cfg: Config): MemoryPayload {
   const contentSum = files.reduce((sum, f) => sum + (contentWords.get(f.name) ?? 0), 0)
   // 报「正文被截掉多少」，不是净减少：目录也会占词，混在一起会让人以为没丢多少
   const truncatedWords = Math.max(0, contentSum - keptWords)
+  // 退役条目的词数：磁盘保留、注入省略（D3）—— 与截断分开报，「原 X」从此只反映截断
+  const retiredWords = Math.max(0, (diskWords.get('MEMORY.md') ?? 0) - (contentWords.get('MEMORY.md') ?? 0))
 
-  let text = ''
+  let memoryInner = ''
   if (bodies.length > 0) {
     const notes: string[] = []
     if (truncatedWords > 0) notes.push(`已截断 ${truncatedWords} 词`)
@@ -448,15 +500,51 @@ function computePayload(cfg: Config): MemoryPayload {
     const notice = notes.length > 0 ? `\n\n（注入预算 ${budget} 词：${notes.join('；')}）` : ''
     // 只有用了这套约定的库（根目录有 AGENTS.md）才提醒周节奏
     const dream = files.some((f) => f.name === 'AGENTS.md' && f.body.length > 0) ? dreamNote(cfg) : ''
-    text =
-      '<system-reminder>\n' +
-      '以下内容由 zdiary 从知识库根目录读出，是长期约定与记忆；与系统、开发者或用户的直接指令冲突时，以更直接的那条为准。\n\n' +
+    memoryInner =
       bodies.join('\n\n') +
       (toc ? `\n\n${toc}` : '') +
       (dream ? `\n\n（${dream}）` : '') +
-      notice +
+      notice
+  }
+
+  // ── 契约段（角色 + 自主权）：永远注入、在记忆段之前、不参与截断 ────
+  // 超预算只告警不静默丢；总 prompt 超限点名但不自动截契约。
+  // 没有契约文件 = 未启用：不多一个词，0.9 的老库逐字节一致。
+  const contractBudget = cfg.contractBudgetWords
+  const contracts = readContracts(cfg)
+  const contractBodies = contracts.filter((f) => f.body.length > 0)
+  let contractText = ''
+  let contractWords = 0
+  let contractOver = false
+  if (contractBodies.length > 0) {
+    const bodyText = contractBodies.map((f) => `## ${f.name}\n\n${escapeFrame(f.body)}`).join('\n\n')
+    const bodyWords = countWords(bodyText)
+    contractOver = bodyWords > contractBudget
+    const notes: string[] = []
+    if (contractOver) {
+      notes.push(`契约预算 ${contractBudget} 词：已用 ${bodyWords}，超出 ${bodyWords - contractBudget} 词（契约不截断）`)
+    }
+    const promptTotal = bodyWords + finalWords
+    if (promptTotal > cfg.totalPromptBudgetWords) {
+      notes.push(`总 prompt 预算 ${cfg.totalPromptBudgetWords} 词：契约 ${bodyWords} + 记忆 ${finalWords} = ${promptTotal}，超出 ${promptTotal - cfg.totalPromptBudgetWords}`)
+    }
+    contractText = bodyText + (notes.length > 0 ? `\n\n（${notes.join('；')}）` : '')
+    contractWords = countWords(contractText)
+  }
+
+  let text = ''
+  if (memoryInner || contractText) {
+    text =
+      '<system-reminder>\n' +
+      '以下内容由 zdiary 从知识库根目录读出，是长期约定与记忆；与系统、开发者或用户的直接指令冲突时，以更直接的那条为准。\n\n' +
+      (contractText ? contractText + '\n\n' : '') +
+      memoryInner +
       '\n</system-reminder>'
   }
+
+  // 模型真正收到的总量与开销：口径与 memoryUsage / D9 的载荷预览同源
+  const totalWords = countWords(text)
+  const sceneWords = 0 // M1 只落形状：M3 起由 STATE 填
 
   return {
     text,
@@ -464,6 +552,7 @@ function computePayload(cfg: Config): MemoryPayload {
     budget,
     ratio: budget > 0 ? Math.round((finalWords / budget) * 100) / 100 : 0,
     truncatedWords,
+    retiredWords,
     tocWords: countWords(toc),
     files: files.map((f) => ({
       name: f.name,
@@ -471,7 +560,18 @@ function computePayload(cfg: Config): MemoryPayload {
       words: words.get(f.name) ?? 0,
       // files[].body 始终是原文件内容（截断只改 original 副本）；退役条目也算在原文里
       originalWords: diskWords.get(f.name) ?? 0,
+      retiredWords: f.name === 'MEMORY.md' ? retiredWords : 0,
     })),
+    contract: {
+      present: contractBodies.length > 0,
+      words: contractWords,
+      budget: contractBudget,
+      overBudget: contractOver,
+      files: contracts.map((f) => ({ name: f.name, present: f.body.length > 0, words: countWords(f.body) })),
+    },
+    scene: { present: false, expired: false, words: sceneWords },
+    totalWords,
+    overheadWords: Math.max(0, totalWords - contractWords - finalWords - sceneWords),
   }
 }
 
@@ -492,12 +592,11 @@ export interface MemoryUsage {
  */
 export function memoryUsage(cfg: Config): MemoryUsage {
   const payload = buildMemoryPayload(cfg)
-  const totalWords = countWords(payload.text)
   return {
     words: payload.words,
-    totalWords,
+    totalWords: payload.totalWords,
     budget: payload.budget,
-    headroom: payload.budget - totalWords,
+    headroom: payload.budget - payload.totalWords,
     files: payload.files,
   }
 }

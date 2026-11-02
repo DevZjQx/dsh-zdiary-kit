@@ -31,6 +31,7 @@ import { parseFrontmatter } from './frontmatter.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './memory-format.ts'
 import type { FrontmatterFields } from './frontmatter.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_VERSION } from './agents-template.ts'
+import { PERSONA_TEMPLATE_VERSION, POLICY_TEMPLATE_VERSION } from './persona-template.ts'
 
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50
@@ -204,6 +205,19 @@ export interface LintTemplateBucket {
   currentText?: string
 }
 
+/** 契约体检（M1：missing / old / placeholder；policy 表结构等 M3 的 policy.ts） */
+export interface LintContractIssue {
+  file: 'PERSONA.md' | 'POLICY.md'
+  kind: 'missing' | 'old' | 'placeholder'
+  /** 人读说明（old 带当前 / 盘上版本；placeholder 带占位符清单） */
+  detail: string
+}
+
+export interface LintContractBucket {
+  total: number
+  items: LintContractIssue[]
+}
+
 export interface LintOptions {
   /** 多少天没修改算陈旧（默认 90） */
   staleDays?: number
@@ -242,6 +256,8 @@ export interface LintResult {
   tags: LintTagBucket
   /** 根目录 AGENTS.md 是不是当前版本的模板（只报告，不覆盖） */
   template: LintTemplateBucket
+  /** 契约层体检：PERSONA.md / POLICY.md 缺失 / 旧版 / 未填占位符（只报告） */
+  contract: LintContractBucket
   /**
    * 非日记笔记已到 150 篇、根目录却没有 INDEX.md（P2-11）：只是提示，不生成静态索引。
    * 实时分布看 zk_stats（byDir / byTag），静态索引会过期、还要决定谁负责更新。
@@ -500,9 +516,15 @@ export function formatMemoryLinks(bucket: LintMemoryBucket): string | null {
  * `zk-kit lint` 与 `zk_lint` 各写一遍就会改到一半。返回空数组 = 这一库三项都没问题，不占行。
  */
 export function formatLintExtras(
-  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'similarTitles' | 'indexHint'>,
+  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'contract' | 'similarTitles' | 'indexHint'>,
 ): string[] {
   const lines: string[] = []
+  if (r.contract.total > 0) {
+    lines.push(
+      `⚠️ 契约：${r.contract.items.map((i) => `${i.file} ${i.detail}`).join('；')}` +
+      '｜只报告：缺文件 = 未启用（不算错），占位符与旧版由人按需处理',
+    )
+  }
   if (r.incomplete.total > 0) {
     lines.push(
       `✗ frontmatter 缺字段：${r.incomplete.total} 篇 — ` +
@@ -679,6 +701,45 @@ export function tagHygiene(notes: NoteRecord[], max = 20): LintTagBucket {
 }
 
 const TEMPLATE_MARK_RE = /<!--\s*zdiary-template:\s*v(\d+)\s*-->/
+const PERSONA_MARK_RE = /<!--\s*zdiary-persona:\s*v(\d+)\s*-->/
+const POLICY_MARK_RE = /<!--\s*zdiary-policy:\s*v(\d+)\s*-->/
+const PLACEHOLDER_RE = /\{\{\s*[^}]+\s*\}\}/g
+
+/**
+ * 契约体检（M1）：缺文件 = 未启用（不算错，但要让 zk_lint 可见）；
+ * 旧版 = 版本标记比当前模板旧（只报告，不覆盖 —— 契约允许人改）；
+ * 占位符 = 模板里的 {{...}} 还没填（“未填”是机械可发现的“未启用一半”状态）。
+ */
+export function contractStatus(cfg: Config): LintContractBucket {
+  const items: LintContractIssue[] = []
+  const files = [
+    { name: 'PERSONA.md', mark: PERSONA_MARK_RE, current: PERSONA_TEMPLATE_VERSION },
+    { name: 'POLICY.md', mark: POLICY_MARK_RE, current: POLICY_TEMPLATE_VERSION },
+  ] as const
+  for (const f of files) {
+    let body = ''
+    try { body = fs.readFileSync(path.join(cfg.notebook, f.name), 'utf8') } catch {
+      items.push({ file: f.name, kind: 'missing', detail: `根目录没有 ${f.name}：契约未启用（zk-kit init --with-contract 或设置页可写入模板）` })
+      continue
+    }
+    const hit = f.mark.exec(body)
+    const version = hit ? Number(hit[1]) : 0
+    if (version !== f.current) {
+      items.push({
+        file: f.name,
+        kind: 'old',
+        detail: version === 0
+          ? `${f.name} 没有版本标记（当前 v${f.current}）`
+          : `${f.name} 是旧版 v${version}（当前 v${f.current}）`,
+      })
+    }
+    const placeholders = [...new Set(body.match(PLACEHOLDER_RE) ?? [])]
+    if (placeholders.length > 0) {
+      items.push({ file: f.name, kind: 'placeholder', detail: `${f.name} 还有未填的占位符：${placeholders.join('、')}` })
+    }
+  }
+  return { total: items.length, items }
+}
 
 /**
  * 模板版本（P2-15）：模板是行为契约，不是静态文档 —— 它每轮注入，写错一句就是每轮都在执行错规则。
@@ -863,6 +924,7 @@ export async function lintNotebook(
       : { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
     tags: tagHygiene(notes),
     template: templateStatus(cfg),
+    contract: contractStatus(cfg),
     // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
     indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
   }

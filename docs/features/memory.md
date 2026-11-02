@@ -4,7 +4,8 @@
 注入有硬预算，截断多少必须可观测 —— 否则模型看到的是残缺记忆却不知道残缺。
 
 **Owns.**
-- `lib/meta.ts`：meta 文件唯一清单（注入 3 份 / 排除 6 份），memory、zk、settings 共用
+- `lib/meta.ts`：meta 文件唯一清单 —— 注入 3 份 `MEMORY_META_FILES`；契约 2 份 `CONTRACT_META_FILES`（`PERSONA.md` / `POLICY.md`）；
+  排除 8 份 `META_NAMES`（含契约）；memory、zk、readonly、settings 共用
 - `lib/memory.ts`：读 `<vault>/AGENTS.md` / `USER.md` / `MEMORY.md` → 词数 → 机械截断 → `<system-reminder>` 框；
   另读 `DREAMS.md` 的「上次做梦」一行（不进正文、不计预算）；
   `memoryUsage(cfg)` 是同一份载荷的投影（内容词 / 总词 / 预算 / 余量），给 dream 与后续页面用
@@ -12,6 +13,9 @@
   `stripRetiredEntries` / `daysSinceDate`；memory、dream、lint 共用，禁止各写一套
 - `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）；`dreamNotebook` 用它算默认窗口
 - `lib/wikilink.ts`：`[[链接]]` 的解析口径（路径 → `.md` → `archive/` → 活笔记标题），lint 与 dream 共用一份
+- `lib/persona-template.ts`：`PERSONA_TEMPLATE` / `POLICY_TEMPLATE` 与独立版本标记
+  （`<!-- zdiary-persona: vN -->` / `<!-- zdiary-policy: vN -->`，不复用 `zdiary-template` ——
+  AGENTS 改版不该让契约误报旧版）；只走 opt-in 写入，已存在不覆盖
 - `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 187 词），flat 用精简版
   （88 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
   layered 初始化自动写，flat 只有 `ensureNotebook(cfg, signal, { withAgents: true })` / `zk-kit init --with-agents` /
@@ -23,11 +27,25 @@
   别的会话切了默认值不会把已开的会话换库，裸装配才退回进程工作区 + 全局默认
 - `zk_context` 工具：同一份 payload（含 `ratio` 用量），给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用；
   另返回 `notebooks`（名字 / 路径 / 结构 / 当前），没有提示注入时模型也能发现已配置的库
-- 设置页「记忆」：注入预算；「目录与 group」：归档目录。快照里带 `memory.words/budget/truncatedWords` 状态行
+- 设置页「记忆」：注入预算、契约预算、场景预算、总 prompt 预算；「目录与 group」：归档目录。
+  快照里带 `memory.words/budget/truncatedWords/retiredWords/contract` 状态行；自检多一项「角色契约」
 
 **Does not own.** MEMORY.md 写什么（agent 按 AGENTS.md 直接改文件，git diff 可审）；
 哪些记忆该晋升（语义判断是 agent 的活，插件只做机械截断）；`MEMORY.md` 的写入路径 ——
 它由人和 agent 直接编辑，`zk_append` / `zk_link` / `zk_supersede` 都会拒绝（追加会把记忆变成流水账，也丢掉「谁改的」这条审计线；后者还会把文件搬进 archive/）。
+
+**契约层（0.10 M1）。** `PERSONA.md` / `POLICY.md` 与 `MEMORY.md` 同级：根目录 meta，人类所有，
+`zk_append` / `zk_new` / `zk_link` / `zk_supersede` 一律拒绝写入或搬移。
+**缺文件 = 未启用，不报错**（payload 不多一个词，0.9 的库逐字一致）；`doctor` 给一条 `·`（不算装坏），
+`zk_lint` 的 `contract` 桶给 missing / old / placeholder 三项只读提示。
+写入入口只有 opt-in：`zk-kit init --with-contract`、设置页「写入契约模板」、
+`ensureNotebook(cfg, signal, { withContract: true })` —— flat 与 layered 都不会自动多两个文件。
+**注入顺序**：契约段永远在记忆段之前、**不参与记忆预算的截断**（超了只告警，点名 `contractBudgetWords`）。
+三个新预算：`contractBudgetWords`（默认 240，范围 50–800）、`sceneBudgetWords`（80，M3 起生效）、
+`totalPromptBudgetWords`（900，只告警点名）。三个都进 payload 缓存键 —— 漏一个就会拿到旧预算的载荷。
+`retiredWords` 与 `truncatedWords` 在 `files[]` 里分开报：`原 X` 从此只反映截断，退役单列一项。
+为什么不分层不行：人设与事实混在 `MEMORY.md` 时，「我是谁」会跟「事实」一起被按日期丢、被预算截；
+而 `AGENTS.md` 已是硬规则且永不截断，再往里塞 persona 只会挤掉 MEMORY。
 
 **记忆层与事实层的一致性。** `MEMORY.md` 每条结论后附 `[[来源路径]]`（写进 AGENTS 模板）；
 `zk_lint` 的 `memoryLinks` 只做机械核对：原路径 → 加 `.md` → `archive/` 下同名 → 活笔记标题 / 文件名，
@@ -39,12 +57,14 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 为什么要有：`zk_supersede` 只重写 `zk graph` 里的入链，meta 文件被 `excludedNames` 排除在图外 ——
 链接不会跟着搬，`--broken-links` 也看不见。语义重复仍留给 agent，插件不碰。
 
-**Depends on.** `config/store`（`memoryBudgetWords`，每次现读 —— 设置页保存后下一次工具调用就生效）、
-`lib/meta`、`node:fs`；宿主的 `systemPrompt` 服务（可选，没有就只留 `zk_context`）。
+**Depends on.** `config/store`（`memoryBudgetWords` / `contractBudgetWords` / `sceneBudgetWords` / `totalPromptBudgetWords`，每次现读 —— 设置页保存后下一次工具调用就生效）、
+`lib/meta`、`lib/persona-template`、`node:fs`；宿主的 `systemPrompt` 服务（可选，没有就只留 `zk_context`）。
 
 **Public surface.** `buildMemoryPayload(cfg)`、`memoryUsage(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、
+`CONTRACT_META_FILES`、`PERSONA_TEMPLATE` / `POLICY_TEMPLATE`、
 `AGENTS_TEMPLATE` / `AGENTS_TEMPLATE_FLAT`、`TEMPLATE_VERSION` / `TEMPLATE_MARK`、`WORKFLOW_TEMPLATE`。
-笔记本侧：`writeAgentsTemplate(cfg)`（缺才写，返回是否写入）与 `ensureNotebook(cfg, signal, { withAgents })`。
+笔记本侧：`writeAgentsTemplate(cfg)` / `writeContractTemplates(cfg)`（缺才写，返回是否写入）与
+`ensureNotebook(cfg, signal, { withAgents, withContract })`。
 `WORKFLOW.md` 不进 `META_FILES`（不注入），只在 `META_NAMES` 里（排除出检索、`zk_append` 拒写）。
 
 **Rejected.** 只在会话开始时注入一次 —— 拒绝：改完 MEMORY.md 要等下一次会话才生效，还得自己实现「这条已经注入过」的去重。

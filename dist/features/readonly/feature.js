@@ -18,6 +18,7 @@ import { config } from '../../config/store.js';
 import { absPathOf, allNotes, graphEdges, hasNotebook, isUnderDir, localDate, readNote, searchNotes, ZkError } from '../../lib/zk.js';
 import { isMetaPath } from '../../lib/meta.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
+import { RETIRED_ENTRY_RE } from '../../lib/memory-format.js';
 import { esc, layout, renderMarkdown } from './html.js';
 const BASE = ROUTE_BASE;
 const VIEW = `${BASE}/view`;
@@ -214,12 +215,47 @@ async function handleSearch(res, cfg, q) {
     ].join('\n');
     sendHtml(res, 200, shell(cfg, `搜索 ${q}`, body));
 }
-/** 记忆页固定的四份文件：只从这个常量取名字，不接受路径参数（meta 仍然不能按路径打开） */
-const MEMORY_PAGE_FILES = ['AGENTS.md', 'USER.md', 'MEMORY.md', 'DREAMS.md'];
+/** MEMORY.md 渲染：退役条目整条（含缩进续行）加删除线与徽标，其余照常渲染 */
+function renderMemoryBody(body, linkFor) {
+    const lines = String(body).split('\n');
+    const out = [];
+    let plain = [];
+    const flush = () => {
+        if (plain.length > 0) {
+            out.push(renderMarkdown(plain.join('\n'), { linkFor, skipFirstH1: true }));
+            plain = [];
+        }
+    };
+    let i = 0;
+    while (i < lines.length) {
+        const line = lines[i] ?? '';
+        if (RETIRED_ENTRY_RE.test(line)) {
+            flush();
+            const retired = [];
+            while (i < lines.length) {
+                const l = lines[i] ?? '';
+                if (RETIRED_ENTRY_RE.test(l) || (retired.length > 0 && /^\s+\S/.test(l))) {
+                    retired.push(l);
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+            out.push(`<div class="retired"><s>${retired.map((l) => esc(l)).join('<br>')}</s>` +
+                '<span class="badge">retired</span></div>');
+            continue;
+        }
+        plain.push(line);
+        i += 1;
+    }
+    flush();
+    return out.join('\n');
+}
 /**
- * 记忆页（P1-5）：人的周审需要一个入口 —— 当前记忆、预算、哪些被截断，都在这一页。
+ * 记忆页（P1-5 → D9）：人的周审入口 —— 契约 / 用户 / 记忆 / 周审 / 场景五段 + 载荷预览。
  * 不走 `loadNote`：根目录 meta 被 `loadAll` 排除、也被 `loadNote` 明确拒绝；
  * 这里按常量直接读盘，再复用渲染层的转义与双链白名单。
+ * 载荷预览只转义展示（与 zk_context 同源），不提供编辑 —— 写仍然只走 zk_* / 编辑器。
  */
 async function handleMemory(res, cfg) {
     let all = [];
@@ -228,31 +264,77 @@ async function handleMemory(res, cfg) {
     }
     catch { /* 索引挂了也能读记忆，双链退化成纯文字 */ }
     const linkFor = linkResolver(all);
+    const read = (name) => {
+        try {
+            return fs.readFileSync(path.join(cfg.notebook, name), 'utf8');
+        }
+        catch {
+            return '';
+        }
+    };
+    const fileArticle = (name, note) => {
+        const body = read(name);
+        return (note ? `<p class="meta">${note}</p>` : '') + (body.trim()
+            ? `<article>${renderMarkdown(body, { linkFor, skipFirstH1: true })}</article>`
+            : '<p class="meta">还没写。</p>');
+    };
     const payload = buildMemoryPayload(cfg);
     const shares = formatFileShares(payload.files, payload.tocWords);
     const usage = `记忆 ${payload.words}/${payload.budget} 词（${shares || '三份都空'}）` +
-        (payload.truncatedWords > 0 ? ` · 已截断 ${payload.truncatedWords} 词` : '');
-    const sections = MEMORY_PAGE_FILES.map((name) => {
-        let body = '';
-        try {
-            body = fs.readFileSync(path.join(cfg.notebook, name), 'utf8');
-        }
-        catch {
-            body = '';
-        }
+        (payload.truncatedWords > 0 ? ` · 已截断 ${payload.truncatedWords} 词` : '') +
+        (payload.retiredWords > 0 ? ` · 退役省略 ${payload.retiredWords} 词` : '');
+    // 契约段：超预算只告警；forbidden 行的警示色等 M3 的 policy 解析
+    const c = payload.contract;
+    const contractSummary = c.present
+        ? c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ') +
+            ` · 预算 ${c.budget} 词` + (c.overBudget ? ' · ⚠️ 超预算（契约不截断，请缩减或调 contractBudgetWords）' : '')
+        : '未启用：根目录没有 PERSONA.md / POLICY.md —— 初始化带 --with-contract 或在设置页写入模板；缺文件不算错。';
+    const contractSections = ['PERSONA.md', 'POLICY.md'].map((name) => {
+        const body = read(name);
         return [
-            `<h2>${esc(name)}</h2>`,
+            `<h3>${esc(name)}</h3>`,
             body.trim()
                 ? `<article>${renderMarkdown(body, { linkFor, skipFirstH1: true })}</article>`
                 : '<p class="meta">还没写。</p>',
         ].join('\n');
     });
+    // 记忆段：退役行删除线 + 徽标（不再看起来像活条目）
+    const memoryBody = read('MEMORY.md');
+    const memorySection = memoryBody.trim()
+        ? `<article>${renderMemoryBody(memoryBody, linkFor)}</article>`
+        : '<p class="meta">还没写。</p>';
+    const dreamBody = read('DREAMS.md');
+    const scene = payload.scene;
+    const counts = `契约 ${c.words} 词 · 记忆 ${payload.words} 词 · 场景 ${scene.words} 词 · 开销 ${payload.overheadWords} 词 = 总 ${payload.totalWords} 词`;
     const body = [
         `<p class="crumb"><a href="${VIEW}">首页</a> / 记忆</p>`,
         '<h1>记忆</h1>',
         `<p class="meta">${esc(usage)}</p>`,
-        '<p class="meta">这四份文件由人和 agent 直接编辑，不进检索；这里只读。</p>',
-        ...sections,
+        '<p class="meta">根目录 meta 由人和 agent 直接编辑，不进检索；这里只读，不提供编辑。</p>',
+        `<h2>契约</h2>`,
+        `<p class="meta">${esc(contractSummary)}</p>`,
+        ...contractSections,
+        '<h2>用户</h2>',
+        fileArticle('USER.md', '用户偏好；可以跨库共享。'),
+        '<h2>工作约定</h2>',
+        fileArticle('AGENTS.md', '硬规则，永不截断；属于记忆预算。'),
+        '<h2>记忆</h2>',
+        `<p class="meta">${esc(payload.files.filter((f) => f.name === 'MEMORY.md').map((f) => (f.retiredWords > 0 ? `退役 ${f.retiredWords} 词只留在磁盘，不注入` : '')).filter(Boolean).join(' · '))}</p>`,
+        memorySection,
+        '<h2>周审</h2>',
+        '<p class="meta">只有「上次做梦：YYYY-MM-DD」一行参与每周提醒，不注入正文；其余是周审记录。</p>',
+        dreamBody.trim()
+            ? `<article>${renderMarkdown(dreamBody, { linkFor, skipFirstH1: true })}</article>`
+            : '<p class="meta">还没写。</p>',
+        '<h2>场景</h2>',
+        scene.present
+            ? `<p class="meta">已注入 ${scene.words} 词（TTL 内）</p>`
+            : '<p class="meta">未配置：运行时状态（STATE）由宿主 / 运行时提供，过期或读不到就不注入；不写进 MEMORY.md。</p>',
+        '<h2>载荷预览</h2>',
+        `<p class="meta">这一轮模型实际收到的文本（转义展示、只读、与 zk_context 同源）：${esc(counts)}</p>`,
+        payload.text
+            ? `<details><summary>展开</summary><pre>${esc(payload.text)}</pre></details>`
+            : '<p class="meta">空：没有可注入的内容。</p>',
     ].join('\n');
     sendHtml(res, 200, shell(cfg, '记忆', body));
 }

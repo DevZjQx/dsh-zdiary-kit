@@ -190,6 +190,24 @@ const LINT_TEMPLATE = objSchema(
   },
   ['present', 'version', 'current', 'stale'],
 )
+/** 契约体检：缺失 / 旧版 / 未填占位符（只报告，不覆盖） */
+const LINT_CONTRACT = objSchema(
+  {
+    total: { type: 'number' },
+    items: {
+      type: 'array',
+      items: objSchema(
+        {
+          file: { type: 'string', enum: ['PERSONA.md', 'POLICY.md'] },
+          kind: { type: 'string', enum: ['missing', 'old', 'placeholder'] },
+          detail: { type: 'string' },
+        },
+        ['file', 'kind', 'detail'],
+      ),
+    },
+  },
+  ['total', 'items'],
+)
 /** 晋升候选的共用形状：newNotes / alreadyPromoted / backlog 三栏一致 */
 const DREAM_CANDIDATE = objSchema({
   title: { type: 'string' },
@@ -925,6 +943,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       name: 'zk_context',
       description:
         '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回；' +
+        '角色契约与自主权契约（PERSONA.md / POLICY.md）单独成段、在记忆段之前、不参与截断。' +
         '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前）。' +
         '宿主支持注入时这些内容每轮已自动进入系统提示；宿主不支持、或想核对「被截断了多少」时用它。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -935,7 +954,29 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           budget: { type: 'number' },
           ratio: { type: 'number' },
           truncatedWords: { type: 'number' },
+          retiredWords: { type: 'number' },
           tocWords: { type: 'number' },
+          totalWords: { type: 'number' },
+          overheadWords: { type: 'number' },
+          contract: objSchema({
+            present: { type: 'boolean' },
+            words: { type: 'number' },
+            budget: { type: 'number' },
+            overBudget: { type: 'boolean' },
+            files: {
+              type: 'array',
+              items: objSchema({
+                name: { type: 'string' },
+                present: { type: 'boolean' },
+                words: { type: 'number' },
+              }, ['name', 'present', 'words']),
+            },
+          }, ['present', 'words', 'budget', 'overBudget', 'files']),
+          scene: objSchema({
+            present: { type: 'boolean' },
+            expired: { type: 'boolean' },
+            words: { type: 'number' },
+          }, ['present', 'expired', 'words']),
           notebook: { type: 'string' },
           defaultNotebook: { type: 'string' },
           pinned: { type: 'string' },
@@ -955,9 +996,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               present: { type: 'boolean' },
               words: { type: 'number' },
               originalWords: { type: 'number' },
-            }, ['name', 'present', 'words', 'originalWords']),
+              retiredWords: { type: 'number' },
+            }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
           },
-        }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'tocWords', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
+        }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'scene', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
       },
       async run(_args, env) {
         // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
@@ -989,8 +1031,12 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           ? `笔记本「${current.name}」（${current.structure}）→ ${current.path}` +
             (others.length ? `\n另有：${others.map((n) => `${n.name}（${n.structure}）`).join('、')} —— zk_use 切换本会话` : '')
           : `笔记本「${v.notebook}」`
-        if (!v.text) return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的）。`)
-        return text(drift + head + '\n\n' + v.text)
+        if (!v.text) return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md / POLICY.md 契约。`)
+        const contract = v.contract?.present
+          ? `\n\n契约：${v.contract.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}` +
+            (v.contract.overBudget ? `（超预算 ${v.contract.budget}，契约不截断）` : `（预算 ${v.contract.budget}）`)
+          : '\n\n契约：未启用（根目录没有 PERSONA.md / POLICY.md）'
+        return text(drift + head + contract + '\n\n' + v.text)
       },
     }),
 
@@ -1040,8 +1086,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           incomplete: LINT_INCOMPLETE,
           tags: LINT_TAGS,
           template: LINT_TEMPLATE,
+          contract: LINT_CONTRACT,
           indexHint: { type: 'boolean' },
-        }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'indexHint']),
+        }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'contract', 'indexHint']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
