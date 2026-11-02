@@ -7,7 +7,7 @@ import path from 'node:path'
 import { config, writeConfig, selectNotebook, isNotebookName, CONFIG_KEYS } from './config/store.ts'
 import type { Config } from './config/store.ts'
 import { CFG_FILE } from './config/paths.ts'
-import { NOTE_KINDS, ensureNotebook, fixGroupConfig, newNoteDir, structureStatus } from './lib/notebook.ts'
+import { NOTE_KINDS, ensureNotebook, fixGroupConfig, groupOverlapNotes, newNoteDir, structureStatus } from './lib/notebook.ts'
 import type { GroupFixResult, StructureStatus } from './lib/notebook.ts'
 import { buildMemoryPayload, formatFileShares } from './lib/memory.ts'
 import { installZk, sourceLabel } from './lib/install.ts'
@@ -247,10 +247,18 @@ function dreamReport(r: DreamResult): string {
   return lines.join('\n')
 }
 
+/** group 路径重叠：config = 配置本身冲突（⚠️），file = config.toml 里已经撞了（✗） */
+function overlapLines(st: StructureStatus): string[] {
+  return groupOverlapNotes(st).map((note) => `${note.level === 'file' ? '✗' : '⚠️'} ${note.text}`)
+}
+
 function groupsReport(cfg: Config, st: StructureStatus, fixed: GroupFixResult | null): string {
   if (fixed) {
     if (!fixed.changed) {
-      const lines = [`group 配置：${fixed.notebook} —— 没有需要修的（未写文件）`]
+      // 有 skip 就不是「没需要修的」—— 是「想修但修不了」，得说清哪一条没改
+      const skipped = fixed.updates.filter((update) => update.action === 'skip')
+      const lines = [`group 配置：${fixed.notebook} —— ${skipped.length ? '没有写文件' : '没有需要修的（未写文件）'}`]
+      for (const update of skipped) lines.push(`  · ${update.name}：未改 —— ${update.reason ?? ''}`)
       for (const warning of fixed.warnings) lines.push('⚠️ ' + warning)
       return lines.join('\n')
     }
@@ -266,6 +274,7 @@ function groupsReport(cfg: Config, st: StructureStatus, fixed: GroupFixResult | 
         lines.push(`  · ${update.name}：未改 —— ${update.reason ?? ''}`)
       }
     }
+    lines.push(...overlapLines(st))
     for (const warning of fixed.warnings) lines.push('⚠️ ' + warning)
     lines.push('（只改插件建的 group 的 paths / 组头；template / extra / 自定义 group 一字未动）')
     return lines.join('\n')
@@ -291,6 +300,7 @@ function groupsReport(cfg: Config, st: StructureStatus, fixed: GroupFixResult | 
       lines.push(`✓ ${group.name}：${group.actualPaths?.join('、')}${template}`)
     }
   }
+  lines.push(...overlapLines(st))
   lines.push('（dry-run：不改文件；--fix 只改 dsh-zdiary-kit 建的 group 的 paths，写前备份 .zk/config.toml.bak）')
   return lines.join('\n')
 }
@@ -321,6 +331,7 @@ async function doctor(): Promise<boolean> {
       rows.push(`✓ group ${group.name}：${group.actualPaths?.join('、')}${templateNote}`)
     }
   }
+  rows.push(...overlapLines(st))
   const structureOk = st.ready && (!st.agents.required || st.agents.present)
   const drift = st.mode === 'flat' && st.extra.length
     ? ` · ⚠️ 盘上有分层目录 ${st.extra.join('、')}：新建笔记会落在 ${cfg.notesDir}/ 根`

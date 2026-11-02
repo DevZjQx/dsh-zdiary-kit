@@ -55,9 +55,11 @@ interface Structure {
   extra: string[]
   ready: boolean
   agents: { path: string; required: boolean; present: boolean }
-  /** 期望 group 与 .zk/config.toml 的对照（旧后端没有这两个字段） */
+  /** 期望 group 与 .zk/config.toml 的对照（旧后端没有这几个字段） */
   groupsOk?: boolean
   groups?: Array<{ name: string; expectedPaths: string[]; actualPaths: string[] | null; pathsOk: boolean; present: boolean }>
+  /** 给人看的差异说明（含 group 路径重叠） */
+  groupWarnings?: string[]
 }
 interface Memory {
   words: number
@@ -365,8 +367,11 @@ interface Field {
             : ''
       // group 与配置不一致不会自己好：改目录 / 改 dailyGroup 后要显式跑 groups --fix
       const groupBroken = (structure?.groups || []).filter((g) => !g.present || !g.pathsOk)
-      const groupWarnText = snap?.notebook.exists && structure?.groupsOk === false && groupBroken.length
-        ? `配置与 .zk/config.toml 的 group 不一致（${groupBroken.map((g) => g.name).join('、')}）`
+      // 也可能只是路径互相重叠（配置本身冲突）：那时没有「坏掉的组」，只有一条说明
+      const groupWarnText = snap?.notebook.exists && structure?.groupsOk === false
+        ? groupBroken.length
+          ? `配置与 .zk/config.toml 的 group 不一致（${groupBroken.map((g) => g.name).join('、')}）`
+          : (structure.groupWarnings?.[0] ?? 'group 路径互相重叠')
         : ''
       const configWarn = [structureWarn, groupWarnText].filter(Boolean).join('；')
       // 底部只留一个按钮：没建过就叫「初始化」，缺东西就叫「补建」，都带上当前笔记本名。
@@ -390,7 +395,9 @@ interface Field {
         configWarn
           ? h('div', { className: 'zdk-err' },
             '⚠️ ' + configWarn +
-            (groupWarnText ? ' —— 跑 zk-kit groups --fix' : ' —— 点底部「' + initLabel + '」'))
+            (groupBroken.length
+              ? ' —— 跑 zk-kit groups --fix'
+              : groupWarnText ? '' : ' —— 点底部「' + initLabel + '」'))
           : null,
 
         h('div', null,

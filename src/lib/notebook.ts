@@ -14,7 +14,7 @@ import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import { ZkError, zk } from './zk.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
-import { isPluginOwned, normGroupPath, parseGroupBlocks, pathsOverlap, samePaths } from './notebook-config.ts'
+import { isPluginOwned, normGroupPath, parseGroupBlocks, sameGroupPath, samePaths } from './notebook-config.ts'
 import type { GroupBlock } from './notebook-config.ts'
 
 export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
@@ -241,6 +241,30 @@ export interface GroupStatus {
   conflict?: string
 }
 
+/** 两个 group 用了同一条路径：zk 命中哪个模板就只剩实现细节了（父子目录不算） */
+export interface GroupOverlap {
+  a: string
+  b: string
+  /** 两边共用的那条路径 */
+  path: string
+}
+
+/** 同一批 group 两两查「同一条路径」：每对只报一次 */
+function overlapsOf(entries: Array<{ name: string; paths: string[] | null }>): GroupOverlap[] {
+  const out: GroupOverlap[] = []
+  for (let i = 0; i < entries.length; i++) {
+    const a = entries[i]
+    if (!a) continue
+    for (let j = i + 1; j < entries.length; j++) {
+      const b = entries[j]
+      if (!b) continue
+      const shared = (a.paths ?? []).find((x) => (b.paths ?? []).some((y) => sameGroupPath(x, y)))
+      if (shared !== undefined) out.push({ a: a.name, b: b.name, path: normGroupPath(shared) })
+    }
+  }
+  return out
+}
+
 export interface StructureStatus {
   /** 配置里的结构模式（权威值：磁盘只用来显示「与配置不一致」） */
   mode: Config['structure']
@@ -258,19 +282,23 @@ export interface StructureStatus {
   agents: { path: string; required: boolean; present: boolean }
   /** 配置期望的每个 group 与 config.toml 的对照（只读） */
   groups: GroupStatus[]
-  /** 每个期望 group 都存在且 paths 一致；template 不参与（用户可能有意改过，见 templateOk） */
+  /** 期望 group 里有两个要用同一条路径：配置本身冲突（例如 dailyDir 与某个 group 的路径一样），--fix 不会写 */
+  expectedOverlaps: GroupOverlap[]
+  /** .zk/config.toml 里两个 group 的 paths 已经一样了（zk 命中哪个模板就只剩实现细节） */
+  actualOverlaps: GroupOverlap[]
+  /** 每个期望 group 都存在、paths 一致、且没有两个组共用一条路径；template 不参与（用户可能有意改过，见 templateOk） */
   groupsOk: boolean
   /** 给人看的差异说明；没有 .zk/config.toml 时为空（未初始化由 ready / 笔记本检查负责） */
   groupWarnings: string[]
 }
 
-function groupStatuses(cfg: Config, blocks: Map<string, GroupBlock> | null): GroupStatus[] {
-  return expectedGroups(cfg).map((group) => {
+function groupStatuses(groups: GroupSpec[], blocks: Map<string, GroupBlock> | null): GroupStatus[] {
+  return groups.map((group) => {
     const block = blocks?.get(group.name) ?? null
     const actualPaths = block?.paths ?? null
     const actualTemplate = block?.template ?? null
     const conflict = block ? undefined : [...(blocks?.values() ?? [])].find((candidate) =>
-      candidate.paths?.some((actual) => group.paths.some((expected) => pathsOverlap(actual, expected))))?.name
+      candidate.paths?.some((actual) => group.paths.some((expected) => sameGroupPath(actual, expected))))?.name
     return {
       name: group.name,
       expectedPaths: group.paths,
@@ -287,7 +315,35 @@ function groupStatuses(cfg: Config, blocks: Map<string, GroupBlock> | null): Gro
   })
 }
 
-function groupWarningsOf(groups: GroupStatus[]): string[] {
+/**
+ * 重叠说明（给人看的一行）；level = config 是配置本身冲突、file 是 config.toml 里已经撞了。
+ * 同一对只报一次：两边都说一遍只会让设置页的告警更长。
+ * 父子目录不算冲突（zk 按最具体的路径归组），所以措辞只说「同一条路径」。
+ */
+export function groupOverlapNotes(
+  st: Pick<StructureStatus, 'expectedOverlaps' | 'actualOverlaps'>,
+): Array<{ level: 'config' | 'file'; text: string }> {
+  const out: Array<{ level: 'config' | 'file'; text: string }> = []
+  const seen = new Set<string>()
+  const key = (o: GroupOverlap): string => [o.a, o.b].sort().join('|')
+  for (const o of st.expectedOverlaps) {
+    seen.add(key(o))
+    out.push({
+      level: 'config',
+      text: `group "${o.a}" 与 "${o.b}" 都用 ${o.path} —— 改 dailyDir / notesDir，或换结构（groups --fix 不会写）`,
+    })
+  }
+  for (const o of st.actualOverlaps) {
+    if (seen.has(key(o))) continue
+    out.push({
+      level: 'file',
+      text: `group "${o.a}" 与 "${o.b}" 的 paths 都是 ${o.path} —— 手动检查 .zk/config.toml`,
+    })
+  }
+  return out
+}
+
+function groupWarningsOf(groups: GroupStatus[], st: Pick<StructureStatus, 'expectedOverlaps' | 'actualOverlaps'>): string[] {
   const out: string[] = []
   for (const group of groups) {
     if (!group.present) {
@@ -305,6 +361,7 @@ function groupWarningsOf(groups: GroupStatus[]): string[] {
       )
     }
   }
+  for (const note of groupOverlapNotes(st)) out.push(note.text)
   return out
 }
 
@@ -328,7 +385,13 @@ export function structureStatus(cfg: Config): StructureStatus {
   try {
     blocks = parseGroupBlocks(fs.readFileSync(path.join(cfg.notebook, '.zk', 'config.toml'), 'utf8'))
   } catch { blocks = null }
-  const groups = groupStatuses(cfg, blocks)
+  const expected = expectedGroups(cfg)
+  const groups = groupStatuses(expected, blocks)
+  const expectedOverlaps = overlapsOf(expected)
+  // 重复出现的组解析不出 paths，不参与「文件里已经撞了」的判断
+  const actualOverlaps = blocks
+    ? overlapsOf([...blocks.values()].filter((block) => !block.duplicate))
+    : []
   return {
     mode: cfg.structure,
     dirs,
@@ -337,8 +400,11 @@ export function structureStatus(cfg: Config): StructureStatus {
     ready: missing.length === 0,
     agents: { path: agentsPath, required, present: fs.existsSync(agentsPath) },
     groups,
-    groupsOk: !!blocks && groups.every((group) => group.present && group.pathsOk),
-    groupWarnings: blocks ? groupWarningsOf(groups) : [],
+    expectedOverlaps,
+    actualOverlaps,
+    groupsOk: !!blocks && groups.every((group) => group.present && group.pathsOk) &&
+      expectedOverlaps.length === 0 && actualOverlaps.length === 0,
+    groupWarnings: blocks ? groupWarningsOf(groups, { expectedOverlaps, actualOverlaps }) : [],
   }
 }
 
@@ -436,10 +502,10 @@ export async function ensureNotebook(
       }
       continue
     }
-    // 新 group 的路径已经被别的 group 占用（典型：只改 dailyGroup 不改 dailyDir）：
-    // 再追加就是两个 group 抢同一路径，zk 的模板命中就随机了 —— 只报告，不写
+    // 新 group 的路径已经被别的 group 占着（典型：只改 dailyGroup 不改 dailyDir）：
+    // 再追加就是两个 group 用同一条路径，zk 命中哪个模板就只剩实现细节了 —— 只报告，不写
     const owner = [...blocks.values()].find((candidate) =>
-      candidate.paths?.some((actual) => group.paths.some((expected) => pathsOverlap(actual, expected))))
+      candidate.paths?.some((actual) => group.paths.some((expected) => sameGroupPath(actual, expected))))
     if (owner) {
       groupWarnings.push(
         `group "${group.name}" 没追加：路径 ${group.paths.join('、')} 已被 group "${owner.name}" 占用` +
@@ -534,6 +600,8 @@ function replacePaths(text: string, name: string, paths: string[]): string | nul
  * 显式修复 group 配置（`zk-kit groups --fix`）：
  *   · 只改 dsh-zdiary-kit 自己写的 group（组头前有 `dsh-zdiary-kit` 注释）；
  *   · 只改 `paths` 行，或把同路径的旧组头改名（dailyGroup 变更）；
+ *   · 写下去会让两个 group 用同一条路径时一律不写（父子目录不算）：
+ *     期望路径自己就冲突时整轮不改，期望路径被别的 group 占着时只跳过那一个；
  *   · 用户自定义的 template / extra / 注释 / 顺序一律不动；
  *   · 写前备份 `.zk/config.toml.bak`，写临时文件后 rename。
  */
@@ -548,6 +616,24 @@ export function fixGroupConfig(cfg: Config): GroupFixResult {
   const warnings: string[] = []
   const groups = expectedGroups(cfg)
   const expectedNames = new Set(groups.map((group) => group.name))
+
+  // 期望路径自己就撞了（典型：dailyDir 与某个 group 的路径一样）：一个都不写。
+  // 写下去就是两个 group 用同一条路径，zk 命中哪个模板就只剩实现细节了 —— 这比「没改」更难查。
+  const expectedOverlaps = overlapsOf(groups)
+  if (expectedOverlaps.length > 0) {
+    for (const note of groupOverlapNotes({ expectedOverlaps, actualOverlaps: [] })) warnings.push(note.text)
+    const involved = new Set(expectedOverlaps.flatMap((overlap) => [overlap.a, overlap.b]))
+    for (const group of groups) {
+      if (!involved.has(group.name)) continue
+      updates.push({
+        name: group.name,
+        action: 'skip',
+        expectedPaths: group.paths,
+        reason: '配置里有两个 group 要用同一条路径，先改 dailyDir / notesDir 或换结构',
+      })
+    }
+    return { notebook: cfg.notebook, changed: false, backup: null, updates, warnings }
+  }
 
   // 1. 缺失的 group：先认领同路径的旧 plugin group（改组头名），再看路径是否被占
   for (const group of groups) {
@@ -576,7 +662,7 @@ export function fixGroupConfig(cfg: Config): GroupFixResult {
       continue
     }
     const owner = [...blocks.values()].find((block) =>
-      block.paths?.some((actual) => group.paths.some((expected) => pathsOverlap(actual, expected))))
+      block.paths?.some((actual) => group.paths.some((expected) => sameGroupPath(actual, expected))))
     if (owner) {
       const reason = `路径 ${group.paths.join('、')} 已被 group "${owner.name}" 占用 —— 先手动处理这个 group`
       warnings.push(`group "${group.name}" 没追加：${reason}`)
@@ -590,7 +676,8 @@ export function fixGroupConfig(cfg: Config): GroupFixResult {
 
   // 2. 已存在的 group：只改 plugin-owned 的 paths 行
   for (const group of groups) {
-    const block = parseGroupBlocks(text).get(group.name)
+    const current = parseGroupBlocks(text)
+    const block = current.get(group.name)
     if (!block) continue
     if (block.duplicate) {
       const reason = `group "${group.name}" 重复出现，解析不了 —— 手动检查 .zk/config.toml`
@@ -601,6 +688,18 @@ export function fixGroupConfig(cfg: Config): GroupFixResult {
     if (samePaths(block.paths, group.paths)) continue
     if (!isPluginOwned(block)) {
       const reason = `不是插件建的 group，paths 未改（期望 ${group.paths.join('、')}，实际 ${block.paths?.join('、') ?? '解析不了'}）`
+      warnings.push(`group "${group.name}"：${reason}`)
+      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, actualPaths: block.paths, reason })
+      continue
+    }
+    // 期望路径被别的 group 占着：不替换 —— 之前只拦了「追加」，替换同样会造出两个 group 用同一条路径。
+    // 期望内部的 group 会自己走到期望路径，不算占用；用户建的 / 上一版留下的 group 才拦。
+    const rival = [...current.values()].find((candidate) =>
+      candidate.name !== group.name &&
+      !(expectedNames.has(candidate.name) && isPluginOwned(candidate)) &&
+      candidate.paths?.some((actual) => group.paths.some((expected) => sameGroupPath(actual, expected))))
+    if (rival) {
+      const reason = `路径 ${group.paths.join('、')} 已被 group "${rival.name}" 占用（${rival.paths?.join('、') ?? '解析不了'}），paths 未改 —— 先手动处理这个 group`
       warnings.push(`group "${group.name}"：${reason}`)
       updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, actualPaths: block.paths, reason })
       continue

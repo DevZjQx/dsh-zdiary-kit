@@ -154,11 +154,15 @@ export function normGroupPath(rel) {
     const clean = rel.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/').replace(/\/+$/, '');
     return clean === '.' ? '' : clean;
 }
-/** 两条路径是否有归属冲突：相等，或者一条是另一条的前缀（zk 按路径前缀归组） */
-export function pathsOverlap(a, b) {
-    const x = normGroupPath(a);
-    const y = normGroupPath(b);
-    return !!x && !!y && (x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`));
+/**
+ * 两条路径是不是同一个目录（`./notes/` 与 `notes` 算同一个）。
+ *
+ * 只认「完全一样」：父子目录是**合法**的 —— zk 0.15 按最具体的路径归组，
+ * `notes` 与 `notes/concepts` 共存时，子目录里的笔记走后者（真机验证过）。
+ * 只有两条路径一模一样时，zk 命中哪个 group 就只剩实现细节了（实测：先定义的那个赢）。
+ */
+export function sameGroupPath(a, b) {
+    return normGroupPath(a) === normGroupPath(b);
 }
 /** 两组 paths 是否一致（顺序无关；null 一律不一致） */
 export function samePaths(actual, expected) {

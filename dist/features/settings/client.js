@@ -308,8 +308,11 @@ window.__ModuleLoader__?.load({
                         : '';
             // group 与配置不一致不会自己好：改目录 / 改 dailyGroup 后要显式跑 groups --fix
             const groupBroken = (structure?.groups || []).filter((g) => !g.present || !g.pathsOk);
-            const groupWarnText = snap?.notebook.exists && structure?.groupsOk === false && groupBroken.length
-                ? `配置与 .zk/config.toml 的 group 不一致（${groupBroken.map((g) => g.name).join('、')}）`
+            // 也可能只是路径互相重叠（配置本身冲突）：那时没有「坏掉的组」，只有一条说明
+            const groupWarnText = snap?.notebook.exists && structure?.groupsOk === false
+                ? groupBroken.length
+                    ? `配置与 .zk/config.toml 的 group 不一致（${groupBroken.map((g) => g.name).join('、')}）`
+                    : (structure.groupWarnings?.[0] ?? 'group 路径互相重叠')
                 : '';
             const configWarn = [structureWarn, groupWarnText].filter(Boolean).join('；');
             // 底部只留一个按钮：没建过就叫「初始化」，缺东西就叫「补建」，都带上当前笔记本名。
@@ -325,7 +328,9 @@ window.__ModuleLoader__?.load({
             return h('div', { className: 'zdk' }, h('h3', { className: 'zdk-title' }, '知识库（zk）'), h('p', { className: 'zdk-intro' }, '把你的 zk 笔记本接进 DSH：agent 用 zk_* 工具搜索、读写笔记与日记，双链交给 zk 索引。' +
                 '没装 zk 就让插件装一个 —— 第一次调用工具时会自动建好笔记本，不需要先来这里点任何按钮。'), statusLine ? h('div', { className: 'zdk-hint' }, '📚 ' + statusLine) : null, memoryLine ? h('div', { className: 'zdk-hint' }, '🧠 ' + memoryLine) : null, configWarn
                 ? h('div', { className: 'zdk-err' }, '⚠️ ' + configWarn +
-                    (groupWarnText ? ' —— 跑 zk-kit groups --fix' : ' —— 点底部「' + initLabel + '」'))
+                    (groupBroken.length
+                        ? ' —— 跑 zk-kit groups --fix'
+                        : groupWarnText ? '' : ' —— 点底部「' + initLabel + '」'))
                 : null, h('div', null, h('div', { className: 'zdk-group' }, '笔记本 · 每个笔记本自己的路径与结构'), h('div', { className: 'zdk-row' }, h('div', null, h('div', { className: 'zdk-label' }, '当前笔记本'), h('div', { className: 'zdk-hint' }, '这里是**新会话的默认值**：每个会话第一次用 zk_* 时会把当时的值固定下来，之后各走各的。' +
                 '改这里不会带着已经跑着的会话走 —— 要让某个会话跟过去，在那个会话里说「切到 X 库」（zk_use）。\n' +
                 '路径与结构是每个笔记本自己的；笔记/日记子目录、归档目录、注入预算是全局的。\n' +

@@ -286,6 +286,9 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
     const dailyGroup = st.groups.find((group) => group.name === cfg.dailyGroup)
     const groupOk = !!dailyGroup && dailyGroup.present && dailyGroup.pathsOk
     const otherBroken = st.groups.filter((group) => group.name !== cfg.dailyGroup && (!group.present || !group.pathsOk))
+    // 路径重叠不影响单组的期望 / 实际对照，但 zk 归组会随机 —— 单独说一句
+    const overlapped = [...st.expectedOverlaps, ...st.actualOverlaps]
+      .some((overlap) => overlap.a === cfg.dailyGroup || overlap.b === cfg.dailyGroup)
     items.push({
       name: `日记 group（${cfg.dailyGroup}）`,
       ok: groupOk,
@@ -294,7 +297,8 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
         : dailyGroup.present
           ? groupOk
             ? `group."${cfg.dailyGroup}" → ${dailyGroup.actualPaths?.join('、')}` +
-              (otherBroken.length ? `；另有 ${otherBroken.length} 个 group 与配置不一致 —— 跑 zk-kit groups --fix` : '')
+              (otherBroken.length ? `；另有 ${otherBroken.length} 个 group 与配置不一致 —— 跑 zk-kit groups --fix` : '') +
+              (overlapped ? '；路径与另一个 group 重叠（zk 按路径前缀归组）—— 跑 zk-kit groups 看详情' : '')
             : `期望 ${dailyGroup.expectedPaths.join('、')}，实际 ${dailyGroup.actualPaths?.join('、') ?? '解析不了'} —— 跑 zk-kit groups --fix`
           : `配置里没有这个 group（期望 ${dailyGroup.expectedPaths.join('、')}），点「初始化 / 补建」补上`,
     })

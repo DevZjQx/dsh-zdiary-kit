@@ -15,9 +15,11 @@
 
 快照（`GET /settings`、`GET /status`、写操作的回包）除了配置与计数，还带两块**诊断**：
 `structure`（配置的模式、缺哪些目录、`extra` 盘上多出来的分层目录、`AGENTS.md` 在不在，
-以及 `groups` / `groupsOk` / `groupWarnings` —— 每个期望 group 的 paths 与 `.zk/config.toml` 的对照）与
+以及 `groups` / `groupsOk` / `groupWarnings` —— 每个期望 group 的 paths 与 `.zk/config.toml` 的对照，
+`expectedOverlaps` / `actualOverlaps` —— 两个 group 用同一条路径（父子目录不算））与
 `memory`（三份 meta 的保留词数 / 原词数 / 目录词数 / 预算 / 截断量）。
-保存后 `groupsOk === false` 时 `warn` 会点名不一致的 group 并建议 `zk-kit groups --fix`；页面顶部也常驻这条告警。
+保存后 `groupsOk === false` 时 `warn` 会点名不一致的 group 并建议 `zk-kit groups --fix`；页面顶部也常驻这条告警
+（只有路径撞车、没有坏组时改为原样显示 `groupWarnings` 的第一条，因为 `--fix` 修不了配置本身）。
 自检的「日记 group」项用同一份解析结果：期望 / 实际不一致即为 ✗；其它 group 不一致会在 detail 里提一句。
 `extra` 只在 `flat` 下非空，命中时不把 `ready` 置 false：它表达的是「盘上有分层目录，新建笔记会落在 `notes/` 根」，
 不是配置错误。

@@ -707,8 +707,10 @@ describe('M1: 配置收敛（group）', () => {
     expect(blocks.get('dup')!.paths).toBeNull()
     expect(notebookConfig.samePaths(['./journal/'], ['journal'])).toBe(true)
     expect(notebookConfig.samePaths(['journal', 'extra'], ['journal'])).toBe(false)
-    expect(notebookConfig.pathsOverlap('notes', 'notes/concepts')).toBe(true)
-    expect(notebookConfig.pathsOverlap('notes', 'journal')).toBe(false)
+    expect(notebookConfig.sameGroupPath('./notes/', 'notes')).toBe(true)
+    // 父子目录是合法的（zk 按最具体的路径归组），不算冲突
+    expect(notebookConfig.sameGroupPath('notes', 'notes/concepts')).toBe(false)
+    expect(notebookConfig.sameGroupPath('notes', 'journal')).toBe(false)
   })
 
   it('改 dailyDir：groupsOk=false，init 不追加重复 group，--fix 只改 paths', async () => {
@@ -808,6 +810,73 @@ describe('M1: 配置收敛（group）', () => {
     } finally {
       fs.writeFileSync(paths.CFG_FILE, before)
     }
+  })
+
+  it('dailyDir 撞上已有 group 的路径：groupsOk=false，--fix 一个都不写', async () => {
+    const dir = path.join(home, 'nb-groups-samepath')
+    const base = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered', dailyDir: 'journal' })
+    await notebookLib.ensureNotebook(base)
+    const same = { ...base, dailyDir: 'notes/concepts' }
+
+    const st = notebookLib.structureStatus(same)
+    expect(st.groupsOk).toBe(false)
+    expect(st.expectedOverlaps).toContainEqual({ a: 'daily', b: 'concept', path: 'notes/concepts' })
+    expect(st.groupWarnings.some((w) => w.includes('都用 notes/concepts'))).toBe(true)
+    expect(notebookLib.groupOverlapNotes(st)[0].level).toBe('config')
+
+    // 写下去就是两个 group 用同一条路径：整轮不改，连备份都不留
+    const before = fs.readFileSync(path.join(dir, '.zk', 'config.toml'), 'utf8')
+    const fixed = notebookLib.fixGroupConfig(same)
+    expect(fixed.changed).toBe(false)
+    expect(fixed.backup).toBeNull()
+    expect(fixed.updates.some((u) => u.action === 'skip' && (u.reason ?? '').includes('同一条路径'))).toBe(true)
+    expect(fs.readFileSync(path.join(dir, '.zk', 'config.toml'), 'utf8')).toBe(before)
+  })
+
+  it('config.toml 里已经同路径：报 actualOverlaps，--fix 把插件建的改回期望', async () => {
+    const dir = path.join(home, 'nb-groups-actual')
+    const base = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(base)
+    const file = path.join(dir, '.zk', 'config.toml')
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('paths = ["notes/concepts"]', 'paths = ["journal"]'))
+
+    const st = notebookLib.structureStatus(base)
+    expect(st.groupsOk).toBe(false)
+    expect(st.actualOverlaps).toContainEqual({ a: 'daily', b: 'concept', path: 'journal' })
+    expect(notebookLib.groupOverlapNotes(st)).toContainEqual({
+      level: 'file',
+      text: 'group "daily" 与 "concept" 的 paths 都是 journal —— 手动检查 .zk/config.toml',
+    })
+
+    expect(notebookLib.fixGroupConfig(base).changed).toBe(true)
+    expect(notebookLib.structureStatus(base).groupsOk).toBe(true)
+  })
+
+  it('--fix 不把 paths 改到用户 group 占着的路径', async () => {
+    const dir = path.join(home, 'nb-groups-rival')
+    const base = store.normalizeConfig({ notebook: dir, zkPath: zkBin, dailyDir: 'journal' })
+    await notebookLib.ensureNotebook(base)
+    const file = path.join(dir, '.zk', 'config.toml')
+    fs.appendFileSync(file, '\n# 用户自己的\n[group."mine"]\npaths = ["entries"]\n')
+
+    const before = fs.readFileSync(file, 'utf8')
+    const fixed = notebookLib.fixGroupConfig({ ...base, dailyDir: 'entries' })
+    expect(fixed.changed).toBe(false)
+    expect(fixed.updates.some((u) => u.action === 'skip' && (u.reason ?? '').includes('mine'))).toBe(true)
+    expect(fs.readFileSync(file, 'utf8')).toBe(before)
+  })
+
+  it('父子目录不算冲突：dailyDir 落在 notes/ 下仍可 --fix（zk 按最具体的路径归组）', async () => {
+    const dir = path.join(home, 'nb-groups-parent')
+    const base = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered', dailyDir: 'journal' })
+    await notebookLib.ensureNotebook(base)
+    const changed = { ...base, dailyDir: 'notes' }
+
+    expect(notebookLib.structureStatus(changed).expectedOverlaps).toEqual([])
+    expect(notebookLib.fixGroupConfig(changed).changed).toBe(true)
+    const st = notebookLib.structureStatus(changed)
+    expect(st.groups[0].actualPaths).toEqual(['notes'])
+    expect(st.groupsOk).toBe(true)
   })
 })
 

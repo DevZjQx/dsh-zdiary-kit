@@ -38,13 +38,18 @@
 `.zk/config.toml` 里的 group 是 zk 套模板 / 文件名的依据，但它是 zk 的文件，插件只追加、不重写：
 
 - `ensureNotebook` 遇到已存在的 group 一律跳过；paths 与配置不一致时只进 `EnsureResult.groupWarnings`；
-- 新 group 的 paths 已被别的 group 占用（典型：只改 `dailyGroup` 不改 `dailyDir`）时**不追加** ——
-  否则两个 group 抢同一路径，模板命中就随机了；
-- `structureStatus` 增加 `groups` / `groupsOk` / `groupWarnings`，只读解析 `.zk/config.toml`
-  （`lib/notebook-config.ts`：支持双 / 单引号 paths、`.note.template`、组头前注释；解析不了返回 `null`，不猜）；
+- 新 group 的 paths 已被别的 group 占着（典型：只改 `dailyGroup` 不改 `dailyDir`）时**不追加** ——
+  否则两个 group 用同一条路径，模板命中就只剩 zk 的实现细节了；
+  判定只认「同一条路径」：父子目录是合法的（zk 0.15 按最具体的路径归组，
+  `notes` 与 `notes/concepts` 共存时子目录里的笔记走后者，真机验证过）；
+- `structureStatus` 增加 `groups` / `groupsOk` / `groupWarnings` / `expectedOverlaps` / `actualOverlaps`，
+  只读解析 `.zk/config.toml`（`lib/notebook-config.ts`：支持双 / 单引号 paths、`.note.template`、
+  组头前注释；解析不了返回 `null`，不猜）；`groupsOk` 要求每个期望 group 都在、paths 一致，且没有任何
+  两个 group 共用一条路径（期望里冲突算配置问题，文件里已冲突算 `actualOverlaps`）；
 - 显式修复走 `zk-kit groups --fix` → `fixGroupConfig(cfg)`：
   - 只碰组头前有 `dsh-zdiary-kit` 注释的 group；
   - 只替换 `paths` 行，或把同路径的旧组头改名（连同 `.note` / `.extra` 子表）；
+  - 会让两个 group 用同一条路径时不写：期望本身冲突 → 整轮不改；期望路径被用户 / 旧 group 占着 → 只跳过那一个；
   - 自定义 `template` / `extra` / 注释 / 未知 group 一字不动；写前备份 `.zk/config.toml.bak`，写临时文件后 rename。
 - `archiveDir` 的非空变更由 `config/store.writeConfig` 直接拒绝（`ArchiveDirChangeError`）：
   旧归档不会自动迁移，改了会让废弃笔记重新进入检索。空目录 / 不存在的目录允许改。
