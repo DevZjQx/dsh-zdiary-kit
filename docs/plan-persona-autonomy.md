@@ -1,6 +1,6 @@
 # 计划：角色契约与自主权（「赋予」层，v0.10 候选）
 
-**状态**：草案（2026-11-02 起草；基线 v0.9.0）
+**状态**：M1 已实施（2026-11-02，提交 `9f365b2`；基线 v0.9.0 → 0.10 候选）；M2 / M3 / M4 待实施
 **目标批次**：0.10（若与 0.9 / 质量计划同批，则并入 0.10.0，不抢跑）
 **关系**：不重复 Q1 / Q3 / Q8 / Q10 / Q11；Q12 只借用 `origin` / `via` 两个字段做可信度检查，
 不重复完整的三段来源链设计。本计划只做「契约层 / 状态层 / 可信层」，
@@ -253,7 +253,17 @@ updated: 2026-11-02
 
 ## 3. 实施里程碑
 
-### M1（P0，契约壳 + 可观测）
+### M1（P0，契约壳 + 可观测）——✅ 已实施（2026-11-02）
+
+**已落地的事实**（与下列落点的差异都记在这里，实现时以这一节为准）
+- `originalWords` 语义没改（仍是磁盘原词数、含退役条目）：`formatFileShares` 展示时先减 `retiredWords`，
+  所以「原 X」只反映截断、退役单列一项，同时 payload 与 0.9 逐字一致（已用 HEAD worktree 逐字节比对验证）。
+- `doctor` 的「契约：未启用」行用 `·` 前缀，退出码判定同时接受 `·`（未启用 / 未配置不算装坏）。
+- 三个新预算都进了 payload 缓存键 —— 漏一个就会在改配置后拿到旧预算的载荷（实现时踩过）。
+- 场景段本批只落形状（`scene.present` 恒 false、`words` 恒 0），等 M3。
+- `zk_context` 的契约摘要行只在有契约时输出；`zk-kit contract` 是只读子命令，可看用量 / 预算 / 体检。
+- 设置页需要 `POST /contract`（第八条路由）：smoke 的路由数断言从 11 改为 12。
+- 记忆页多了「工作约定（AGENTS.md）」一段，否则预算里的 187 词无法逐项对上。
 
 **落点**
 - `src/lib/meta.ts`：新增 `CONTRACT_META_FILES`（`PERSONA.md` / `POLICY.md`），扩 `META_NAMES`。
@@ -412,15 +422,15 @@ updated: 2026-11-02
 
 ## 8. 验收清单
 
-- [ ] 无契约文件的旧库：payload 与 0.9 逐字一致；`bun run check` / `bun run smoke` 全绿。
-- [ ] `PERSONA.md` / `POLICY.md` 是 meta：工具不能写、不能搬；根目录同名普通笔记迁移说明存在。
-- [ ] 记忆页分契约 / 用户 / 记忆 / 周审 / 场景，能解释每一项词数；退役行有徽标；载荷预览与 `zk_context` 同源。
-- [ ] 契约超预算只告警、不截断；总预算超限点名；MEMORY 截断行为不变。
+- [x] 无契约文件的旧库：payload 与 0.9 逐字一致；`bun run check` / `bun run smoke` 全绿。
+- [x] `PERSONA.md` / `POLICY.md` 是 meta：工具不能写、不能搬；根目录同名普通笔记迁移说明存在。
+- [x] 记忆页分契约 / 用户 / 工作约定 / 记忆 / 周审 / 场景，能解释每一项词数；退役行有徽标；载荷预览与 `zk_context` 同源。
+- [x] 契约超预算只告警、不截断；总预算超限点名；MEMORY 截断行为不变。
 - [ ] 新 source 默认 `authority=informal`；`origin` / `via` 可写；`sourceTrust` 能报「中配 + expert」。
 - [ ] MEMORY 条目的 `[user|agent|persona]` / `[scope]` / `有效至` 能被解析；旧格式不报错。
 - [ ] `POLICY.md` 的 `auto / ask / forbidden` 能解析；解析失败只告警；插件不替动作工具执行。
 - [ ] `STATE` 过期不注入；敏感值 redact；MEMORY 里不出现运行时身体参数。
 - [ ] 多 agent 场景下 persona 不串台（M4）；没有匹配 persona 时退回默认并告警。
-- [ ] 只读视图仍是 GET-only + 回环 + 无脚本 + 固定白名单；不新增写接口。
-- [ ] 文档更新：`docs/features/memory.md`、`docs/features/readonly.md`、`docs/features/settings.md`、`README.md`
-      说明四层、预算、authority 默认、policy 边界、state 不在 MEMORY。
+- [x] 只读视图仍是 GET-only + 回环 + 无脚本 + 固定白名单；不新增写接口。
+- [x] 文档更新（M1 部分）：`docs/features/memory.md`、`readonly.md`、`settings.md`、`provisioning.md`、
+      `zk-tools.md`、`README.md` 已写契约层与预算；authority 默认、policy 解析边界、state 不在 MEMORY 等 M2 / M3 落地时补。
