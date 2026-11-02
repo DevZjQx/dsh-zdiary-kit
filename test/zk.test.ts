@@ -3724,6 +3724,9 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
   })
 
   test('模板：版本标记后紧跟 frontmatter，现有解析器可直接读', () => {
+    // 口头禅会让模型逐轮复读；v3 起只留「语气与边界」和负向的「禁用表达」
+    expect(personaTpl.PERSONA_TEMPLATE).not.toContain('## 口头禅')
+    expect(personaTpl.PERSONA_TEMPLATE).toContain('## 禁用表达')
     const persona = fm.parseFrontmatter(personaTpl.stripContractMarker(personaTpl.PERSONA_TEMPLATE)).fields
     expect(persona).toMatchObject({ name: '{{name}}', role: '{{role}}', updated: '{{updated}}' })
     const policy = fm.parseFrontmatter(personaTpl.stripContractMarker(personaTpl.POLICY_TEMPLATE)).fields
@@ -3752,8 +3755,8 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     const withC = await notebookLib.ensureNotebook(cfg, undefined, { withContract: true })
     expect(withC.personaWritten).toBe(true)
     expect(withC.policyWritten).toBe(true)
-    expect(fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')).toContain('<!-- zdiary-persona: v2 -->')
-    expect(fs.readFileSync(path.join(cfg.notebook, 'POLICY.md'), 'utf8')).toContain('<!-- zdiary-policy: v2 -->')
+    expect(fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')).toContain(`<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->`)
+    expect(fs.readFileSync(path.join(cfg.notebook, 'POLICY.md'), 'utf8')).toContain(`<!-- zdiary-policy: v${personaTpl.POLICY_TEMPLATE_VERSION} -->`)
     expect(fs.readFileSync(path.join(cfg.notebook, 'POLICY.md'), 'utf8')).toContain('publish')
 
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), '# 我自己写的\n')
@@ -3771,7 +3774,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       // 只建目录 + 两份契约，不假装已经初始化
       expect(fs.existsSync(path.join(cfg.notebook, '.zk'))).toBe(false)
       const persona = fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')
-      expect(persona).toContain('<!-- zdiary-persona: v2 -->')
+      expect(persona).toContain(`<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->`)
 
       const second = notebookLib.writeContractTemplates(cfg)
       expect(second).toEqual({ personaWritten: false, policyWritten: false })

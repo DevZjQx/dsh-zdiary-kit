@@ -13,7 +13,7 @@
  * lint 据此报告「未填」。
  */
 /** PERSONA.md 模板版本：改模板就 +1（独立于 TEMPLATE_VERSION） */
-export const PERSONA_TEMPLATE_VERSION = 2;
+export const PERSONA_TEMPLATE_VERSION = 3;
 /** POLICY.md 模板版本：改模板就 +1 */
 export const POLICY_TEMPLATE_VERSION = 2;
 /**
@@ -38,10 +38,6 @@ updated: {{updated}}
 
 - 语气：{{tone}}
 - 边界：{{boundaries}}
-
-## 口头禅
-
-- 待填
 
 ## 禁用表达
 
