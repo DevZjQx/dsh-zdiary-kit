@@ -29,6 +29,7 @@ const notebookConfig = await import('../src/lib/notebook-config.ts')
 const lintLib = await import('../src/lib/lint.ts')
 const dreamLib = await import('../src/lib/dream.ts')
 const toolsFeature = await import('../src/features/zk-tools/feature.ts')
+const settingsFeature = await import('../src/features/settings/feature.ts')
 const workspaceLib = await import('../src/lib/workspace.ts')
 const toolLib = await import('../src/lib/tool.ts')
 const fm = await import('../src/lib/frontmatter.ts')
@@ -2824,6 +2825,109 @@ function makeReq(url: string, opts: { method?: string; host?: string; remote?: s
     socket: { remoteAddress: opts.remote ?? '127.0.0.1' },
   }
 }
+
+describe('设置页', () => {
+  test('group paths 解析失败时提示手动编辑，可修复时才建议 --fix', async () => {
+    const globals = globalThis as Record<string, unknown>
+    const previous = { window: globals.window, document: globals.document }
+    const states: unknown[] = []
+    let stateIndex = 0
+    let Section: (() => unknown) | undefined
+    const react = {
+      createElement: (tag: string, props?: Record<string, unknown> | null, ...children: unknown[]) => ({ tag, props, children }),
+      useState: (init: unknown) => [states[stateIndex++] ?? init, () => {}],
+      useCallback: (fn: unknown) => fn,
+      useEffect: () => {},
+    }
+    globals.window = {
+      __ModuleLoader__: {
+        load(spec: { factory: (require: (name: string) => unknown) => { Section: () => unknown } }) {
+          const exported = spec.factory((name) => {
+            if (name === 'react') return react
+            throw new Error(` unexpected require: ${name}`)
+          })
+          Section = exported.Section
+        },
+      },
+    }
+    globals.document = {
+      getElementById: () => null,
+      createElement: () => ({}),
+      head: { appendChild: () => {} },
+    }
+
+    try {
+      await import('../src/features/settings/client.ts')
+      expect(Section).toBeTruthy()
+      const cfg = store.config()
+      const render = (actualPaths: string[] | null): string => {
+        const snap = {
+          ok: true,
+          config: cfg,
+          zk: { found: true, version: '0.15.7', source: 'managed' },
+          notebook: { path: cfg.notebook, exists: true },
+          structure: {
+            mode: 'flat', dirs: [], missing: [], extra: [], ready: true,
+            agents: { path: '', required: false, present: true },
+            groupsOk: false,
+            groups: [{ name: 'daily', expectedPaths: ['journal'], actualPaths, pathsOk: false, present: true }],
+            groupWarnings: ['group "daily" paths 解析不了'],
+          },
+          memory: null,
+          counts: null,
+          countsError: null,
+        }
+        states.splice(0, states.length, cfg, '', JSON.stringify(cfg), snap, '', '', '', '', '', '', '')
+        stateIndex = 0
+        return JSON.stringify(Section!())
+      }
+
+      const manual = render(null)
+      expect(manual).toContain('手动编辑 .zk/config.toml')
+      expect(manual).not.toContain('跑 zk-kit groups --fix')
+      expect(render(['old'])).toContain('跑 zk-kit groups --fix')
+    } finally {
+      globals.window = previous.window
+      globals.document = previous.document
+    }
+  })
+
+  test('自检：其他 group 损坏或共用路径都不能整体通过', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const nb = path.join(home, 'settings-selftest-notebook')
+    const routes = new Map<string, (req: never, res: never) => unknown>()
+    settingsFeature.registerSettings({ route: (p, h) => routes.set(p, h), isTrusted: () => true })
+    const call = async (): Promise<{ ok: boolean; items: Array<{ name: string; ok: boolean; detail: string }> }> => {
+      const res = makeRes()
+      await routes.get('/dsh-zdiary-kit/api/selftest')!(makeReq('/dsh-zdiary-kit/api/selftest') as never, res as never)
+      return JSON.parse(res.body)
+    }
+    const groupItem = (result: { items: Array<{ name: string; ok: boolean }> }) =>
+      result.items.find((item) => item.name.startsWith('日记 group'))!
+
+    try {
+      store.writeConfig({ notebooks: { default: { path: nb, structure: 'layered' } }, active: 'default', zkPath: zkBin })
+      await notebookLib.ensureNotebook(store.config())
+      expect((await call()).ok).toBe(true)
+
+      const file = path.join(nb, '.zk', 'config.toml')
+      const original = fs.readFileSync(file, 'utf8')
+      fs.writeFileSync(file, original.replace('paths = ["notes/concepts"]', 'paths = ["notes/wrong"]'))
+      const broken = await call()
+      expect(groupItem(broken).ok).toBe(false)
+      expect(broken.ok).toBe(false)
+
+      fs.writeFileSync(file, original.replace('paths = ["notes/concepts"]', 'paths = ["journal"]'))
+      const overlap = await call()
+      expect(groupItem(overlap).ok).toBe(false)
+      expect(overlap.ok).toBe(false)
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+      fs.rmSync(nb, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('只读视图', () => {
   test('渲染层：文本转义、代码块里的标记不生效、危险链接不放行', () => {

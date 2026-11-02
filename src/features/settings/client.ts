@@ -367,6 +367,8 @@ interface Field {
             : ''
       // group 与配置不一致不会自己好：改目录 / 改 dailyGroup 后要显式跑 groups --fix
       const groupBroken = (structure?.groups || []).filter((g) => !g.present || !g.pathsOk)
+      // 多行数组 / 重复组等解析失败不是 --fix 能修的；缺 group（present=false）仍可补建
+      const groupNeedsManual = groupBroken.some((g) => g.present && g.actualPaths === null)
       // 也可能只是路径互相重叠（配置本身冲突）：那时没有「坏掉的组」，只有一条说明
       const groupWarnText = snap?.notebook.exists && structure?.groupsOk === false
         ? groupBroken.length
@@ -396,7 +398,9 @@ interface Field {
           ? h('div', { className: 'zdk-err' },
             '⚠️ ' + configWarn +
             (groupBroken.length
-              ? ' —— 跑 zk-kit groups --fix'
+              ? groupNeedsManual
+                ? ' —— 有 paths 解析不了，请手动编辑 .zk/config.toml'
+                : ' —— 跑 zk-kit groups --fix'
               : groupWarnText ? '' : ' —— 点底部「' + initLabel + '」'))
           : null,
 

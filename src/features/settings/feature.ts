@@ -284,21 +284,21 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
 
     const st = structureStatus(cfg)
     const dailyGroup = st.groups.find((group) => group.name === cfg.dailyGroup)
-    const groupOk = !!dailyGroup && dailyGroup.present && dailyGroup.pathsOk
+    const dailyOk = !!dailyGroup && dailyGroup.present && dailyGroup.pathsOk
+    // 自检覆盖全部期望 group 与路径冲突，不是只看 daily 自己能不能对上
+    const groupOk = st.groupsOk
     const otherBroken = st.groups.filter((group) => group.name !== cfg.dailyGroup && (!group.present || !group.pathsOk))
-    // 路径重叠不影响单组的期望 / 实际对照，但 zk 归组会随机 —— 单独说一句
-    const overlapped = [...st.expectedOverlaps, ...st.actualOverlaps]
-      .some((overlap) => overlap.a === cfg.dailyGroup || overlap.b === cfg.dailyGroup)
+    const overlapped = st.expectedOverlaps.length > 0 || st.actualOverlaps.length > 0
     items.push({
       name: `日记 group（${cfg.dailyGroup}）`,
       ok: groupOk,
       detail: !dailyGroup
         ? '当前结构没有这个 group'
         : dailyGroup.present
-          ? groupOk
+          ? dailyOk
             ? `group."${cfg.dailyGroup}" → ${dailyGroup.actualPaths?.join('、')}` +
               (otherBroken.length ? `；另有 ${otherBroken.length} 个 group 与配置不一致 —— 跑 zk-kit groups --fix` : '') +
-              (overlapped ? '；路径与另一个 group 重叠（zk 按路径前缀归组）—— 跑 zk-kit groups 看详情' : '')
+              (overlapped ? '；有 group 共用同一路径，zk 命中哪个模板不确定 —— 跑 zk-kit groups 看详情' : '')
             : `期望 ${dailyGroup.expectedPaths.join('、')}，实际 ${dailyGroup.actualPaths?.join('、') ?? '解析不了'}` +
               (dailyGroup.actualPaths === null ? '（可能是多行数组）—— 手动编辑 .zk/config.toml' : ' —— 跑 zk-kit groups --fix')
           : dailyGroup.conflict

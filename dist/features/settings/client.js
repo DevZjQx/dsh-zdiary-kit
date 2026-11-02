@@ -308,6 +308,8 @@ window.__ModuleLoader__?.load({
                         : '';
             // group 与配置不一致不会自己好：改目录 / 改 dailyGroup 后要显式跑 groups --fix
             const groupBroken = (structure?.groups || []).filter((g) => !g.present || !g.pathsOk);
+            // 多行数组 / 重复组等解析失败不是 --fix 能修的；缺 group（present=false）仍可补建
+            const groupNeedsManual = groupBroken.some((g) => g.present && g.actualPaths === null);
             // 也可能只是路径互相重叠（配置本身冲突）：那时没有「坏掉的组」，只有一条说明
             const groupWarnText = snap?.notebook.exists && structure?.groupsOk === false
                 ? groupBroken.length
@@ -329,7 +331,9 @@ window.__ModuleLoader__?.load({
                 '没装 zk 就让插件装一个 —— 第一次调用工具时会自动建好笔记本，不需要先来这里点任何按钮。'), statusLine ? h('div', { className: 'zdk-hint' }, '📚 ' + statusLine) : null, memoryLine ? h('div', { className: 'zdk-hint' }, '🧠 ' + memoryLine) : null, configWarn
                 ? h('div', { className: 'zdk-err' }, '⚠️ ' + configWarn +
                     (groupBroken.length
-                        ? ' —— 跑 zk-kit groups --fix'
+                        ? groupNeedsManual
+                            ? ' —— 有 paths 解析不了，请手动编辑 .zk/config.toml'
+                            : ' —— 跑 zk-kit groups --fix'
                         : groupWarnText ? '' : ' —— 点底部「' + initLabel + '」'))
                 : null, h('div', null, h('div', { className: 'zdk-group' }, '笔记本 · 每个笔记本自己的路径与结构'), h('div', { className: 'zdk-row' }, h('div', null, h('div', { className: 'zdk-label' }, '当前笔记本'), h('div', { className: 'zdk-hint' }, '这里是**新会话的默认值**：每个会话第一次用 zk_* 时会把当时的值固定下来，之后各走各的。' +
                 '改这里不会带着已经跑着的会话走 —— 要让某个会话跟过去，在那个会话里说「切到 X 库」（zk_use）。\n' +
