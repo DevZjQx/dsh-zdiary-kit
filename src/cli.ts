@@ -7,7 +7,8 @@ import path from 'node:path'
 import { config, writeConfig, selectNotebook, isNotebookName, CONFIG_KEYS } from './config/store.ts'
 import type { Config } from './config/store.ts'
 import { CFG_FILE } from './config/paths.ts'
-import { NOTE_KINDS, ensureNotebook, newNoteDir, structureStatus } from './lib/notebook.ts'
+import { NOTE_KINDS, ensureNotebook, fixGroupConfig, newNoteDir, structureStatus } from './lib/notebook.ts'
+import type { GroupFixResult, StructureStatus } from './lib/notebook.ts'
 import { buildMemoryPayload, formatFileShares } from './lib/memory.ts'
 import { installZk, sourceLabel } from './lib/install.ts'
 import {
@@ -26,6 +27,7 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit doctor                       自检：zk / 笔记本 / 模板 / group / 索引
   zk-kit install [版本]                安装内置 zk（默认取配置里的版本）
   zk-kit init [--with-agents]        建好（或补齐）笔记本；flat 下加 --with-agents 才写 AGENTS.md 模板
+  zk-kit groups [--fix] [--dry-run]  对照配置与 .zk/config.toml 的 group（默认 dry-run；--fix 只改插件建的 paths，写前备份）
   zk-kit new --title T [--name 文件名] [--summary 摘要] [--body B] [--tags a,b] [--dir notes] [--type source|concept|entity|pattern]
   zk-kit search [词] [--tags a,b] [--since 日期] [--limit 5] [--json]
   zk-kit read <路径> | --query 词 [--max-chars n] [--json]
@@ -233,6 +235,54 @@ function dreamReport(r: DreamResult): string {
   return lines.join('\n')
 }
 
+function groupsReport(cfg: Config, st: StructureStatus, fixed: GroupFixResult | null): string {
+  if (fixed) {
+    if (!fixed.changed) {
+      const lines = [`group 配置：${fixed.notebook} —— 没有需要修的（未写文件）`]
+      for (const warning of fixed.warnings) lines.push('⚠️ ' + warning)
+      return lines.join('\n')
+    }
+    const lines = [`已修复 group 配置：${fixed.notebook}（备份 ${fixed.backup}）`]
+    for (const update of fixed.updates) {
+      if (update.action === 'paths') {
+        lines.push(`  ✓ ${update.name}：${update.actualPaths?.join('、') ?? '解析不了'} → ${update.expectedPaths.join('、')}`)
+      } else if (update.action === 'rename') {
+        lines.push(`  ✓ ${update.from} → ${update.name}（只改组头，路径与模板不变）`)
+      } else if (update.action === 'append') {
+        lines.push(`  + ${update.name}：追加 ${update.expectedPaths.join('、')}`)
+      } else {
+        lines.push(`  · ${update.name}：未改 —— ${update.reason ?? ''}`)
+      }
+    }
+    for (const warning of fixed.warnings) lines.push('⚠️ ' + warning)
+    lines.push('（只改插件建的 group 的 paths / 组头；template / extra / 自定义 group 一字未动）')
+    return lines.join('\n')
+  }
+  const lines = [`group 配置：${cfg.notebook}${st.groupsOk ? '（与配置一致）' : ''}`]
+  if (!fs.existsSync(path.join(cfg.notebook, '.zk', 'config.toml'))) {
+    lines.push('✗ 还没有 .zk/config.toml —— 先跑 zk-kit init')
+    return lines.join('\n')
+  }
+  for (const group of st.groups) {
+    if (!group.present) {
+      lines.push(
+        group.conflict
+          ? `✗ ${group.name}：缺（路径 ${group.expectedPaths.join('、')} 已被 group "${group.conflict}" 占用）`
+          : `✗ ${group.name}：缺（期望 ${group.expectedPaths.join('、')}）`,
+      )
+    } else if (group.duplicate) {
+      lines.push(`⚠️ ${group.name}：重复出现，解析不了`)
+    } else if (!group.pathsOk) {
+      lines.push(`⚠️ ${group.name}：期望 ${group.expectedPaths.join('、')}，实际 ${group.actualPaths?.join('、') ?? '解析不了'}`)
+    } else {
+      const template = group.templateOk ? '' : ` · template=${group.actualTemplate ?? '（无）'}（配置期望 ${group.expectedTemplate}）`
+      lines.push(`✓ ${group.name}：${group.actualPaths?.join('、')}${template}`)
+    }
+  }
+  lines.push('（dry-run：不改文件；--fix 只改 dsh-zdiary-kit 建的 group 的 paths，写前备份 .zk/config.toml.bak）')
+  return lines.join('\n')
+}
+
 async function doctor(): Promise<boolean> {
   const cfg = config()
   const zk = await resolveZk(cfg)
@@ -242,13 +292,23 @@ async function doctor(): Promise<boolean> {
   rows.push(`${exists ? '✓' : '✗'} 笔记本：${cfg.notebook}${exists ? '' : '（不是 zk 笔记本 —— 跑 zk-kit init）'}`)
   const template = path.join(cfg.notebook, '.zk', 'templates', 'daily.md')
   rows.push(`${fs.existsSync(template) ? '✓' : '✗'} 日记模板：${template}`)
-  let group = false
-  try {
-    group = new RegExp(`^\\[group\\."?${cfg.dailyGroup}"?\\]`, 'm').test(fs.readFileSync(path.join(cfg.notebook, '.zk', 'config.toml'), 'utf8'))
-  } catch { group = false }
-  rows.push(`${group ? '✓' : '✗'} 日记 group：${cfg.dailyGroup} → ${cfg.dailyDir}/`)
 
   const st = structureStatus(cfg)
+  for (const group of st.groups) {
+    if (!group.present) {
+      rows.push(`✗ group ${group.name}：缺（期望 ${group.expectedPaths.join('、')}；跑 zk-kit groups --fix）`)
+    } else if (group.duplicate) {
+      rows.push(`⚠️ group ${group.name}：重复出现，解析不了 —— 手动检查 .zk/config.toml`)
+    } else if (!group.pathsOk) {
+      rows.push(
+        `⚠️ group ${group.name}：期望 ${group.expectedPaths.join('、')}，` +
+        `实际 ${group.actualPaths?.join('、') ?? '解析不了'}（跑 zk-kit groups --fix）`,
+      )
+    } else {
+      const templateNote = group.templateOk ? '' : ` · template=${group.actualTemplate ?? '（无）'}`
+      rows.push(`✓ group ${group.name}：${group.actualPaths?.join('、')}${templateNote}`)
+    }
+  }
   const structureOk = st.ready && (!st.agents.required || st.agents.present)
   const drift = st.mode === 'flat' && st.extra.length
     ? ` · ⚠️ 盘上有分层目录 ${st.extra.join('、')}：新建笔记会落在 ${cfg.notesDir}/ 根`
@@ -331,7 +391,21 @@ async function main(): Promise<void> {
       const r = await ensureNotebook(cfg, undefined, { withAgents })
       print(json ? r : `笔记本 ${r.notebook}（结构 ${cfg.structure}）\n` +
         `初始化：${r.initialized ? '是' : '已是笔记本'} · 目录：${r.dirsCreated.length ? '新建 ' + r.dirsCreated.join('、') : '已齐全'}\n` +
-        `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' || withAgents ? '已存在' : '未写（flat 要 --with-agents）')} · WORKFLOW.md：${r.workflowWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')}`, json)
+        `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' || withAgents ? '已存在' : '未写（flat 要 --with-agents）')} · WORKFLOW.md：${r.workflowWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')}` +
+        (r.groupWarnings.length ? `\n⚠️ ${r.groupWarnings.join('\n⚠️ ')}` : ''), json)
+      return
+    }
+
+    case 'groups': {
+      const fix = flags.fix === true || flags.fix === 'true'
+      const dryRun = flags['dry-run'] === true || flags['dry-run'] === 'true'
+      if (fix && !dryRun) {
+        const result = fixGroupConfig(cfg)
+        print(json ? { ...structureStatus(cfg), fix: result } : groupsReport(cfg, structureStatus(cfg), result), json)
+        return
+      }
+      const st = structureStatus(cfg)
+      print(json ? { ...st, dryRun: true } : groupsReport(cfg, st, null), json)
       return
     }
 

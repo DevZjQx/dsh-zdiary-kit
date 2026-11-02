@@ -33,6 +33,22 @@
 `entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入（Z10）；
 所有模板必须含 `{{content}}`，否则 stdin 的正文会被丢（Z9）。
 
+### group 收敛（配置改了之后）
+
+`.zk/config.toml` 里的 group 是 zk 套模板 / 文件名的依据，但它是 zk 的文件，插件只追加、不重写：
+
+- `ensureNotebook` 遇到已存在的 group 一律跳过；paths 与配置不一致时只进 `EnsureResult.groupWarnings`；
+- 新 group 的 paths 已被别的 group 占用（典型：只改 `dailyGroup` 不改 `dailyDir`）时**不追加** ——
+  否则两个 group 抢同一路径，模板命中就随机了；
+- `structureStatus` 增加 `groups` / `groupsOk` / `groupWarnings`，只读解析 `.zk/config.toml`
+  （`lib/notebook-config.ts`：支持双 / 单引号 paths、`.note.template`、组头前注释；解析不了返回 `null`，不猜）；
+- 显式修复走 `zk-kit groups --fix` → `fixGroupConfig(cfg)`：
+  - 只碰组头前有 `dsh-zdiary-kit` 注释的 group；
+  - 只替换 `paths` 行，或把同路径的旧组头改名（连同 `.note` / `.extra` 子表）；
+  - 自定义 `template` / `extra` / 注释 / 未知 group 一字不动；写前备份 `.zk/config.toml.bak`，写临时文件后 rename。
+- `archiveDir` 的非空变更由 `config/store.writeConfig` 直接拒绝（`ArchiveDirChangeError`）：
+  旧归档不会自动迁移，改了会让废弃笔记重新进入检索。空目录 / 不存在的目录允许改。
+
 **Does not own.** 解析用哪个 zk（`lib/zk.ts` 的四级优先：配置 → `$ZK_BIN` → PATH → 内置）。
 「安装成功」的判定不在这里的下载逻辑里，而在 `zk --version` 的真实输出里。
 
@@ -41,9 +57,11 @@
 **Public surface.** `installZk(version)`（返回 `path` / `version` / `asset` / `url` / `mirror`）、`sourceLabel(mirror)`、`zkAsset(version)`、`ensureNotebook(cfg)`、`DAILY_TEMPLATE` / `DAILY_TEMPLATE_LAYERED`、
 `SOURCE_TEMPLATE`、`ENTRY_TEMPLATE`、`AGENTS_TEMPLATE`、`AGENTS_TEMPLATE_FLAT`、`WORKFLOW_TEMPLATE`、
 `TEMPLATE_VERSION` / `TEMPLATE_MARK`、`writeAgentsTemplate(cfg)`；
-`structureDirs(cfg)` / `structureStatus(cfg)`（只报告，不建不改；`extra` 列出 flat 库里多出来的分层目录）。
-`ensureNotebook` 返回 `dirsCreated` / `templatesWritten` / `groupsAdded` / `agentsWritten` / `workflowWritten`，
-设置页据此显示「本次真正做了什么」（第二次调用五项都是空的）。
+`structureDirs(cfg)` / `structureStatus(cfg)`（只报告，不建不改；`extra` 列出 flat 库里多出来的分层目录，
+`groups` / `groupsOk` / `groupWarnings` 报告与 `.zk/config.toml` 的差异）、
+`expectedGroups(cfg)`、`fixGroupConfig(cfg)`（`groups --fix` 的实现）。
+`ensureNotebook` 返回 `dirsCreated` / `templatesWritten` / `groupsAdded` / `groupWarnings` / `agentsWritten` / `workflowWritten`，
+设置页据此显示「本次真正做了什么」（第二次调用五项都是空的；`groupWarnings` 只报告，不改文件）。
 `structureStatus` 是设置页「初始化 / 补建」的依据：「配置为准，磁盘只用来显示缺什么」，它自己不建目录。
 `extra` 只收 `raw` / `inbox` / `notes/{四类}`；`archive` 不算 —— flat 库做过一次 supersede 就会自建它，
 放进来会让每本用过 supersede 的 flat 库都被误报。`ready` 不因 `extra` 变 false（配置仍是权威）。
@@ -53,7 +71,8 @@
 **Rejected.** 随包分发二进制 —— 拒绝：三平台 × 两架构 × 10 MB，仓库和 npm 都受不了，且发布新版本要重打包。
 用 npm 的 `zk` 包 —— 不存在官方包。写一个 tar.gz 解压器 —— 拒绝：系统 tar（Linux/macOS/Win10+）就够，
 少一个自研解析器的攻击面。覆盖用户已有的 `config.toml` —— 拒绝：只在缺 group 时**追加**，
-用户自己的模板、过滤、别名一字不动（测试里断言了「第二次调用文件不变」）。
+用户自己的模板、过滤、别名一字不动（测试里断言了「第二次调用文件不变」）；
+配置改了要显式跑 `zk-kit groups --fix`，不静默重写。
 
 **Exceptions.** `ensureDailyNote` 用"目录快照前后对比"判断今天这篇是不是新建的 ——
 zk 的日期模板不给文件名，无法预先算；两次 `readdir` 比解析模板可靠。

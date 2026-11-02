@@ -160,6 +160,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 - 顶层 `notebook` 与 `structure` 是**派生的**（`notebooks[active]` 解析后的绝对路径 / 该条目的结构），只在内存里、不落盘也不可写；可写的是条目里的 `notebooks[名].structure`（`zk-kit config set structure=…` 改的就是当前笔记本那一条）—— 磁盘上笔记本只有一个真相，就是 `notebooks` + `active`。
   老配置里那个单独的 `notebook` 字段（和全局 `structure`）读进来会**一次性**迁进 `notebooks.default`，之后不再互相覆盖。
 - **共享的是全局项**：笔记 / 日记子目录、`daily` group、归档目录、注入预算 —— 这些不按笔记本分开。
+  改子目录 / group 名后要跑 `zk-kit groups --fix` 让 `.zk/config.toml` 跟上；归档目录非空时不允许改（不自动迁移文件）。
 
 ```bash
 zk-kit notebooks                     # 列出所有笔记本（* 是当前那个；[flat/layered] 是各自的结构）
@@ -206,6 +207,23 @@ paths = ["journal"]
 filename = '{{format-date now "%Y-%m-%d"}}'
 template = "daily.md"
 ```
+
+### 改了目录 / group 之后
+
+插件**不会自动重写**已有的 `[group.*]`：你改过 `notesDir` / `dailyDir` / `dailyGroup` 后，
+`zk-kit init` 只追加缺失的 group，不会把旧 paths 改掉（也不会有两个 group 抢同一路径）。
+差异由 `doctor` / `groups` / 设置页报告，确认后用显式修复：
+
+```bash
+zk-kit groups           # 默认 dry-run：逐组打印期望 / 实际
+zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行或旧组头改名
+```
+
+`--fix` 写前备份 `.zk/config.toml.bak`，只改 paths 与组头；自定义的 `template` / `extra` / 注释 / 别的 group 一字不动。
+`dailyGroup` 改名且 `dailyDir` 没变时，`--fix` 直接把旧组头改成新名字（连同 `.note` / `.extra` 子表），不追加第二个日记组。
+
+`archiveDir` 是另一条硬规则：**旧归档目录非空时拒绝改**。插件不迁移归档文件，改了会让废弃笔记重新进入检索、
+统计也会把它们算成活跃 —— 先手动迁移，或保持原值。空目录 / 不存在的目录可以改。
 
 ### 分层结构（可选）
 
@@ -266,6 +284,8 @@ template = "daily.md"
 ```bash
 zk-kit init                          # 建库 / 补齐目录、模板、group、AGENTS.md（幂等）
 zk-kit init --with-agents            # flat 库也写一份精简版 AGENTS.md（已存在不覆盖）
+zk-kit groups                        # 对照配置与 .zk/config.toml 的 group（默认 dry-run）
+zk-kit groups --fix                  # 只改插件建的 group 的 paths / 组头（写前备份 .zk/config.toml.bak）
 zk-kit new --title "示例笔记" --body "正文" --tags demo --type concept
 zk-kit search --tags demo --limit 5
 zk-kit daily --entry "今天把 zk-kit 跑了一遍"

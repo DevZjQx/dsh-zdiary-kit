@@ -55,6 +55,9 @@ interface Structure {
   extra: string[]
   ready: boolean
   agents: { path: string; required: boolean; present: boolean }
+  /** 期望 group 与 .zk/config.toml 的对照（旧后端没有这两个字段） */
+  groupsOk?: boolean
+  groups?: Array<{ name: string; expectedPaths: string[]; actualPaths: string[] | null; pathsOk: boolean; present: boolean }>
 }
 interface Memory {
   words: number
@@ -138,7 +141,7 @@ interface Field {
       { group: '目录与 group', key: 'notesDir', label: '笔记子目录', hint: '普通笔记放哪（相对笔记本），默认 notes —— 所有笔记本共用' },
       { group: '目录与 group', key: 'dailyDir', label: '日记子目录', hint: '日记放哪（相对笔记本），默认 journal；文件名由日期模板生成 —— 所有笔记本共用' },
       { group: '目录与 group', key: 'dailyGroup', label: '日记 group 名', hint: 'zk 配置里的 [group."…"]，默认 daily —— 初始化时会自动补上；所有笔记本共用' },
-      { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；所有笔记本共用，改动后点「初始化 / 补建」' },
+      { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；所有笔记本共用。旧归档目录非空时拒绝改动 —— 插件不会自动迁移文件' },
       { group: '记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 500（中文按 2 字 1 词）。超了先丢 MEMORY 尾部整段，并回显截断了多少' },
       { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
       { group: '写入', key: 'maxReadChars', label: 'zk_read 单次上限（字符）', hint: '默认 20000；超了会截断并明确告知模型' },
@@ -261,7 +264,7 @@ interface Field {
             if (r.agentsWritten) parts.push('写入 AGENTS.md')
             if (r.workflowWritten) parts.push('写入 WORKFLOW.md')
             if (r.configPatched && !(r.templatesWritten && r.templatesWritten.length) && !(r.dirsCreated && r.dirsCreated.length)) parts.push('补齐 group')
-            setOkMsg('✓ ' + parts.join(' · '))
+            setOkMsg('✓ ' + parts.join(' · ') + (d.warn ? '\n⚠️ ' + d.warn : ''))
           }
           if (name === 'index') setOkMsg('✓ 索引已重建')
           if (name === 'agents') setOkMsg(d.result?.written === true ? '✓ 已写入 AGENTS.md 模板' : '✓ AGENTS.md 已存在，没有覆盖')
@@ -360,6 +363,12 @@ interface Field {
           : structure.mode === 'flat' && structure.extra.length
             ? `盘上有分层目录（${structure.extra.join('、')}），但配置是 flat —— 新建笔记会落在 notes/ 根，不套模板`
             : ''
+      // group 与配置不一致不会自己好：改目录 / 改 dailyGroup 后要显式跑 groups --fix
+      const groupBroken = (structure?.groups || []).filter((g) => !g.present || !g.pathsOk)
+      const groupWarnText = snap?.notebook.exists && structure?.groupsOk === false && groupBroken.length
+        ? `配置与 .zk/config.toml 的 group 不一致（${groupBroken.map((g) => g.name).join('、')}）`
+        : ''
+      const configWarn = [structureWarn, groupWarnText].filter(Boolean).join('；')
       // 底部只留一个按钮：没建过就叫「初始化」，缺东西就叫「补建」，都带上当前笔记本名。
       // 用已保存的 active 而不是 cfg.active —— 按钮执行的是服务端已落盘的那份配置。
       const savedActive = snap?.config?.active || cfg.active
@@ -378,9 +387,10 @@ interface Field {
           '没装 zk 就让插件装一个 —— 第一次调用工具时会自动建好笔记本，不需要先来这里点任何按钮。'),
         statusLine ? h('div', { className: 'zdk-hint' }, '📚 ' + statusLine) : null,
         memoryLine ? h('div', { className: 'zdk-hint' }, '🧠 ' + memoryLine) : null,
-        structureWarn
+        configWarn
           ? h('div', { className: 'zdk-err' },
-            '⚠️ ' + structureWarn + ' —— 点底部「' + initLabel + '」')
+            '⚠️ ' + configWarn +
+            (groupWarnText ? ' —— 跑 zk-kit groups --fix' : ' —— 点底部「' + initLabel + '」'))
           : null,
 
         h('div', null,

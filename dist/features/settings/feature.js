@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { json, readBody, ROUTE_BASE } from '../../lib/http.js';
 import { CFG_FILE, processWorkspace } from '../../config/paths.js';
-import { config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.js';
+import { ArchiveDirChangeError, config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.js';
 import { ensureNotebook, structureStatus, writeAgentsTemplate } from '../../lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
 import { installZk, sourceLabel } from '../../lib/install.js';
@@ -121,6 +121,18 @@ export function registerSettings({ route, isTrusted }) {
                 });
                 return;
             }
+            if (err instanceof ArchiveDirChangeError) {
+                const latest = config();
+                json(res, 400, {
+                    ok: false,
+                    error: err.message,
+                    config: latest,
+                    configPath: CFG_FILE,
+                    stamp: configStamp(),
+                    ...(await snapshot(latest)),
+                });
+                return;
+            }
             throw err;
         }
         const warn = [];
@@ -155,6 +167,10 @@ export function registerSettings({ route, isTrusted }) {
         if (exists && st.mode === 'flat' && st.extra.length) {
             warn.push(`盘上有分层目录（${st.extra.join('、')}），但配置是 flat —— 新建笔记会落在 ${next.notesDir}/ 根`);
         }
+        // 改目录不改 group 是最常见的静默坏法：group 的 paths 还指着旧目录，zk 就不按模板归组
+        if (exists && !st.groupsOk && st.groupWarnings.length) {
+            warn.push('配置与 .zk/config.toml 的 group 不一致：' + st.groupWarnings.join('；'));
+        }
         json(res, 200, { ok: true, config: next, configPath: CFG_FILE, stamp: configStamp(), warn: warn.length ? warn.join('；') : null, ...(await snapshot(next)) });
     });
     // ── 状态 ──
@@ -177,7 +193,8 @@ export function registerSettings({ route, isTrusted }) {
         const cfg = config();
         try {
             const result = await ensureNotebook(cfg);
-            json(res, 200, { ok: true, result, ...(await snapshot(cfg)) });
+            const warn = result.groupWarnings.length ? result.groupWarnings.join('；') : null;
+            json(res, 200, { ok: true, result, warn, ...(await snapshot(cfg)) });
         }
         catch (err) {
             json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -273,20 +290,22 @@ export function registerSettings({ route, isTrusted }) {
             ok: fs.existsSync(templateFile),
             detail: fs.existsSync(templateFile) ? templateFile : '缺 .zk/templates/daily.md，点「初始化 / 补建」补上',
         });
-        let groupOk = false;
-        try {
-            const toml = fs.readFileSync(path.join(cfg.notebook, '.zk', 'config.toml'), 'utf8');
-            groupOk = new RegExp(`^\\[group\\."?${cfg.dailyGroup}"?\\]`, 'm').test(toml);
-        }
-        catch {
-            groupOk = false;
-        }
+        const st = structureStatus(cfg);
+        const dailyGroup = st.groups.find((group) => group.name === cfg.dailyGroup);
+        const groupOk = !!dailyGroup && dailyGroup.present && dailyGroup.pathsOk;
+        const otherBroken = st.groups.filter((group) => group.name !== cfg.dailyGroup && (!group.present || !group.pathsOk));
         items.push({
             name: `日记 group（${cfg.dailyGroup}）`,
             ok: groupOk,
-            detail: groupOk ? `group."${cfg.dailyGroup}" → ${cfg.dailyDir}/` : '配置里没有这个 group，点「初始化 / 补建」补上',
+            detail: !dailyGroup
+                ? '当前结构没有这个 group'
+                : dailyGroup.present
+                    ? groupOk
+                        ? `group."${cfg.dailyGroup}" → ${dailyGroup.actualPaths?.join('、')}` +
+                            (otherBroken.length ? `；另有 ${otherBroken.length} 个 group 与配置不一致 —— 跑 zk-kit groups --fix` : '')
+                        : `期望 ${dailyGroup.expectedPaths.join('、')}，实际 ${dailyGroup.actualPaths?.join('、') ?? '解析不了'} —— 跑 zk-kit groups --fix`
+                    : `配置里没有这个 group（期望 ${dailyGroup.expectedPaths.join('、')}），点「初始化 / 补建」补上`,
         });
-        const st = structureStatus(cfg);
         const drift = st.mode === 'flat' && st.extra.length
             ? `；盘上有分层目录 ${st.extra.join('、')}，新建笔记会落在 ${cfg.notesDir}/ 根`
             : '';

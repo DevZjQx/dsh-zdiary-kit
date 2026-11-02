@@ -14,6 +14,8 @@ import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import { ZkError, zk } from './zk.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
+import { isPluginOwned, normGroupPath, parseGroupBlocks, pathsOverlap, samePaths } from './notebook-config.ts'
+import type { GroupBlock } from './notebook-config.ts'
 
 export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
 
@@ -33,6 +35,8 @@ export interface EnsureResult {
   templatesWritten: string[]
   /** 本次追加的 group 名 */
   groupsAdded: string[]
+  /** 配置与 `.zk/config.toml` 的 group 不一致（只报告，不自动重写；`zk-kit groups --fix` 显式修） */
+  groupWarnings: string[]
   /** 本次写了根目录的 AGENTS.md（layered 自动写；flat 只有 withAgents 才写；已存在的不覆盖） */
   agentsWritten: boolean
   /** 本次写了根目录的 WORKFLOW.md（同上，只在缺失时写） */
@@ -100,7 +104,7 @@ tags: []
 ## Links
 `
 
-interface GroupSpec {
+export interface GroupSpec {
   name: string
   paths: string[]
   template: string
@@ -166,7 +170,7 @@ function normDir(rel: string): string {
 export function newNoteDir(cfg: Config, input: { dir?: string; type?: string } = {}): string {
   const given = input.dir ? normDir(input.dir) : ''
   if (cfg.structure !== 'layered') return given || normDir(cfg.notesDir)
-  const groups = layeredGroups(cfg).flatMap((group) => group.paths.map(normDir))
+  const groups = expectedGroups(cfg).flatMap((group) => group.paths.map(normDir))
   const hint =
     `可选目录：${groups.join(' / ')}（group 下的子目录也行）；` +
     `落在 ${cfg.notesDir}/ 根不会套模板，没有 frontmatter，文件名是随机 id`
@@ -199,6 +203,11 @@ function layeredGroups(cfg: Config): GroupSpec[] {
   ]
 }
 
+/** 当前结构期望的 group（flat 一个，layered 五个）；顺序与目录一致 */
+export function expectedGroups(cfg: Config): GroupSpec[] {
+  return cfg.structure === 'layered' ? layeredGroups(cfg) : [dailyGroup(cfg)]
+}
+
 /** 当前结构需要的目录（相对笔记本；flat 只有笔记与日记两个） */
 export function structureDirs(cfg: Config): string[] {
   const rels = [cfg.notesDir, cfg.dailyDir]
@@ -210,6 +219,26 @@ export function structureDirs(cfg: Config): string[] {
     )
   }
   return [...new Set(rels)]
+}
+
+/** 一个期望 group 与 `.zk/config.toml` 现状的对照 */
+export interface GroupStatus {
+  name: string
+  expectedPaths: string[]
+  /** null = 缺 paths / 解析不了 / group 不存在（用 present 区分） */
+  actualPaths: string[] | null
+  pathsOk: boolean
+  /** config.toml 里有没有这个名字的组头 */
+  present: boolean
+  expectedTemplate: string
+  actualTemplate: string | null
+  /** template 被用户改过不算「装坏了」，只如实展示；不影响 groupsOk / ready */
+  templateOk: boolean
+  duplicate: boolean
+  /** 组头前有 dsh-zdiary-kit 注释：`groups --fix` 允许改它的 paths */
+  owned: boolean
+  /** group 缺失时：哪个现有 group 占着期望路径（典型：只改 dailyGroup） */
+  conflict?: string
 }
 
 export interface StructureStatus {
@@ -227,6 +256,56 @@ export interface StructureStatus {
   ready: boolean
   /** layered 才要求有 AGENTS.md；present 如实反映磁盘（flat 下也可能是用户自己放的） */
   agents: { path: string; required: boolean; present: boolean }
+  /** 配置期望的每个 group 与 config.toml 的对照（只读） */
+  groups: GroupStatus[]
+  /** 每个期望 group 都存在且 paths 一致；template 不参与（用户可能有意改过，见 templateOk） */
+  groupsOk: boolean
+  /** 给人看的差异说明；没有 .zk/config.toml 时为空（未初始化由 ready / 笔记本检查负责） */
+  groupWarnings: string[]
+}
+
+function groupStatuses(cfg: Config, blocks: Map<string, GroupBlock> | null): GroupStatus[] {
+  return expectedGroups(cfg).map((group) => {
+    const block = blocks?.get(group.name) ?? null
+    const actualPaths = block?.paths ?? null
+    const actualTemplate = block?.template ?? null
+    const conflict = block ? undefined : [...(blocks?.values() ?? [])].find((candidate) =>
+      candidate.paths?.some((actual) => group.paths.some((expected) => pathsOverlap(actual, expected))))?.name
+    return {
+      name: group.name,
+      expectedPaths: group.paths,
+      actualPaths,
+      pathsOk: !!block && !block.duplicate && samePaths(actualPaths, group.paths),
+      present: !!block,
+      expectedTemplate: group.template,
+      actualTemplate,
+      templateOk: !!block && !block.duplicate && actualTemplate === group.template,
+      duplicate: !!block?.duplicate,
+      owned: !!block && isPluginOwned(block),
+      ...(conflict ? { conflict } : {}),
+    }
+  })
+}
+
+function groupWarningsOf(groups: GroupStatus[]): string[] {
+  const out: string[] = []
+  for (const group of groups) {
+    if (!group.present) {
+      out.push(
+        group.conflict
+          ? `缺 group "${group.name}"：路径 ${group.expectedPaths.join('、')} 已被 group "${group.conflict}" 占用 —— 跑 zk-kit groups --fix`
+          : `缺 group "${group.name}"（期望 ${group.expectedPaths.join('、')}）—— 跑 zk-kit groups --fix`,
+      )
+    } else if (group.duplicate) {
+      out.push(`group "${group.name}" 重复出现，解析不了 —— 手动检查 .zk/config.toml`)
+    } else if (!group.pathsOk) {
+      out.push(
+        `group "${group.name}" 期望 ${group.expectedPaths.join('、')}，` +
+        `实际 ${group.actualPaths?.join('、') ?? '解析不了'} —— 跑 zk-kit groups --fix`,
+      )
+    }
+  }
+  return out
 }
 
 /** 结构一致性检查：只报告，不建目录、不改配置（设置页据此显示告警） */
@@ -245,6 +324,11 @@ export function structureStatus(cfg: Config): StructureStatus {
     .filter((rel) => !dirs.map(normDir).includes(rel))
     .filter((rel) => fs.existsSync(path.join(cfg.notebook, rel)))
     .sort()
+  let blocks: Map<string, GroupBlock> | null = null
+  try {
+    blocks = parseGroupBlocks(fs.readFileSync(path.join(cfg.notebook, '.zk', 'config.toml'), 'utf8'))
+  } catch { blocks = null }
+  const groups = groupStatuses(cfg, blocks)
   return {
     mode: cfg.structure,
     dirs,
@@ -252,12 +336,10 @@ export function structureStatus(cfg: Config): StructureStatus {
     extra,
     ready: missing.length === 0,
     agents: { path: agentsPath, required, present: fs.existsSync(agentsPath) },
+    groups,
+    groupsOk: !!blocks && groups.every((group) => group.present && group.pathsOk),
+    groupWarnings: blocks ? groupWarningsOf(groups) : [],
   }
-}
-
-function hasGroup(configToml: string, group: string): boolean {
-  const escaped = group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`^\\[group\\."?${escaped}"?\\]`, 'm').test(configToml)
 }
 
 /** 建目录，返回真正新建的那些（相对笔记本） */
@@ -335,15 +417,48 @@ export async function ensureNotebook(
     workflowWritten = true
   }
 
-  const groups = layered ? layeredGroups(cfg) : [dailyGroup(cfg)]
+  const groups = expectedGroups(cfg)
   let configText = fs.readFileSync(configFile, 'utf8')
+  const blocks = parseGroupBlocks(configText)
   const groupsAdded: string[] = []
+  const groupWarnings: string[] = []
   for (const group of groups) {
-    if (hasGroup(configText, group.name)) continue
+    const block = blocks.get(group.name)
+    if (block) {
+      // 已有 group 一律不重写（用户可能改过 template / extra），只报告与配置的差异
+      if (block.duplicate) {
+        groupWarnings.push(`group "${group.name}" 重复出现，解析不了 —— 手动检查 .zk/config.toml`)
+      } else if (!samePaths(block.paths, group.paths)) {
+        groupWarnings.push(
+          `group "${group.name}" 期望 ${group.paths.join('、')}，` +
+          `实际 ${block.paths?.join('、') ?? '解析不了'} —— 跑 zk-kit groups --fix`,
+        )
+      }
+      continue
+    }
+    // 新 group 的路径已经被别的 group 占用（典型：只改 dailyGroup 不改 dailyDir）：
+    // 再追加就是两个 group 抢同一路径，zk 的模板命中就随机了 —— 只报告，不写
+    const owner = [...blocks.values()].find((candidate) =>
+      candidate.paths?.some((actual) => group.paths.some((expected) => pathsOverlap(actual, expected))))
+    if (owner) {
+      groupWarnings.push(
+        `group "${group.name}" 没追加：路径 ${group.paths.join('、')} 已被 group "${owner.name}" 占用` +
+        '（跑 zk-kit groups --fix）',
+      )
+      continue
+    }
     const prefix = configText.endsWith('\n') ? '' : '\n'
     configText += prefix + groupSection(group)
     fs.writeFileSync(configFile, configText, 'utf8')
     groupsAdded.push(group.name)
+    blocks.set(group.name, {
+      name: group.name,
+      paths: group.paths.map(normGroupPath),
+      template: group.template,
+      comment: `# ${group.comment}`,
+      header: `[group."${group.name}"]`,
+      duplicate: false,
+    })
   }
 
   return {
@@ -354,7 +469,164 @@ export async function ensureNotebook(
     dirsCreated,
     templatesWritten,
     groupsAdded,
+    groupWarnings,
     agentsWritten,
     workflowWritten,
   }
+}
+
+export interface GroupFixUpdate {
+  name: string
+  action: 'paths' | 'rename' | 'append' | 'skip'
+  expectedPaths: string[]
+  actualPaths?: string[] | null
+  /** action=rename 时的旧组名 */
+  from?: string
+  reason?: string
+}
+
+export interface GroupFixResult {
+  notebook: string
+  changed: boolean
+  /** 写前备份的路径（没有改动就是 null） */
+  backup: string | null
+  updates: GroupFixUpdate[]
+  warnings: string[]
+}
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** 只改组头名字（连同 .note / .extra 子表），其它行一字不动 */
+function renameGroup(text: string, from: string, to: string): string {
+  const re = new RegExp(`(\\[group\\.)(?:"${escapeRe(from)}"|'${escapeRe(from)}')`, 'g')
+  return text.replace(re, `$1"${to}"`)
+}
+
+/** 只替换 base group 的 paths 行；多行数组 / 找不到都不猜（返回 null） */
+function replacePaths(text: string, name: string, paths: string[]): string | null {
+  const lines = text.split('\n')
+  const headerRe = /^\s*\[group\.(?:"([^"]+)"|'([^']+)')(?:\.(note|extra))?\]\s*$/
+  let start = -1
+  for (let i = 0; i < lines.length; i++) {
+    const m = headerRe.exec(lines[i])
+    if (!m || m[3]) continue
+    if ((m[1] ?? m[2]) === name) { start = i; break }
+  }
+  if (start < 0) return null
+  let end = lines.length
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\s*\[/.test(lines[i])) { end = i; break }
+  }
+  const value = `[${paths.map((p) => JSON.stringify(p)).join(', ')}]`
+  for (let i = start + 1; i < end; i++) {
+    const m = /^(\s*paths\s*=\s*)(\[[^\]]*\])(\s*(?:#.*)?)$/.exec(lines[i])
+    if (m) {
+      lines[i] = m[1] + value + m[3]
+      return lines.join('\n')
+    }
+    if (/^\s*paths\s*=/.test(lines[i])) return null // 多行数组：不在本轮猜着改
+  }
+  lines.splice(start + 1, 0, `paths = ${value}`)
+  return lines.join('\n')
+}
+
+/**
+ * 显式修复 group 配置（`zk-kit groups --fix`）：
+ *   · 只改 dsh-zdiary-kit 自己写的 group（组头前有 `dsh-zdiary-kit` 注释）；
+ *   · 只改 `paths` 行，或把同路径的旧组头改名（dailyGroup 变更）；
+ *   · 用户自定义的 template / extra / 注释 / 顺序一律不动；
+ *   · 写前备份 `.zk/config.toml.bak`，写临时文件后 rename。
+ */
+export function fixGroupConfig(cfg: Config): GroupFixResult {
+  const file = path.join(cfg.notebook, '.zk', 'config.toml')
+  if (!fs.existsSync(file)) {
+    throw new ZkError('还没有 .zk/config.toml —— 先跑 zk-kit init')
+  }
+  const original = fs.readFileSync(file, 'utf8')
+  let text = original
+  const updates: GroupFixUpdate[] = []
+  const warnings: string[] = []
+  const groups = expectedGroups(cfg)
+  const expectedNames = new Set(groups.map((group) => group.name))
+
+  // 1. 缺失的 group：先认领同路径的旧 plugin group（改组头名），再看路径是否被占
+  for (const group of groups) {
+    const blocks = parseGroupBlocks(text)
+    if (blocks.has(group.name)) continue
+    const stale = [...blocks.values()].filter((block) => isPluginOwned(block) && !expectedNames.has(block.name))
+    const same = stale.find((block) => samePaths(block.paths, group.paths))
+    if (same) {
+      text = renameGroup(text, same.name, group.name)
+      updates.push({
+        name: group.name,
+        action: 'rename',
+        from: same.name,
+        expectedPaths: group.paths,
+        actualPaths: same.paths,
+      })
+      continue
+    }
+    // dailyGroup 改名 + dailyDir 同时改：认不出旧组，也不冒险追加第二个日记组
+    const staleDaily = group.template === 'daily.md' ? stale.find((block) => block.template === 'daily.md') : undefined
+    if (staleDaily) {
+      const reason = `旧日记 group "${staleDaily.name}" 的路径是 ${staleDaily.paths?.join('、') ?? '解析不了'}，` +
+        `与期望 ${group.paths.join('、')} 不一致 —— 先手动确认改名与路径`
+      warnings.push(reason)
+      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, reason })
+      continue
+    }
+    const owner = [...blocks.values()].find((block) =>
+      block.paths?.some((actual) => group.paths.some((expected) => pathsOverlap(actual, expected))))
+    if (owner) {
+      const reason = `路径 ${group.paths.join('、')} 已被 group "${owner.name}" 占用 —— 先手动处理这个 group`
+      warnings.push(`group "${group.name}" 没追加：${reason}`)
+      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, reason })
+      continue
+    }
+    const prefix = text.endsWith('\n') ? '' : '\n'
+    text += prefix + groupSection(group)
+    updates.push({ name: group.name, action: 'append', expectedPaths: group.paths })
+  }
+
+  // 2. 已存在的 group：只改 plugin-owned 的 paths 行
+  for (const group of groups) {
+    const block = parseGroupBlocks(text).get(group.name)
+    if (!block) continue
+    if (block.duplicate) {
+      const reason = `group "${group.name}" 重复出现，解析不了 —— 手动检查 .zk/config.toml`
+      warnings.push(reason)
+      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, reason })
+      continue
+    }
+    if (samePaths(block.paths, group.paths)) continue
+    if (!isPluginOwned(block)) {
+      const reason = `不是插件建的 group，paths 未改（期望 ${group.paths.join('、')}，实际 ${block.paths?.join('、') ?? '解析不了'}）`
+      warnings.push(`group "${group.name}"：${reason}`)
+      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, actualPaths: block.paths, reason })
+      continue
+    }
+    const next = replacePaths(text, group.name, group.paths)
+    if (next === null) {
+      const reason = 'paths 行解析不了（可能是多行数组），未改 —— 手动编辑 .zk/config.toml'
+      warnings.push(`group "${group.name}"：${reason}`)
+      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, actualPaths: block.paths, reason })
+      continue
+    }
+    text = next
+    updates.push({
+      name: group.name,
+      action: 'paths',
+      expectedPaths: group.paths,
+      actualPaths: block.paths,
+    })
+  }
+
+  if (text === original) return { notebook: cfg.notebook, changed: false, backup: null, updates, warnings }
+
+  const backup = `${file}.bak`
+  fs.copyFileSync(file, backup)
+  const tmp = `${file}.tmp-${process.pid}`
+  fs.writeFileSync(tmp, text, 'utf8')
+  fs.renameSync(tmp, file)
+  return { notebook: cfg.notebook, changed: true, backup, updates, warnings }
 }

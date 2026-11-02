@@ -4,7 +4,8 @@
 
 **Owns.** 七条路由（全部 `/dsh-zdiary-kit/api/*`）：
 - `GET/POST /settings`：读写配置（白名单 + 归一化在 `config/store`）；GET 返回快照与 `stamp`，POST 带回 `stamp`
-  校验（别人改过就 409），成功返回快照与 `warn`
+  校验（别人改过就 409），成功返回快照与 `warn`；旧 `archiveDir` 非空时改它返回 **400**
+  （`ArchiveDirChangeError`，不迁移文件）
 - `GET /status`：zk 位置/版本/来源、笔记本是否存在、笔记/标签/断链/孤立计数
 - `POST /init`：`ensureNotebook`（幂等；layered 时一并写 `AGENTS.md`）
 - `POST /agents`：`writeAgentsTemplate` —— flat 库的 opt-in，已存在不覆盖；返回 `result.written` 与最新快照
@@ -13,8 +14,11 @@
 - `GET /selftest`：七项真检查（zk、笔记本、模板、group、结构、长期记忆、索引）
 
 快照（`GET /settings`、`GET /status`、写操作的回包）除了配置与计数，还带两块**诊断**：
-`structure`（配置的模式、缺哪些目录、`extra` 盘上多出来的分层目录、`AGENTS.md` 在不在）与
+`structure`（配置的模式、缺哪些目录、`extra` 盘上多出来的分层目录、`AGENTS.md` 在不在，
+以及 `groups` / `groupsOk` / `groupWarnings` —— 每个期望 group 的 paths 与 `.zk/config.toml` 的对照）与
 `memory`（三份 meta 的保留词数 / 原词数 / 目录词数 / 预算 / 截断量）。
+保存后 `groupsOk === false` 时 `warn` 会点名不一致的 group 并建议 `zk-kit groups --fix`；页面顶部也常驻这条告警。
+自检的「日记 group」项用同一份解析结果：期望 / 实际不一致即为 ✗；其它 group 不一致会在 detail 里提一句。
 `extra` 只在 `flat` 下非空，命中时不把 `ready` 置 false：它表达的是「盘上有分层目录，新建笔记会落在 `notes/` 根」，
 不是配置错误。
 两者都是纯读：结构不一致只显示告警 + 底部的「初始化 / 补建」（= `POST /init`），**不自动建、不自动删、不改配置**。
@@ -43,6 +47,7 @@
 `config set structure=…` 改的是**当前笔记本**的结构；派生键 `notebook` / `notebooks` 不接受单键赋值（报错并指路）。
 多笔记本走 `zk-kit notebooks [add 名 路径 | use 名 | remove 名]`：它改的是 `notebooks` 与 `active`，
 `use` / `remove` 触发的切换会自动建好目标笔记本；`remove` 只移除配置条目，磁盘目录与笔记保留。
+改目录 / `dailyGroup` 后，`.zk/config.toml` 不会自动跟着变：`zk-kit groups` 看差异，`--fix` 只改插件建的 group（写前备份）。
 `notebook` 与 `structure` 是派生的（`notebooks[active]`），不落盘。
 
 **Does not own.** 工具的注册与执行；zk 命令的正确性；模板 / group / `AGENTS.md` 的写入与结构检查（`lib/notebook`）。

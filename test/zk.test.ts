@@ -24,6 +24,7 @@ const session = await import('../src/config/session.ts')
 const zk = await import('../src/lib/zk.ts')
 const memory = await import('../src/lib/memory.ts')
 const notebookLib = await import('../src/lib/notebook.ts')
+const notebookConfig = await import('../src/lib/notebook-config.ts')
 const lintLib = await import('../src/lib/lint.ts')
 const dreamLib = await import('../src/lib/dream.ts')
 const toolsFeature = await import('../src/features/zk-tools/feature.ts')
@@ -668,6 +669,145 @@ describe('notebook bootstrap', () => {
     const result = await notebookLib.ensureNotebook(custom)
     expect(result.configPatched).toBe(false)
     expect(fs.readFileSync(file, 'utf8')).toBe(before)
+  })
+})
+
+describe('M1: 配置收敛（group）', () => {
+  test('解析 group：双 / 单引号、缺 paths、重复、注释归属', () => {
+    const text = [
+      '# dsh-zdiary-kit：日记笔记组',
+      '[group."daily"]',
+      'paths = ["journal"]',
+      '',
+      '[group."daily".note]',
+      'template = "daily.md"',
+      '',
+      '# 用户自己写的',
+      "[group.'single']",
+      "paths = ['a', 'b']",
+      '',
+      '[group."nopaths"]',
+      '',
+      '[group."dup"]',
+      'paths = ["x"]',
+      '',
+      '[group."dup"]',
+      'paths = ["y"]',
+    ].join('\n')
+    const blocks = notebookConfig.parseGroupBlocks(text)
+    const daily = blocks.get('daily')!
+    expect(daily.paths).toEqual(['journal'])
+    expect(daily.template).toBe('daily.md')
+    expect(daily.comment).toContain('dsh-zdiary-kit')
+    expect(notebookConfig.isPluginOwned(daily)).toBe(true)
+    expect(blocks.get('single')!.paths).toEqual(['a', 'b'])
+    expect(notebookConfig.isPluginOwned(blocks.get('single')!)).toBe(false)
+    expect(blocks.get('nopaths')!.paths).toBeNull()
+    expect(blocks.get('dup')!.duplicate).toBe(true)
+    expect(blocks.get('dup')!.paths).toBeNull()
+    expect(notebookConfig.samePaths(['./journal/'], ['journal'])).toBe(true)
+    expect(notebookConfig.samePaths(['journal', 'extra'], ['journal'])).toBe(false)
+    expect(notebookConfig.pathsOverlap('notes', 'notes/concepts')).toBe(true)
+    expect(notebookConfig.pathsOverlap('notes', 'journal')).toBe(false)
+  })
+
+  it('改 dailyDir：groupsOk=false，init 不追加重复 group，--fix 只改 paths', async () => {
+    const dir = path.join(home, 'nb-groups-daily')
+    const base = store.normalizeConfig({ notebook: dir, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal' })
+    await notebookLib.ensureNotebook(base)
+    expect(notebookLib.structureStatus(base).groupsOk).toBe(true)
+
+    const changed = { ...base, dailyDir: 'diary' }
+    const before = notebookLib.structureStatus(changed)
+    expect(before.groupsOk).toBe(false)
+    expect(before.groups[0].expectedPaths).toEqual(['diary'])
+    expect(before.groups[0].actualPaths).toEqual(['journal'])
+    expect(before.groupWarnings.length).toBe(1)
+
+    const again = await notebookLib.ensureNotebook(changed)
+    expect(again.groupsAdded).toEqual([])
+    expect(again.groupWarnings.length).toBe(1)
+    const unchanged = fs.readFileSync(path.join(dir, '.zk', 'config.toml'), 'utf8')
+    expect(unchanged.match(/^\[group\."daily"\]/gm)?.length).toBe(1)
+    expect(unchanged).not.toContain('[group."diary"]')
+
+    const fixed = notebookLib.fixGroupConfig(changed)
+    expect(fixed.changed).toBe(true)
+    expect(fixed.updates.some((u) => u.action === 'paths')).toBe(true)
+    expect(fixed.backup).toBeTruthy()
+    expect(fs.existsSync(fixed.backup!)).toBe(true)
+    const toml = fs.readFileSync(path.join(dir, '.zk', 'config.toml'), 'utf8')
+    expect(toml).toContain('paths = ["diary"]')
+    expect(toml).not.toContain('paths = ["journal"]')
+    expect(notebookLib.structureStatus(changed).groupsOk).toBe(true)
+  })
+
+  it('改 dailyGroup：不追加抢同一路径的 group；--fix 把旧组头改名（含 .note）', async () => {
+    const dir = path.join(home, 'nb-groups-rename')
+    const base = store.normalizeConfig({ notebook: dir, zkPath: zkBin, dailyDir: 'journal' })
+    await notebookLib.ensureNotebook(base)
+
+    const renamed = { ...base, dailyGroup: 'diary' }
+    const before = fs.readFileSync(path.join(dir, '.zk', 'config.toml'), 'utf8')
+    const result = await notebookLib.ensureNotebook(renamed)
+    expect(result.groupsAdded).toEqual([])
+    expect(result.groupWarnings.some((w) => w.includes('占用'))).toBe(true)
+    expect(fs.readFileSync(path.join(dir, '.zk', 'config.toml'), 'utf8')).toBe(before)
+
+    const fixed = notebookLib.fixGroupConfig(renamed)
+    expect(fixed.updates.some((u) => u.action === 'rename' && u.from === 'daily')).toBe(true)
+    const toml = fs.readFileSync(path.join(dir, '.zk', 'config.toml'), 'utf8')
+    expect(toml).toContain('[group."diary"]')
+    expect(toml).toContain('[group."diary".note]')
+    expect(toml).not.toContain('[group."daily"]')
+    // 改名不动路径与模板
+    expect(toml).toContain('paths = ["journal"]')
+    expect(toml).toContain('template = "daily.md"')
+    expect(notebookLib.structureStatus(renamed).groupsOk).toBe(true)
+  })
+
+  it('--fix 不覆盖自定义 template / extra', async () => {
+    const dir = path.join(home, 'nb-groups-custom')
+    const base = store.normalizeConfig({ notebook: dir, zkPath: zkBin, dailyDir: 'journal' })
+    await notebookLib.ensureNotebook(base)
+    const file = path.join(dir, '.zk', 'config.toml')
+    const custom = fs.readFileSync(file, 'utf8')
+      .replace('template = "daily.md"', 'template = "mine.md"') +
+      '\n[group."daily".extra]\nowner = "me"\n'
+    fs.writeFileSync(file, custom)
+
+    const changed = { ...base, dailyDir: 'entries' }
+    const fixed = notebookLib.fixGroupConfig(changed)
+    expect(fixed.changed).toBe(true)
+    const toml = fs.readFileSync(file, 'utf8')
+    expect(toml).toContain('paths = ["entries"]')
+    expect(toml).toContain('template = "mine.md"')
+    expect(toml).toContain('owner = "me"')
+  })
+
+  it('archiveDir：旧目录非空拒绝改动；空目录 / 不存在允许', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const dir = path.join(home, 'nb-archive-guard')
+    try {
+      fs.mkdirSync(path.join(dir, 'archive'), { recursive: true })
+      fs.writeFileSync(path.join(dir, 'archive', 'old.md'), '# 废弃\n')
+      store.writeConfig({ notebooks: { default: { path: dir, structure: 'flat' } }, active: 'default', archiveDir: 'archive' })
+
+      expect(() => store.writeConfig({ archiveDir: 'attic' })).toThrow(store.ArchiveDirChangeError)
+      expect(store.config().archiveDir).toBe('archive')
+
+      // 空目录允许改
+      fs.rmSync(path.join(dir, 'archive', 'old.md'))
+      store.writeConfig({ archiveDir: 'attic' })
+      expect(store.config().archiveDir).toBe('attic')
+
+      // 旧目录不存在也允许改
+      store.writeConfig({ archiveDir: 'gone' })
+      expect(store.config().archiveDir).toBe('gone')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+    }
   })
 })
 
@@ -2070,15 +2210,16 @@ describe('M4: 结构设置与记忆预算', () => {
     expect(fs.readFileSync(paper, 'utf8')).toBe('# 原文\n\n一段原文。\n')
   })
 
-  it('设置写入后立刻生效：structure / memoryBudgetWords / archiveDir', async () => {
+  it('设置写入后立刻生效：structure / memoryBudgetWords', async () => {
     const paths = await import('../src/config/paths.ts')
     const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
     try {
-      store.writeConfig({ structure: 'layered', memoryBudgetWords: 180, archiveDir: 'attic' })
+      store.writeConfig({ structure: 'layered', memoryBudgetWords: 180 })
       const next = store.config()
       expect(next.structure).toBe('layered')
       expect(next.memoryBudgetWords).toBe(180)
-      expect(next.archiveDir).toBe('attic')
+      // archiveDir 的非空变更另有专门用例（M1：旧归档目录里有文件就拒绝改）
+      expect(next.archiveDir).toBe('archive')
       // 预算真的进注入：180 词上限
       expect(memory.buildMemoryPayload(next).budget).toBe(180)
     } finally {

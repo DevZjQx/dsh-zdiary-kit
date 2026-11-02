@@ -59,7 +59,7 @@ window.__ModuleLoader__?.load({
             { group: '目录与 group', key: 'notesDir', label: '笔记子目录', hint: '普通笔记放哪（相对笔记本），默认 notes —— 所有笔记本共用' },
             { group: '目录与 group', key: 'dailyDir', label: '日记子目录', hint: '日记放哪（相对笔记本），默认 journal；文件名由日期模板生成 —— 所有笔记本共用' },
             { group: '目录与 group', key: 'dailyGroup', label: '日记 group 名', hint: 'zk 配置里的 [group."…"]，默认 daily —— 初始化时会自动补上；所有笔记本共用' },
-            { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；所有笔记本共用，改动后点「初始化 / 补建」' },
+            { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；所有笔记本共用。旧归档目录非空时拒绝改动 —— 插件不会自动迁移文件' },
             { group: '记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 500（中文按 2 字 1 词）。超了先丢 MEMORY 尾部整段，并回显截断了多少' },
             { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
             { group: '写入', key: 'maxReadChars', label: 'zk_read 单次上限（字符）', hint: '默认 20000；超了会截断并明确告知模型' },
@@ -195,7 +195,7 @@ window.__ModuleLoader__?.load({
                             parts.push('写入 WORKFLOW.md');
                         if (r.configPatched && !(r.templatesWritten && r.templatesWritten.length) && !(r.dirsCreated && r.dirsCreated.length))
                             parts.push('补齐 group');
-                        setOkMsg('✓ ' + parts.join(' · '));
+                        setOkMsg('✓ ' + parts.join(' · ') + (d.warn ? '\n⚠️ ' + d.warn : ''));
                     }
                     if (name === 'index')
                         setOkMsg('✓ 索引已重建');
@@ -306,6 +306,12 @@ window.__ModuleLoader__?.load({
                     : structure.mode === 'flat' && structure.extra.length
                         ? `盘上有分层目录（${structure.extra.join('、')}），但配置是 flat —— 新建笔记会落在 notes/ 根，不套模板`
                         : '';
+            // group 与配置不一致不会自己好：改目录 / 改 dailyGroup 后要显式跑 groups --fix
+            const groupBroken = (structure?.groups || []).filter((g) => !g.present || !g.pathsOk);
+            const groupWarnText = snap?.notebook.exists && structure?.groupsOk === false && groupBroken.length
+                ? `配置与 .zk/config.toml 的 group 不一致（${groupBroken.map((g) => g.name).join('、')}）`
+                : '';
+            const configWarn = [structureWarn, groupWarnText].filter(Boolean).join('；');
             // 底部只留一个按钮：没建过就叫「初始化」，缺东西就叫「补建」，都带上当前笔记本名。
             // 用已保存的 active 而不是 cfg.active —— 按钮执行的是服务端已落盘的那份配置。
             const savedActive = snap?.config?.active || cfg.active;
@@ -317,8 +323,9 @@ window.__ModuleLoader__?.load({
                     ? `补建 ${savedActive} 的目录`
                     : `初始化 / 补建 ${savedActive}`;
             return h('div', { className: 'zdk' }, h('h3', { className: 'zdk-title' }, '知识库（zk）'), h('p', { className: 'zdk-intro' }, '把你的 zk 笔记本接进 DSH：agent 用 zk_* 工具搜索、读写笔记与日记，双链交给 zk 索引。' +
-                '没装 zk 就让插件装一个 —— 第一次调用工具时会自动建好笔记本，不需要先来这里点任何按钮。'), statusLine ? h('div', { className: 'zdk-hint' }, '📚 ' + statusLine) : null, memoryLine ? h('div', { className: 'zdk-hint' }, '🧠 ' + memoryLine) : null, structureWarn
-                ? h('div', { className: 'zdk-err' }, '⚠️ ' + structureWarn + ' —— 点底部「' + initLabel + '」')
+                '没装 zk 就让插件装一个 —— 第一次调用工具时会自动建好笔记本，不需要先来这里点任何按钮。'), statusLine ? h('div', { className: 'zdk-hint' }, '📚 ' + statusLine) : null, memoryLine ? h('div', { className: 'zdk-hint' }, '🧠 ' + memoryLine) : null, configWarn
+                ? h('div', { className: 'zdk-err' }, '⚠️ ' + configWarn +
+                    (groupWarnText ? ' —— 跑 zk-kit groups --fix' : ' —— 点底部「' + initLabel + '」'))
                 : null, h('div', null, h('div', { className: 'zdk-group' }, '笔记本 · 每个笔记本自己的路径与结构'), h('div', { className: 'zdk-row' }, h('div', null, h('div', { className: 'zdk-label' }, '当前笔记本'), h('div', { className: 'zdk-hint' }, '这里是**新会话的默认值**：每个会话第一次用 zk_* 时会把当时的值固定下来，之后各走各的。' +
                 '改这里不会带着已经跑着的会话走 —— 要让某个会话跟过去，在那个会话里说「切到 X 库」（zk_use）。\n' +
                 '路径与结构是每个笔记本自己的；笔记/日记子目录、归档目录、注入预算是全局的。\n' +

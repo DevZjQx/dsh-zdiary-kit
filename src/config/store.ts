@@ -12,6 +12,8 @@
  * 老配置只有 `notebook`（或 structure 是全局键）：读进来一次性迁进 `notebooks.default`，
  * 之后就不再有双向合并 —— notebooks 存在时，散落的 `notebook` 顶层键只当没看见。
  */
+import fs from 'node:fs'
+import path from 'node:path'
 import { CFG_FILE, CFG_LOCK, defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from './paths.ts'
 import { fileStamp } from '../lib/file-stamp.ts'
 import { withFileLockSync } from '../lib/lock.ts'
@@ -300,6 +302,16 @@ export function writeConfig(
       notebooks[active] = { ...entry, structure: structureOf(patch.structure, 'flat') }
     }
     const next = normalizeConfig({ ...merged, notebooks, active }, workspace)
+    // archiveDir 变更先阻断：旧归档目录非空时，改完不会迁移文件 —— 旧归档不再被排除，
+    // 废弃笔记会重新进入检索、统计也会把它们算成活跃。要么手动迁移，要么保持原值。
+    if (next.archiveDir !== current.archiveDir) {
+      const oldAbs = path.join(current.notebook, current.archiveDir)
+      let entries: string[] = []
+      try { entries = fs.readdirSync(oldAbs) } catch { /* 不存在 / 没权限：按空处理，允许改 */ }
+      if (entries.length > 0) {
+        throw new ArchiveDirChangeError(current.archiveDir, next.archiveDir, oldAbs, entries.length)
+      }
+    }
     writeJson(CFG_FILE, toDisk(next))
     configCache = null
     return next
@@ -316,6 +328,20 @@ export class ConfigConflictError extends Error {
   constructor() {
     super('配置已被其他会话或 CLI 修改')
     this.name = 'ConfigConflictError'
+  }
+}
+
+/**
+ * archiveDir 从「空目录 / 不存在」改成别的值时被拒。
+ * 不是技术限制，是不让「改一个字符串」静默把旧归档放回检索：插件不迁移文件。
+ */
+export class ArchiveDirChangeError extends Error {
+  constructor(oldDir: string, newDir: string, absPath: string, count: number) {
+    super(
+      `archiveDir 从 "${oldDir}" 改成 "${newDir}" 被拒绝：旧归档目录 ${absPath} 里还有 ${count} 项。\n` +
+      '旧归档不会自动迁移，改完会让废弃笔记重新进入检索 —— 先手动迁移，或保持原值。',
+    )
+    this.name = 'ArchiveDirChangeError'
   }
 }
 
