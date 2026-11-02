@@ -23,6 +23,7 @@ const store = await import('../src/config/store.ts')
 const session = await import('../src/config/session.ts')
 const zk = await import('../src/lib/zk.ts')
 const memory = await import('../src/lib/memory.ts')
+const memoryFormat = await import('../src/lib/memory-format.ts')
 const notebookLib = await import('../src/lib/notebook.ts')
 const notebookConfig = await import('../src/lib/notebook-config.ts')
 const lintLib = await import('../src/lib/lint.ts')
@@ -828,6 +829,37 @@ describe('M1: 配置收敛（group）', () => {
     }
   })
 
+  it('archiveDir：非当前笔记本也受保护，读取失败不按空目录放行', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const active = path.join(home, 'nb-archive-active')
+    const other = path.join(home, 'nb-archive-other')
+    try {
+      fs.mkdirSync(path.join(other, 'archive'), { recursive: true })
+      fs.writeFileSync(path.join(other, 'archive', 'retired.md'), '# 废弃\n')
+      store.writeConfig({
+        notebooks: {
+          default: { path: active, structure: 'flat' },
+          other: { path: other, structure: 'flat' },
+        },
+        active: 'default',
+        archiveDir: 'archive',
+      })
+
+      // archiveDir 是全局项：当前库为空，也不能漏掉另一本里的非空旧归档
+      expect(() => store.writeConfig({ archiveDir: 'attic' })).toThrow(store.ArchiveDirChangeError)
+      expect(store.config().archiveDir).toBe('archive')
+
+      // ENOENT 之外的读取失败必须失败关闭，不能猜旧归档是空的
+      fs.rmSync(path.join(other, 'archive'), { recursive: true, force: true })
+      fs.writeFileSync(path.join(other, 'archive'), 'not a directory')
+      expect(() => store.writeConfig({ archiveDir: 'attic' })).toThrow()
+      expect(store.config().archiveDir).toBe('archive')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+    }
+  })
+
   it('dailyDir 撞上已有 group 的路径：groupsOk=false，--fix 一个都不写', async () => {
     const dir = path.join(home, 'nb-groups-samepath')
     const base = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered', dailyDir: 'journal' })
@@ -996,21 +1028,24 @@ describe('M2: 记忆生命周期', () => {
     expect(payload.text).toContain('只能按位置丢')
   })
 
-  it('退役条目：注入省略（含缩进续行）、notice 计数、大小写都算', () => {
-    const { payload } = buildMem({
-      'MEMORY.md': [
-        '# 记忆',
-        '',
-        '- 活条目（2026-01-01）[[notes/keep.md]]',
-        '- [Superseded 2026-02-01] 旧条目 → [[notes/new.md]]',
-        '  这一行是旧条目的续行，不该留下',
-        '- 末尾的活条目（2026-03-01）',
-        '',
-      ].join('\n'),
-    })
+  it('退役条目：注入省略（含缩进续行 / 子列表）、notice 计数、大小写都算', () => {
+    const body = [
+      '# 记忆',
+      '',
+      '- 活条目（2026-01-01）[[notes/keep.md]]',
+      '- [Superseded 2026-02-01] 旧条目 → [[notes/new.md]]',
+      '  - 旧条目的子列表，也不该留下',
+      '  这一行是旧条目的续行，不该留下',
+      '- 末尾的活条目（2026-03-01）',
+      '',
+    ].join('\n')
+    const { payload } = buildMem({ 'MEMORY.md': body })
+    // 缩进子列表属于上一条顶层条目，不能另起一条逃过退役省略
+    expect(memoryFormat.splitMemoryEntries(body)).toHaveLength(3)
     expect(payload.text).toContain('活条目')
     expect(payload.text).toContain('末尾的活条目')
     expect(payload.text).not.toContain('旧条目')
+    expect(payload.text).not.toContain('子列表')
     expect(payload.text).not.toContain('续行')
     expect(payload.text).toContain('已省略 1 条退役条目')
     // 退役不是截断：truncatedWords 不把省略算进去

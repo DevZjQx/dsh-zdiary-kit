@@ -247,17 +247,28 @@ export function writeConfig(patch, workspace = processWorkspace(), opts = {}) {
             notebooks[active] = { ...entry, structure: structureOf(patch.structure, 'flat') };
         }
         const next = normalizeConfig({ ...merged, notebooks, active }, workspace);
-        // archiveDir 变更先阻断：旧归档目录非空时，改完不会迁移文件 —— 旧归档不再被排除，
-        // 废弃笔记会重新进入检索、统计也会把它们算成活跃。要么手动迁移，要么保持原值。
+        // archiveDir 是全局项：旧归档目录非空时，任何一本已配置笔记本都不能直接改，
+        // 否则切到那本后旧归档不再被排除，废弃笔记会重新进入检索与统计。
         if (next.archiveDir !== current.archiveDir) {
-            const oldAbs = path.join(current.notebook, current.archiveDir);
-            let entries = [];
-            try {
-                entries = fs.readdirSync(oldAbs);
-            }
-            catch { /* 不存在 / 没权限：按空处理，允许改 */ }
-            if (entries.length > 0) {
-                throw new ArchiveDirChangeError(current.archiveDir, next.archiveDir, oldAbs, entries.length);
+            const checked = new Set();
+            for (const info of notebookInfos(next, workspace)) {
+                if (checked.has(info.path))
+                    continue;
+                checked.add(info.path);
+                const oldAbs = path.join(info.path, current.archiveDir);
+                let entries;
+                try {
+                    entries = fs.readdirSync(oldAbs);
+                }
+                catch (err) {
+                    // 只有目录不存在才放行；没权限 / 路径类型异常都失败关闭，不能猜它是空的。
+                    if (err.code === 'ENOENT')
+                        continue;
+                    throw err;
+                }
+                if (entries.length > 0) {
+                    throw new ArchiveDirChangeError(current.archiveDir, next.archiveDir, oldAbs, entries.length);
+                }
             }
         }
         writeJson(CFG_FILE, toDisk(next));
