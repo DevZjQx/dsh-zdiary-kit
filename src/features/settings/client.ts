@@ -284,7 +284,7 @@ interface Field {
             else parts.push('PERSONA.md 已存在，没有覆盖')
             if (r.policyWritten) parts.push('写入 POLICY.md')
             else parts.push('POLICY.md 已存在，没有覆盖')
-            setOkMsg('✓ ' + parts.join(' · '))
+            setOkMsg('✓ ' + parts.join(' · ') + (d.warn ? '\n⚠️ ' + d.warn : ''))
           }
         } catch (e) { setErr(String((e as Error).message || e)) }
         finally { setBusy('') }
@@ -338,9 +338,16 @@ interface Field {
       }
 
       if (!cfg) {
+        // 读取失败也要有出路：以前这里只有一行红字，整个 section 没有一个可点项
+        const failure = err
+          ? h('div', null,
+            h('div', { className: 'zdk-err' }, err),
+            h('div', { className: 'zdk-actions' },
+              h('button', { className: 'zdk-btn zdk-btn2', onClick: load, disabled: !!busy }, '重试')))
+          : null
         return h('div', { className: 'zdk' },
           h('h3', { className: 'zdk-title' }, '知识库（zk）'),
-          busy ? h('div', { className: 'zdk-hint' }, '读取中…') : err ? h('div', { className: 'zdk-err' }, err) : null)
+          busy ? h('div', { className: 'zdk-hint' }, '读取中…') : failure)
       }
 
       const dirty = saved !== JSON.stringify({ ...cfg, defaultTags: tagsText.split(/[,，]/).map((s) => s.trim()).filter(Boolean) })
@@ -402,7 +409,8 @@ interface Field {
         : needsBuild
           ? `补建 ${savedActive} 的目录`
           : `初始化 / 补建 ${savedActive}`
-
+      // 契约按钮不按 notebook.exists 隐藏：契约不依赖 .zk，
+      // 这样自检里的「点「写入契约模板」」任何状态下都有对应的可点项。
       return h('div', { className: 'zdk' },
         h('h3', { className: 'zdk-title' }, '知识库（zk）'),
         h('p', { className: 'zdk-intro' },
@@ -486,9 +494,7 @@ interface Field {
           structure && snap?.notebook.exists && !structure.agents.present
             ? h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('agents', 'agents'), disabled: !!busy }, busy === 'agents' ? '写入中…' : '写入 AGENTS.md 模板')
             : null,
-          snap?.notebook.exists
-            ? h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('contract', 'contract'), disabled: !!busy }, busy === 'contract' ? '写入中…' : '写入契约模板')
-            : null,
+          h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('contract', 'contract'), disabled: !!busy }, busy === 'contract' ? '写入中…' : '写入契约模板'),
           h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('index', 'index'), disabled: !!busy }, busy === 'index' ? '索引进…' : '重建索引'),
           h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('install', 'install'), disabled: !!busy }, busy === 'install' ? '下载中…' : '安装内置 zk'),
           h('button', { className: 'zdk-btn zdk-btn2', onClick: selftest, disabled: !!busy }, busy === 'selftest' ? '自检中…' : '自检'),

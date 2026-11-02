@@ -249,7 +249,11 @@ export function registerSettings({ route, isTrusted }) {
         const cfg = config();
         try {
             const result = writeContractTemplates(cfg);
-            json(res, 200, { ok: true, result, ...(await snapshot(cfg)) });
+            // 契约不依赖 zk：允许在建库前先写。缺 .zk/config.toml 时明确提醒下一步，
+            // 别让人以为写完契约笔记本就建好了。文案不区分「这次写没写」：
+            // 第二次点击时两份都已存在（false/false），说「已写入」会和「已存在，没有覆盖」自相矛盾。
+            const warn = hasNotebook(cfg) ? null : '契约已就位（缺的才写，已存在不覆盖），但这还不是 zk 笔记本（缺 .zk/config.toml）—— 点「初始化 / 补建」建库';
+            json(res, 200, { ok: true, result, warn, ...(await snapshot(cfg)) });
         }
         catch (err) {
             json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -372,7 +376,10 @@ export function registerSettings({ route, isTrusted }) {
                     ? `正文（含标题）${c.contentWords}/${c.budget} 词（${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
                         (c.overBudget ? `，超 ${c.overWords} 词（契约不截断，请缩减或调大契约预算）` : '') +
                         (contractIssueText ? `；⚠️ ${contractIssueText}` : '')
-                    : '未启用：根目录没有 PERSONA.md / POLICY.md（点「写入契约模板」，缺文件不算错）',
+                    : exists
+                        ? '未启用：根目录没有 PERSONA.md / POLICY.md（点「写入契约模板」，缺文件不算错）'
+                        // 契约不依赖 .zk：按钮在被测页面上始终可见，所以先写契约也是合法下一步
+                        : '未启用：根目录没有 PERSONA.md / POLICY.md（点「写入契约模板」可先写；再点「初始化 / 补建」建库，缺文件不算错）',
             });
         }
         catch (err) {

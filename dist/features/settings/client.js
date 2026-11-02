@@ -216,7 +216,7 @@ window.__ModuleLoader__?.load({
                             parts.push('写入 POLICY.md');
                         else
                             parts.push('POLICY.md 已存在，没有覆盖');
-                        setOkMsg('✓ ' + parts.join(' · '));
+                        setOkMsg('✓ ' + parts.join(' · ') + (d.warn ? '\n⚠️ ' + d.warn : ''));
                     }
                 }
                 catch (e) {
@@ -286,7 +286,11 @@ window.__ModuleLoader__?.load({
                 setNbPath('');
             };
             if (!cfg) {
-                return h('div', { className: 'zdk' }, h('h3', { className: 'zdk-title' }, '知识库（zk）'), busy ? h('div', { className: 'zdk-hint' }, '读取中…') : err ? h('div', { className: 'zdk-err' }, err) : null);
+                // 读取失败也要有出路：以前这里只有一行红字，整个 section 没有一个可点项
+                const failure = err
+                    ? h('div', null, h('div', { className: 'zdk-err' }, err), h('div', { className: 'zdk-actions' }, h('button', { className: 'zdk-btn zdk-btn2', onClick: load, disabled: !!busy }, '重试')))
+                    : null;
+                return h('div', { className: 'zdk' }, h('h3', { className: 'zdk-title' }, '知识库（zk）'), busy ? h('div', { className: 'zdk-hint' }, '读取中…') : failure);
             }
             const dirty = saved !== JSON.stringify({ ...cfg, defaultTags: tagsText.split(/[,，]/).map((s) => s.trim()).filter(Boolean) });
             const input = { className: 'zdk-input', autoComplete: 'off', spellCheck: false };
@@ -344,6 +348,8 @@ window.__ModuleLoader__?.load({
                 : needsBuild
                     ? `补建 ${savedActive} 的目录`
                     : `初始化 / 补建 ${savedActive}`;
+            // 契约按钮不按 notebook.exists 隐藏：契约不依赖 .zk，
+            // 这样自检里的「点「写入契约模板」」任何状态下都有对应的可点项。
             return h('div', { className: 'zdk' }, h('h3', { className: 'zdk-title' }, '知识库（zk）'), h('p', { className: 'zdk-intro' }, '把你的 zk 笔记本接进 DSH：agent 用 zk_* 工具搜索、读写笔记与日记，双链交给 zk 索引。' +
                 '没装 zk 就让插件装一个 —— 第一次调用工具时会自动建好笔记本，不需要先来这里点任何按钮。'), statusLine ? h('div', { className: 'zdk-hint' }, '📚 ' + statusLine) : null, memoryLine ? h('div', { className: 'zdk-hint' }, '🧠 ' + memoryLine) : null, configWarn
                 ? h('div', { className: 'zdk-err' }, '⚠️ ' + configWarn +
@@ -375,9 +381,7 @@ window.__ModuleLoader__?.load({
                 onChange: (e) => setNotebookStructure(name, e.target.value),
             }, h('option', { value: 'flat' }, 'flat'), h('option', { value: 'layered' }, 'layered')), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => removeNotebook(name), disabled: nbNames.length <= 1 || !!busy }, '删除')))), h('div', { className: 'zdk-row' }, h('div', null, h('div', { className: 'zdk-label' }, '新增笔记本'), h('div', { className: 'zdk-hint' }, '名字只接受字母、数字、_ 与 -（1-32 字符）；路径空着就是 <工作区>/zdiary，结构跟当前笔记本一致。改完点「保存」')), h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, h('input', { ...input, style: { minWidth: '0', width: '110px' }, placeholder: '名字', value: nbName, onChange: (e) => setNbName(e.target.value) }), h('input', { ...input, style: { minWidth: '0', width: '190px' }, placeholder: '路径', value: nbPath, onChange: (e) => setNbPath(e.target.value) }), h('button', { className: 'zdk-btn zdk-btn2', onClick: addNotebook, disabled: !nbName.trim() || !!busy }, '新增')))), ...groups.map((g) => h('div', { key: g }, h('div', { className: 'zdk-group' }, GROUP_LABELS[g] || g), h('div', null, FIELDS.filter((f) => f.group === g).map((f) => h('div', { className: 'zdk-row', key: f.key }, h('div', null, h('div', { className: 'zdk-label' }, f.label), h('div', { className: 'zdk-hint' }, f.hint)), control(f)))))), h('div', { className: 'zdk-actions' }, h('button', { className: 'zdk-btn', onClick: save, disabled: !!busy }, busy === 'save' ? '保存中…' : '保存'), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('init', 'init'), disabled: !!busy }, busy === 'init' ? '处理中…' : initLabel), structure && snap?.notebook.exists && !structure.agents.present
                 ? h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('agents', 'agents'), disabled: !!busy }, busy === 'agents' ? '写入中…' : '写入 AGENTS.md 模板')
-                : null, snap?.notebook.exists
-                ? h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('contract', 'contract'), disabled: !!busy }, busy === 'contract' ? '写入中…' : '写入契约模板')
-                : null, h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('index', 'index'), disabled: !!busy }, busy === 'index' ? '索引进…' : '重建索引'), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('install', 'install'), disabled: !!busy }, busy === 'install' ? '下载中…' : '安装内置 zk'), h('button', { className: 'zdk-btn zdk-btn2', onClick: selftest, disabled: !!busy }, busy === 'selftest' ? '自检中…' : '自检'), h('a', { className: 'zdk-btn zdk-btn2', href: '/dsh-zdiary-kit/view', target: '_blank', rel: 'noopener noreferrer', style: { display: 'inline-flex', alignItems: 'center', textDecoration: 'none' } }, '只读视图'), h('button', { className: 'zdk-btn zdk-btn2', onClick: load, disabled: !!busy }, '刷新'), dirty ? h('span', { style: { marginLeft: '10px', color: '#ffb020', fontSize: '13px', alignSelf: 'center' } }, '● 有改动还没保存') : null), okMsg ? h('div', { className: 'zdk-ok' }, okMsg) : null, err ? h('div', { className: 'zdk-err' }, err) : null, out ? h('div', { className: 'zdk-out' }, out) : null, snap?.countsError ? h('div', { className: 'zdk-err' }, '计数失败：' + snap.countsError) : null, h('div', { className: 'zdk-hint' }, `配置：${snap?.configPath || '~/.dsh/zdiary/zdiary.config.json'}\n` +
+                : null, h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('contract', 'contract'), disabled: !!busy }, busy === 'contract' ? '写入中…' : '写入契约模板'), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('index', 'index'), disabled: !!busy }, busy === 'index' ? '索引进…' : '重建索引'), h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('install', 'install'), disabled: !!busy }, busy === 'install' ? '下载中…' : '安装内置 zk'), h('button', { className: 'zdk-btn zdk-btn2', onClick: selftest, disabled: !!busy }, busy === 'selftest' ? '自检中…' : '自检'), h('a', { className: 'zdk-btn zdk-btn2', href: '/dsh-zdiary-kit/view', target: '_blank', rel: 'noopener noreferrer', style: { display: 'inline-flex', alignItems: 'center', textDecoration: 'none' } }, '只读视图'), h('button', { className: 'zdk-btn zdk-btn2', onClick: load, disabled: !!busy }, '刷新'), dirty ? h('span', { style: { marginLeft: '10px', color: '#ffb020', fontSize: '13px', alignSelf: 'center' } }, '● 有改动还没保存') : null), okMsg ? h('div', { className: 'zdk-ok' }, okMsg) : null, err ? h('div', { className: 'zdk-err' }, err) : null, out ? h('div', { className: 'zdk-out' }, out) : null, snap?.countsError ? h('div', { className: 'zdk-err' }, '计数失败：' + snap.countsError) : null, h('div', { className: 'zdk-hint' }, `配置：${snap?.configPath || '~/.dsh/zdiary/zdiary.config.json'}\n` +
                 '工具的用法：zk_search 查 → zk_read 读 → zk_new 新建 → zk_daily 写日记 → zk_link 连双链；zk_stats 看规模。'));
         }
         function apply(ctx) {

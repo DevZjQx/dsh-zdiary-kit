@@ -10,7 +10,9 @@
 - `POST /init`：`ensureNotebook`（幂等；layered 时一并写 `AGENTS.md`）
 - `POST /agents`：`writeAgentsTemplate` —— flat 库的 opt-in，已存在不覆盖；返回 `result.written` 与最新快照
 - `POST /contract`：`writeContractTemplates` —— `PERSONA.md` / `POLICY.md` 的 opt-in，缺了才写，已存在不覆盖；
-  返回 `result.personaWritten` / `result.policyWritten` 与最新快照
+  返回 `result.personaWritten` / `result.policyWritten` 与最新快照。
+  契约不依赖 zk：笔记本还没初始化时也能写（只 `mkdir` 笔记本目录 + 两份文件，不碰 `.zk`），
+  这时回包带 `warn` 提醒「点「初始化 / 补建」建库」；按钮因此不按 `notebook.exists` 隐藏。
 - `POST /index`：`zk index`
 - `POST /install`：内置 zk（下载 → 解包 → `--version` 验证）；`detail` 里回显下载源（自定义镜像会点名）
 - `GET /selftest`：八项真检查（zk、笔记本、模板、group、结构、长期记忆、角色契约、索引）
@@ -37,8 +39,11 @@
 结构是**每个笔记本自己的**，就摆在那一行上；`flat → layered` 保存前弹窗明确写「只建目录与模板，不搬已有笔记」。
 `flat` 且缺 `AGENTS.md` 时，操作区多一个「写入 AGENTS.md 模板」按钮（走 `POST /agents`）；记忆状态行同时提示
 「缺 AGENTS.md：约定与周提醒未启用」。已有文件不覆盖，按钮点了也不会动用户的定制。
-笔记本存在时操作区常驻「写入契约模板」按钮（走 `POST /contract`）：缺 `PERSONA.md` / `POLICY.md` 时写入，
+操作区常驻「写入契约模板」按钮（走 `POST /contract`）：缺 `PERSONA.md` / `POLICY.md` 时写入，
 已存在就只回「已存在，没有覆盖」（契约允许人改，插件不做第二份真相）。
+这个按钮**不依赖 `notebook.exists`**：建库前也可以先定角色（服务端只建目录与两份契约，不碰 `.zk`），
+成功提示里会带一条「还不是 zk 笔记本，点「初始化 / 补建」」的 `warn` ——
+否则自检说「点「写入契约模板」」时，未初始化的库根本没有对应的可点项。
 「记忆」分组里多三行配置：契约预算（`contractBudgetWords`，默认 240）、场景预算（`sceneBudgetWords`，80）、
 总 prompt 预算（`totalPromptBudgetWords`，900，启用契约后按实际载荷检查，只告警）。
 分组标题直接标作用范围（「笔记本」是每本自己的，其余是全局）；删除笔记本先确认「只删配置，磁盘目录与笔记保留」。

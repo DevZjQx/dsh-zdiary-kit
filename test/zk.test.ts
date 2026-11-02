@@ -2873,12 +2873,12 @@ describe('设置页', () => {
       await import('../src/features/settings/client.ts')
       expect(Section).toBeTruthy()
       const cfg = store.config()
-      const render = (actualPaths: string[] | null): string => {
+      const render = (actualPaths: string[] | null, notebookExists = true): string => {
         const snap = {
           ok: true,
           config: cfg,
           zk: { found: true, version: '0.15.7', source: 'managed' },
-          notebook: { path: cfg.notebook, exists: true },
+          notebook: { path: cfg.notebook, exists: notebookExists },
           structure: {
             mode: 'flat', dirs: [], missing: [], extra: [], ready: true,
             agents: { path: '', required: false, present: true },
@@ -2899,6 +2899,15 @@ describe('设置页', () => {
       expect(manual).toContain('手动编辑 .zk/config.toml')
       expect(manual).not.toContain('跑 zk-kit groups --fix')
       expect(render(['old'])).toContain('跑 zk-kit groups --fix')
+      // 自检在笔记本没初始化时也会说「点「写入契约模板」」：按钮必须始终在操作区，
+      // 不能只在 notebook.exists 时出现，否则提示指向一个不存在的可点项。
+      expect(manual).toContain('写入契约模板')
+      expect(render(null, false)).toContain('写入契约模板')
+
+      // 配置读取失败时也要有可点的重试，而不是只剩一行红字
+      states.splice(0, states.length, null, '', '', null, '', '读取失败', '', '', '', '', '')
+      stateIndex = 0
+      expect(JSON.stringify(Section!())).toContain('重试')
     } finally {
       globals.window = previous.window
       globals.document = previous.document
@@ -2935,6 +2944,61 @@ describe('设置页', () => {
       const overlap = await call()
       expect(groupItem(overlap).ok).toBe(false)
       expect(overlap.ok).toBe(false)
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+      fs.rmSync(nb, { recursive: true, force: true })
+    }
+  })
+
+  test('/contract：建库前也能点（按钮不依赖 notebook.exists），回包提示先初始化', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const nb = path.join(home, 'settings-contract-preinit')
+    const routes = new Map<string, (req: never, res: never) => unknown>()
+    settingsFeature.registerSettings({ route: (p, h) => routes.set(p, h), isTrusted: () => true })
+    try {
+      store.writeConfig({ notebooks: { default: { path: nb, structure: 'flat' } }, active: 'default', zkPath: zkBin })
+      // 先看自检：契约缺失 + 库未初始化时，提示必须同时指出「写入契约模板」与「初始化 / 补建」
+      const sres = makeRes()
+      await routes.get('/dsh-zdiary-kit/api/selftest')!(
+        makeReq('/dsh-zdiary-kit/api/selftest') as never, sres as never,
+      )
+      const selftest = JSON.parse(sres.body) as { items: Array<{ name: string; ok: boolean; detail: string }> }
+      const contractItem = selftest.items.find((item) => item.name === '角色契约')!
+      expect(contractItem.ok).toBe(true)
+      expect(contractItem.detail).toContain('写入契约模板')
+      expect(contractItem.detail).toContain('初始化 / 补建')
+
+      const res = makeRes()
+      await routes.get('/dsh-zdiary-kit/api/contract')!(
+        makeReq('/dsh-zdiary-kit/api/contract', { method: 'POST' }) as never, res as never,
+      )
+      const d = JSON.parse(res.body) as {
+        ok: boolean
+        result: { personaWritten: boolean; policyWritten: boolean }
+        warn: string | null
+        notebook: { exists: boolean }
+      }
+      expect(d.ok).toBe(true)
+      expect(d.result).toEqual({ personaWritten: true, policyWritten: true })
+      // 契约写了不等于库建好了：必须把下一步说出来
+      expect(d.notebook.exists).toBe(false)
+      expect(d.warn).toContain('初始化')
+      expect(fs.existsSync(path.join(nb, 'PERSONA.md'))).toBe(true)
+      expect(fs.existsSync(path.join(nb, 'POLICY.md'))).toBe(true)
+
+      // 第二次点击：两份都已存在（false/false），warn 不能再说「已写入」
+      const again = makeRes()
+      await routes.get('/dsh-zdiary-kit/api/contract')!(
+        makeReq('/dsh-zdiary-kit/api/contract', { method: 'POST' }) as never, again as never,
+      )
+      const d2 = JSON.parse(again.body) as {
+        result: { personaWritten: boolean; policyWritten: boolean }
+        warn: string | null
+      }
+      expect(d2.result).toEqual({ personaWritten: false, policyWritten: false })
+      expect(d2.warn).toContain('初始化')
+      expect(d2.warn).not.toContain('已写入')
     } finally {
       fs.writeFileSync(paths.CFG_FILE, before)
       fs.rmSync(nb, { recursive: true, force: true })
@@ -3696,6 +3760,32 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     const again = await notebookLib.ensureNotebook(cfg, undefined, { withContract: true })
     expect(again.personaWritten).toBe(false)
     expect(fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')).toBe('# 我自己写的\n')
+  })
+
+  it('writeContractTemplates：建库前也能先写，随后 ensureNotebook 接管且不覆盖', async () => {
+    const cfg = fresh('nb-m1-contract-preinit')
+    try {
+      expect(fs.existsSync(cfg.notebook)).toBe(false)
+      const first = notebookLib.writeContractTemplates(cfg)
+      expect(first).toEqual({ personaWritten: true, policyWritten: true })
+      // 只建目录 + 两份契约，不假装已经初始化
+      expect(fs.existsSync(path.join(cfg.notebook, '.zk'))).toBe(false)
+      const persona = fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')
+      expect(persona).toContain('<!-- zdiary-persona: v2 -->')
+
+      const second = notebookLib.writeContractTemplates(cfg)
+      expect(second).toEqual({ personaWritten: false, policyWritten: false })
+
+      // 关键链路：先定角色、再建库。zk init 要能在已有目录（且里面有契约文件）上幂等接管，
+      // 契约一个字都不能被覆盖。
+      const ensured = await notebookLib.ensureNotebook(cfg)
+      expect(ensured.initialized).toBe(true)
+      expect(ensured.personaWritten).toBe(false)
+      expect(zk.hasNotebook(cfg)).toBe(true)
+      expect(fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')).toBe(persona)
+    } finally {
+      fs.rmSync(cfg.notebook, { recursive: true, force: true })
+    }
   })
 
   it('记忆页：退役行有徽标与删除线；PERSONA/POLICY 不能按路径打开；载荷预览同源', async () => {

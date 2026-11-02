@@ -37,6 +37,8 @@
 设置页「写入契约模板」、或 `ensureNotebook(cfg, signal, { withContract: true })`。
 两种结构**都不自动写** —— 升级不多两个文件（D10），缺文件 = 契约未启用、不报错。
 写入口只在缺失时生效，已存在的文件一字不改（契约允许人改）。
+契约不依赖 zk：`writeContractTemplates` 会先 `mkdir` 笔记本目录，所以设置页按钮在建库前也能点
+（只建目录与两份文件，不碰 `.zk`；之后 `ensureNotebook` 幂等接管同一目录）。
 首行是独立版本标记 `<!-- zdiary-persona: vN -->` / `<!-- zdiary-policy: vN -->`（`PERSONA_TEMPLATE_VERSION` /
 `POLICY_TEMPLATE_VERSION`）：不复用 `TEMPLATE_VERSION` —— 改 `AGENTS.md` 只升旧的，不该让契约误报旧版。
 `POLICY.md` 形状是「首行版本标记 + 紧跟 frontmatter + 一张表」（`action / level / approval / reversible`），

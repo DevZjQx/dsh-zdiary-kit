@@ -342,12 +342,17 @@ export function writeAgentsTemplate(cfg) {
 /**
  * 写根目录契约模板（PERSONA.md / POLICY.md；缺了才写，已存在绝不覆盖 —— 契约允许人改）。
  * 只走显式 opt-in（zk-kit init --with-contract / 设置页按钮）：默认升级不多一个文件。
+ *
+ * 先 mkdir 再写：设置页的按钮在笔记本还没初始化时也可点（「先定角色、再建库」是合法顺序）。
+ * 这里只建目录与两份契约，不碰 .zk / 模板 / 笔记；之后 ensureNotebook 幂等接管同一目录。
  */
 export function writeContractTemplates(cfg) {
     const persona = path.join(cfg.notebook, 'PERSONA.md');
     const policy = path.join(cfg.notebook, 'POLICY.md');
     const personaWritten = !fs.existsSync(persona);
     const policyWritten = !fs.existsSync(policy);
+    if (personaWritten || policyWritten)
+        fs.mkdirSync(cfg.notebook, { recursive: true });
     if (personaWritten)
         fs.writeFileSync(persona, PERSONA_TEMPLATE, 'utf8');
     if (policyWritten)
