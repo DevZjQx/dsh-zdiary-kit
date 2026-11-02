@@ -11,7 +11,7 @@ import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
 import { installZk, sourceLabel } from './lib/install.js';
 import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from './lib/lint.js';
-import { dreamNotebook } from './lib/dream.js';
+import { dreamNotebook, STALE_DAYS } from './lib/dream.js';
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
 
   zk-kit doctor                       自检：zk / 笔记本 / 模板 / group / 索引
@@ -191,7 +191,7 @@ function dreamReport(r) {
         for (const c of r.retireCandidates.slice(0, 10)) {
             const when = c.date ? `${c.date}（${c.age} 天）` : '无日期';
             const why = c.reason === 'stale'
-                ? '超过 90 天未复核'
+                ? `超过 ${STALE_DAYS} 天未复核`
                 : c.reason === 'source-superseded' ? '来源已归档' : '来源不存在';
             lines.push(`  · ${c.entry} — ${when} · ${why}`);
         }
@@ -301,7 +301,8 @@ function groupsReport(cfg, st, fixed) {
             lines.push(`⚠️ ${group.name}：重复出现，解析不了`);
         }
         else if (!group.pathsOk) {
-            lines.push(`⚠️ ${group.name}：期望 ${group.expectedPaths.join('、')}，实际 ${group.actualPaths?.join('、') ?? '解析不了'}`);
+            lines.push(`⚠️ ${group.name}：期望 ${group.expectedPaths.join('、')}，实际 ${group.actualPaths?.join('、') ?? '解析不了'}` +
+                (group.actualPaths === null ? '（可能是多行数组，手动编辑 .zk/config.toml）' : ''));
         }
         else {
             const template = group.templateOk ? '' : ` · template=${group.actualTemplate ?? '（无）'}（配置期望 ${group.expectedTemplate}）`;
@@ -324,14 +325,16 @@ async function doctor() {
     const st = structureStatus(cfg);
     for (const group of st.groups) {
         if (!group.present) {
-            rows.push(`✗ group ${group.name}：缺（期望 ${group.expectedPaths.join('、')}；跑 zk-kit groups --fix）`);
+            rows.push(group.conflict
+                ? `✗ group ${group.name}：缺（期望 ${group.expectedPaths.join('、')}，已被 group "${group.conflict}" 占用；跑 zk-kit groups --fix）`
+                : `✗ group ${group.name}：缺（期望 ${group.expectedPaths.join('、')}；跑 zk-kit groups --fix）`);
         }
         else if (group.duplicate) {
             rows.push(`⚠️ group ${group.name}：重复出现，解析不了 —— 手动检查 .zk/config.toml`);
         }
         else if (!group.pathsOk) {
-            rows.push(`⚠️ group ${group.name}：期望 ${group.expectedPaths.join('、')}，` +
-                `实际 ${group.actualPaths?.join('、') ?? '解析不了'}（跑 zk-kit groups --fix）`);
+            rows.push(`⚠️ group ${group.name}：期望 ${group.expectedPaths.join('、')}，实际 ${group.actualPaths?.join('、') ?? '解析不了'}` +
+                (group.actualPaths === null ? '（可能是多行数组 —— 手动编辑 .zk/config.toml）' : '（跑 zk-kit groups --fix）'));
         }
         else {
             const templateNote = group.templateOk ? '' : ` · template=${group.actualTemplate ?? '（无）'}`;

@@ -14,7 +14,7 @@ import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import { ZkError, zk } from './zk.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
-import { isPluginOwned, normGroupPath, parseGroupBlocks, sameGroupPath, samePaths } from './notebook-config.ts'
+import { effectivePaths, isPluginOwned, normGroupPath, parseGroupBlocks, sameGroupPath, samePaths } from './notebook-config.ts'
 import type { GroupBlock } from './notebook-config.ts'
 
 export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
@@ -225,7 +225,7 @@ export function structureDirs(cfg: Config): string[] {
 export interface GroupStatus {
   name: string
   expectedPaths: string[]
-  /** null = 缺 paths / 解析不了 / group 不存在（用 present 区分） */
+  /** zk 归组用的路径（缺 paths 按同名目录）；null = 解析不了 / group 不存在（用 present 区分） */
   actualPaths: string[] | null
   pathsOk: boolean
   /** config.toml 里有没有这个名字的组头 */
@@ -295,10 +295,11 @@ export interface StructureStatus {
 function groupStatuses(groups: GroupSpec[], blocks: Map<string, GroupBlock> | null): GroupStatus[] {
   return groups.map((group) => {
     const block = blocks?.get(group.name) ?? null
-    const actualPaths = block?.paths ?? null
+    // 缺 paths 的 group 按同名目录占着（zk 语义）：冲突判断必须算上，否则会追加同路径组
+    const actualPaths = block ? effectivePaths(block) : null
     const actualTemplate = block?.template ?? null
     const conflict = block ? undefined : [...(blocks?.values() ?? [])].find((candidate) =>
-      candidate.paths?.some((actual) => group.paths.some((expected) => sameGroupPath(actual, expected))))?.name
+      effectivePaths(candidate)?.some((actual) => group.paths.some((expected) => sameGroupPath(actual, expected))))?.name
     return {
       name: group.name,
       expectedPaths: group.paths,
@@ -355,14 +356,17 @@ function groupWarningsOf(groups: GroupStatus[], st: Pick<StructureStatus, 'expec
     } else if (group.duplicate) {
       out.push(`group "${group.name}" 重复出现，解析不了 —— 手动检查 .zk/config.toml`)
     } else if (!group.pathsOk) {
-      out.push(
-        `group "${group.name}" 期望 ${group.expectedPaths.join('、')}，` +
-        `实际 ${group.actualPaths?.join('、') ?? '解析不了'} —— 跑 zk-kit groups --fix`,
-      )
+      out.push(`group "${group.name}" ${pathsDiff(group.expectedPaths, group.actualPaths)}`)
     }
   }
   for (const note of groupOverlapNotes(st)) out.push(note.text)
   return out
+}
+
+/** 期望 / 实际 paths 的差异尾巴；actual 为 null = 解析不了（多行数组 / 未加引号的项），--fix 也不猜 */
+function pathsDiff(expected: string[], actual: string[] | null): string {
+  return `期望 ${expected.join('、')}，实际 ${actual?.join('、') ?? '解析不了'}` +
+    (actual === null ? '（可能是多行数组）—— 手动编辑 .zk/config.toml' : ' —— 跑 zk-kit groups --fix')
 }
 
 /** 结构一致性检查：只报告，不建目录、不改配置（设置页据此显示告警） */
@@ -388,9 +392,10 @@ export function structureStatus(cfg: Config): StructureStatus {
   const expected = expectedGroups(cfg)
   const groups = groupStatuses(expected, blocks)
   const expectedOverlaps = overlapsOf(expected)
-  // 重复出现的组解析不出 paths，不参与「文件里已经撞了」的判断
+  // 重复出现的组解析不出 paths，不参与「文件里已经撞了」的判断；缺 paths 的按同名目录算（zk 语义）
   const actualOverlaps = blocks
-    ? overlapsOf([...blocks.values()].filter((block) => !block.duplicate))
+    ? overlapsOf([...blocks.values()].filter((block) => !block.duplicate)
+      .map((block) => ({ name: block.name, paths: effectivePaths(block) })))
     : []
   return {
     mode: cfg.structure,
@@ -494,18 +499,15 @@ export async function ensureNotebook(
       // 已有 group 一律不重写（用户可能改过 template / extra），只报告与配置的差异
       if (block.duplicate) {
         groupWarnings.push(`group "${group.name}" 重复出现，解析不了 —— 手动检查 .zk/config.toml`)
-      } else if (!samePaths(block.paths, group.paths)) {
-        groupWarnings.push(
-          `group "${group.name}" 期望 ${group.paths.join('、')}，` +
-          `实际 ${block.paths?.join('、') ?? '解析不了'} —— 跑 zk-kit groups --fix`,
-        )
+      } else if (!samePaths(effectivePaths(block), group.paths)) {
+        groupWarnings.push(`group "${group.name}" ${pathsDiff(group.paths, effectivePaths(block))}`)
       }
       continue
     }
-    // 新 group 的路径已经被别的 group 占着（典型：只改 dailyGroup 不改 dailyDir）：
+    // 新 group 的路径已经被别的 group 占着（典型：只改 dailyGroup 不改 dailyDir；缺 paths 的按同名目录也算）：
     // 再追加就是两个 group 用同一条路径，zk 命中哪个模板就只剩实现细节了 —— 只报告，不写
     const owner = [...blocks.values()].find((candidate) =>
-      candidate.paths?.some((actual) => group.paths.some((expected) => sameGroupPath(actual, expected))))
+      effectivePaths(candidate)?.some((actual) => group.paths.some((expected) => sameGroupPath(actual, expected))))
     if (owner) {
       groupWarnings.push(
         `group "${group.name}" 没追加：路径 ${group.paths.join('、')} 已被 group "${owner.name}" 占用` +
@@ -520,6 +522,7 @@ export async function ensureNotebook(
     blocks.set(group.name, {
       name: group.name,
       paths: group.paths.map(normGroupPath),
+      pathsState: 'set',
       template: group.template,
       comment: `# ${group.comment}`,
       header: `[group."${group.name}"]`,
@@ -562,21 +565,22 @@ export interface GroupFixResult {
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-/** 只改组头名字（连同 .note / .extra 子表），其它行一字不动 */
+/** 只改组头名字（连同 .note / .extra 子表；裸键 / 引号写法都认），其它行一字不动 */
 function renameGroup(text: string, from: string, to: string): string {
-  const re = new RegExp(`(\\[group\\.)(?:"${escapeRe(from)}"|'${escapeRe(from)}')`, 'g')
+  const esc = escapeRe(from)
+  const re = new RegExp(`(\\[group\\.)(?:"${esc}"|'${esc}'|${esc}(?=[.\\]]))`, 'g')
   return text.replace(re, `$1"${to}"`)
 }
 
 /** 只替换 base group 的 paths 行；多行数组 / 找不到都不猜（返回 null） */
 function replacePaths(text: string, name: string, paths: string[]): string | null {
   const lines = text.split('\n')
-  const headerRe = /^\s*\[group\.(?:"([^"]+)"|'([^']+)')(?:\.(note|extra))?\]\s*$/
+  const headerRe = /^\s*\[group\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))(?:\.(note|extra))?\]\s*(?:#.*)?$/
   let start = -1
   for (let i = 0; i < lines.length; i++) {
     const m = headerRe.exec(lines[i])
-    if (!m || m[3]) continue
-    if ((m[1] ?? m[2]) === name) { start = i; break }
+    if (!m || m[4]) continue
+    if ((m[1] ?? m[2] ?? m[3]) === name) { start = i; break }
   }
   if (start < 0) return null
   let end = lines.length
@@ -640,7 +644,7 @@ export function fixGroupConfig(cfg: Config): GroupFixResult {
     const blocks = parseGroupBlocks(text)
     if (blocks.has(group.name)) continue
     const stale = [...blocks.values()].filter((block) => isPluginOwned(block) && !expectedNames.has(block.name))
-    const same = stale.find((block) => samePaths(block.paths, group.paths))
+    const same = stale.find((block) => samePaths(effectivePaths(block), group.paths))
     if (same) {
       text = renameGroup(text, same.name, group.name)
       updates.push({
@@ -648,21 +652,21 @@ export function fixGroupConfig(cfg: Config): GroupFixResult {
         action: 'rename',
         from: same.name,
         expectedPaths: group.paths,
-        actualPaths: same.paths,
+        actualPaths: effectivePaths(same),
       })
       continue
     }
     // dailyGroup 改名 + dailyDir 同时改：认不出旧组，也不冒险追加第二个日记组
     const staleDaily = group.template === 'daily.md' ? stale.find((block) => block.template === 'daily.md') : undefined
     if (staleDaily) {
-      const reason = `旧日记 group "${staleDaily.name}" 的路径是 ${staleDaily.paths?.join('、') ?? '解析不了'}，` +
+      const reason = `旧日记 group "${staleDaily.name}" 的路径是 ${effectivePaths(staleDaily)?.join('、') ?? '解析不了'}，` +
         `与期望 ${group.paths.join('、')} 不一致 —— 先手动确认改名与路径`
       warnings.push(reason)
       updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, reason })
       continue
     }
     const owner = [...blocks.values()].find((block) =>
-      block.paths?.some((actual) => group.paths.some((expected) => sameGroupPath(actual, expected))))
+      effectivePaths(block)?.some((actual) => group.paths.some((expected) => sameGroupPath(actual, expected))))
     if (owner) {
       const reason = `路径 ${group.paths.join('、')} 已被 group "${owner.name}" 占用 —— 先手动处理这个 group`
       warnings.push(`group "${group.name}" 没追加：${reason}`)
@@ -685,11 +689,12 @@ export function fixGroupConfig(cfg: Config): GroupFixResult {
       updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, reason })
       continue
     }
-    if (samePaths(block.paths, group.paths)) continue
+    const actual = effectivePaths(block)
+    if (samePaths(actual, group.paths)) continue
     if (!isPluginOwned(block)) {
-      const reason = `不是插件建的 group，paths 未改（期望 ${group.paths.join('、')}，实际 ${block.paths?.join('、') ?? '解析不了'}）`
+      const reason = `不是插件建的 group，paths 未改（期望 ${group.paths.join('、')}，实际 ${actual?.join('、') ?? '解析不了'}）`
       warnings.push(`group "${group.name}"：${reason}`)
-      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, actualPaths: block.paths, reason })
+      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, actualPaths: actual, reason })
       continue
     }
     // 期望路径被别的 group 占着：不替换 —— 之前只拦了「追加」，替换同样会造出两个 group 用同一条路径。
@@ -697,18 +702,18 @@ export function fixGroupConfig(cfg: Config): GroupFixResult {
     const rival = [...current.values()].find((candidate) =>
       candidate.name !== group.name &&
       !(expectedNames.has(candidate.name) && isPluginOwned(candidate)) &&
-      candidate.paths?.some((actual) => group.paths.some((expected) => sameGroupPath(actual, expected))))
+      effectivePaths(candidate)?.some((p) => group.paths.some((expected) => sameGroupPath(p, expected))))
     if (rival) {
-      const reason = `路径 ${group.paths.join('、')} 已被 group "${rival.name}" 占用（${rival.paths?.join('、') ?? '解析不了'}），paths 未改 —— 先手动处理这个 group`
+      const reason = `路径 ${group.paths.join('、')} 已被 group "${rival.name}" 占用（${effectivePaths(rival)?.join('、') ?? '解析不了'}），paths 未改 —— 先手动处理这个 group`
       warnings.push(`group "${group.name}"：${reason}`)
-      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, actualPaths: block.paths, reason })
+      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, actualPaths: actual, reason })
       continue
     }
     const next = replacePaths(text, group.name, group.paths)
     if (next === null) {
       const reason = 'paths 行解析不了（可能是多行数组），未改 —— 手动编辑 .zk/config.toml'
       warnings.push(`group "${group.name}"：${reason}`)
-      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, actualPaths: block.paths, reason })
+      updates.push({ name: group.name, action: 'skip', expectedPaths: group.paths, actualPaths: actual, reason })
       continue
     }
     text = next
@@ -716,7 +721,7 @@ export function fixGroupConfig(cfg: Config): GroupFixResult {
       name: group.name,
       action: 'paths',
       expectedPaths: group.paths,
-      actualPaths: block.paths,
+      actualPaths: actual,
     })
   }
 

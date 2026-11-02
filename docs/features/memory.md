@@ -12,7 +12,7 @@
   `stripRetiredEntries` / `daysSinceDate`；memory、dream、lint 共用，禁止各写一套
 - `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）；`dreamNotebook` 用它算默认窗口
 - `lib/wikilink.ts`：`[[链接]]` 的解析口径（路径 → `.md` → `archive/` → 活笔记标题），lint 与 dream 共用一份
-- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 186 词），flat 用精简版
+- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 187 词），flat 用精简版
   （88 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
   layered 初始化自动写，flat 只有 `ensureNotebook(cfg, signal, { withAgents: true })` / `zk-kit init --with-agents` /
   设置页「写入 AGENTS.md 模板」才写；已存在一律不覆盖。
@@ -55,7 +55,9 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 **Exceptions.** 中文按 2 字 1 词计（空白切分在中文上严重低估，预算会变成装饰）；
 `AGENTS.md` 模板自己也得守这条预算：初版 310 词，`bun run docs` 里 `zk-kit doctor` 直接报
 `✗ 记忆：310/300 词` —— 模板吃掉整个预算，MEMORY.md 就永远被截光，所以先压到 160 词（195 词的版本把 USER + MEMORY 压到只剩 105 词），后续补 `name` / `WORKFLOW` / `rename` 规则后为 175 词，加「截断从底部往前丢」后为 187 词，
-P1-3 的日期 / 退役格式 + P2-15 的版本标记后为 189 词；P2-8 去掉 `inbox/` 后实测 186 词（单测锁 `≤190`；flat 精简版锁 `≤90`，实测 88）。
+P1-3 的日期 / 退役格式 + P2-15 的版本标记后为 189 词；P2-8 去掉 `inbox/` 后实测 186 词；
+0.9 把「超预算从底部往前丢」改成「按日期丢最旧的一条」（截断语义变了，模板必须跟着改）后为 187 词，`TEMPLATE_VERSION` 升到 3
+（单测锁 `≤190`；flat 精简版锁 `≤90`，实测 88）。
 `AGENTS.md` 是硬规则，单独超预算也不截断，只回显告警；文件内容里的 `</system-reminder>` 会被转义，
 截断目录里的段落标题同样转义 —— 不许提前闭合插件自己的框；任何一份文件读不到都当作不存在，笔记本没建好时返回空载荷而不是报错。
 
@@ -113,8 +115,8 @@ dream 的判重分两步（顺序不能反）：`[[链接]]` 匹配用**原文**
 **用量与退役材料（D4）。** `memoryUsage(cfg)` 只是 `buildMemoryPayload` 的投影：`words` 与 `payload.words` 同源
 （含「记忆已用」提示行），`totalWords = countWords(payload.text)`（框 / 做梦提醒 / notice 都在里面），
 `headroom = budget - totalWords` **可以为负**。`zk_dream` 的结果因此多两栏：`memory`（上面四个数）与
-`retireCandidates`（有日期且 > 90 天 → `stale`；`[[来源]]` 指向归档 / 不存在 → `source-superseded` / `source-missing`；
-无日期无链接的不算候选）。只给材料，不自动退役、不写 MEMORY。
+`retireCandidates`（有日期且 > 90 天 → `stale`；`[[来源]]` 指向归档 / 不存在 → `source-superseded` / `source-missing`，
+显式写 `archive/` 的链接是有意引用、不算来源断了 —— 与 lint 同口径；无日期无链接的不算候选）。只给材料，不自动退役、不写 MEMORY。
 
 **flat 也能有约定（P1-6）。** `flat` 是默认结构，但自动写 `AGENTS.md` 会破坏 M0 的「升级不多一个文件」，
 于是默认安装既没有约定、也没有周提醒（提醒只在根目录有 AGENTS 时出现）。改成 opt-in：

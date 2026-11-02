@@ -673,7 +673,7 @@ describe('notebook bootstrap', () => {
 })
 
 describe('M1: 配置收敛（group）', () => {
-  test('解析 group：双 / 单引号、缺 paths、重复、注释归属', () => {
+  test('解析 group：双 / 单引号 / 裸键、缺 paths、重复、注释归属', () => {
     const text = [
       '# dsh-zdiary-kit：日记笔记组',
       '[group."daily"]',
@@ -693,18 +693,34 @@ describe('M1: 配置收敛（group）', () => {
       '',
       '[group."dup"]',
       'paths = ["y"]',
+      '',
+      // 裸键组头是合法 TOML（zk 自己的模板就这么写）：必须认，还认 .note 子表与行尾注释
+      '[group.bare]',
+      "paths = ['b', 'c']  # 行尾注释",
+      '',
+      '[group.bare2]',
+      '[group.bare2.note]',
+      'template = "daily.md"',
     ].join('\n')
     const blocks = notebookConfig.parseGroupBlocks(text)
     const daily = blocks.get('daily')!
     expect(daily.paths).toEqual(['journal'])
+    expect(daily.pathsState).toBe('set')
     expect(daily.template).toBe('daily.md')
     expect(daily.comment).toContain('dsh-zdiary-kit')
     expect(notebookConfig.isPluginOwned(daily)).toBe(true)
     expect(blocks.get('single')!.paths).toEqual(['a', 'b'])
     expect(notebookConfig.isPluginOwned(blocks.get('single')!)).toBe(false)
     expect(blocks.get('nopaths')!.paths).toBeNull()
+    // 缺 paths 不是「没有路径」：zk 按同名目录归组
+    expect(blocks.get('nopaths')!.pathsState).toBe('absent')
+    expect(notebookConfig.effectivePaths(blocks.get('nopaths')!)).toEqual(['nopaths'])
+    expect(blocks.get('bare')!.paths).toEqual(['b', 'c'])
+    expect(blocks.get('bare2')!.template).toBe('daily.md')
+    expect(notebookConfig.effectivePaths(blocks.get('bare2')!)).toEqual(['bare2'])
     expect(blocks.get('dup')!.duplicate).toBe(true)
     expect(blocks.get('dup')!.paths).toBeNull()
+    expect(notebookConfig.effectivePaths(blocks.get('dup')!)).toBeNull()
     expect(notebookConfig.samePaths(['./journal/'], ['journal'])).toBe(true)
     expect(notebookConfig.samePaths(['journal', 'extra'], ['journal'])).toBe(false)
     expect(notebookConfig.sameGroupPath('./notes/', 'notes')).toBe(true)
@@ -878,6 +894,58 @@ describe('M1: 配置收敛（group）', () => {
     expect(st.groups[0].actualPaths).toEqual(['notes'])
     expect(st.groupsOk).toBe(true)
   })
+
+  it('未加引号的组头：识别、不追加重复组（曾把 config 写成重复表，zk 拒读），--fix 仍能改 paths / 组头', async () => {
+    const dir = path.join(home, 'nb-groups-bare')
+    const base = store.normalizeConfig({ notebook: dir, zkPath: zkBin, dailyDir: 'journal' })
+    await notebookLib.ensureNotebook(base)
+    const file = path.join(dir, '.zk', 'config.toml')
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8')
+      .replaceAll('[group."daily"]', '[group.daily]')
+      .replaceAll('[group."daily".note]', '[group.daily.note]'))
+
+    expect(notebookLib.structureStatus(base).groupsOk).toBe(true)
+    const again = await notebookLib.ensureNotebook(base)
+    expect(again.groupsAdded).toEqual([])
+    expect(again.groupWarnings).toEqual([])
+    const text = fs.readFileSync(file, 'utf8')
+    // 回归：认不出裸键表头就会追加 [group."daily"] —— 同名 TOML 表定义两次，zk 拒读整个配置
+    expect(text.match(/^\[group\.daily\]$/gm)?.length).toBe(1)
+    expect(text).not.toContain('[group."daily"]')
+    await zk.indexNotebook(base) // zk 真的读得懂这份配置
+
+    const fixed = notebookLib.fixGroupConfig({ ...base, dailyDir: 'entries' })
+    expect(fixed.changed).toBe(true)
+    expect(fixed.updates.some((u) => u.action === 'paths')).toBe(true)
+    expect(fs.readFileSync(file, 'utf8')).toContain('paths = ["entries"]')
+
+    const renamed = notebookLib.fixGroupConfig({ ...base, dailyDir: 'entries', dailyGroup: 'diary' })
+    expect(renamed.updates.some((u) => u.action === 'rename' && u.from === 'daily')).toBe(true)
+    const after = fs.readFileSync(file, 'utf8')
+    expect(after).toContain('[group."diary"]')
+    expect(after).toContain('[group."diary".note]')
+    expect(after).not.toContain('[group.daily]')
+  })
+
+  it('省略 paths 的 group 按同名目录占位：不追加同路径组（zk 语义）', async () => {
+    const dir = path.join(home, 'nb-groups-implicit')
+    const base = store.normalizeConfig({ notebook: dir, zkPath: zkBin, dailyDir: 'journal' })
+    await notebookLib.ensureNotebook(base)
+    const file = path.join(dir, '.zk', 'config.toml')
+    // 用户自己写的组：没写 paths —— zk 把它当成 paths = ["journal"]（组名 = 目录）
+    const text = fs.readFileSync(file, 'utf8')
+      .replace(/# dsh-zdiary-kit：日记笔记组[\s\S]*?template = "daily\.md"\n/, '')
+    fs.writeFileSync(file, text + '\n# 用户自己的\n[group."journal"]\n')
+
+    const st = notebookLib.structureStatus(base)
+    expect(st.groupsOk).toBe(false)
+    expect(st.groups[0].conflict).toBe('journal')
+    const res = await notebookLib.ensureNotebook(base)
+    expect(res.groupsAdded).toEqual([])
+    expect(res.groupWarnings.some((w) => w.includes('已被 group "journal" 占用'))).toBe(true)
+    expect(fs.readFileSync(file, 'utf8')).not.toContain('[group."daily"]')
+    await zk.indexNotebook(base)
+  })
 })
 
 describe('M2: 记忆生命周期', () => {
@@ -955,10 +1023,12 @@ describe('M2: 记忆生命周期', () => {
     await notebookLib.ensureNotebook(cfg)
     const reused = await zk.createNote(cfg, { title: '重复标题的旧结论', dir: 'notes/concepts', content: '正文 #keep' })
     const successor = await zk.createNote(cfg, { title: '新结论替代旧结论', dir: 'notes/concepts', content: '正文 #keep' })
+    fs.writeFileSync(path.join(dir, 'archive', '旧结论.md'), '# 旧\n')
     fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
       '# 记忆',
       `- [superseded 2026-02-01] 重复标题的旧结论 → [[${successor.path}]]`,
       '- 老结论（2025-01-01）[[notes/已经不存在.md]]',
+      '- 显式引用归档（2026-10-25）[[archive/旧结论.md]]',
       '',
     ].join('\n'))
 
@@ -972,6 +1042,8 @@ describe('M2: 记忆生命周期', () => {
     expect(dream.retireCandidates.map((c) => c.reason)).toContain('source-missing')
     expect(dream.retireCandidates.map((c) => c.entry).some((e) => e.includes('老结论'))).toBe(true)
     expect(dream.retireCandidates.map((c) => c.entry).some((e) => e.includes('重复标题的旧结论'))).toBe(false)
+    // 显式写 archive/ 的链接是有意引用旧结论（与 lint 同口径）：不算来源断了，不进退役候选
+    expect(dream.retireCandidates.map((c) => c.entry).some((e) => e.includes('显式引用归档'))).toBe(false)
     // 余量与注入同一口径
     expect(dream.memory.budget).toBe(cfg.memoryBudgetWords)
     expect(dream.memory.totalWords).toBeGreaterThanOrEqual(dream.memory.words)
@@ -3013,7 +3085,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     await notebookLib.ensureNotebook(cfg)
     // layered 初始化会写 AGENTS.md；先删掉，验证「没有文件」不是旧模板
     fs.rmSync(path.join(cfg.notebook, 'AGENTS.md'))
-    expect(lintLib.templateStatus(cfg)).toEqual({ present: false, version: 0, current: 2, stale: false })
+    expect(lintLib.templateStatus(cfg)).toEqual({ present: false, version: 0, current: 3, stale: false })
 
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '# 手写规则\n')
     const old = lintLib.templateStatus(cfg)
@@ -3024,12 +3096,12 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(old.currentText).toBe(notebookLib.AGENTS_TEMPLATE)
     const extras = lintLib.formatLintExtras({ ...(await lintLib.lintNotebook(cfg)) }).join('\n')
     expect(extras).toContain('新版模板全文')
-    expect(extras).toContain('<!-- zdiary-template: v2 -->')
+    expect(extras).toContain('<!-- zdiary-template: v3 -->')
     expect(extras).not.toContain('docs/features/memory.md')
 
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '<!-- zdiary-template: v99 -->\n\n# 未来版本\n')
     // 插件比库旧：仍然报（不然升过插件又降级的人永远看不见），但不能把当前版本的模板递过去
-    // —— agent 会照着合并、把标记改成 v2，等于把规则回退
+    // —— agent 会照着合并、把标记改成 v3，等于把规则回退
     const future = lintLib.templateStatus(cfg)
     expect(future.stale).toBe(true)
     expect(future.currentText).toBeUndefined()

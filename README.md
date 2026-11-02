@@ -226,7 +226,8 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 
 `--fix` 写前备份 `.zk/config.toml.bak`，只改 paths 与组头；自定义的 `template` / `extra` / 注释 / 别的 group 一字不动。
 两个 group 要落到**同一条路径**时它拒绝写（整轮不改，并在 `groups` / `doctor` / 设置页里报出来）——
-那样 zk 命中哪个模板就只剩实现细节了。父子目录不算冲突：`dailyDir=notes` 与 `notes/concepts` 可以共存。
+那样 zk 命中哪个模板就只剩实现细节了。父子目录不算冲突：`dailyDir=notes` 与 `notes/concepts` 可以共存；
+没写 `paths` 的 group 按同名目录算（zk 的语义），同样算抢同一路径。
 `dailyGroup` 改名且 `dailyDir` 没变时，`--fix` 直接把旧组头改成新名字（连同 `.note` / `.extra` 子表），不追加第二个日记组。
 
 `archiveDir` 是另一条硬规则：**旧归档目录非空时拒绝改**。插件不迁移归档文件，改了会让废弃笔记重新进入检索、

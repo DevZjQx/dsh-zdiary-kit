@@ -203,6 +203,7 @@ function promotionsOf(cfg, notes) {
  * 退役候选（D4.3）：只做机械规则，不判断「这条还有没有用」。
  *   · 有日期且超过 STALE_DAYS → stale；
  *   · 条目里的 `[[来源]]` 指向归档 / 不存在 → source-superseded / source-missing；
+ *   · 显式写 `archive/` 的链接是有意引用旧结论（与 lint 同口径），不算来源断了；
  *   · 无日期、无链接的不算候选（它们已经由 lint 的 undated / unlinked 报告）。
  */
 function retireCandidatesOf(cfg, notes, now) {
@@ -227,7 +228,8 @@ function retireCandidatesOf(cfg, notes, now) {
             if (!target)
                 continue;
             const hit = resolveWikiTarget(cfg, target, index);
-            if (hit.status === 'live')
+            // 显式写 archive/ 的链接是有意引用（supersede 就是这样重写入链的）：与 lint 一个口径，不算来源断了
+            if (hit.status === 'live' || hit.explicit)
                 continue;
             reason = hit.status === 'archived' ? 'source-superseded' : 'source-missing';
             break;

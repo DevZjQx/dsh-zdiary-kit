@@ -28,7 +28,7 @@ import { META_NAMES } from '../../lib/meta.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.ts'
 import type { LintResult } from '../../lib/lint.ts'
-import { dreamNotebook } from '../../lib/dream.ts'
+import { dreamNotebook, STALE_DAYS } from '../../lib/dream.ts'
 import type { DreamResult } from '../../lib/dream.ts'
 
 const text = (value: string): ContentBlockLike[] => [{ type: 'text', text: value }]
@@ -1118,7 +1118,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         '会读 MEMORY.md：已经晋升过的（`[[链接]]` 命中或条目里写了标题）移出候选、进 alreadyPromoted —— 不会每周原样重复。' +
         '退役行里的旧标题不再算已晋升，但 `→ [[新结论]]` 仍算。' +
         'backlog 是窗口外仍未晋升的笔记（按被引数），漏做一次不会永久掉队。' +
-        'memory 给记忆余量（内容词 + 提示 = 总词，余量按总词算，可以为负）；retireCandidates 给「可考虑退役」的条目（来源归档 / 不存在、超过 90 天）。' +
+        'memory 给记忆余量（内容词 + 提示 = 总词，余量按总词算，可以为负）；retireCandidates 给「可考虑退役」的条目' +
+        '（来源归档 / 不存在、超过 ' + STALE_DAYS + ' 天未复核；显式写 archive/ 的有意引用不算）。' +
         'days 省略时窗口 = 距 DREAMS.md「上次做梦」的天数（没有则 7 天）。' +
         '只返回材料：写 MEMORY.md / DREAMS.md 由你按 AGENTS.md 决定，这个工具不写任何文件。',
       parameters: {
@@ -1206,7 +1207,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           for (const c of v.retireCandidates.slice(0, 10)) {
             const when = c.date ? c.date + '（' + c.age + ' 天）' : '无日期'
             const why = c.reason === 'stale'
-              ? '超过 90 天未复核'
+              ? '超过 ' + STALE_DAYS + ' 天未复核'
               : c.reason === 'source-superseded' ? '来源已归档' : '来源不存在'
             lines.push('  · ' + c.entry + ' — ' + when + ' · ' + why)
           }

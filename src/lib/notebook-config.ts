@@ -12,8 +12,15 @@
 
 export interface GroupBlock {
   name: string
-  /** 解析不出（缺 paths / 数组里有没加引号的项 / 重复 group）就是 null */
+  /** paths 数组本身；`pathsState !== 'set'` 时是 null（用 pathsState 区分缺键 / 解析失败 / 重复组） */
   paths: string[] | null
+  /**
+   * paths 的状态：
+   *   · `set` = 文件里写了合法数组；
+   *   · `absent` = 根本没写 paths —— zk 按**同名目录**归组（见 effectivePaths）；
+   *   · `invalid` = 写了但解析不了（多行数组 / 未加引号的项），或 group 重复出现。
+   */
+  pathsState: 'set' | 'absent' | 'invalid'
   /** `[group."name".note] template = "..."`；没有就是 null */
   template: string | null
   /** 组头前紧邻的注释行（原样，含 `#`）；没有就是 null */
@@ -24,8 +31,8 @@ export interface GroupBlock {
   duplicate: boolean
 }
 
-/** `[group."name"]` 或 `[group."name".note|extra]` 的组头 */
-const GROUP_HEADER = /^\s*\[group\.(?:"([^"]+)"|'([^']+)')(?:\.(note|extra))?\]\s*$/
+/** `[group."name"]` / `[group.'name']` / `[group.bare]` 的组头（允许行尾注释） */
+const GROUP_HEADER = /^\s*\[group\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))(?:\.(note|extra))?\]\s*(?:#.*)?$/
 
 function arrayOf(raw: string): string[] | null {
   const text = raw.trim()
@@ -83,13 +90,13 @@ export function parseGroupBlocks(text: string): Map<string, GroupBlock> {
   for (const line of text.split(/\r?\n/)) {
     const header = GROUP_HEADER.exec(line)
     if (header) {
-      const name = header[1] ?? header[2] ?? ''
-      const sub = header[3] as 'note' | 'extra' | undefined
+      const name = header[1] ?? header[2] ?? header[3] ?? ''
+      const sub = header[4] as 'note' | 'extra' | undefined
       if (!sub) {
         const existing = blocks.get(name)
         current = existing
-          ? { ...existing, duplicate: true, paths: null, template: null }
-          : { name, paths: null, template: null, comment: comments.length ? comments.join('\n') : null, header: line, duplicate: false }
+          ? { ...existing, duplicate: true, paths: null, pathsState: 'invalid', template: null }
+          : { name, paths: null, pathsState: 'absent', template: null, comment: comments.length ? comments.join('\n') : null, header: line, duplicate: false }
         blocks.set(name, current)
         section = 'base'
       } else {
@@ -121,6 +128,7 @@ export function parseGroupBlocks(text: string): Map<string, GroupBlock> {
     const value = valueOf(trimmed.slice(eq + 1))
     if (section === 'base' && key === 'paths') {
       current.paths = arrayOf(value)
+      current.pathsState = current.paths ? 'set' : 'invalid'
     } else if (section === 'note' && key === 'template') {
       current.template = unquote(value)
     }
@@ -139,6 +147,18 @@ function unquote(value: string): string | null {
 /** 组头是否是 dsh-zdiary-kit 自己写的（有它才允许 `--fix` 改） */
 export function isPluginOwned(block: GroupBlock): boolean {
   return !!block.comment && block.comment.includes('dsh-zdiary-kit')
+}
+
+/**
+ * zk 实际用于归组的路径。没写 `paths` 等价于 `[名字]`（zk 生成的 config 注释原话：
+ * "Omitting `paths` is equivalent to providing a single path equal to the name of the group"），
+ * 所以缺键不是「没有路径」，而是按同名目录占着 —— 冲突判断必须算上它。
+ * 解析失败 / 重复组返回 null（没有可信路径，不猜）。
+ */
+export function effectivePaths(block: GroupBlock): string[] | null {
+  if (block.duplicate) return null
+  if (block.pathsState === 'set') return block.paths
+  return block.pathsState === 'absent' ? [block.name] : null
 }
 
 /** 路径归一化：`./notes/` 与 `notes` 是同一个目录 */

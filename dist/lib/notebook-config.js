@@ -9,8 +9,8 @@
  * 约定：**解析不了就返回 null，绝不猜**。调用方把 null 当作「缺失 / 需要修」，
  * 而不是按半份结果去改文件。
  */
-/** `[group."name"]` 或 `[group."name".note|extra]` 的组头 */
-const GROUP_HEADER = /^\s*\[group\.(?:"([^"]+)"|'([^']+)')(?:\.(note|extra))?\]\s*$/;
+/** `[group."name"]` / `[group.'name']` / `[group.bare]` 的组头（允许行尾注释） */
+const GROUP_HEADER = /^\s*\[group\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))(?:\.(note|extra))?\]\s*(?:#.*)?$/;
 function arrayOf(raw) {
     const text = raw.trim();
     if (!text.startsWith('[') || !text.endsWith(']'))
@@ -80,13 +80,13 @@ export function parseGroupBlocks(text) {
     for (const line of text.split(/\r?\n/)) {
         const header = GROUP_HEADER.exec(line);
         if (header) {
-            const name = header[1] ?? header[2] ?? '';
-            const sub = header[3];
+            const name = header[1] ?? header[2] ?? header[3] ?? '';
+            const sub = header[4];
             if (!sub) {
                 const existing = blocks.get(name);
                 current = existing
-                    ? { ...existing, duplicate: true, paths: null, template: null }
-                    : { name, paths: null, template: null, comment: comments.length ? comments.join('\n') : null, header: line, duplicate: false };
+                    ? { ...existing, duplicate: true, paths: null, pathsState: 'invalid', template: null }
+                    : { name, paths: null, pathsState: 'absent', template: null, comment: comments.length ? comments.join('\n') : null, header: line, duplicate: false };
                 blocks.set(name, current);
                 section = 'base';
             }
@@ -131,6 +131,7 @@ export function parseGroupBlocks(text) {
         const value = valueOf(trimmed.slice(eq + 1));
         if (section === 'base' && key === 'paths') {
             current.paths = arrayOf(value);
+            current.pathsState = current.paths ? 'set' : 'invalid';
         }
         else if (section === 'note' && key === 'template') {
             current.template = unquote(value);
@@ -148,6 +149,19 @@ function unquote(value) {
 /** 组头是否是 dsh-zdiary-kit 自己写的（有它才允许 `--fix` 改） */
 export function isPluginOwned(block) {
     return !!block.comment && block.comment.includes('dsh-zdiary-kit');
+}
+/**
+ * zk 实际用于归组的路径。没写 `paths` 等价于 `[名字]`（zk 生成的 config 注释原话：
+ * "Omitting `paths` is equivalent to providing a single path equal to the name of the group"），
+ * 所以缺键不是「没有路径」，而是按同名目录占着 —— 冲突判断必须算上它。
+ * 解析失败 / 重复组返回 null（没有可信路径，不猜）。
+ */
+export function effectivePaths(block) {
+    if (block.duplicate)
+        return null;
+    if (block.pathsState === 'set')
+        return block.paths;
+    return block.pathsState === 'absent' ? [block.name] : null;
 }
 /** 路径归一化：`./notes/` 与 `notes` 是同一个目录 */
 export function normGroupPath(rel) {

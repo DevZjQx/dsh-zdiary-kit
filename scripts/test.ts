@@ -26,7 +26,8 @@ if (loc === null) {
 }
 console.log(`zk: ${loc.bin}（来源 ${loc.source}，v${loc.version}）`)
 
-const child = spawn(process.execPath, ['test', ...forward], {
+// 集成测试跑真 zk：建 150+ 篇笔记的用例在慢机器上会超过 bun 默认的 5s（实测偶发 flake），放宽到 15s
+const child = spawn(process.execPath, ['test', '--timeout=15000', ...forward], {
   cwd: root,
   env: { ...process.env, ZK_BIN: loc.bin },
   stdio: ['inherit', 'pipe', 'inherit'],

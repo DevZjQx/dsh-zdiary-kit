@@ -299,8 +299,11 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
             ? `group."${cfg.dailyGroup}" → ${dailyGroup.actualPaths?.join('、')}` +
               (otherBroken.length ? `；另有 ${otherBroken.length} 个 group 与配置不一致 —— 跑 zk-kit groups --fix` : '') +
               (overlapped ? '；路径与另一个 group 重叠（zk 按路径前缀归组）—— 跑 zk-kit groups 看详情' : '')
-            : `期望 ${dailyGroup.expectedPaths.join('、')}，实际 ${dailyGroup.actualPaths?.join('、') ?? '解析不了'} —— 跑 zk-kit groups --fix`
-          : `配置里没有这个 group（期望 ${dailyGroup.expectedPaths.join('、')}），点「初始化 / 补建」补上`,
+            : `期望 ${dailyGroup.expectedPaths.join('、')}，实际 ${dailyGroup.actualPaths?.join('、') ?? '解析不了'}` +
+              (dailyGroup.actualPaths === null ? '（可能是多行数组）—— 手动编辑 .zk/config.toml' : ' —— 跑 zk-kit groups --fix')
+          : dailyGroup.conflict
+            ? `配置里没有这个 group（期望 ${dailyGroup.expectedPaths.join('、')}），路径已被 group "${dailyGroup.conflict}" 占用 —— 跑 zk-kit groups --fix`
+            : `配置里没有这个 group（期望 ${dailyGroup.expectedPaths.join('、')}），点「初始化 / 补建」补上`,
     })
     const drift = st.mode === 'flat' && st.extra.length
       ? `；盘上有分层目录 ${st.extra.join('、')}，新建笔记会落在 ${cfg.notesDir}/ 根`

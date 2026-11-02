@@ -170,7 +170,8 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 **记忆余量与退役材料（0.9 D4）。** 结果的 `memory` 与注入同一口径：`words` 是内容词（含「记忆已用」提示行），
 `totalWords` 含框 / 做梦提醒 / notice，`headroom = budget - totalWords` 可以为负 —— 只报内容词等于说
 「还有 15 词」，而框和提示早就把它吃完了。`retireCandidates` 是机械规则给的「可考虑退役」：有日期且 > 90 天（`stale`）、
-`[[来源]]` 指向归档 / 不存在（`source-superseded` / `source-missing`）；无日期无链接的不算候选。
+`[[来源]]` 指向归档 / 不存在（`source-superseded` / `source-missing`）；显式写 `archive/` 的链接是有意引用旧结论，
+不算来源断了（与 `memoryLinks` 同口径），无日期无链接的不算候选。
 `zk_dream` 只输出这两栏，不写任何文件。
 `zk-kit query` 的透传在 0 命中且给了 `-m` 时退回 `-M re`：FTS5 不切中文，不兜底会静默返回空（Z12）。
 `zk_search`（P2-7）更进一步：**查询含 CJK 时 FTS 与 `-M re` 各跑一次**，按路径去重合并，`matchStrategy` 返回
