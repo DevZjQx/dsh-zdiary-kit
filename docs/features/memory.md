@@ -6,7 +6,10 @@
 **Owns.**
 - `lib/meta.ts`：meta 文件唯一清单（注入 3 份 / 排除 6 份），memory、zk、settings 共用
 - `lib/memory.ts`：读 `<vault>/AGENTS.md` / `USER.md` / `MEMORY.md` → 词数 → 机械截断 → `<system-reminder>` 框；
-  另读 `DREAMS.md` 的「上次做梦」一行（不进正文、不计预算）
+  另读 `DREAMS.md` 的「上次做梦」一行（不进正文、不计预算）；
+  `memoryUsage(cfg)` 是同一份载荷的投影（内容词 / 总词 / 预算 / 余量），给 dream 与后续页面用
+- `lib/memory-format.ts`：条目的唯一切分口径 —— `splitMemoryEntries` / `isRetiredEntry` / `entryDate` /
+  `stripRetiredEntries` / `daysSinceDate`；memory、dream、lint 共用，禁止各写一套
 - `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）；`dreamNotebook` 用它算默认窗口
 - `lib/wikilink.ts`：`[[链接]]` 的解析口径（路径 → `.md` → `archive/` → 活笔记标题），lint 与 dream 共用一份
 - `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 186 词），flat 用精简版
@@ -31,15 +34,15 @@
 旧路径在 `archive/` 下找到同名（或活文件带 `status: superseded`）报 `superseded`，都找不到报 `missing`；
 显式写 `archive/` 的链接是有意引用，不算漂移；另数 MEMORY.md 里有多少列表条目没附链接（USER 不计）。
 P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）、
-`retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记）。注入仍按文件原文，退役行不删、不过滤 ——
-「注入 = 文件原文」这条现状留给 A 案跑一段时间后再评估（B 案）。
+`retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记）。0.9 起注入会省略退役条目（notice 说明省略了几条），
+但文件不删、不改 —— 「注入 = 文件原文」收窄为「注入 = 原文去掉退役条目」（D3）。
 为什么要有：`zk_supersede` 只重写 `zk graph` 里的入链，meta 文件被 `excludedNames` 排除在图外 ——
 链接不会跟着搬，`--broken-links` 也看不见。语义重复仍留给 agent，插件不碰。
 
 **Depends on.** `config/store`（`memoryBudgetWords`，每次现读 —— 设置页保存后下一次工具调用就生效）、
 `lib/meta`、`node:fs`；宿主的 `systemPrompt` 服务（可选，没有就只留 `zk_context`）。
 
-**Public surface.** `buildMemoryPayload(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、
+**Public surface.** `buildMemoryPayload(cfg)`、`memoryUsage(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、
 `AGENTS_TEMPLATE` / `AGENTS_TEMPLATE_FLAT`、`TEMPLATE_VERSION` / `TEMPLATE_MARK`、`WORKFLOW_TEMPLATE`。
 笔记本侧：`writeAgentsTemplate(cfg)`（缺才写，返回是否写入）与 `ensureNotebook(cfg, signal, { withAgents })`。
 `WORKFLOW.md` 不进 `META_FILES`（不注入），只在 `META_NAMES` 里（排除出检索、`zk_append` 拒写）。
@@ -74,8 +77,7 @@ P1-3 的日期 / 退役格式 + P2-15 的版本标记后为 189 词；P2-8 去�
 丢弃循环一次都不进，预算于是完全不生效（真机实测 880 / 449 / 895 词，`truncatedWords` 都是 0）。
 现在按顺序降级：`##` 小节 → 顶层列表项（至少两条，缩进续行归上一条）→ 空行段落（首段作为 head）；
 三级都跳过 ```` ``` ```` 围栏里的行 —— 代码块里的 `- ` 或空行不该被当成可丢弃的条目。
-丢弃仍从尾部开始、`head` 永远保留，所以**条目列表是从末尾往前丢**：新条目加在底部会先被丢，
-README 与模板不要暗示「新条目往下加」而不提这一点。
+`head` 永远保留；MEMORY 的丢弃对象按**日期**选（见下），USER 与无日期条目仍从尾部往前丢。
 
 **截断留目录，不静默消失。** 丢掉的段会合成一份紧凑目录（`MEMORY.md：§标题、§标题`），
 标题取首行（去掉 `##` 或列表符号）、压到 40 字，最多 5 个；目录自己也算预算（载荷里的 `tocWords`，
@@ -92,11 +94,27 @@ README 与模板不要暗示「新条目往下加」而不提这一点。
 **整段提醒只在根目录有 `AGENTS.md` 时出现** —— 没采用这套工作约定的库不该每步被催。
 这一行**不计入预算**、不参与截断，也不写进 `files` —— 它不是被注入的记忆，是给模型的一个机械提醒。
 
-**条目生命周期（P1-3）。** 只增不减的记忆一定撞上限，撞上之后由三级切分按位置丢弃 —— 那不可审计。
+**条目生命周期（P1-3 / 0.9 D2–D4）。** 只增不减的记忆一定撞上限，撞上之后由三级切分按位置丢弃 —— 那不可审计。
 所以 `AGENTS.md` 约定每条写 `结论（YYYY-MM-DD）[[来源路径]]`，退役写 `- [superseded YYYY-MM-DD] 旧结论 → [[新结论]]`，
-行留在原处：`zk_lint` 数 `undated` / `retired` / `retiredBroken`，但**不删、不改、不过滤**。
-整篇重写会丢掉「这里曾经有过什么、为什么废掉」；退役行是笔记 `supersede + reason + archive` 在记忆层的对应物。
-注入仍按文件原文（B 案「过滤退役行」等退役行真的出现、预算压力可测之后再评估）。
+行留在原处：`zk_lint` 数 `undated` / `retired` / `retiredBroken`，但**不删、不改**。
+
+**截断按日期（D2）。** MEMORY 超预算时选**能解析出 `YYYY-MM-DD` 且日期最旧**的一条丢；同日期按文件位置靠后的先丢；
+一条都解析不出（老库）才退回尾部丢，行为与 0.8.3 完全一致。日期真校验：`2026-99-99` 不算，按「无日期」处理。
+目录仍按原文件位置重建，不按丢弃顺序。这样「新结论写顶部」就不再是截断正确性的前提。
+退到尾部丢且 MEMORY 里有没日期的条目时，notice 明说「MEMORY 有 N 条没日期，只能按位置丢」—— 不改模板，先说清代价。
+
+**退役条目不过注入（D3）。** `lib/memory-format.ts` 是唯一切分口径（`splitMemoryEntries` / `isRetiredEntry` /
+`entryDate` / `stripRetiredEntries`），memory / dream / lint 共用。注入前整条删除退役条目，notice 加一行
+`已省略 N 条退役条目（见 MEMORY.md）`，这一行**计入预算**；`truncatedWords` 不算省略，只算被预算挤掉的正文。
+磁盘、git、记忆页仍是原文 —— 「注入 = 文件原文」这条现状在 0.9 收窄为「注入 = 原文去掉退役条目」。
+dream 的判重分两步（顺序不能反）：`[[链接]]` 匹配用**原文**（退役行的 `→ [[新结论]]` 是合法的已晋升指针），
+标题包含匹配用 strip 之后的正文（退役行里的旧标题不该再算已晋升，否则归档后复用同一标题永远进不了候选）。
+
+**用量与退役材料（D4）。** `memoryUsage(cfg)` 只是 `buildMemoryPayload` 的投影：`words` 与 `payload.words` 同源
+（含「记忆已用」提示行），`totalWords = countWords(payload.text)`（框 / 做梦提醒 / notice 都在里面），
+`headroom = budget - totalWords` **可以为负**。`zk_dream` 的结果因此多两栏：`memory`（上面四个数）与
+`retireCandidates`（有日期且 > 90 天 → `stale`；`[[来源]]` 指向归档 / 不存在 → `source-superseded` / `source-missing`；
+无日期无链接的不算候选）。只给材料，不自动退役、不写 MEMORY。
 
 **flat 也能有约定（P1-6）。** `flat` 是默认结构，但自动写 `AGENTS.md` 会破坏 M0 的「升级不多一个文件」，
 于是默认安装既没有约定、也没有周提醒（提醒只在根目录有 AGENTS 时出现）。改成 opt-in：

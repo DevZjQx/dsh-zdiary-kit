@@ -184,6 +184,18 @@ function dreamReport(r) {
     const lines = [
         `做梦：近 ${r.windowDays} 天（自 ${r.since}）— 窗口 ${r.counts.window} 篇（日记 ${r.counts.daily}）· 候选 ${r.counts.candidates} · 拒绝 ${r.counts.rejected} · 未完成 ${r.counts.looseEnds} · 已晋升 ${r.counts.promoted} · 积压 ${r.counts.backlog}`,
     ];
+    // 余量按总词算：只报内容词等于说「还有 10 词」，而框与提示早就把它吃完了
+    lines.push(`记忆：内容 ${r.memory.words}/${r.memory.budget} 词 + 提示 ${r.memory.totalWords - r.memory.words} = ${r.memory.totalWords} 词（余 ${r.memory.headroom}）`);
+    if (r.retireCandidates.length) {
+        lines.push('可考虑退役：');
+        for (const c of r.retireCandidates.slice(0, 10)) {
+            const when = c.date ? `${c.date}（${c.age} 天）` : '无日期';
+            const why = c.reason === 'stale'
+                ? '超过 90 天未复核'
+                : c.reason === 'source-superseded' ? '来源已归档' : '来源不存在';
+            lines.push(`  · ${c.entry} — ${when} · ${why}`);
+        }
+    }
     if (r.newNotes.length) {
         lines.push('晋升候选：');
         for (const [i, n] of r.newNotes.slice(0, 10).entries()) {

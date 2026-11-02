@@ -112,6 +112,18 @@ const LINT_MEMORY = objSchema(
     undated: { type: 'number' },
     retired: { type: 'number' },
     retiredBroken: { type: 'number' },
+    stale: objSchema({
+      total: { type: 'number' },
+      staleDays: { type: 'number' },
+      items: {
+        type: 'array',
+        items: objSchema({
+          entry: { type: 'string' },
+          date: { type: 'string' },
+          age: { type: 'number' },
+        }, ['entry', 'date', 'age']),
+      },
+    }, ['total', 'staleDays', 'items']),
     items: {
       type: 'array',
       items: objSchema({
@@ -123,7 +135,7 @@ const LINT_MEMORY = objSchema(
       }, ['source', 'entry', 'link', 'reason', 'path']),
     },
   },
-  ['files', 'links', 'total', 'unlinked', 'undated', 'retired', 'retiredBroken', 'items'],
+  ['files', 'links', 'total', 'unlinked', 'undated', 'retired', 'retiredBroken', 'stale', 'items'],
 )
 /** frontmatter 缺字段（P2-13） */
 const LINT_INCOMPLETE = objSchema(
@@ -989,7 +1001,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'frontmatter 解析失败的笔记单列一类：它们进不了索引，别的项统计不到，先修它们再看其余。' +
         'memoryLinks 查 MEMORY.md / USER.md 里的 [[来源链接]] 是否还指向活笔记（已废弃 / 不存在）—— ' +
         'supersede 不会重写 meta 文件里的链接，这类漂移 broken-links 看不见；另数没附链接（unlinked）、' +
-        '没写日期（undated）、已退役（retired）与退役后新结论失效（retiredBroken）的条目。' +
+        '没写日期（undated）、已退役（retired）、退役后新结论失效（retiredBroken）与超过 90 天没复核（stale）的条目。' +
         'incomplete 是 frontmatter 缺 type / status / authority 的笔记：缺失被索引落成空串，机械门会静默失效。' +
         'tags 查标签卫生（大小写变体 / 单例，标签总数 ≥ 30 才报）；template 说根目录 AGENTS.md 是不是当前版本。' +
         'similarTitles 是「改一两个字」的疑似重复（同目录、二元组相似度 ≥ 0.6）：与全等重名分开，只报告。' +
@@ -1104,7 +1116,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'daily 里没划掉的 Loose ends、被引用最多的笔记。候选带正文摘要（lead）与入链来源（citedBy），方便重放上下文。' +
         'topCited 先按「被日记提到几天」排（使用信号），入链数只作并列次序；没有日记时退化为原排序。' +
         '会读 MEMORY.md：已经晋升过的（`[[链接]]` 命中或条目里写了标题）移出候选、进 alreadyPromoted —— 不会每周原样重复。' +
+        '退役行里的旧标题不再算已晋升，但 `→ [[新结论]]` 仍算。' +
         'backlog 是窗口外仍未晋升的笔记（按被引数），漏做一次不会永久掉队。' +
+        'memory 给记忆余量（内容词 + 提示 = 总词，余量按总词算，可以为负）；retireCandidates 给「可考虑退役」的条目（来源归档 / 不存在、超过 90 天）。' +
         'days 省略时窗口 = 距 DREAMS.md「上次做梦」的天数（没有则 7 天）。' +
         '只返回材料：写 MEMORY.md / DREAMS.md 由你按 AGENTS.md 决定，这个工具不写任何文件。',
       parameters: {
@@ -1120,6 +1134,12 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           windowDays: { type: 'number' },
           since: { type: 'string' },
           truncated: { type: 'boolean' },
+          memory: objSchema({
+            words: { type: 'number' },
+            totalWords: { type: 'number' },
+            budget: { type: 'number' },
+            headroom: { type: 'number' },
+          }, ['words', 'totalWords', 'budget', 'headroom']),
           counts: objSchema({
             window: { type: 'number' },
             daily: { type: 'number' },
@@ -1155,7 +1175,16 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               items: { type: 'array', items: { type: 'string' } },
             }, ['path', 'date', 'items']),
           },
-        }, ['notebook', 'windowDays', 'since', 'truncated', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds']),
+          retireCandidates: {
+            type: 'array',
+            items: objSchema({
+              entry: { type: 'string' },
+              date: { type: 'string' },
+              age: { type: 'number' },
+              reason: { type: 'string', enum: ['stale', 'source-missing', 'source-superseded'] },
+            }, ['entry', 'date', 'age', 'reason']),
+          },
+        }, ['notebook', 'windowDays', 'since', 'truncated', 'memory', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds', 'retireCandidates']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -1169,6 +1198,19 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           ' 篇（日记 ' + v.counts.daily + '）· 候选 ' + v.counts.candidates + ' · 拒绝 ' + v.counts.rejected +
           ' · 未完成 ' + v.counts.looseEnds + ' · 已晋升 ' + v.counts.promoted + ' · 积压 ' + v.counts.backlog,
         ]
+        // 余量按总词算（框 + 提示 + notice 都算）：只报内容词等于说「还有 15 词」，而提示早把它吃完了
+        lines.push('记忆：内容 ' + v.memory.words + '/' + v.memory.budget + ' 词 + 提示 ' +
+          (v.memory.totalWords - v.memory.words) + ' = ' + v.memory.totalWords + ' 词（余 ' + v.memory.headroom + '）')
+        if (v.retireCandidates.length) {
+          lines.push('可考虑退役：')
+          for (const c of v.retireCandidates.slice(0, 10)) {
+            const when = c.date ? c.date + '（' + c.age + ' 天）' : '无日期'
+            const why = c.reason === 'stale'
+              ? '超过 90 天未复核'
+              : c.reason === 'source-superseded' ? '来源已归档' : '来源不存在'
+            lines.push('  · ' + c.entry + ' — ' + when + ' · ' + why)
+          }
+        }
         if (v.newNotes.length) {
           lines.push('晋升候选：')
           for (const [i, n] of v.newNotes.slice(0, 10).entries()) {

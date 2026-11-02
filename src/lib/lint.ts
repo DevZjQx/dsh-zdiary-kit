@@ -28,6 +28,7 @@ import type { GraphEdge, NoteRecord } from './zk.ts'
 import { allNotes, graphEdges, localDate, MAX_SCAN, notesWithFlag, parseErrorWarnings } from './zk.ts'
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
 import { parseFrontmatter } from './frontmatter.ts'
+import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './memory-format.ts'
 import type { FrontmatterFields } from './frontmatter.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_VERSION } from './agents-template.ts'
 
@@ -124,6 +125,14 @@ export interface LintMemoryLink {
   path: string
 }
 
+export interface LintMemoryStale {
+  /** 条目首行（压空白后最多 100 字） */
+  entry: string
+  /** 条目里的日期（YYYY-MM-DD） */
+  date: string
+  age: number
+}
+
 export interface LintMemoryBucket {
   /** 实际读到的记忆文件数（0 = 还没启用记忆层，不报这一项） */
   files: number
@@ -135,10 +144,12 @@ export interface LintMemoryBucket {
   unlinked: number
   /** MEMORY.md 里首行没有 `YYYY-MM-DD` 的条目数（P1-3；退役行不计） */
   undated: number
-  /** 以 `- [superseded …]` 开头的退役条目数（只报告，注入仍按原文） */
+  /** 以 `- [superseded …]` 开头的退役条目数（只报告；注入从 0.9 起省略它们） */
   retired: number
   /** 退役行里的 `→ [[新结论]]` 解析不到活笔记的条数 */
   retiredBroken: number
+  /** 有日期但超过阈值没复核的条目（D5.1）：只报告，不判断还有没有用 */
+  stale: { total: number; staleDays: number; items: LintMemoryStale[] }
   items: LintMemoryLink[]
 }
 
@@ -353,33 +364,18 @@ export function similarTitles(notes: NoteRecord[], scanTruncated: boolean, max =
 const MEMORY_LINK_FILES = ['MEMORY.md', 'USER.md'] as const
 
 /** 按列表条目切分（含缩进续行）：只有条目才谈得上「没附来源」 */
-function listEntries(body: string): string[] {
-  const out: string[] = []
-  let current: string[] | null = null
-  const flush = (): void => {
-    if (current) out.push(current.join('\n'))
-    current = null
-  }
-  for (const line of String(body ?? '').split('\n')) {
-    if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(line)) {
-      flush()
-      current = [line]
-    } else if (current && /^\s+\S/.test(line)) {
-      current.push(line)
-    } else {
-      flush()
-    }
-  }
-  flush()
-  return out
-}
-
-/** 记忆条目的观察日期（P1-3）：只认 YYYY-MM-DD 这种能机械解析的形状 */
-const DATE_IN_LINE = /\b\d{4}-\d{2}-\d{2}\b/
-
 function collapse(text: string, max = 100): string {
   const one = text.replace(/\s+/g, ' ').trim()
   return one.length > max ? one.slice(0, max) + '…' : one
+}
+
+export interface MemoryIssueOptions {
+  /** 失效链接最多回几条（默认 MAX_ITEMS） */
+  max?: number
+  /** 多少天没复核算陈旧（默认 90；与笔记陈旧同一套阈值） */
+  staleDays?: number
+  /** 测试用；默认 now */
+  now?: Date
 }
 
 /**
@@ -392,10 +388,14 @@ function collapse(text: string, max = 100): string {
  * 纯机械解析：路径优先（原路径 → 加 .md → archive/ 下同名），退而按标题/文件名匹配**活笔记**；
  * 归档标题不反查 —— 归档默认不进检索，这里再造一套索引就成了第二真相。「语义重复」也不查。
  */
-export function memoryLinkIssues(cfg: Config, notes: NoteRecord[], max = MAX_ITEMS): LintMemoryBucket {
+export function memoryLinkIssues(cfg: Config, notes: NoteRecord[], opts: MemoryIssueOptions = {}): LintMemoryBucket {
+  const max = opts.max ?? MAX_ITEMS
+  const staleDays = Math.min(3650, Math.max(1, Math.trunc(opts.staleDays ?? 90)))
+  const now = opts.now ?? new Date()
   const index = wikiIndex(notes)
 
   const items: LintMemoryLink[] = []
+  const staleItems: LintMemoryStale[] = []
   const seen = new Set<string>()
   let files = 0
   let links = 0
@@ -403,6 +403,7 @@ export function memoryLinkIssues(cfg: Config, notes: NoteRecord[], max = MAX_ITE
   let undated = 0
   let retired = 0
   let retiredBroken = 0
+  let staleTotal = 0
 
   for (const name of MEMORY_LINK_FILES) {
     let body = ''
@@ -426,25 +427,45 @@ export function memoryLinkIssues(cfg: Config, notes: NoteRecord[], max = MAX_ITE
       }
     }
 
-    // 只对 MEMORY.md 数「没附来源 / 没日期 / 退役」：USER.md 是偏好清单，大多数条目本来就没有来源
+    // 只对 MEMORY.md 数「没附来源 / 没日期 / 退役 / 陈旧」：USER.md 是偏好清单，大多数条目本来就没有来源
     if (name === 'MEMORY.md') {
-      for (const entry of listEntries(body)) {
+      for (const entry of splitMemoryEntries(body)) {
         const first = entry.split('\n', 1)[0] ?? ''
         if (!entry.includes('[[')) unlinked += 1
-        // 退役行：磁盘保留、注入仍按原文（P1-3 A 案），只核对它指向的新结论是否还活着
-        if (/^\s*(?:[-*+]|\d+[.)])\s+\[superseded\b/i.test(first)) {
+        // 退役行：磁盘保留、注入从 0.9 起省略（D3），只核对它指向的新结论是否还活着
+        if (isRetiredEntry(entry)) {
           retired += 1
           const next = /→\s*\[\[([^\]|#]+)/.exec(entry)
           const resolved = next ? resolveWikiTarget(cfg, String(next[1] ?? '').trim(), index) : null
           if (!resolved || resolved.status !== 'live') retiredBroken += 1
           continue
         }
-        if (!DATE_IN_LINE.test(first)) undated += 1
+        // 日期要真校验：`2026-99-99` 既不算「有日期」，也不该在陈旧里报一次
+        const date = entryDate(entry)
+        if (!date) {
+          undated += 1
+          continue
+        }
+        const age = daysSinceDate(date, now)
+        if (age !== null && age > staleDays) {
+          staleTotal += 1
+          if (staleItems.length < max) staleItems.push({ entry: collapse(first), date, age })
+        }
       }
     }
   }
 
-  return { files, links, total: items.length, unlinked, undated, retired, retiredBroken, items: items.slice(0, max) }
+  return {
+    files,
+    links,
+    total: items.length,
+    unlinked,
+    undated,
+    retired,
+    retiredBroken,
+    stale: { total: staleTotal, staleDays, items: staleItems },
+    items: items.slice(0, max),
+  }
 }
 
 /**
@@ -470,6 +491,7 @@ export function formatMemoryLinks(bucket: LintMemoryBucket): string | null {
       ? `${bucket.retired} 条已退役，其中 ${bucket.retiredBroken} 条的新结论不是活笔记`
       : `${bucket.retired} 条已退役`)
   }
+  if (bucket.stale.total > 0) parts.push(`${bucket.stale.total} 条超过 ${bucket.stale.staleDays} 天未复核`)
   return `${bucket.total === 0 && bucket.retiredBroken === 0 ? '✓' : '✗'} 记忆链接：${parts.join('｜')}`
 }
 
@@ -835,7 +857,7 @@ export async function lintNotebook(
     duplicateTitles: duplicateTitles(notes),
     // 日记按天写，标题就是日期：同类比较只会产出一堆误报（见 similarTitles 的注释）
     similarTitles: similarTitles(nonDaily, scanTruncated),
-    memoryLinks: memoryLinkIssues(cfg, notes),
+    memoryLinks: memoryLinkIssues(cfg, notes, { staleDays, now }),
     incomplete: cfg.structure === 'layered'
       ? incompleteFrontmatter(cfg, notes, (rel) => isDaily(path.resolve(cfg.notebook, rel)), scanTruncated)
       : { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },

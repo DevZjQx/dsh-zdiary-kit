@@ -131,8 +131,9 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 排除在图外 —— 链接不会跟着搬，`--broken-links` 也统计不到；记忆说 X、库里 X 已废弃，这是两层脱节的入口。
 `unlinked` 只数 **MEMORY.md** 的列表条目里没有 `[[链接]]` 的（USER.md 是偏好清单，本来大多没有来源，
 不计；散文段落也不算，避免把自由文本变成告警噪音）。
-同一份条目解析还数 `undated`（首行没有 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）
-与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记）—— 都只报告，注入仍按文件原文。
+同一份条目解析还数 `undated`（首行没有真校验过的 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）
+与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记），以及 `stale`（有日期且超过 `stale_days`，默认 90 天未复核）——
+都只报告；注入从 0.9 起省略退役条目（notice 说明省略数），文件本身不动。条目切分与日期解析统一走 `lib/memory-format`。
 文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
 `incomplete`（P2-13）：`type` / `status` / `authority` 缺任一的笔记（**只在 layered 下查**：flat 的笔记
 本来就不写这三个字段，整库标红不是「可发现的状态」而是噪音）。索引把缺失落成空串，
@@ -157,6 +158,8 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 两条都是字符串比较 —— `[[链接]]` 经 `lib/wikilink` 解析到活笔记（`promotedBy: 'link'`），
 或者候选标题（归一化后 ≥ 6 字）出现在 MEMORY 的某一行里（`promotedBy: 'title'`，真机 7 条里 6 条是这种纯文字条目）。
 短标题（「RAG」）不做包含匹配：任意句子里都可能撞上，宁可重复报，不猜。归档链接不算晋升。
+退役条目（0.9 D3）让这两条略微分叉：链接匹配仍用**原文**（退役行的 `→ [[新结论]]` 是合法的已晋升指针），
+标题匹配用 `stripRetiredEntries` 之后的正文（退役行里的旧标题不该再算已晋升）。
 不这样做的后果是可推演的：同一批笔记每周原样重复，人跳过几次之后 `DREAMS.md` 的日期不再更新，整套回路就断了。
 窗口默认也不再固定 7 天：`days` 省略时 = 距 `DREAMS.md`「上次做梦」的日历天数（1–365，没有或日期不合法才退回 7），
 所以漏做一周窗口会自然变大；窗口外仍未晋升、且过机械门的笔记进 `backlog`（按被引数取前 10，`counts.backlog` 给总数），
@@ -164,6 +167,11 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 候选的 `lead` 是 frontmatter 之后第一段正文（200 字内）—— 不是 zk 的 `lead`（那只是标题行）；
 `citedBy` 是同一次 `zk graph` 得到的入链来源前 5 条。给 agent 的是可重放的上下文（谁引了它、摘要是什么），
 不是「这条该晋升」的结论。
+**记忆余量与退役材料（0.9 D4）。** 结果的 `memory` 与注入同一口径：`words` 是内容词（含「记忆已用」提示行），
+`totalWords` 含框 / 做梦提醒 / notice，`headroom = budget - totalWords` 可以为负 —— 只报内容词等于说
+「还有 15 词」，而框和提示早就把它吃完了。`retireCandidates` 是机械规则给的「可考虑退役」：有日期且 > 90 天（`stale`）、
+`[[来源]]` 指向归档 / 不存在（`source-superseded` / `source-missing`）；无日期无链接的不算候选。
+`zk_dream` 只输出这两栏，不写任何文件。
 `zk-kit query` 的透传在 0 命中且给了 `-m` 时退回 `-M re`：FTS5 不切中文，不兜底会静默返回空（Z12）。
 `zk_search`（P2-7）更进一步：**查询含 CJK 时 FTS 与 `-M re` 各跑一次**，按路径去重合并，`matchStrategy` 返回
 `fts` / `regex` / `mixed`。只兜 0 命中是不够的 —— FTS 命中 1–2 条时模型会以为「库里只有这些」，然后建重复笔记；

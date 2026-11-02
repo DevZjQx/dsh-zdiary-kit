@@ -7,8 +7,9 @@
  *   · 预算按**总载荷**算，不是只卡 MEMORY.md；
  *   · 切分按三级降级：`##` 小节 → 顶层列表项 → 空行段落。只有 `##` 一级时，
  *     `# 记忆` + 要点列表（最常见的写法）一个小节都切不出来，预算会整个失效 —— 见 P0-1；
- *   · 截断顺序纯机械：先丢 MEMORY 的尾部整条，再丢 USER 的尾部整段，
- *     最后各自只留首段；AGENTS.md 是硬规则，永不截断（单独超预算时只告警）；
+ *   · 截断顺序纯机械：先丢 MEMORY 里**日期最旧**的一条（都没有日期才退回尾部整条），
+ *     再丢 USER 的尾部整段，最后各自只留首段；AGENTS.md 是硬规则，永不截断（单独超预算时只告警）；
+ *   · 退役条目（`- [superseded …]`）磁盘保留、注入省略 —— 它们按约定退役，不该继续占预算；
  *   · 丢掉的段落留一份**目录**（段落标题，计入预算），agent 用 zk_read 取回正文 ——
  *     选哪段是 agent 按当前任务判断，插件只搬运目录，不猜相关性；
  *   · 中文按「1 词 / 2 字」计 —— 空白切分在中文上严重低估，预算会变成装饰。
@@ -22,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DREAM_INTERVAL_DAYS, daysSinceDream, lastDreamDate } from './dream.js';
 import { fileStamp } from './file-stamp.js';
+import { entryDate, splitMemoryEntries, stripRetiredEntries } from './memory-format.js';
 import { MEMORY_META_FILES } from './meta.js';
 /** vault 根目录下、按优先级排列的三份 meta 文件（定义在 lib/meta.ts，这里只挂个本地名） */
 export const META_FILES = MEMORY_META_FILES;
@@ -148,6 +150,25 @@ function joinSections(split) {
 function firstSection(body) {
     const split = splitSections(body);
     return joinSections({ head: split.head, sections: split.sections.slice(0, 1), mode: split.mode });
+}
+/**
+ * 下一个该丢的条目：能解析出日期时选**最旧**的一条（同日期按位置靠后的先丢）；
+ * 一条日期都解析不出来返回 null —— 调用方退回尾部丢，老库行为不变（D2.6）。
+ *
+ * 为什么按日期而不是位置：条目约定是「新结论写顶部」，但没人能保证每次都守；
+ * 按位置丢会把最新结论先删掉，而那正好是最该留的。
+ */
+function oldestIndex(split) {
+    let best = null;
+    for (const [index, section] of split.sections.entries()) {
+        const date = entryDate(section);
+        if (!date)
+            continue;
+        if (!best || date < best.date || (date === best.date && index > best.index)) {
+            best = { index, date };
+        }
+    }
+    return best?.index ?? null;
 }
 function sectionTitle(section, mode) {
     const first = section.split('\n', 1)[0] ?? '';
@@ -283,16 +304,26 @@ export function buildMemoryPayload(cfg) {
 function computePayload(cfg) {
     const budget = cfg.memoryBudgetWords;
     const files = readMeta(cfg);
+    // 磁盘原文：files[].originalWords 与记忆页的对齐点，退役条目也算在里面
+    const diskWords = new Map(files.map((f) => [f.name, countWords(f.body)]));
     const original = new Map(files.map((f) => [f.name, f.body]));
-    const pristineWords = new Map(files.map((f) => [f.name, countWords(f.body)]));
-    // 截断会改写这份计数；pristineWords 保留原值，给「原多少词」和 truncatedWords 用
-    const words = new Map(pristineWords);
+    // 退役条目：磁盘保留、注入省略（D3）。先去掉，后面的截断只面对活条目。
+    const omitted = stripRetiredEntries(original.get('MEMORY.md') ?? '');
+    if (omitted.count > 0)
+        original.set('MEMORY.md', omitted.body);
+    // 去掉退役行之后的内容词数：用来算「截断了多少」，不把省略算成截断
+    const contentWords = new Map(files.map((f) => [f.name, countWords(original.get(f.name) ?? '')]));
+    // 截断会改写这份计数；contentWords 保留原值，给 truncatedWords 与 files 用
+    const words = new Map(contentWords);
     const total = () => [...words.values()].reduce((a, b) => a + b, 0);
-    // ── 机械截断：MEMORY 尾段 → USER 尾段 → 各留首段 ──────────────────
+    // 截断前的 MEMORY 正文：报告「有多少条没日期」要在丢之前数
+    const memorySource = original.get('MEMORY.md') ?? '';
+    // ── 机械截断：MEMORY 最旧条目 → USER 尾段 → 各留首段 ──────────────
     // 丢掉的段落留一份目录（段落标题），让 agent 能按当前任务用 zk_read 取回。
     // 目录自己也要占预算，所以每丢一段都把它算进去；目录有上限，循环一定收敛。
     const dropped = [];
     const tocCap = tocCapOf(budget);
+    let fellBack = false;
     for (const name of ['MEMORY.md', 'USER.md']) {
         if (total() + countWords(tocText(dropped, tocCap)) <= budget)
             break;
@@ -300,12 +331,23 @@ function computePayload(cfg) {
         const mine = [];
         const over = () => total() + countWords(tocText([...dropped, ...mine], tocCap)) > budget;
         while (over() && split.sections.length > 1) {
-            const section = split.sections.pop();
-            mine.unshift({ name, title: sectionTitle(section, split.mode) });
+            // MEMORY 按「最旧日期」丢；解析不出日期（或这是 USER）就退回尾部，行为与 0.8.3 一致
+            let index = split.sections.length - 1;
+            if (name === 'MEMORY.md') {
+                const oldest = oldestIndex(split);
+                if (oldest === null)
+                    fellBack = true;
+                else
+                    index = oldest;
+            }
+            const section = split.sections.splice(index, 1)[0];
+            mine.push({ name, title: sectionTitle(section, split.mode), order: index });
             const body = joinSections(split);
             original.set(name, body);
             words.set(name, countWords(body));
         }
+        // 按原文件位置重建目录，而不是按丢弃顺序 —— 目录要能对上文件
+        mine.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         dropped.push(...mine);
     }
     if (total() + countWords(tocText(dropped, tocCap)) > budget) {
@@ -321,15 +363,26 @@ function computePayload(cfg) {
     const present = files.filter((f) => (original.get(f.name) ?? '').length > 0);
     const bodies = present.map((f) => `## ${f.name}\n\n${escapeFrame(original.get(f.name) ?? '')}`);
     const keptWords = total();
-    let finalWords = keptWords + countWords(toc);
-    const originalWords = files.reduce((sum, f) => sum + (pristineWords.get(f.name) ?? 0), 0);
+    // 退役条目不算截断：它按约定退役，不是被预算挤掉的
+    const omittedNote = omitted.count > 0 ? `已省略 ${omitted.count} 条退役条目（见 MEMORY.md）` : '';
+    // 这条提示本身也要吃饭（D3.2）：不把它算进 words，报出来的用量就会少一截
+    let finalWords = keptWords + countWords(toc) + countWords(omittedNote);
+    const contentSum = files.reduce((sum, f) => sum + (contentWords.get(f.name) ?? 0), 0);
     // 报「正文被截掉多少」，不是净减少：目录也会占词，混在一起会让人以为没丢多少
-    const truncatedWords = Math.max(0, originalWords - keptWords);
+    const truncatedWords = Math.max(0, contentSum - keptWords);
     let text = '';
     if (bodies.length > 0) {
         const notes = [];
         if (truncatedWords > 0)
             notes.push(`已截断 ${truncatedWords} 词`);
+        if (omittedNote)
+            notes.push(omittedNote);
+        // 一条日期都没有只能按位置丢：说出来，别让人以为是按日期挑的（D2.5）
+        if (fellBack && truncatedWords > 0) {
+            const undated = splitMemoryEntries(memorySource).filter((entry) => !entryDate(entry)).length;
+            if (undated > 0)
+                notes.push(`MEMORY 有 ${undated} 条没日期，只能按位置丢`);
+        }
         // 目录放不下时至少留一句指路；否则被丢掉的段落对模型完全不可见
         if (!toc && dropped.length > 0) {
             const names = [...new Set(dropped.map((d) => d.name))];
@@ -390,8 +443,23 @@ function computePayload(cfg) {
             name: f.name,
             present: f.body.length > 0,
             words: words.get(f.name) ?? 0,
-            // files[].body 始终是原文件内容（截断只改 original 副本）
-            originalWords: pristineWords.get(f.name) ?? 0,
+            // files[].body 始终是原文件内容（截断只改 original 副本）；退役条目也算在原文里
+            originalWords: diskWords.get(f.name) ?? 0,
         })),
+    };
+}
+/**
+ * 记忆用量（D4）。只是 `buildMemoryPayload` 的投影 —— 不重读、不重算，
+ * 否则就是第三个计数口径，doctor / 设置页 / dream 三处迟早对不上。
+ */
+export function memoryUsage(cfg) {
+    const payload = buildMemoryPayload(cfg);
+    const totalWords = countWords(payload.text);
+    return {
+        words: payload.words,
+        totalWords,
+        budget: payload.budget,
+        headroom: payload.budget - totalWords,
+        files: payload.files,
     };
 }

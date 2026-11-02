@@ -26,6 +26,7 @@ import path from 'node:path';
 import { allNotes, graphEdges, localDate, MAX_SCAN, notesWithFlag, parseErrorWarnings } from './zk.js';
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 import { parseFrontmatter } from './frontmatter.js';
+import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './memory-format.js';
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_VERSION } from './agents-template.js';
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50;
@@ -144,31 +145,6 @@ export function similarTitles(notes, scanTruncated, max = MAX_ITEMS) {
 /** 注入的三份 meta 里只有 MEMORY / USER 会写来源链接；AGENTS 是规则，不查 */
 const MEMORY_LINK_FILES = ['MEMORY.md', 'USER.md'];
 /** 按列表条目切分（含缩进续行）：只有条目才谈得上「没附来源」 */
-function listEntries(body) {
-    const out = [];
-    let current = null;
-    const flush = () => {
-        if (current)
-            out.push(current.join('\n'));
-        current = null;
-    };
-    for (const line of String(body ?? '').split('\n')) {
-        if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(line)) {
-            flush();
-            current = [line];
-        }
-        else if (current && /^\s+\S/.test(line)) {
-            current.push(line);
-        }
-        else {
-            flush();
-        }
-    }
-    flush();
-    return out;
-}
-/** 记忆条目的观察日期（P1-3）：只认 YYYY-MM-DD 这种能机械解析的形状 */
-const DATE_IN_LINE = /\b\d{4}-\d{2}-\d{2}\b/;
 function collapse(text, max = 100) {
     const one = text.replace(/\s+/g, ' ').trim();
     return one.length > max ? one.slice(0, max) + '…' : one;
@@ -183,9 +159,13 @@ function collapse(text, max = 100) {
  * 纯机械解析：路径优先（原路径 → 加 .md → archive/ 下同名），退而按标题/文件名匹配**活笔记**；
  * 归档标题不反查 —— 归档默认不进检索，这里再造一套索引就成了第二真相。「语义重复」也不查。
  */
-export function memoryLinkIssues(cfg, notes, max = MAX_ITEMS) {
+export function memoryLinkIssues(cfg, notes, opts = {}) {
+    const max = opts.max ?? MAX_ITEMS;
+    const staleDays = Math.min(3650, Math.max(1, Math.trunc(opts.staleDays ?? 90)));
+    const now = opts.now ?? new Date();
     const index = wikiIndex(notes);
     const items = [];
+    const staleItems = [];
     const seen = new Set();
     let files = 0;
     let links = 0;
@@ -193,6 +173,7 @@ export function memoryLinkIssues(cfg, notes, max = MAX_ITEMS) {
     let undated = 0;
     let retired = 0;
     let retiredBroken = 0;
+    let staleTotal = 0;
     for (const name of MEMORY_LINK_FILES) {
         let body = '';
         try {
@@ -221,14 +202,14 @@ export function memoryLinkIssues(cfg, notes, max = MAX_ITEMS) {
                 items.push({ source: name, entry: collapse(line), link: target, reason: issue.reason, path: issue.path });
             }
         }
-        // 只对 MEMORY.md 数「没附来源 / 没日期 / 退役」：USER.md 是偏好清单，大多数条目本来就没有来源
+        // 只对 MEMORY.md 数「没附来源 / 没日期 / 退役 / 陈旧」：USER.md 是偏好清单，大多数条目本来就没有来源
         if (name === 'MEMORY.md') {
-            for (const entry of listEntries(body)) {
+            for (const entry of splitMemoryEntries(body)) {
                 const first = entry.split('\n', 1)[0] ?? '';
                 if (!entry.includes('[['))
                     unlinked += 1;
-                // 退役行：磁盘保留、注入仍按原文（P1-3 A 案），只核对它指向的新结论是否还活着
-                if (/^\s*(?:[-*+]|\d+[.)])\s+\[superseded\b/i.test(first)) {
+                // 退役行：磁盘保留、注入从 0.9 起省略（D3），只核对它指向的新结论是否还活着
+                if (isRetiredEntry(entry)) {
                     retired += 1;
                     const next = /→\s*\[\[([^\]|#]+)/.exec(entry);
                     const resolved = next ? resolveWikiTarget(cfg, String(next[1] ?? '').trim(), index) : null;
@@ -236,12 +217,32 @@ export function memoryLinkIssues(cfg, notes, max = MAX_ITEMS) {
                         retiredBroken += 1;
                     continue;
                 }
-                if (!DATE_IN_LINE.test(first))
+                // 日期要真校验：`2026-99-99` 既不算「有日期」，也不该在陈旧里报一次
+                const date = entryDate(entry);
+                if (!date) {
                     undated += 1;
+                    continue;
+                }
+                const age = daysSinceDate(date, now);
+                if (age !== null && age > staleDays) {
+                    staleTotal += 1;
+                    if (staleItems.length < max)
+                        staleItems.push({ entry: collapse(first), date, age });
+                }
             }
         }
     }
-    return { files, links, total: items.length, unlinked, undated, retired, retiredBroken, items: items.slice(0, max) };
+    return {
+        files,
+        links,
+        total: items.length,
+        unlinked,
+        undated,
+        retired,
+        retiredBroken,
+        stale: { total: staleTotal, staleDays, items: staleItems },
+        items: items.slice(0, max),
+    };
 }
 /**
  * 一行「记忆链接」摘要：`zk-kit lint` 与 `zk_lint` 共用，免得两处各写一遍文案、
@@ -270,6 +271,8 @@ export function formatMemoryLinks(bucket) {
             ? `${bucket.retired} 条已退役，其中 ${bucket.retiredBroken} 条的新结论不是活笔记`
             : `${bucket.retired} 条已退役`);
     }
+    if (bucket.stale.total > 0)
+        parts.push(`${bucket.stale.total} 条超过 ${bucket.stale.staleDays} 天未复核`);
     return `${bucket.total === 0 && bucket.retiredBroken === 0 ? '✓' : '✗'} 记忆链接：${parts.join('｜')}`;
 }
 /**
@@ -600,7 +603,7 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         duplicateTitles: duplicateTitles(notes),
         // 日记按天写，标题就是日期：同类比较只会产出一堆误报（见 similarTitles 的注释）
         similarTitles: similarTitles(nonDaily, scanTruncated),
-        memoryLinks: memoryLinkIssues(cfg, notes),
+        memoryLinks: memoryLinkIssues(cfg, notes, { staleDays, now }),
         incomplete: cfg.structure === 'layered'
             ? incompleteFrontmatter(cfg, notes, (rel) => isDaily(path.resolve(cfg.notebook, rel)), scanTruncated)
             : { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },

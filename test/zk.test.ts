@@ -811,6 +811,147 @@ describe('M1: 配置收敛（group）', () => {
   })
 })
 
+describe('M2: 记忆生命周期', () => {
+  const buildMem = (files: Record<string, string>, budget = 300) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-m2-'))
+    for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body)
+    try {
+      const cfg = store.normalizeConfig({ notebook: dir, memoryBudgetWords: budget })
+      return { cfg, payload: memory.buildMemoryPayload(cfg), dir }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('按最旧日期丢条目，目录按文件位置而不是丢弃顺序', () => {
+    const entry = (label: string, date: string, word: string) =>
+      `- ${label} 结论（${date}） ` + `${word} `.repeat(30)
+    const body = [
+      '# 记忆',
+      '',
+      entry('B', '2025-06-01', 'bword'),
+      entry('A', '2025-01-01', 'aword'),
+      entry('C', '2025-09-01', 'cword'),
+      entry('D', '2026-01-01', 'dword'),
+    ].join('\n')
+    const { payload } = buildMem({ 'MEMORY.md': body }, 120)
+
+    expect(payload.truncatedWords).toBeGreaterThan(0)
+    // 丢的是最旧的两条（A / B），而不是文件末尾的两条（C / D 还在正文里）
+    expect(payload.text).not.toContain('- A 结论')
+    expect(payload.text).not.toContain('- B 结论')
+    expect(payload.text).toContain('- C 结论')
+    expect(payload.text).toContain('- D 结论')
+    // 目录按原文件位置排：B（第一条）在 A 之前，尽管先被丢的是 A
+    expect(payload.text).toContain('§B 结论')
+    expect(payload.text).toContain('§A 结论')
+    expect(payload.text.indexOf('§B 结论')).toBeLessThan(payload.text.indexOf('§A 结论'))
+  })
+
+  it('一条日期都没有时退回尾部丢，并在 notice 里说明', () => {
+    const body = [
+      '# 记忆',
+      ...Array.from({ length: 8 }, (_, i) => `- 第 ${i + 1} 条：没有日期的结论，内容不长但足够占预算。`),
+    ].join('\n')
+    const { payload } = buildMem({ 'MEMORY.md': body }, 60)
+    expect(payload.truncatedWords).toBeGreaterThan(0)
+    expect(payload.text).not.toContain('第 8 条')
+    expect(payload.text).toContain('只能按位置丢')
+  })
+
+  it('退役条目：注入省略（含缩进续行）、notice 计数、大小写都算', () => {
+    const { payload } = buildMem({
+      'MEMORY.md': [
+        '# 记忆',
+        '',
+        '- 活条目（2026-01-01）[[notes/keep.md]]',
+        '- [Superseded 2026-02-01] 旧条目 → [[notes/new.md]]',
+        '  这一行是旧条目的续行，不该留下',
+        '- 末尾的活条目（2026-03-01）',
+        '',
+      ].join('\n'),
+    })
+    expect(payload.text).toContain('活条目')
+    expect(payload.text).toContain('末尾的活条目')
+    expect(payload.text).not.toContain('旧条目')
+    expect(payload.text).not.toContain('续行')
+    expect(payload.text).toContain('已省略 1 条退役条目')
+    // 退役不是截断：truncatedWords 不把省略算进去
+    expect(payload.truncatedWords).toBe(0)
+  })
+
+  it('dream：退役行的链接仍算已晋升，旧标题不再算', async () => {
+    const dir = path.join(home, 'nb-m2-dream')
+    const cfg = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfg)
+    const reused = await zk.createNote(cfg, { title: '重复标题的旧结论', dir: 'notes/concepts', content: '正文 #keep' })
+    const successor = await zk.createNote(cfg, { title: '新结论替代旧结论', dir: 'notes/concepts', content: '正文 #keep' })
+    fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+      '# 记忆',
+      `- [superseded 2026-02-01] 重复标题的旧结论 → [[${successor.path}]]`,
+      '- 老结论（2025-01-01）[[notes/已经不存在.md]]',
+      '',
+    ].join('\n'))
+
+    const dream = await dreamLib.dreamNotebook(cfg, { days: 7 })
+    // 链接匹配用原文：退役行里的 → [[新结论]] 是合法的已晋升指针
+    expect(dream.alreadyPromoted.map((n) => n.path)).toContain(successor.path)
+    expect(dream.alreadyPromoted.find((n) => n.path === successor.path)?.promotedBy).toBe('link')
+    // 标题匹配用 strip 之后的正文：旧标题不再算已晋升，复用同名的笔记回到候选
+    expect(dream.newNotes.map((n) => n.path)).toContain(reused.path)
+    // 退役候选：来源不存在 + 超过 90 天未复核；退役行本身不进候选
+    expect(dream.retireCandidates.map((c) => c.reason)).toContain('source-missing')
+    expect(dream.retireCandidates.map((c) => c.entry).some((e) => e.includes('老结论'))).toBe(true)
+    expect(dream.retireCandidates.map((c) => c.entry).some((e) => e.includes('重复标题的旧结论'))).toBe(false)
+    // 余量与注入同一口径
+    expect(dream.memory.budget).toBe(cfg.memoryBudgetWords)
+    expect(dream.memory.totalWords).toBeGreaterThanOrEqual(dream.memory.words)
+  })
+
+  it('memoryUsage：words 与 payload 一致，totalWords 含框，余量可以为负', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-m2-usage-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), '# 记忆\n\n- 结论（2026-01-01）\n')
+      const cfg = store.normalizeConfig({ notebook: dir, memoryBudgetWords: 300 })
+      const payload = memory.buildMemoryPayload(cfg)
+      const usage = memory.memoryUsage(cfg)
+      expect(usage.words).toBe(payload.words)
+      expect(usage.totalWords).toBe(memory.countWords(payload.text))
+      expect(usage.totalWords).toBeGreaterThan(usage.words)
+      expect(usage.headroom).toBe(300 - usage.totalWords)
+
+      // AGENTS 硬规则不截断：内容没超、整段载荷超了，余量为负
+      fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'rule '.repeat(400))
+      const over = memory.memoryUsage(cfg)
+      expect(over.headroom).toBeLessThan(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('stale：89 / 90 天不报、91 天报；非法日期不算有日期', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-m2-stale-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+        '# 记忆',
+        '- 八十九天（2026-03-04）',
+        '- 九十天（2026-03-03）',
+        '- 九十一天（2026-03-02）',
+        '- 坏日期（2026-99-99）',
+        '',
+      ].join('\n'))
+      const cfg = store.normalizeConfig({ notebook: dir })
+      const bucket = lintLib.memoryLinkIssues(cfg, [], { staleDays: 90, now: new Date(2026, 5, 1) })
+      expect(bucket.stale.total).toBe(1)
+      expect(bucket.stale.items[0]).toMatchObject({ date: '2026-03-02', age: 91 })
+      expect(bucket.undated).toBe(1)
+      expect(lintLib.formatMemoryLinks(bucket)).toContain('1 条超过 90 天未复核')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('structure: layered', () => {
   const layeredDir = path.join(home, 'nb-layered')
   const layered = store.normalizeConfig({ notebook: layeredDir, zkPath: zkBin, structure: 'layered' })
@@ -1432,7 +1573,8 @@ describe('M3: 巡检与做梦', () => {
     expect(lint.brokenLinks.total).toBe(1)
     // 没启用记忆层的库：不报这一项（files = 0），别给老 vault 添噪音
     expect(lint.memoryLinks).toEqual({
-      files: 0, links: 0, total: 0, unlinked: 0, undated: 0, retired: 0, retiredBroken: 0, items: [],
+      files: 0, links: 0, total: 0, unlinked: 0, undated: 0, retired: 0, retiredBroken: 0,
+      stale: { total: 0, staleDays: 90, items: [] }, items: [],
     })
   })
 

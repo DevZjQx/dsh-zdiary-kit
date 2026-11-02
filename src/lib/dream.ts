@@ -17,6 +17,11 @@ import type { Config } from '../config/store.ts'
 import type { NoteRecord } from './zk.ts'
 import { allNotes, graphEdges, localDate, MAX_SCAN } from './zk.ts'
 import { parseFrontmatter } from './frontmatter.ts'
+// memory.ts 也 import 本模块（DREAM_INTERVAL_DAYS / daysSinceDream）：这里是运行期才取用，
+// 循环引用在 ESM 下安全 —— 不要在模块顶层调用 memoryUsage。
+import { memoryUsage } from './memory.ts'
+import type { MemoryUsage } from './memory.ts'
+import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
 
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
@@ -116,12 +121,30 @@ export interface DreamCited {
   lastMentioned: string
 }
 
+/** 超过多少天没复核算「可考虑退役」（只做机械年龄判断） */
+export const STALE_DAYS = 90
+/** 退役候选最多回几条：给材料，不是给清理清单 */
+export const MAX_RETIRE = 10
+
+export interface DreamRetireCandidate {
+  /** 条目首行摘要（最多 100 字） */
+  entry: string
+  /** YYYY-MM-DD；没有可解析的日期时为空串 */
+  date: string
+  /** 距今天数；无日期为 -1（不猜日期，排序时排最后） */
+  age: number
+  /** 来源断了优先报：那比「旧」更值得看一眼 */
+  reason: 'stale' | 'source-missing' | 'source-superseded'
+}
+
 export interface DreamResult {
   notebook: string
   windowDays: number
   since: string
   /** true = 触到扫描上限，窗口与排名都不完整 */
   truncated: boolean
+  /** 记忆用量（与注入 / 设置页同一口径）：晋升前先知道还剩多少预算 */
+  memory: MemoryUsage
   counts: {
     window: number
     daily: number
@@ -141,6 +164,8 @@ export interface DreamResult {
   rejected: DreamRejection[]
   topCited: DreamCited[]
   dailyLooseEnds: DreamLooseEnds[]
+  /** 机械规则筛出的「可考虑退役」条目（只给材料，不写 MEMORY.md） */
+  retireCandidates: DreamRetireCandidate[]
 }
 
 /**
@@ -233,6 +258,11 @@ function windowDaysOf(cfg: Config, now: Date, explicit?: number): number {
  * 为什么要有第二条：真机 MEMORY.md 7 条里 6 条是纯文字（没有链接），只按链接判会漏掉它们，
  * 而它们正是每周重复出现的候选来源。标题包含只做字符串比较、且要求标题 ≥ 6 字 ——
  * 短标题（「RAG」「额度」）在任意句子里都可能撞上，宁可重复报，不猜。
+ *
+ * 退役条目要分开处理（D3.3，顺序不能反）：
+ *   · 链接匹配用**原文** —— 退役行里的 `→ [[新结论]]` 是合法的「已晋升」指针；
+ *   · 标题匹配用**去掉退役行之后**的正文 —— 退役行里的旧结论不该再算已晋升，
+ *     否则归档后复用同一标题的笔记会永远进不了候选。
  */
 function promotionsOf(cfg: Config, notes: NoteRecord[]): Map<string, 'link' | 'title'> {
   const out = new Map<string, 'link' | 'title'>()
@@ -246,7 +276,7 @@ function promotionsOf(cfg: Config, notes: NoteRecord[]): Map<string, 'link' | 't
     if (hit.status === 'live' && hit.path) out.set(hit.path, 'link')
   }
 
-  const lines = body.split('\n').map((line) => normalizeTitle(line)).filter(Boolean)
+  const lines = stripRetiredEntries(body).body.split('\n').map((line) => normalizeTitle(line)).filter(Boolean)
   for (const note of notes) {
     if (out.has(note.path)) continue
     const key = normalizeTitle(note.title)
@@ -254,6 +284,51 @@ function promotionsOf(cfg: Config, notes: NoteRecord[]): Map<string, 'link' | 't
     if (lines.some((line) => line.includes(key))) out.set(note.path, 'title')
   }
   return out
+}
+
+/**
+ * 退役候选（D4.3）：只做机械规则，不判断「这条还有没有用」。
+ *   · 有日期且超过 STALE_DAYS → stale；
+ *   · 条目里的 `[[来源]]` 指向归档 / 不存在 → source-superseded / source-missing；
+ *   · 无日期、无链接的不算候选（它们已经由 lint 的 undated / unlinked 报告）。
+ */
+function retireCandidatesOf(cfg: Config, notes: NoteRecord[], now: Date): DreamRetireCandidate[] {
+  let body = ''
+  try { body = fs.readFileSync(path.join(cfg.notebook, 'MEMORY.md'), 'utf8') } catch { return [] }
+  const index = wikiIndex(notes)
+  const out: DreamRetireCandidate[] = []
+  const seen = new Set<string>()
+
+  for (const entry of splitMemoryEntries(body)) {
+    if (isRetiredEntry(entry)) continue
+    const date = entryDate(entry) ?? ''
+    const age = date ? (daysSinceDate(date, now) ?? -1) : -1
+
+    let reason: DreamRetireCandidate['reason'] | null = null
+    for (const match of entry.matchAll(WIKI_LINK)) {
+      const target = String(match[1] ?? '').trim()
+      if (!target) continue
+      const hit = resolveWikiTarget(cfg, target, index)
+      if (hit.status === 'live') continue
+      reason = hit.status === 'archived' ? 'source-superseded' : 'source-missing'
+      break
+    }
+    if (!reason && age > STALE_DAYS) reason = 'stale'
+    if (!reason) continue
+
+    const summary = (entry.split('\n', 1)[0] ?? '')
+      .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    const one = summary.length > 100 ? summary.slice(0, 100) + '…' : summary
+    if (!one || seen.has(one)) continue
+    seen.add(one)
+    out.push({ entry: one, date, age, reason })
+  }
+
+  // 越旧越靠前；无日期（-1）的排在最后（不假装它们更旧）
+  out.sort((a, b) => b.age - a.age || a.entry.localeCompare(b.entry))
+  return out.slice(0, MAX_RETIRE)
 }
 
 export async function dreamNotebook(
@@ -408,5 +483,7 @@ export async function dreamNotebook(
     rejected: rejected.slice(0, MAX_ITEMS),
     topCited,
     dailyLooseEnds,
+    memory: memoryUsage(cfg),
+    retireCandidates: retireCandidatesOf(cfg, notes, now),
   }
 }

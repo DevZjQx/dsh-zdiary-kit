@@ -15,6 +15,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { allNotes, graphEdges, localDate, MAX_SCAN } from './zk.js';
 import { parseFrontmatter } from './frontmatter.js';
+// memory.ts 也 import 本模块（DREAM_INTERVAL_DAYS / daysSinceDream）：这里是运行期才取用，
+// 循环引用在 ESM 下安全 —— 不要在模块顶层调用 memoryUsage。
+import { memoryUsage } from './memory.js';
+import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.js';
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
 export const MAX_ITEMS = 50;
@@ -56,6 +60,10 @@ export function daysSinceDream(last, now = new Date()) {
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     return Math.round((today.getTime() - at.getTime()) / 86_400_000);
 }
+/** 超过多少天没复核算「可考虑退役」（只做机械年龄判断） */
+export const STALE_DAYS = 90;
+/** 退役候选最多回几条：给材料，不是给清理清单 */
+export const MAX_RETIRE = 10;
 /**
  * 从日记正文里取 Loose ends 小节。
  * `- [x]` 是已完成，不收；`- [ ]` 与普通列表项都收（划掉的状态比格式重要）。
@@ -156,6 +164,11 @@ function windowDaysOf(cfg, now, explicit) {
  * 为什么要有第二条：真机 MEMORY.md 7 条里 6 条是纯文字（没有链接），只按链接判会漏掉它们，
  * 而它们正是每周重复出现的候选来源。标题包含只做字符串比较、且要求标题 ≥ 6 字 ——
  * 短标题（「RAG」「额度」）在任意句子里都可能撞上，宁可重复报，不猜。
+ *
+ * 退役条目要分开处理（D3.3，顺序不能反）：
+ *   · 链接匹配用**原文** —— 退役行里的 `→ [[新结论]]` 是合法的「已晋升」指针；
+ *   · 标题匹配用**去掉退役行之后**的正文 —— 退役行里的旧结论不该再算已晋升，
+ *     否则归档后复用同一标题的笔记会永远进不了候选。
  */
 function promotionsOf(cfg, notes) {
     const out = new Map();
@@ -174,7 +187,7 @@ function promotionsOf(cfg, notes) {
         if (hit.status === 'live' && hit.path)
             out.set(hit.path, 'link');
     }
-    const lines = body.split('\n').map((line) => normalizeTitle(line)).filter(Boolean);
+    const lines = stripRetiredEntries(body).body.split('\n').map((line) => normalizeTitle(line)).filter(Boolean);
     for (const note of notes) {
         if (out.has(note.path))
             continue;
@@ -185,6 +198,57 @@ function promotionsOf(cfg, notes) {
             out.set(note.path, 'title');
     }
     return out;
+}
+/**
+ * 退役候选（D4.3）：只做机械规则，不判断「这条还有没有用」。
+ *   · 有日期且超过 STALE_DAYS → stale；
+ *   · 条目里的 `[[来源]]` 指向归档 / 不存在 → source-superseded / source-missing；
+ *   · 无日期、无链接的不算候选（它们已经由 lint 的 undated / unlinked 报告）。
+ */
+function retireCandidatesOf(cfg, notes, now) {
+    let body = '';
+    try {
+        body = fs.readFileSync(path.join(cfg.notebook, 'MEMORY.md'), 'utf8');
+    }
+    catch {
+        return [];
+    }
+    const index = wikiIndex(notes);
+    const out = [];
+    const seen = new Set();
+    for (const entry of splitMemoryEntries(body)) {
+        if (isRetiredEntry(entry))
+            continue;
+        const date = entryDate(entry) ?? '';
+        const age = date ? (daysSinceDate(date, now) ?? -1) : -1;
+        let reason = null;
+        for (const match of entry.matchAll(WIKI_LINK)) {
+            const target = String(match[1] ?? '').trim();
+            if (!target)
+                continue;
+            const hit = resolveWikiTarget(cfg, target, index);
+            if (hit.status === 'live')
+                continue;
+            reason = hit.status === 'archived' ? 'source-superseded' : 'source-missing';
+            break;
+        }
+        if (!reason && age > STALE_DAYS)
+            reason = 'stale';
+        if (!reason)
+            continue;
+        const summary = (entry.split('\n', 1)[0] ?? '')
+            .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        const one = summary.length > 100 ? summary.slice(0, 100) + '…' : summary;
+        if (!one || seen.has(one))
+            continue;
+        seen.add(one);
+        out.push({ entry: one, date, age, reason });
+    }
+    // 越旧越靠前；无日期（-1）的排在最后（不假装它们更旧）
+    out.sort((a, b) => b.age - a.age || a.entry.localeCompare(b.entry));
+    return out.slice(0, MAX_RETIRE);
 }
 export async function dreamNotebook(cfg, opts = {}, signal) {
     const now = opts.now ?? new Date();
@@ -336,5 +400,7 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         rejected: rejected.slice(0, MAX_ITEMS),
         topCited,
         dailyLooseEnds,
+        memory: memoryUsage(cfg),
+        retireCandidates: retireCandidatesOf(cfg, notes, now),
     };
 }
