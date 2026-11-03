@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 2.0.0
+# dsh-zdiary-kit 2.1.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -66,14 +66,19 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 **角色契约**：根目录还可以放 `PERSONA.md`（名字 / 身份 / 语气 / 边界）。它与 `MEMORY.md` 同级：人和 agent 直接编辑，`zk_append` / `zk_new` 一律拒写，
 **缺文件 = 未启用**（旧库行为一个词不变）。它单独成段、永远在记忆段之前注入，**不参与记忆预算的截断**：
 契约是硬规则，超了只告警（`zk_context` / `doctor` / 记忆页都会点名），不会静默丢掉半份人设。
-三个预算可以分开调（设置页「记忆」组）：记忆 500 · 契约 240 · 场景 80，总 prompt 默认 900（启用契约后按实际载荷检查，超了只告警点名；没有契约的库不多一个词）。
+三个预算可以分开调（设置页「记忆」组）：记忆 500 · 契约 240 · 场景 80，合并预算默认 900（记忆载荷 + 场景行，超了只告警点名；没有契约、没有状态的库不多一个词）。
 写入是 opt-in：`zk-kit init --with-contract` 或设置页「写入契约模板」，已存在的文件绝不覆盖。
 设置页的按钮不依赖 zk 初始化：笔记本还没建好时也能先写契约（只建根目录与文件，不碰 `.zk`），
 写完会提醒你仍需要点「初始化 / 补建」建库。
-**从 1.x 升级**：根目录的 `POLICY.md` 不再解析或注入（2.0.0 移除）；文件不会被删，但会按普通笔记处理
-（可检索、计入统计，不再受 meta 写保护）。建议删除，或把「别自动发布 / 别花钱」这类边界写进 `AGENTS.md` / `PERSONA.md`。
 **边界**：M1 是「一本笔记本一份」契约；多个 agent 共用一个库时先别启用，等 M4 的 per-agent persona ——
 否则 A 的人格会串到 B。
+
+**运行时状态**：`<笔记本>/.state/events.log` 一行一条事件（`woke hours=7.5` / `ate` / `at place=书房` / `user_left`），
+场景是日志的**投影**：插件用 `.state/rules`（缺省内置）现算 energy / mood / satiety / 地点 / 目标 / 在场，
+只注入一行，独立预算 80 词、不进 `MEMORY.md`、不占记忆预算。不跑定时器：衰减按「现在 − 事件时间」惰性算。
+**没有日志 = 不注入**（老库行为逐字不变）；只有窗口外事件时仍注入长尾（prune 会留每个事件名的最后一条）。
+`zk_state append` 只校验格式与时间，事件是 agent 的自述；`.state/` 不进检索，`zk_append` / `zk_new` 拒绝写它。
+人用 `zk-kit state show [--at ISO]` 重放过去、`zk-kit state log` 看原文、`zk-kit state prune --days N` 压实（`--commit` 才提交）。
 
 维护用 `zk_lint`（结构体检 + 记忆链接核对）和 `zk_dream`（晋升候选 / 拒绝原因 / 未完成项）：两个工具都**只读**，
 写 `MEMORY.md` / `DREAMS.md` 由 agent 按 `AGENTS.md` 自己决定 —— 机械活留在插件，语义判断留在可审计的地方。
@@ -327,7 +332,10 @@ zk-kit query -- -t demo --limit 5    # 透传 zk list：--notebook-dir / --forma
 zk-kit index
 zk-kit config get structure          # 看一个配置项（不传键 = 全量）
 zk-kit config set structure=layered  # 只落盘配置，不建目录 —— 目录要 zk-kit init 补
-zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group / 结构 / 记忆 / 索引
+zk-kit state show                    # 场景投影（人看「现在」）；加 --at ISO 可重放过去某一刻
+zk-kit state log --lines 20          # 看 .state/events.log 原文（尾部 N 行）
+zk-kit state prune --days 30         # 压实：窗口内全留 + 每个事件名的最后一条（--commit 才提交）
+zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group / 结构 / 记忆 / 状态 / 索引
 ```
 
 按路径用的子命令（`<…>` 要换成真实路径，所以不放进可跑清单）：
@@ -407,7 +415,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉，并检查没有顶层声明
   （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：14 个内置工具各跑一遍 + 7 条设置路由都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
+  `bun run smoke`（加载 dist：15 个内置工具各跑一遍 + 7 条设置路由都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
   `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
@@ -436,7 +444,7 @@ src/
 │   ├── dsh.ts                    # 宿主契约（纯类型，编译后为空）
 │   └── exec.ts / http.ts / json-file.ts
 ├── features/
-│   ├── zk-tools/feature.ts       # 14 个内置工具 + [alias] 别名工具
+│   ├── zk-tools/feature.ts       # 15 个内置工具 + [alias] 别名工具
 │   ├── settings/                 # 宿主 API + 浏览器 section
 │   └── readonly/                 # 只读视图：GET-only 路由 + Web 1.0 渲染（无 JS）
 └── cli.ts                        # zk-kit 命令行

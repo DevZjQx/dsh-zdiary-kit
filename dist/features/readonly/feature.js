@@ -18,6 +18,8 @@ import { config } from '../../config/store.js';
 import { absPathOf, allNotes, graphEdges, hasNotebook, isUnderDir, localDate, readNote, searchNotes, ZkError } from '../../lib/zk.js';
 import { isMetaPath } from '../../lib/meta.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
+import { buildScene, combinedWords, DEFAULT_RULES_TEXT, readRulesText } from '../../lib/scene.js';
+import { readStateLog } from '../../lib/state-log.js';
 import { RETIRED_ENTRY_RE } from '../../lib/memory-format.js';
 import { parseFrontmatter } from '../../lib/frontmatter.js';
 import { stripContractMarker } from '../../lib/persona-template.js';
@@ -281,6 +283,8 @@ async function handleMemory(res, cfg) {
             : '<p class="meta">还没写。</p>');
     };
     const payload = buildMemoryPayload(cfg);
+    const scene = buildScene(cfg);
+    const log = readStateLog(cfg, { windowDays: cfg.sceneWindowDays });
     const shares = formatFileShares(payload.files, payload.tocWords);
     const usage = `记忆 ${payload.words}/${payload.budget} 词（${shares || '三份都空'}）` +
         (payload.truncatedWords > 0 ? ` · 已截断 ${payload.truncatedWords} 词` : '') +
@@ -311,8 +315,15 @@ async function handleMemory(res, cfg) {
         ? `<article>${renderMemoryBody(memoryBody, linkFor)}</article>`
         : '<p class="meta">还没写。</p>';
     const dreamBody = read('DREAMS.md');
-    const scene = payload.scene;
-    const counts = `契约正文 ${c.contentWords} 词 · 记忆 ${payload.words} 词 · 场景 ${scene.words} 词 · 开销 ${payload.overheadWords} 词 = 总 ${payload.totalWords} 词`;
+    const counts = `契约正文 ${c.contentWords} 词 · 记忆 ${payload.words} 词 · 记忆载荷 ${payload.totalWords} 词（含框与提示 ${payload.overheadWords}）` +
+        ` · 场景 ${scene.words} 词 = 合计 ${combinedWords(payload.totalWords, scene)} 词`;
+    const presence = scene.presence === 'present' ? '在场' : scene.presence === 'absent' ? '不在' : '未知';
+    const sceneStatus = scene.present
+        ? `已注入 ${scene.words}/${cfg.sceneBudgetWords} 词 · 规则 ${scene.rulesVersion} · 窗口内 ${scene.events} 条事件 · 用户${presence}` +
+            (scene.rulesError ? ` · ⚠️ 规则回退默认：${scene.rulesError}` : '')
+        : '未启用：.state/events.log 不存在或没有事件；缺文件不算错，不注入也不报错。';
+    const recent = log.events.slice(-5).reverse();
+    const rulesSource = readRulesText(cfg);
     const body = [
         `<p class="crumb"><a href="${VIEW}">首页</a> / 记忆</p>`,
         '<h1>记忆</h1>',
@@ -334,14 +345,25 @@ async function handleMemory(res, cfg) {
             ? `<article>${renderMarkdown(dreamBody, { linkFor, skipFirstH1: true })}</article>`
             : '<p class="meta">还没写。</p>',
         '<h2>场景</h2>',
-        scene.present
-            ? `<p class="meta">已注入 ${scene.words} 词（TTL 内）</p>`
-            : '<p class="meta">未配置：运行时状态（STATE）由宿主 / 运行时提供，过期或读不到就不注入；不写进 MEMORY.md。</p>',
+        `<p class="meta">${esc(sceneStatus)}</p>`,
+        scene.present ? `<details><summary>展开投影</summary><pre>${esc(scene.text)}</pre></details>` : '',
+        recent.length
+            ? `<p class="meta">最近事件（新 → 旧）：${recent.map((e) => `${esc(e.at)} ${esc(e.name)}${Object.keys(e.params).length ? ' ' + esc(Object.entries(e.params).map(([k, v]) => `${k}=${v}`).join(' ')) : ''}`).join(' · ')}</p>`
+            : '',
+        log.badLines.length ? `<p class="meta">⚠️ ${log.badLines.length} 条坏行被跳过（doctor 给第一条原因）</p>` : '',
+        '<h2>状态规则</h2>',
+        `<p class="meta">${rulesSource.trim() ? `.state/rules（${esc(scene.rulesVersion)}）` : '没有 .state/rules：用内置默认规则（' + esc(scene.rulesVersion) + '）'} · 规则是人类工作面，只读；写事件用 zk_state append。</p>`,
+        `<details><summary>展开规则</summary><pre>${esc(rulesSource.trim() || DEFAULT_RULES_TEXT)}</pre></details>`,
         '<h2>载荷预览</h2>',
         `<p class="meta">这一轮模型实际收到的文本（转义展示、只读、与 zk_context 同源）：${esc(counts)}</p>`,
+        '<h3>记忆段</h3>',
         payload.text
             ? `<details><summary>展开</summary><pre>${esc(payload.text)}</pre></details>`
             : '<p class="meta">空：没有可注入的内容。</p>',
+        '<h3>场景段</h3>',
+        scene.text
+            ? `<details><summary>展开</summary><pre>${esc(scene.text)}</pre></details>`
+            : '<p class="meta">空：不注入场景段。</p>',
     ].join('\n');
     sendHtml(res, 200, shell(cfg, '记忆', body));
 }

@@ -18,6 +18,7 @@ import { registerZkTools } from '../features/zk-tools/feature.ts'
 import { registerReadOnly } from '../features/readonly/feature.ts'
 import { registerSettings } from '../features/settings/feature.ts'
 import { buildMemoryPayload } from '../lib/memory.ts'
+import { buildScene } from '../lib/scene.ts'
 import { structureStatus } from '../lib/notebook.ts'
 import { sessionWorkspace } from '../lib/workspace.ts'
 import type { SessionsLike } from '../lib/workspace.ts'
@@ -26,6 +27,8 @@ import type { AssemblyContextLike, ConnectionLike, PluginContext, RouteHandler, 
 /** 系统提示里的段位：5000 是 TOOLS_SDK，9000 是交付物引用 —— 记忆落在两者之间的空档 */
 const NOTEBOOK_SECTION_ORDER = 5190
 const MEMORY_SECTION_ORDER = 5200
+/** 场景排在记忆之后：先给「我是谁 / 我记得什么」，再给「此刻身体与场景」 */
+const SCENE_SECTION_ORDER = 5210
 
 export default {
   name: 'dsh-zdiary-kit',
@@ -162,6 +165,19 @@ export default {
         return ''
       }
     }
+    /**
+     * 场景段：事件日志的投影（D7）。独立段、独立预算、`interpolate: false`。
+     * 没有日志 / 读失败 / 规则全挂 → 空串：状态层坏掉不能把整次装配拖下水。
+     */
+    function sceneText(assemble?: AssemblyContextLike): string {
+      try {
+        const sessions = service<SessionsLike>(ctx, 'sessions')
+        const workspace = sessionWorkspace(assemble, sessions) ?? processWorkspace()
+        return buildScene(configFor(workspace, assemble?.agent?.id)).text
+      } catch {
+        return ''
+      }
+    }
     function registerPromptSections(host: PluginContext): void {
       const prompt = service<SystemPromptLike>(host, 'systemPrompt')
       if (!prompt || typeof prompt.section !== 'function') return
@@ -170,7 +186,8 @@ export default {
       // 叫 provider / model 的则会被静默改写成真实值。DSH 自己给所有「内容类」段也是这么关的。
       host.effect(() => prompt.section({ name: 'zdiary:notebook', order: NOTEBOOK_SECTION_ORDER, text: notebookText, interpolate: false }))
       host.effect(() => prompt.section({ name: 'zdiary:memory', order: MEMORY_SECTION_ORDER, text: memoryText, interpolate: false }))
-      try { console.log('[zdiary] 提示注入已挂载：笔记本 + AGENTS.md / USER.md / MEMORY.md → 系统提示') } catch { /* ignore */ }
+      host.effect(() => prompt.section({ name: 'zdiary:scene', order: SCENE_SECTION_ORDER, text: sceneText, interpolate: false }))
+      try { console.log('[zdiary] 提示注入已挂载：笔记本 + AGENTS.md / USER.md / MEMORY.md + 场景（有日志时）→ 系统提示') } catch { /* ignore */ }
     }
     if (service<SystemPromptLike>(ctx, 'systemPrompt')) {
       try {

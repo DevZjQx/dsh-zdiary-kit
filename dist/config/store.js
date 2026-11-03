@@ -45,6 +45,8 @@ export const DEFAULTS = {
     memoryBudgetWords: 500,
     contractBudgetWords: 240,
     sceneBudgetWords: 80,
+    sceneWindowDays: 30,
+    staleHours: 72,
     totalPromptBudgetWords: 900,
     archiveDir: 'archive',
     zkVersion: '0.15.7',
@@ -146,6 +148,8 @@ export function normalizeConfig(raw, workspace = processWorkspace()) {
         memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
         contractBudgetWords: clamp(Number(src.contractBudgetWords), 50, 800, DEFAULTS.contractBudgetWords),
         sceneBudgetWords: clamp(Number(src.sceneBudgetWords), 20, 400, DEFAULTS.sceneBudgetWords),
+        sceneWindowDays: clamp(Number(src.sceneWindowDays), 1, 365, DEFAULTS.sceneWindowDays),
+        staleHours: clamp(Number(src.staleHours), 1, 8760, DEFAULTS.staleHours),
         totalPromptBudgetWords: clamp(Number(src.totalPromptBudgetWords), 200, 5000, DEFAULTS.totalPromptBudgetWords),
         archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
         zkVersion: /^\d+\.\d+\.\d+$/.test(String(src.zkVersion ?? '').trim().replace(/^v/i, ''))

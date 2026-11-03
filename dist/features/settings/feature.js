@@ -16,6 +16,7 @@ import { CFG_FILE, processWorkspace } from '../../config/paths.js';
 import { ArchiveDirChangeError, config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.js';
 import { ensureNotebook, structureStatus, writeAgentsTemplate, writeContractTemplates } from '../../lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
+import { buildScene } from '../../lib/scene.js';
 import { contractStatus } from '../../lib/lint.js';
 import { installZk, sourceLabel } from '../../lib/install.js';
 import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.js';
@@ -62,6 +63,23 @@ async function snapshot(cfg) {
     catch {
         memory = null;
     }
+    // 状态层只读回显：没有日志时 present=false（不是错误）
+    let scene = null;
+    try {
+        const s = buildScene(cfg);
+        scene = {
+            present: s.present,
+            presence: s.presence,
+            events: s.events,
+            rulesVersion: s.rulesVersion,
+            words: s.words,
+            budget: cfg.sceneBudgetWords,
+            ...(s.rulesError ? { rulesError: s.rulesError } : {}),
+        };
+    }
+    catch {
+        scene = null;
+    }
     return {
         zk,
         // 本页解析空 / 相对路径用的是插件进程工作区；agent 工具按各自会话工作区，可能不是同一个目录
@@ -69,6 +87,7 @@ async function snapshot(cfg) {
         notebook: { path: cfg.notebook, exists },
         structure,
         memory,
+        scene,
         dailyTemplate: fs.existsSync(path.join(cfg.notebook, '.zk', 'templates', 'daily.md')),
         counts,
         countsError,

@@ -68,13 +68,6 @@ export interface ContractSegment {
   files: ContractFileInfo[]
 }
 
-/** 场景段：M1 只落形状（present/expired 恒 false），M3 起由 STATE 填充 */
-export interface SceneSegment {
-  present: boolean
-  expired: boolean
-  words: number
-}
-
 export interface MemoryPayload {
   /** 可直接注入的完整文本；契约 + 记忆都不存在时是空串 */
   text: string
@@ -90,10 +83,9 @@ export interface MemoryPayload {
   tocWords: number
   files: MemoryFileInfo[]
   contract: ContractSegment
-  scene: SceneSegment
   /** 模型真正收到的总量（countWords(text)，含框 / 做梦提醒 / notice / 契约告警） */
   totalWords: number
-  /** totalWords - 契约正文 - 记忆内容 - 场景：框、做梦提醒、notice 与契约告警的开销 */
+  /** totalWords - 契约正文 - 记忆内容：框、做梦提醒、notice 与契约告警的开销。场景不在里面（D7） */
   overheadWords: number
 }
 
@@ -369,8 +361,8 @@ function payloadKeyOf(cfg: Config): string {
   // 做梦提醒按本地日历天变化（「3 天前」→「4 天前」）：文件没动也得跟着日期失效
   const now = new Date()
   const day = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`
-  // 三个预算都要进键：改配置不重新写入任何文件，漏一个就会拿到旧预算的载荷
-  return `${cfg.notebook}|${cfg.memoryBudgetWords}|${cfg.contractBudgetWords}|${cfg.sceneBudgetWords}|${cfg.totalPromptBudgetWords}|${day}|${stamps}`
+  // 预算都要进键：改配置不重新写入任何文件，漏一个就会拿到旧预算的载荷
+  return `${cfg.notebook}|${cfg.memoryBudgetWords}|${cfg.contractBudgetWords}|${cfg.totalPromptBudgetWords}|${day}|${stamps}`
 }
 
 /**
@@ -556,7 +548,6 @@ function computePayload(cfg: Config): MemoryPayload {
 
   // 模型真正收到的总量与开销：口径与 memoryUsage / D9 的载荷预览同源
   const totalWords = countWords(text)
-  const sceneWords = 0 // M1 只落形状：M3 起由 STATE 填
 
   return {
     text,
@@ -584,9 +575,8 @@ function computePayload(cfg: Config): MemoryPayload {
       overWords: Math.max(0, contractContentWords - contractBudget),
       files: contracts.map((f) => ({ name: f.name, present: f.body.length > 0, words: countWords(f.body) })),
     },
-    scene: { present: false, expired: false, words: sceneWords },
     totalWords,
-    overheadWords: Math.max(0, totalWords - contractContentWords - finalWords - sceneWords),
+    overheadWords: Math.max(0, totalWords - contractContentWords - finalWords),
   }
 }
 

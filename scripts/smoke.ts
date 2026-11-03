@@ -4,7 +4,7 @@
  *
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
- *   · 14 个内置工具能注册、能执行、能渲染（zk_context 也执行一次；`[alias]` 别名工具按配置另行追加）；
+ *   · 15 个内置工具能注册、能执行、能渲染（zk_context / zk_state 也执行一次；`[alias]` 别名工具按配置另行追加）；
  *   · 8 条设置路由 + 4 条只读路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
@@ -92,7 +92,7 @@ for (const tool of tools) checkSchema(tool.output.schema, `${tool.name}.output.s
 
 console.log('工具：' + tools.map((t) => t.name).join(', '))
 console.log('路由：' + [...routes.keys()].join(', '))
-if (tools.length !== 14) throw new Error('工具数量不对：' + tools.length)
+if (tools.length !== 15) throw new Error('工具数量不对：' + tools.length)
 // 8 条设置页路由 + 4 条只读路由（view / feed.xml / api/notes / api/note）
 if (routes.size !== 12) throw new Error('路由数量不对：' + routes.size)
 
@@ -125,6 +125,12 @@ const dreamed = await call('zk_dream', { days: 7 })
 if (!Array.isArray(dreamed.newNotes)) throw new Error('zk_dream 输出不对')
 await call('zk_stats', {})
 await call('zk_context', {})
+// 状态层：写一条事件 → 读出投影 → 压实（空日志 / 缺规则都要能跑）
+await call('zk_state', { action: 'append', event: 'ate', params: ['amount=1'] })
+const shown = await call('zk_state', { action: 'show' })
+if (typeof shown.text !== 'string') throw new Error('zk_state show 输出不对')
+const pruned = await call('zk_state', { action: 'prune', days: 30 })
+if (typeof pruned.kept !== 'number') throw new Error('zk_state prune 输出不对')
 await call('zk_use', {})
 
 // ── 真发 HTTP：设置页 8 条 + 只读视图 4 条 ─────────────────────────────────

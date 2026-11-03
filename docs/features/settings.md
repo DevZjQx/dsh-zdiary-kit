@@ -45,8 +45,9 @@
 这个按钮**不依赖 `notebook.exists`**：建库前也可以先定角色（服务端只建目录与契约，不碰 `.zk`），
 成功提示里会带一条「还不是 zk 笔记本，点「初始化 / 补建」」的 `warn` ——
 否则自检说「点「写入契约模板」」时，未初始化的库根本没有对应的可点项。
-「记忆」分组里多三行配置：契约预算（`contractBudgetWords`，默认 240）、场景预算（`sceneBudgetWords`，80）、
-总 prompt 预算（`totalPromptBudgetWords`，900，启用契约后按实际载荷检查，只告警）。
+「记忆」分组里多五行配置：契约预算（`contractBudgetWords`，默认 240）、场景预算（`sceneBudgetWords`，80）、
+状态窗口（`sceneWindowDays`，30 天）、场景新鲜度（`staleHours`，72 小时）、
+合并预算（`totalPromptBudgetWords`，900，记忆载荷 + 场景行，只告警）。
 「工具」分组只有一个开关：`aliasTools`（默认关）—— 打开后插件加载时才把 `.zk/config.toml` 的 `[alias]`
 注册成 `zk_<名>`。注册发生在加载时，勾完保存还要重载插件（或重启 DSH）才会出现在工具列表里；hint 里写明了。
 分组标题直接标作用范围（「笔记本」是每本自己的，其余是全局）；删除笔记本先确认「只删配置，磁盘目录与笔记保留」。

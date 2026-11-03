@@ -26,7 +26,7 @@
   别的会话切了默认值不会把已开的会话换库，裸装配才退回进程工作区 + 全局默认
 - `zk_context` 工具：同一份 payload（含 `ratio` 用量），给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用；
   另返回 `notebooks`（名字 / 路径 / 结构 / 当前），没有提示注入时模型也能发现已配置的库
-- 设置页「记忆」：注入预算、契约预算、场景预算、总 prompt 预算；「目录与 group」：归档目录。
+- 设置页「记忆」：注入预算、契约预算、场景预算、状态窗口、场景新鲜度、合并预算；「目录与 group」：归档目录。
   快照里带 `memory.words/budget/truncatedWords/retiredWords/contract` 状态行；自检多一项「角色契约」
 
 **Does not own.** MEMORY.md 写什么（agent 按 AGENTS.md 直接改文件，git diff 可审）；
@@ -41,9 +41,15 @@
 写入入口只有 opt-in：`zk-kit init --with-contract`、设置页「写入契约模板」、
 `ensureNotebook(cfg, signal, { withContract: true })` —— flat 与 layered 都不会自动多一个文件。
 **注入顺序**：契约段永远在记忆段之前、**不参与记忆预算的截断**（超了只告警，点名 `contractBudgetWords`）。
-三个新预算：`contractBudgetWords`（默认 240，范围 50–800）、`sceneBudgetWords`（80，M3 起生效）、
-`totalPromptBudgetWords`（900，启用契约后按实际载荷检查，含框与提示；只告警点名）。
-三个都进 payload 缓存键 —— 漏一个就会拿到旧预算的载荷。
+三个新预算：`contractBudgetWords`（默认 240，范围 50–800）、`sceneBudgetWords`（80，场景行独立预算，不进记忆截断）、
+`totalPromptBudgetWords`（900，记忆载荷 + 场景行的合并总账；只告警点名）。
+记忆载荷的缓存键包含真正影响它的大小项；场景有独立缓存（日志 / 规则指纹 + 分钟），互不串。
+
+**场景层（M3）。** 场景**不在这个 payload 里**：`buildMemoryPayload` 只产出记忆段，
+场景由 `lib/scene.ts` 从 `<notebook>/.state/events.log` 独立投影，单独成段注入（order 5210，记忆之后）。
+没有日志 = 不注入、不多一个词；只有窗口外事件时仍注入长尾（`hoursSince` 读 last-seen / tombstone）。
+预算 `sceneBudgetWords` 只裁场景行：从尾部丢（地点 / 目标先丢，energy / mood 最后），一句都放不下就不注入。
+合并总量 `combinedWords = payload.totalWords + scene.words`，在 `zk_context` / `doctor` / 记忆页用同一个口径。
 `truncatedWords` 在顶层、`retiredWords` 在 `files[]` 里分开报：`原 X` 从此只反映截断，退役单列一项。
 契约段再拆 `contentWords`（正文，含文件标题，预算只看它）/ `noticeWords`（告警行）/ `words`（整段注入量）/ `overWords`；
 `memoryUsage` 的 `headroom` 只按记忆侧算（`totalWords - contractWords`），dream 不再把契约误叫成「提示」。

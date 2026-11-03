@@ -18,8 +18,8 @@
  * 只报告不覆盖（模板允许用户改）。
  */
 
-/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧契约（v2：去掉 inbox/；v3：截断改按日期；v4：去掉「宿主不会自动加载」一句；v5：MEMORY 条目补「先 zk_read 核对来源」） */
-export const TEMPLATE_VERSION = 5
+/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧契约（v2：去掉 inbox/；v3：截断改按日期；v4：去掉「宿主不会自动加载」一句；v5：MEMORY 条目补「先 zk_read 核对来源」；v6：补状态层一句） */
+export const TEMPLATE_VERSION = 6
 
 /** 首行版本标记（实测 4 词）；不许带日期 —— 带日期的写法实测 6 词，白花 2 词 */
 export const TEMPLATE_MARK = `<!-- zdiary-template: v${TEMPLATE_VERSION} -->`
@@ -43,6 +43,7 @@ export interface TemplateSentinels {
 export const TEMPLATE_SENTINELS: Record<number, TemplateSentinels> = {
   4: { forbidden: ['DSH 不会自动加载', '从底部往前丢'] },
   5: { required: ['先 zk_read 核对来源'], forbidden: ['DSH 不会自动加载', '从底部往前丢'] },
+  6: { required: ['先 zk_read 核对来源', 'zk_state'], forbidden: ['DSH 不会自动加载', '从底部往前丢'] },
 }
 
 export const AGENTS_TEMPLATE = `${TEMPLATE_MARK}
@@ -71,6 +72,10 @@ notes/{concepts,entities,patterns}/ 原子笔记 · archive/ 废弃（不删）
 每周：DREAMS.md 写「上次做梦：YYYY-MM-DD」；到期 zk_lint → zk_dream → 人裁决改 MEMORY。
 MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]，先 zk_read 核对来源；退役写 - [superseded YYYY-MM-DD] 旧结论 → [[新结论]]，行不删。
 新条目写顶部；超预算按日期丢最旧的一条。
+
+## 状态
+
+用 zk_state 记事件，不翻历史。
 `
 
 /**
@@ -91,6 +96,10 @@ export const AGENTS_TEMPLATE_FLAT = `${TEMPLATE_MARK}
 
 DREAMS.md 写「上次做梦：YYYY-MM-DD」；到期 zk_lint → zk_dream → 人裁决改 MEMORY。
 MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]，先 zk_read 核对来源；退役写 - [superseded] 旧结论 → [[新结论]]。
+
+## 状态
+
+用 zk_state 记事件，不翻历史。
 `
 
 /**

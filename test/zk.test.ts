@@ -593,11 +593,13 @@ describe('memory', () => {
       effect: (fn: () => undefined | (() => void)) => { fn() },
     }
     plugin.apply(withPrompt as never)
-    expect(sections.map((s) => s.name)).toEqual(['zdiary:notebook', 'zdiary:memory'])
+    expect(sections.map((s) => s.name)).toEqual(['zdiary:notebook', 'zdiary:memory', 'zdiary:scene'])
     expect(sections[0].order).toBe(5190)
     expect(sections[1].order).toBe(5200)
+    expect(sections[2].order).toBe(5210)
     expect(typeof sections[0].text).toBe('function')
     expect(typeof sections[1].text).toBe('function')
+    expect(typeof sections[2].text).toBe('function')
     // 笔记本提示与记忆都是内容类：不插值，`{{…}}` 原样保留
     expect(sections[0].interpolate).toBe(false)
     expect(sections[1].interpolate).toBe(false)
@@ -2215,12 +2217,12 @@ describe('daily', () => {
 })
 
 describe('tools', () => {
-  it('14 个工具，参数校验拒绝坏输入', () => {
+  it('15 个工具，参数校验拒绝坏输入', () => {
     const defs = toolsFeature.buildTools()
     expect(defs.map((d) => d.name)).toEqual([
       'zk_search', 'zk_query', 'zk_read', 'zk_new', 'zk_daily', 'zk_append', 'zk_link',       'zk_supersede',
       'zk_rename',
-      'zk_context', 'zk_lint', 'zk_dream', 'zk_stats', 'zk_use',
+      'zk_context', 'zk_state', 'zk_lint', 'zk_dream', 'zk_stats', 'zk_use',
     ])
     const zkNew = defs.find((d) => d.name === 'zk_new')!
     expect(toolLib.validateArgs(zkNew.parameters, { body: 'x' }).some((i) => i.includes('title'))).toBe(true)
@@ -2616,7 +2618,7 @@ describe('alias tools', () => {
 
       const defs = toolsFeature.buildTools(() => dir)
       expect(defs.map((d) => d.name)).not.toContain('zk_lucky')
-      expect(defs).toHaveLength(14)
+      expect(defs).toHaveLength(15)
     } finally {
       store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'], aliasTools: false })
       fs.rmSync(dir, { recursive: true, force: true })
@@ -3865,7 +3867,8 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
     expect(plain.contract.overWords).toBe(0)
     expect(plain.text).not.toContain('PERSONA.md')
     expect(plain.totalWords).toBe(memory.countWords(plain.text))
-    expect(plain.overheadWords).toBe(plain.totalWords - plain.words - plain.contract.contentWords - plain.scene.words)
+    // 场景是独立段（D7）：不进 memory text，也不参与 overhead 的减法
+    expect(plain.overheadWords).toBe(plain.totalWords - plain.words - plain.contract.contentWords)
 
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), '<!-- zdiary-persona: v2 -->\n\n# 角色\n\n- name: 小z\n- role: 助手\n- updated: 2026-11-02\n')
     const withContract = memory.buildMemoryPayload(cfg)

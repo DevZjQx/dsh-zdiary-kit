@@ -487,13 +487,15 @@ function sentinelIssue(body, rule) {
     if (!rule)
         return null;
     const quote = (texts) => texts.map((text) => `「${showSentinel(text)}」`).join('、');
+    // 两件事一起报：只报「缺了什么」会让「还留着旧句」被藏起来，人改完一处又撞一次
+    const parts = [];
     const missing = (rule.required ?? []).filter((text) => !body.includes(text));
     if (missing.length > 0)
-        return `缺少当前版本才有的内容：${quote(missing)}`;
+        parts.push(`缺少当前版本才有的内容：${quote(missing)}`);
     const leftover = (rule.forbidden ?? []).filter((text) => body.includes(text));
     if (leftover.length > 0)
-        return `仍含旧版已移除的内容：${quote(leftover)}`;
-    return null;
+        parts.push(`仍含旧版已移除的内容：${quote(leftover)}`);
+    return parts.length > 0 ? parts.join('；') : null;
 }
 /**
  * 契约体检（M1）：缺文件 = 未启用（不算错，但要让 zk_lint 可见）；

@@ -2,8 +2,8 @@
 
 **Purpose.** 让模型用 zk 思维工作：先查重、再写原子笔记、用双链连起来、每天记一段。
 
-**Owns.** 14 个内置工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
-`zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
+**Owns.** 15 个内置工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
+`zk_supersede` / `zk_rename` / `zk_context` / `zk_state` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
 `.zk/config.toml` 的 `[alias]` 派生的 `zk_<别名>` 工具：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
 `zk_context` 例外：它只读根目录三份 meta 文件与角色契约（`PERSONA.md`），并列出已配置笔记本（另读 `DREAMS.md` 的「上次做梦」一行用于周节奏提醒），**不** `ensureNotebook`（读记忆不该依赖 zk）。
@@ -23,7 +23,7 @@
 **Public surface.** `buildTools()`（按默认工作区的笔记本配置构建，测试用）与 `registerZkTools(tools)`（返回撤销函数）。
 
 **Alias tools（`zk_<别名>`）.** 默认**不注册**：`aliasTools` 为 false 时 `buildTools` 连 `.zk/config.toml` 都不读，
-内置工具固定 14 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
+内置工具固定 15 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
 （设置页「工具」组的复选框，或 `zk-kit config set aliasTools=true`，只认 `true`；拼错的值归一化成 false 并在 `config set` 时回显）。
 打开后，插件加载时读所有已配置笔记本的 `.zk/config.toml`，把 `[alias]` 表里未注释的键注册成工具；
 同名只取第一本。工具名用下划线而不是点号：DSH 的 function-name 契约是 `[A-Za-z0-9_-]`（`zk.lucky` 会被 provider 拒绝）。
@@ -118,11 +118,20 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `tocWords`（目录占的词数）与 `ratio`（用量 = `words / budget`，两位小数，> 1 表示超预算）只用于解释预算，不改变注入内容。
 `originalWords` 含退役条目；展示层的「原 X」会先减掉 `retiredWords`，所以退役不会再被当成截断报出来。
 契约单独一组：`contract.present / contentWords / words / noticeWords / budget / overBudget / overWords / files[]`（`contentWords` 含 `## PERSONA.md` 标题），
-外加 `totalWords`（`countWords(payload.text)`）与 `overheadWords`（框 / 做梦提醒 / notice / 契约告警等开销）；
-场景段本批只落形状（`scene.present` 恒 false），M3 起由 `STATE` 填。
+外加 `totalWords`（`countWords(payload.text)`）与 `overheadWords`（框 / 做梦提醒 / notice / 契约告警等开销）。
+场景是**独立段**：`scene: { present, presence, events, rulesVersion, words }`，不进 memory text、不占记忆预算，
+`combinedWords` = `totalWords + scene.words` 才是合并总账（别叫「总 prompt」——宿主自己的系统提示不在里面）。
+`presence` 是三态：`present` / `absent` / `unknown`（布尔分不清「不在」和「没记录」）。
 契约**不参与** `memoryBudgetWords` 的截断，超了只告警；`overWords` 是所有展示的唯一超量口径，别拿 `words` 再做减法。
-总 prompt 超 `totalPromptBudgetWords` 时只点名（按实际载荷，含框与提示），不自动截契约。
+合并总量超 `totalPromptBudgetWords` 时只点名（按实际载荷，含框与提示），不自动截契约。
 `zk_dream` 的 `memory.contractWords` 是整段契约注入量；`headroom` 只扣记忆侧（`totalWords - contractWords`），契约不占记忆预算。
+
+**`zk_state`（事件流）。** `append` / `show` / `prune` 三个动作，全部落 `<notebook>/.state/`：
+`append` 一行一条事件（时间戳必须带时区、参数最多 8 个、单行 ≤ 512 字节），插件只校验格式与时间，
+不判断真假；`show` 只回投影 + 窗口内最近 20 条，不回全量日志、不回窗口外事件；
+`prune` 压实成「窗口内全部 + 每个事件名在窗口外的最后一条」（tombstone，`hoursSince` 靠它算长尾），
+**不自动 commit** —— 删除证据在 git diff 里，提交由人决定。
+`.state/` 不是笔记：`zk_append` / `zk_new` / `zk_rename` 的路径守卫拒绝它，`excludedNames` 也把它排除出检索。
 
 `zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关（D7）。
 `zk_lint` = 1 次 `zk list` + 三个 zk 原生过滤器（`--orphan` / `--broken-links` / `--tagless`）+ 1 次 `zk graph`，
