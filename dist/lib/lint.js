@@ -323,6 +323,7 @@ export function formatLintExtras(r) {
         const sample = r.policy.items.slice(0, 5).map((i) => i.detail).join('；');
         lines.push(`⚠️ 自主权契约：${r.policy.rows} 行动作，${r.policy.total} 条结构问题 — ${sample}` +
             (r.policy.total > 5 ? ' …' : '') +
+            (r.policy.truncated ? '（issues 已截断）' : '') +
             '｜只报告，不改文件；表头写 action / level / approval / reversible');
     }
     if (r.incomplete.total > 0) {

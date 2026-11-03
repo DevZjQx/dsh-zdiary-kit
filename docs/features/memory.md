@@ -60,9 +60,10 @@
 合法行动作进 `rows`（`zk_context.policy` 里叫 `actions`；字段是 `action` / `level` / `approval` / `reversible`），坏行进 `issues`：表头缺失或列数不对、行缺列、
 空 `action`、未知 `level`（只认 `auto` / `ask` / `forbidden`）、未知 `approval`（`none` / `human` / `policy`）、
 `reversible` 不是 `yes` / `no`、重复 `action`、frontmatter 缺 `audit`。
+`issues` 最多回 50 条（`POLICY_MAX_ITEMS`）：`total` 始终是完整数，`truncated` 标记是否被截断。
 缺文件 / 空文件返回 `null` —— 「未启用」不是结构错误，`contract` 桶已经报 missing，这里不重复报。
-解析失败不抛异常；`zk_context.policy` 返回 `actions` + `issues`，`zk_lint.policy` / `zk-kit contract` / `doctor` 只报告。
-**不执行权限**：`zk_*` 的强制检查与 `bili_*` 等外部动作的读取都在后续（M3b / M3c）—— 本层只把表读成可核对的结构。
+解析失败不抛异常；`zk_context.policy` 返回 `actions` + `issues`（最多 50 条）+ `total` + `truncated`，`zk_lint.policy` / `zk-kit contract` / `doctor` 只报告。
+**不执行权限**：`zk_*` 的强制检查与 `bili_*` 等外部动作的读取都在后续（M3c）—— 本层只把表读成可核对的结构。
 
 **记忆层与事实层的一致性。** `MEMORY.md` 每条结论后附 `[[来源路径]]`（写进 AGENTS 模板）；
 `zk_lint` 的 `memoryLinks` 只做机械核对：原路径 → 加 `.md` → `archive/` 下同名 → 活笔记标题 / 文件名，
@@ -79,7 +80,7 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 
 **Public surface.** `buildMemoryPayload(cfg)`、`memoryUsage(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、
 `CONTRACT_META_FILES`、`PERSONA_TEMPLATE` / `POLICY_TEMPLATE`、`stripContractMarker`、
-`parsePolicy` / `parsePolicyText` / `policyStatus`、
+`parsePolicy` / `parsePolicyText` / `policyStatus` / `capPolicyIssues` / `POLICY_MAX_ITEMS`、
 `AGENTS_TEMPLATE` / `AGENTS_TEMPLATE_FLAT`、`TEMPLATE_VERSION` / `TEMPLATE_MARK`、`WORKFLOW_TEMPLATE`。
 笔记本侧：`writeAgentsTemplate(cfg)` / `writeContractTemplates(cfg)`（缺才写，返回是否写入）与
 `ensureNotebook(cfg, signal, { withAgents, withContract })`。

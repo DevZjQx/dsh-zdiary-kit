@@ -2311,7 +2311,7 @@ describe('tools', () => {
       const value = await ctxTool.execute({}, { signal: AbortSignal.timeout(10_000) }) as {
         notebook: string
         contract: { present: boolean; contentWords: number; overWords: number }
-        policy: { present: boolean; actions: Array<{ action: string }>; issues: Array<{ kind: string; detail: string }> }
+        policy: { present: boolean; actions: Array<{ action: string }>; total: number; issues: Array<{ kind: string; detail: string }>; truncated: boolean }
         notebooks: Array<{ name: string; path: string; structure: string; active: boolean }>
       }
       expect(value.notebook).toBe('default')
@@ -2326,7 +2326,9 @@ describe('tools', () => {
       // POLICY 解析：模板 3 行、无结构问题；渲染里也要有一行（schema 与 render 各走一遍）
       expect(value.policy.present).toBe(true)
       expect(value.policy.actions.map((r) => r.action)).toEqual(['zk.read', 'zk.note.write', 'zk.notebook.use'])
+      expect(value.policy.total).toBe(0)
       expect(value.policy.issues).toEqual([])
+      expect(value.policy.truncated).toBe(false)
       const blocks = ctxTool.output.render({}, value)
       expect(blocks[0].text).toContain(`笔记本「default」（flat）→ ${notebook}`)
       expect(blocks[0].text).toContain('另有：work（layered）')
@@ -3717,7 +3719,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: missing,
-      policy: { present: false, rows: 0, total: 0, items: [] },
+      policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
     }).some((line) => line.includes('契约'))).toBe(false)
@@ -3727,7 +3729,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: half,
-      policy: { present: false, rows: 0, total: 0, items: [] },
+      policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
     }).some((line) => line.includes('POLICY.md'))).toBe(true)
@@ -3744,7 +3746,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: { total: 0, items: [] },
-      policy: { present: false, rows: 0, total: 0, items: [] },
+      policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
     })
@@ -3754,7 +3756,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: st,
-      policy: { present: false, rows: 0, total: 0, items: [] },
+      policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
     }).some((line) => line.includes('契约'))).toBe(true)
@@ -3771,7 +3773,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
         tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
         template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
         contract: c,
-        policy: { present: false, rows: 0, total: 0, items: [] },
+        policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
         similarTitles: { total: 0, truncated: false, items: [] },
         indexHint: false,
       }).join('\n')
@@ -3942,7 +3944,7 @@ describe('0.10 M3a：自主权契约解析（只读）', () => {
     const cfg = fresh('nb-m3a-missing')
     fs.mkdirSync(cfg.notebook, { recursive: true })
     expect(policyLib.parsePolicy(cfg)).toBeNull()
-    expect(policyLib.policyStatus(cfg)).toEqual({ present: false, rows: 0, total: 0, items: [] })
+    expect(policyLib.policyStatus(cfg)).toEqual({ present: false, rows: 0, total: 0, items: [], truncated: false })
   })
 
   test('模板解析出三行；audit 从 frontmatter 读出', () => {
@@ -3958,7 +3960,7 @@ describe('0.10 M3a：自主权契约解析（只读）', () => {
       { action: 'zk.notebook.use', level: 'auto', approval: 'none', reversible: true },
     ])
     expect(doc!.issues).toEqual([])
-    expect(policyLib.policyStatus(cfg)).toEqual({ present: true, rows: 3, total: 0, items: [] })
+    expect(policyLib.policyStatus(cfg)).toEqual({ present: true, rows: 3, total: 0, items: [], truncated: false })
   })
 
   test('坏表只报告：合法行照常返回，坏行各自带原因', () => {
@@ -3974,6 +3976,7 @@ describe('0.10 M3a：自主权契约解析（只读）', () => {
       '|---|---|---|---|',
       '| zk.read | auto | none | yes |',
       '| bili.comment | sometimes | none | no |',
+      '| bili.approve | auto | sometimes | no |',
       '| bili.coin | auto | none | maybe |',
       '|  | auto | none | yes |',
       '| zk.read | auto | none | yes |',
@@ -3983,6 +3986,7 @@ describe('0.10 M3a：自主权契约解析（只读）', () => {
     expect(doc.issues.map((i) => i.kind)).toEqual([
       'no-audit',
       'unknown-level',
+      'unknown-approval',
       'bad-reversible',
       'empty-action',
       'duplicate-action',
@@ -4005,6 +4009,81 @@ describe('0.10 M3a：自主权契约解析（只读）', () => {
     ].join('\n'))
     expect(fiveCols.rows).toEqual([])
     expect(fiveCols.issues.map((i) => i.kind)).toEqual(['table', 'row'])
+  })
+
+  test('分隔行列数不对要报；表头多一列、数据行四列时动作仍按前四列解析', () => {
+    const fiveSep = policyLib.parsePolicyText([
+      '---',
+      'audit: DREAMS.md',
+      '---',
+      '| action | level | approval | reversible |',
+      '|---|---|---|---|---|',
+      '| zk.read | auto | none | yes |',
+    ].join('\n'))
+    expect(fiveSep.rows.map((r) => r.action)).toEqual(['zk.read'])
+    expect(fiveSep.issues).toEqual([{ kind: 'table', detail: '分隔行有 5 列，应为 4' }])
+
+    const fiveHeader = policyLib.parsePolicyText([
+      '---',
+      'audit: DREAMS.md',
+      '---',
+      '| action | level | approval | reversible | trigger |',
+      '|---|---|---|---|---|',
+      '| zk.read | auto | none | yes |',
+    ].join('\n'))
+    expect(fiveHeader.rows.map((r) => r.action)).toEqual(['zk.read'])
+    expect(fiveHeader.issues.map((i) => i.kind)).toEqual(['table'])
+  })
+
+  test('全坏行不叠「没有合法动作行」；空表才补这一条', () => {
+    const allBad = policyLib.parsePolicyText([
+      '---',
+      'audit: DREAMS.md',
+      '---',
+      '| action | level | approval | reversible |',
+      '|---|---|---|---|',
+      '| a | nope | none | yes |',
+    ].join('\n'))
+    expect(allBad.rows).toEqual([])
+    expect(allBad.issues.map((i) => i.kind)).toEqual(['unknown-level'])
+
+    const empty = policyLib.parsePolicyText([
+      '---',
+      'audit: DREAMS.md',
+      '---',
+      '| action | level | approval | reversible |',
+      '|---|---|---|---|',
+    ].join('\n'))
+    expect(empty.rows).toEqual([])
+    expect(empty.issues).toEqual([{ kind: 'table', detail: '表里没有合法的动作行' }])
+  })
+
+  test('空文件也算未启用：parsePolicy 返回 null', () => {
+    const cfg = fresh('nb-m3a-empty')
+    fs.mkdirSync(cfg.notebook, { recursive: true })
+    fs.writeFileSync(path.join(cfg.notebook, 'POLICY.md'), ' \n\n')
+    expect(policyLib.parsePolicy(cfg)).toBeNull()
+    expect(policyLib.policyStatus(cfg)).toEqual({ present: false, rows: 0, total: 0, items: [], truncated: false })
+  })
+
+  test('issues 最多 50 条：total 仍是完整数，truncated 标记截断', () => {
+    const cfg = fresh('nb-m3a-many')
+    fs.mkdirSync(cfg.notebook, { recursive: true })
+    const lines = [
+      '---',
+      'audit: DREAMS.md',
+      '---',
+      '| action | level | approval | reversible |',
+      '|---|---|---|---|',
+    ]
+    for (let i = 0; i < 60; i++) lines.push(`| a${i} | nope | none | yes |`)
+    fs.writeFileSync(path.join(cfg.notebook, 'POLICY.md'), lines.join('\n'))
+    const st = policyLib.policyStatus(cfg)
+    expect(st.present).toBe(true)
+    expect(st.rows).toBe(0)
+    expect(st.total).toBe(60)
+    expect(st.items.length).toBe(50)
+    expect(st.truncated).toBe(true)
   })
 
   test('缺分隔行不丢数据行；重复动作按大小写不敏感算', () => {
@@ -4048,13 +4127,25 @@ describe('0.10 M3a：自主权契约解析（只读）', () => {
         rows: 1,
         total: 1,
         items: [{ kind: 'unknown-level', detail: 'bili.comment 的 level 是「sometimes」，只认 auto / ask / forbidden' }],
+        truncated: false,
       },
     })
     expect(lines.some((line) => line.includes('自主权契约'))).toBe(true)
     expect(lines.join('\n')).toContain('只认 auto / ask / forbidden')
+    const truncated = lintLib.formatLintExtras({
+      ...base,
+      policy: {
+        present: true,
+        rows: 0,
+        total: 60,
+        items: [{ kind: 'unknown-level', detail: 'x 的 level 不合法' }],
+        truncated: true,
+      },
+    })
+    expect(truncated.join('\n')).toContain('issues 已截断')
     expect(lintLib.formatLintExtras({
       ...base,
-      policy: { present: false, rows: 0, total: 0, items: [] },
+      policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
     }).some((line) => line.includes('自主权契约'))).toBe(false)
   })
 })

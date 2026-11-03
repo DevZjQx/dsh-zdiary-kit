@@ -378,7 +378,9 @@ async function doctor() {
     }
     const policy = policyStatus(cfg);
     if (policy.present && policy.total > 0) {
-        rows.push(`⚠️ 自主权契约：${policy.rows} 行动作，${policy.total} 条结构问题 — ${policy.items.map((i) => i.detail).join('；')}`);
+        rows.push(`⚠️ 自主权契约：${policy.rows} 行动作，${policy.total} 条结构问题` +
+            (policy.truncated ? `（只列前 ${policy.items.length} 条）` : '') +
+            ` — ${policy.items.map((i) => i.detail).join('；')}`);
     }
     if (exists) {
         // 记忆在跑、但没有工作约定：默认安装里这是常态（flat 不自动写 AGENTS.md），
@@ -468,6 +470,9 @@ async function main() {
                         lines.push(`⚠️ ${i.file} ${i.detail}`);
                     for (const i of policy.items)
                         lines.push(`⚠️ POLICY.md ${i.detail}`);
+                    if (policy.truncated) {
+                        lines.push(`⚠️ 另有 ${policy.total - policy.items.length} 条结构问题未显示（最多列前 ${policy.items.length} 条）`);
+                    }
                     print(lines.join('\n'), false);
                 }
             }

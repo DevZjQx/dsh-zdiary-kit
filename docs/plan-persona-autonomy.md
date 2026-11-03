@@ -180,6 +180,7 @@ AGENTS 已经是 175 词硬规则，再加就会挤掉 MEMORY；人设和事实�
 <!-- zdiary-policy: v4 -->
 ---
 updated: 2026-11-02
+audit: DREAMS.md
 ---
 | action | level | approval | reversible |
 |---|---|---|---|
@@ -189,7 +190,7 @@ updated: 2026-11-02
 ```
 
 - 级别只认 `auto` / `ask` / `forbidden`；`approval` 只认 `none` / `human` / `policy`。
-- `zk_context` 返回 policy 原文与解析结果；解析失败只告警，不猜。
+- `zk_context` 的 `text` 里带 POLICY 原文；`policy` 字段给解析结果（`actions` / `issues` / `total` / `truncated`）；解析失败只告警，不猜。
 - 插件只对 `zk_*` 自己的动作做最小检查（读 / 写笔记 / 改 meta）；
   `publish` / `spend` / 外部动作由 `bili_*` 等工具按同一份 policy 执行 —— **本插件不假装能管住别的插件**。
 - 审计：`POLICY.md` 指定审计落点（默认 `DREAMS.md` 的「本周裁决」或 `journal/`）；
@@ -210,7 +211,7 @@ updated: 2026-11-02
 ### D8：一致性检查（只报告）
 
 - `persona`：缺文件 / 旧版本 / 未填 `{{...}}` / 缺 `name` / `role` / `updated`。
-- `policy`：缺文件 / 旧版本 / 表头不合法 / 未知 level / 空 action / 缺审计落点。
+- `policy`：缺文件 / 旧版本 / 表头或分隔行列数 / 未知 `level` / `approval` / `reversible` / 空 action / 重复动作 / 缺审计落点。
 - `personaDrift`：`PERSONA.md` 的 `name` / `role` 与 `MEMORY.md` 的 `name` / `role`（两边都写了才比）机械冲突；
   MEMORY 条目带 `persona` 标记（说明人设事实写错了层）。
 - `memoryProvenance` / `sourceTrust` / `memoryTtl`：见 D5。
@@ -317,7 +318,7 @@ updated: 2026-11-02
 
 ### M3（P1，自主权与状态）
 
-**M3a 已实施（2026-11-03）**：`lib/policy.ts` 只读解析（四列表 → rows + issues）+ `zk_context.policy` +
+**M3a 已实施（2026-11-03）**：`lib/policy.ts` 只读解析（四列表 → rows + issues；issues 最多 50 条，`total` / `truncated` 给完整口径）+ `zk_context.policy` +
 `lint.policy` + `zk-kit contract` / `doctor` 报告。缺文件归 `contract` 桶，不重复报；解析失败不猜。
 **没做** `zk_*` 强制（M3c），也没做 `state.ts` / 场景注入（M3b）—— 按「先用 3 次开口验证形状」的约定后置。
 
@@ -364,7 +365,7 @@ updated: 2026-11-02
 | authority | 新 source 默认 informal；显式 expert 保留；旧笔记不变；`sourceTrust` 命中「中配 + expert」 |
 | provenance | MEMORY 条目 `[agent]` / `[scope]` 解析；`persona` 标记报错；旧格式不报错 |
 | TTL | `有效至` 过期报 `memoryTtl`；无日期不报；日期非法按无日期 |
-| policy | 三个 level 解析；未知 level / 空 action / 缺审计落点报错；解析失败不猜 |
+| policy | 四列表解析；表头 / 分隔行 / 列数 / level / approval / reversible / 重复动作 / 缺 audit 只报告；缺文件归 contract；issues 截到 50 条并给 total / truncated |
 | state | TTL 内注入；过期不注入；敏感值 redact；读不到不报错 |
 | 回归 | 无契约文件的 payload 与 0.9 一致；flat 0.1.0 产物逐字节不变；只读视图 GET-only + 回环 |
 

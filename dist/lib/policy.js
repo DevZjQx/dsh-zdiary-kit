@@ -19,6 +19,12 @@ import { stripContractMarker } from './persona-template.js';
 export const POLICY_LEVELS = ['auto', 'ask', 'forbidden'];
 export const POLICY_APPROVALS = ['none', 'human', 'policy'];
 export const POLICY_COLUMNS = ['action', 'level', 'approval', 'reversible'];
+/**
+ * policy issue 回给工具 / lint 的上限。
+ * 与 lint 的 MAX_ITEMS 同口径；policy.ts 不能反向 import lint（lint 已依赖本文件），
+ * 所以单独命名，别在调用方各写一个 50。
+ */
+export const POLICY_MAX_ITEMS = 50;
 /** 结构问题种类（运行时也要用：工具输出 schema 的 enum 从这里取，别在 feature.ts 里再抄一份） */
 export const POLICY_ISSUE_KINDS = [
     'table',
@@ -30,6 +36,12 @@ export const POLICY_ISSUE_KINDS = [
     'duplicate-action',
     'no-audit',
 ];
+/** 只读投影的超量口径：items 截到 max，total 始终完整；不要在每个调用方各切一遍 */
+export function capPolicyIssues(issues, max = POLICY_MAX_ITEMS) {
+    const limit = Math.max(0, Math.trunc(max));
+    const items = issues.slice(0, limit);
+    return { total: issues.length, items, truncated: items.length < issues.length };
+}
 function cellsOf(line) {
     return line
         .replace(/^\s*\|/, '')
@@ -55,7 +67,7 @@ export function parsePolicyText(content) {
     if (!audit)
         issues.push({ kind: 'no-audit', detail: 'frontmatter 里没有 audit（审计落点）' });
     const lines = body.split('\n');
-    // 表头只认前四列；多出来的列会让下面的行报「列数不对」，不会静默忽略一个 trigger 列
+    // 表头只认前四列；表头多出来的列会单独报「列数不对」；四列数据行仍按前四列解析
     const headAt = lines.findIndex((line) => {
         if (!line.trim().startsWith('|'))
             return false;
@@ -67,16 +79,28 @@ export function parsePolicyText(content) {
         return { updated: fields.updated ?? '', audit, rows, issues };
     }
     const header = cellsOf(lines[headAt] ?? '');
-    if (header.length !== POLICY_COLUMNS.length) {
+    const headerOk = header.length === POLICY_COLUMNS.length;
+    if (!headerOk) {
         issues.push({
             kind: 'table',
             detail: `表头有 ${header.length} 列，应为 ${POLICY_COLUMNS.length}：${POLICY_COLUMNS.join(' | ')}`,
         });
     }
     // 分隔行缺失时 headAt+1 就是第一条数据行：跳过它会静默丢一条动作
-    const hasSeparator = isSeparator(lines[headAt + 1] ?? '');
+    const separatorLine = lines[headAt + 1] ?? '';
+    const hasSeparator = isSeparator(separatorLine);
     if (!hasSeparator) {
         issues.push({ kind: 'table', detail: '表头下缺分隔行（| --- | --- | --- | --- |）' });
+    }
+    else if (headerOk) {
+        // 表头列数已经报过就不再叠一条；这里只抓「表头对、分隔行错」这种会被 isSeparator 放过的坏表
+        const separator = cellsOf(separatorLine);
+        if (separator.length !== POLICY_COLUMNS.length) {
+            issues.push({
+                kind: 'table',
+                detail: `分隔行有 ${separator.length} 列，应为 ${POLICY_COLUMNS.length}`,
+            });
+        }
     }
     const start = hasSeparator ? headAt + 2 : headAt + 1;
     for (let i = start; i < lines.length; i++) {
@@ -127,8 +151,9 @@ export function parsePolicyText(content) {
             reversible: reversible === 'yes',
         });
     }
-    // 表头在了、行却全是坏行：上面已经逐行报过，不再叠一条「表里没有合法动作行」的废话
-    if (rows.length === 0 && issues.every((issue) => issue.kind !== 'table')) {
+    // 只有「表结构没报错、也没有坏行，只是空表」才补一句；行全是坏行时上面已逐行报过，不再叠
+    const noRowIssues = issues.every((issue) => issue.kind === 'no-audit');
+    if (rows.length === 0 && noRowIssues) {
         issues.push({ kind: 'table', detail: '表里没有合法的动作行' });
     }
     return { updated: fields.updated ?? '', audit, rows, issues };
@@ -147,9 +172,9 @@ export function parsePolicy(cfg) {
     return parsePolicyText(text);
 }
 /** lint 的只读投影：缺文件不在这里报（contract 桶负责），这里只报「已启用但表坏了」 */
-export function policyStatus(cfg) {
+export function policyStatus(cfg, max = POLICY_MAX_ITEMS) {
     const doc = parsePolicy(cfg);
     if (!doc)
-        return { present: false, rows: 0, total: 0, items: [] };
-    return { present: true, rows: doc.rows.length, total: doc.issues.length, items: doc.issues };
+        return { present: false, rows: 0, total: 0, items: [], truncated: false };
+    return { present: true, rows: doc.rows.length, ...capPolicyIssues(doc.issues, max) };
 }

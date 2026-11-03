@@ -572,6 +572,7 @@ export function formatLintExtras(
     lines.push(
       `⚠️ 自主权契约：${r.policy.rows} 行动作，${r.policy.total} 条结构问题 — ${sample}` +
       (r.policy.total > 5 ? ' …' : '') +
+      (r.policy.truncated ? '（issues 已截断）' : '') +
       '｜只报告，不改文件；表头写 action / level / approval / reversible',
     )
   }

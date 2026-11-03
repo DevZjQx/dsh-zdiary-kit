@@ -102,8 +102,8 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 契约**不参与** `memoryBudgetWords` 的截断，超了只告警；`overWords` 是所有展示的唯一超量口径，别拿 `words` 再做减法。
 总 prompt 超 `totalPromptBudgetWords` 时只点名（按实际载荷，含框与提示），不自动截契约。
 `zk_dream` 的 `memory.contractWords` 是整段契约注入量；`headroom` 只扣记忆侧（`totalWords - contractWords`），契约不占记忆预算。
-`policy` 是 `POLICY.md` 的只读解析（M3a）：`present / actions[] / issues[]`，行是 `action / level / approval / reversible`；
-坏行只进 `issues`，合法行照常返回；缺文件时 `present:false`，missing 由 `contract` 桶报，不重复。
+`policy` 是 `POLICY.md` 的只读解析（M3a）：`present / actions[] / total / issues[] / truncated`，行是 `action / level / approval / reversible`；
+坏行只进 `issues`，合法行照常返回；`issues` 最多 50 条（`total` 是完整数，`truncated` 标记截断）；缺文件时 `present:false`，missing 由 `contract` 桶报，不重复。
 
 `zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关（D7）。
 `zk_lint` = 1 次 `zk list` + 三个 zk 原生过滤器（`--orphan` / `--broken-links` / `--tagless`）+ 1 次 `zk graph`，
@@ -145,6 +145,7 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 都只报告；注入从 0.9 起省略退役条目（notice 说明省略数），文件本身不动。条目切分与日期解析统一走 `lib/memory-format`。
 `policy`（M3a）查 `POLICY.md` 的自主权契约表：表头 / 列数 / 空 `action` / 未知 `level`（`auto` / `ask` / `forbidden`）/
 未知 `approval`（`none` / `human` / `policy`）/ `reversible` 不是 `yes` / `no` / 重复动作 / frontmatter 缺 `audit`。
+`issues` 最多 50 条（`total` 是完整数，`truncated` 标记截断）。
 缺文件归 `contract` 桶，不重复报；解析失败只报告、不猜、不改文件。
 文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / 自主权契约 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
 `incomplete`（P2-13）：`type` / `status` / `authority` 缺任一的笔记（**只在 layered 下查**：flat 的笔记

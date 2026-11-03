@@ -45,7 +45,7 @@
 相等但正文还留着旧版内容 = `mismatch`（只改了首行数字，`CONTRACT_TEMPLATE_SENTINELS` 机械可查）。
 `POLICY.md` 形状是「首行版本标记 + 紧跟 frontmatter + 一张表」（`action / level / approval / reversible`），
 level 只认 `auto / ask / forbidden`；解析前先 `stripContractMarker()`，再复用 `lib/frontmatter`。
-解析与强制执行归 M3，这里只负责写入模板。
+只读解析见 M3a（`lib/policy.ts`）；强制执行归 M3c，这里只负责写入模板。
 两个文件都进 `META_NAMES`：不进检索、`zk_append` 等写入一律拒绝。
 **迁移说明**：根目录曾有同名普通笔记的库，升级后它们会从检索里消失 —— 需要改名或移入子目录。
 
