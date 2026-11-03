@@ -255,7 +255,7 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 ```
 <notebook>/
 ├── raw/            # 原始材料，只读
-├── AGENTS.md       # 工作约定（模板由插件写入；agent 每轮读它，DSH 不会自动加载）
+├── AGENTS.md       # 工作约定（模板由插件写入；插件每轮注入）
 ├── WORKFLOW.md     # 改已有笔记的细则：先列清单、三分类（不注入，按需读）
 ├── notes/
 │   ├── sources/
@@ -267,7 +267,7 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 
 外加 `source.md` / `entry.md` 两套模板与 source / concept / entity / pattern 四个 group
 （`entry.md` 三处共用，`type` 与 `authority` 由 `[group.X.extra]` 注入），
-以及根目录两份模板：**`AGENTS.md`**（检索词归宿、中文必须打 tags、"插件不保证宿主自动加载本文件"三件事）
+以及根目录两份模板：**`AGENTS.md`**（检索词归宿、中文必须打 tags 两件事）
 与 **`WORKFLOW.md`**（改已有笔记前先列受影响清单等确认，再按 temporal / context variant / contradiction 三分类动手）。
 `WORKFLOW.md` 不进每轮注入 —— 它低频但重要，塞进 `AGENTS.md` 会把 500 词预算挤到 MEMORY 没位置。
 **只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` / `WORKFLOW.md` 一律不覆盖。

@@ -277,8 +277,8 @@ layered 建 7 个目录 + 3 套模板 + 5 个 group；`excludedNames()` 一个�
 - 设置页新增：结构模式（flat/layered）、注入预算（词，管三份 meta 的总载荷）、归档目录；layered 未初始化时给"一键初始化分层结构"按钮。
 - 危险操作二次确认：切 flat→layered 只建目录不搬文件，弹窗里明确说这句。
 - `docs/features/memory.md`（Purpose/Owns/Rejected 体例）、README 增加"记忆分层"一节、AGENTS.md 模板随插件分发。
-  AGENTS.md 模板必须写清三件事：检索词归宿规则（值得检索 → tags 或正文；不值得 → 不存在）、
-  中文笔记必须打 tags（Z12：中文正文召回不完整）、以及"插件不保证自动加载本文件"（M1 结论回填）。
+  AGENTS.md 模板必须写清两件事：检索词归宿规则（值得检索 → tags 或正文；不值得 → 不存在）、
+  中文笔记必须打 tags（Z12：中文正文召回不完整）。
 
 产出 / 验收
 - 设置页保存 → 下一次工具调用立刻生效（沿用现在"每次现读配置"的做法）。
@@ -298,6 +298,9 @@ layered 建 7 个目录 + 3 套模板 + 5 个 group；`excludedNames()` 一个�
   初版 310 词，`zk-kit doctor` 当场报 `✗ 记忆：310/300 词` —— 模板自身在预算里且永不截断，等于把 MEMORY 挤成零，
   压缩到 147 词（当时默认 300 词，留 150 词给 USER + MEMORY）后才通过。这条只有真跑才能发现；
   也正是这次实跑暴露了 300 不够用，最终在 D6 修订里把默认值上调到 500。
+- **模板不再写「宿主不会自动加载本文件」（2026-11-03）。** 插件本来就每轮注入，这句话 agent 无法据此行动，
+  却占掉十几词预算；结论留在 `docs/features/memory.md` 与 §4 M1。两份模板从 187 / 88 词降到 175 / 76，
+  `TEMPLATE_VERSION` 升到 4，老库的 `zk_lint` 会报旧模板。
 - **`zk_append` 拒写 meta**：根目录五个 meta 文件一律拒绝（子目录同名文件照常）；理由写进 hint。
 - **`zk_stats` 归档计数**：`archived` 扫 archive/ 磁盘（归档区被索引查询排除），`superseded` = 归档区 frontmatter +
   非归档区里手工标了 status 的笔记；不额外起进程的方式是复用 `allNotes` 与一次目录遍历。

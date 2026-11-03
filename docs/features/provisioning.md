@@ -26,8 +26,8 @@
 `AGENTS.md` 在 `layered` 下自动写；`flat` 默认**不写**（从 0.1.0 升级来的 vault 不能因为升级多出一个文件，M0 的逐字节回归）。
 想要约定与周提醒就显式 opt-in：`zk-kit init --with-agents`、设置页「写入 AGENTS.md 模板」、
 或代码里 `ensureNotebook(cfg, signal, { withAgents: true })`；已存在的文件一律不覆盖。
-`flat` 用精简版 `AGENTS_TEMPLATE_FLAT`（实测 88 词，锁 ≤90）：不出现 `raw/` / `inbox/` / `archive/` / `WORKFLOW.md`。
-`layered` 用完整版 `AGENTS_TEMPLATE`（实测 187 词，锁 ≤190）—— 它属于注入预算且**永不截断**，
+`flat` 用精简版 `AGENTS_TEMPLATE_FLAT`（实测 76 词，锁 ≤90）：不出现 `raw/` / `inbox/` / `archive/` / `WORKFLOW.md`。
+`layered` 用完整版 `AGENTS_TEMPLATE`（实测 175 词，锁 ≤190）—— 它属于注入预算且**永不截断**，
 写长了 USER / MEMORY 就没位置。两份模板首行都有 `<!-- zdiary-template: vN -->`（`TEMPLATE_MARK`），
 `zk_lint` 据此报告老库的模板是否过期（只报告、不覆盖）。
 `entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入（Z10）；

@@ -7,19 +7,19 @@
  * 或在设置页点「写入 AGENTS.md 模板」—— 否则默认安装既没有约定、也没有周节奏提醒。
  *
  * 为什么单独一个文件：它是「给人读的文档」，不是逻辑；放在这里也方便直接对照
- * docs/features/memory.md 的三条口径（检索词归宿 / 中文必打 tags / 宿主不会自动加载）。
+ * docs/features/memory.md 的口径（检索词归宿 / 中文必打 tags）。
  * 注意别让运行期消息只指向 docs/：插件发布后文档在 profile 的 node_modules 里，agent 够不着；
  * lint 的旧版提示直接带模板全文（见 lib/lint.ts 的 LintTemplateBucket.currentText）。
  *
  * 长度是设计约束：AGENTS.md 属于注入预算（默认 500 词，中文 2 字 = 1 词）且**永不截断**，
  * 模板自己吃掉过半预算，USER / MEMORY 就没位置了 —— 所以这里只留规则，不写教程。
- * 目标 ≤190 词（AGENTS_TEMPLATE 实测 187、AGENTS_TEMPLATE_FLAT 实测 88），单测里锁住。
+ * 目标 ≤190 词（AGENTS_TEMPLATE 实测 175、AGENTS_TEMPLATE_FLAT 实测 76），单测里锁住。
  * 首行 `<!-- zdiary-template: vN -->` 是版本标记：lint 据此报告「老库的 AGENTS.md 是旧版」，
  * 只报告不覆盖（模板允许用户改）。
  */
 
-/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧契约（v2：去掉 inbox/） */
-export const TEMPLATE_VERSION = 3
+/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧契约（v2：去掉 inbox/；v3：截断改按日期；v4：去掉「宿主不会自动加载」一句） */
+export const TEMPLATE_VERSION = 4
 
 /** 首行版本标记（实测 4 词）；不许带日期 —— 带日期的写法实测 6 词，白花 2 词 */
 export const TEMPLATE_MARK = `<!-- zdiary-template: v${TEMPLATE_VERSION} -->`
@@ -27,8 +27,6 @@ export const TEMPLATE_MARK = `<!-- zdiary-template: v${TEMPLATE_VERSION} -->`
 export const AGENTS_TEMPLATE = `${TEMPLATE_MARK}
 
 # 知识库工作约定
-
-> zdiary 生成；DSH 不会自动加载，插件每轮注入。
 
 ## 目录
 
@@ -61,8 +59,6 @@ MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]；退役写 - [superse
 export const AGENTS_TEMPLATE_FLAT = `${TEMPLATE_MARK}
 
 # 知识库工作约定
-
-> zdiary 生成；DSH 不会自动加载，插件每轮注入。
 
 ## 写之前
 

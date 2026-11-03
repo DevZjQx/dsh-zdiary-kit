@@ -88,7 +88,7 @@
 ### 1.3 为什么现在做
 
 现在加 persona / policy 只是往 `AGENTS.md` 里再塞规则，或者往 `MEMORY.md` 里再塞人设：
-AGENTS 已经是 187 词硬规则，再加就会挤掉 MEMORY；人设和事实混在一起后，退役、截断、溯源都会失真。
+AGENTS 已经是 175 词硬规则，再加就会挤掉 MEMORY；人设和事实混在一起后，退役、截断、溯源都会失真。
 先把层分开，比以后从 `AGENTS.md` 里往外拆便宜。
 
 ---
@@ -176,9 +176,8 @@ AGENTS 已经是 187 词硬规则，再加就会挤掉 MEMORY；人设和事实�
 版本标记必须在 frontmatter 之前（与 `PERSONA.md` 同一套模板规则），解析前先 `stripContractMarker()`：
 
 ```markdown
-<!-- zdiary-policy: v3 -->
+<!-- zdiary-policy: v4 -->
 ---
-version: 2
 updated: 2026-11-02
 ---
 | action | level | approval | reversible |
@@ -273,7 +272,7 @@ updated: 2026-11-02
 - 场景段本批只落形状（`scene.present` 恒 false、`words` 恒 0），等 M3。
 - `zk_context` 的契约摘要行只在有契约时输出；`zk-kit contract` 是只读子命令，可看用量 / 预算 / 体检。
 - 设置页需要 `POST /contract`（第八条路由）：smoke 的路由数断言从 11 改为 12。
-- 记忆页多了「工作约定（AGENTS.md）」一段，否则预算里的 187 词无法逐项对上。
+- 记忆页多了「工作约定（AGENTS.md）」一段，否则预算里的 175 词无法逐项对上。
 
 **落点**
 - `src/lib/meta.ts`：新增 `CONTRACT_META_FILES`（`PERSONA.md` / `POLICY.md`），扩 `META_NAMES`。
@@ -353,7 +352,7 @@ updated: 2026-11-02
 | 契约读取 | 无文件 = 空；有文件 = 按 `PERSONA → POLICY → AGENTS → USER → MEMORY` 顺序；读不到 = 不存在 |
 | 契约预算 | 240 词内完整；超了只告警、不截断；`totalPromptBudgetWords` 超了点名 |
 | 契约词数 | `contentWords` / `noticeWords` / `words` / `overWords` 分开；注入提示与 doctor / contract / 设置页 / 记忆页 / `zk_context` 报同一个超出量；`memoryUsage.headroom` 不扣契约 |
-| 模板解析 | 版本标记后紧跟 frontmatter；`stripContractMarker()` 后 `parseFrontmatter()` 能读到 name / role / version / audit |
+| 模板解析 | 版本标记后紧跟 frontmatter；`stripContractMarker()` 后 `parseFrontmatter()` 能读到 name / role / updated / audit |
 | 退役 / 截断 | `retiredWords` 与 `truncatedWords` 分开；`formatFileShares` 不再把退役写成「原 X」 |
 | 记忆页 | 退役行有徽标；`<script>` 被转义；`PERSONA`/`POLICY` 不能按 `path` 打开；载荷预览与 payload 同源 |
 | 写入守卫 | `zk_append` / `zk_new` / `zk_link` / `zk_supersede` 拒绝 `PERSONA` / `POLICY`；根目录同名普通笔记迁移提示 |

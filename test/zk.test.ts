@@ -25,6 +25,7 @@ const zk = await import('../src/lib/zk.ts')
 const memory = await import('../src/lib/memory.ts')
 const memoryFormat = await import('../src/lib/memory-format.ts')
 const notebookLib = await import('../src/lib/notebook.ts')
+const agentsTpl = await import('../src/lib/agents-template.ts')
 const notebookConfig = await import('../src/lib/notebook-config.ts')
 const lintLib = await import('../src/lib/lint.ts')
 const dreamLib = await import('../src/lib/dream.ts')
@@ -2455,14 +2456,14 @@ describe('M4: 结构设置与记忆预算', () => {
   const m4 = store.normalizeConfig({ notebook: m4dir, zkPath: zkBin, structure: 'layered' })
   const agentsFile = path.join(m4dir, 'AGENTS.md')
 
-  it('layered 初始化写 AGENTS.md：含三件事，已有内容绝不覆盖', async () => {
+  it('layered 初始化写 AGENTS.md：含关键约定，已有内容绝不覆盖', async () => {
     const first = await notebookLib.ensureNotebook(m4)
     expect(first.agentsWritten).toBe(true)
     const body = fs.readFileSync(agentsFile, 'utf8')
-    // 三件必须写清的事（计划 §4 M4）
+    // 计划 §4 M4 的两件事：检索词归宿、中文必打 tags
+    expect(body).toContain('值得检索')
     expect(body).toContain('tags')
     expect(body).toMatch(/中文.*tags|tags.*中文/)
-    expect(body).toContain('不会')
     expect(body).toContain('MEMORY.md')
     expect(body).toContain('WORKFLOW.md')
     // 截断从底部往前丢：模板必须说清新条目写在哪，否则 agent 继续往下追加，最新的结论先没
@@ -3301,7 +3302,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     await notebookLib.ensureNotebook(cfg)
     // layered 初始化会写 AGENTS.md；先删掉，验证「没有文件」不是旧模板
     fs.rmSync(path.join(cfg.notebook, 'AGENTS.md'))
-    expect(lintLib.templateStatus(cfg)).toEqual({ present: false, version: 0, current: 3, stale: false })
+    expect(lintLib.templateStatus(cfg)).toEqual({ present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false })
 
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '# 手写规则\n')
     const old = lintLib.templateStatus(cfg)
@@ -3312,12 +3313,12 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(old.currentText).toBe(notebookLib.AGENTS_TEMPLATE)
     const extras = lintLib.formatLintExtras({ ...(await lintLib.lintNotebook(cfg)) }).join('\n')
     expect(extras).toContain('新版模板全文')
-    expect(extras).toContain('<!-- zdiary-template: v3 -->')
+    expect(extras).toContain(`<!-- zdiary-template: v${agentsTpl.TEMPLATE_VERSION} -->`)
     expect(extras).not.toContain('docs/features/memory.md')
 
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '<!-- zdiary-template: v99 -->\n\n# 未来版本\n')
     // 插件比库旧：仍然报（不然升过插件又降级的人永远看不见），但不能把当前版本的模板递过去
-    // —— agent 会照着合并、把标记改成 v3，等于把规则回退
+    // —— agent 会照着合并、把标记改成当前版本，等于把规则回退
     const future = lintLib.templateStatus(cfg)
     expect(future.stale).toBe(true)
     expect(future.currentText).toBeUndefined()
@@ -3682,7 +3683,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     expect(lintLib.formatLintExtras({
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
-      template: { present: false, version: 0, current: 3, stale: false },
+      template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: missing,
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
@@ -3691,7 +3692,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     expect(lintLib.formatLintExtras({
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
-      template: { present: false, version: 0, current: 3, stale: false },
+      template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: half,
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
@@ -3707,7 +3708,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     const empty = lintLib.formatLintExtras({
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
-      template: { present: false, version: 0, current: 3, stale: false },
+      template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: { total: 0, items: [] },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
@@ -3716,7 +3717,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     expect(lintLib.formatLintExtras({
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
-      template: { present: false, version: 0, current: 3, stale: false },
+      template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: st,
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
@@ -3730,7 +3731,9 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     const persona = fm.parseFrontmatter(personaTpl.stripContractMarker(personaTpl.PERSONA_TEMPLATE)).fields
     expect(persona).toMatchObject({ name: '{{name}}', role: '{{role}}', updated: '{{updated}}' })
     const policy = fm.parseFrontmatter(personaTpl.stripContractMarker(personaTpl.POLICY_TEMPLATE)).fields
-    expect(policy).toMatchObject({ version: '2', updated: '{{updated}}', audit: 'DREAMS.md' })
+    expect(policy).toMatchObject({ updated: '{{updated}}', audit: 'DREAMS.md' })
+    // 只保留首行模板版本标记；frontmatter 里不再有第二个版本号
+    expect(policy.version).toBeUndefined()
     expect(personaTpl.stripContractMarker(personaTpl.POLICY_TEMPLATE).startsWith('---')).toBe(true)
   })
 

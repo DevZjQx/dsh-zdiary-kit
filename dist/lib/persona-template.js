@@ -16,10 +16,10 @@
 export const PERSONA_TEMPLATE_VERSION = 3;
 /**
  * POLICY.md 模板版本：改模板就 +1。
- * 注意与模板 frontmatter 里的 `version:` 区分：那个是**机器可读 schema 版本**（表头 / 字段语义变了才升），
- * 不随模板版本走 —— 模板 v1→v2 时它一直是 1。M3 解析按 `version` 分支，别把两者混成一条线。
+ * 版本只认首行的 `<!-- zdiary-policy: vN -->`，frontmatter 里不再另放一个 schema `version` ——
+ * 同一份文件只维护一个版本号。M3 解析按 frontmatter 字段与表格结构走，不按版本分支。
  */
-export const POLICY_TEMPLATE_VERSION = 3;
+export const POLICY_TEMPLATE_VERSION = 4;
 /**
  * 去掉首行契约版本标记，剩下的可以直接交给 `parseFrontmatter()`。
  * M3 的 policy / persona 解析必须走这里，别自己再写一套「跳过第几行」的规则。
@@ -49,7 +49,6 @@ updated: {{updated}}
 `;
 export const POLICY_TEMPLATE = `<!-- zdiary-policy: v${POLICY_TEMPLATE_VERSION} -->
 ---
-version: 2
 updated: {{updated}}
 audit: DREAMS.md
 ---
