@@ -39,6 +39,7 @@ type Tool = {
 const tools: Tool[] = []
 const routes = new Map<string, (req: http.IncomingMessage, res: http.ServerResponse) => unknown>()
 const promptSections: Array<{ name: string; order: number; text: string | (() => string) }> = []
+const promptContexts: Array<{ name: string; order: number; text: string | (() => string) }> = []
 /** 模拟 DSH 的浏览器会话栅栏：打开时没有 cookie 的请求一律 401 */
 let requireCookie = false
 
@@ -46,7 +47,10 @@ const ctx = {
   get(name: string) {
     if (name === 'tools') return { register: (d: Tool) => { tools.push(d); return () => {} } }
     if (name === 'systemPrompt') {
-      return { section: (s: typeof promptSections[number]) => { promptSections.push(s); return () => {} } }
+      return {
+        section: (s: typeof promptSections[number]) => { promptSections.push(s); return () => {} },
+        context: (c: typeof promptContexts[number]) => { promptContexts.push(c); return () => {} },
+      }
     }
     if (name === 'webServer') {
       return {
@@ -70,6 +74,12 @@ if (!memorySection) throw new Error('zdiary:memory 没有注册到 systemPrompt'
 const injected = typeof memorySection.text === 'function' ? memorySection.text() : memorySection.text
 if (!injected.includes('先查重再写')) throw new Error('注入内容没有读到 AGENTS.md')
 console.log(`记忆注入：${memorySection.name} · order ${memorySection.order} · ${injected.length} 字符`)
+
+// 场景走动态运行时上下文（user-role 快照），不应再注册成系统提示 section
+const sceneContext = promptContexts.find((c) => c.name === 'zdiary:scene')
+if (!sceneContext) throw new Error('zdiary:scene 没有注册到 systemPrompt.context()')
+if (promptSections.some((s) => s.name === 'zdiary:scene')) throw new Error('zdiary:scene 不应再注册到 systemPrompt.section()')
+console.log(`场景注入：${sceneContext.name} · order ${sceneContext.order} · runtime context`)
 
 // ── 输出 schema 必须落在 DSH 支持的子集里（超集会在 register 时直接 TypeError）──
 const ALLOWED = new Set(['type', 'oneOf', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'const', 'description', 'title', 'default', 'examples'])

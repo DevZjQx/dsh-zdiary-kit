@@ -10,7 +10,8 @@ import { CFG_FILE } from './config/paths.ts'
 import { NOTE_KINDS, ensureNotebook, fixGroupConfig, groupOverlapNotes, newNoteDir, structureStatus } from './lib/notebook.ts'
 import type { GroupFixResult, StructureStatus } from './lib/notebook.ts'
 import { buildMemoryPayload, formatFileShares } from './lib/memory.ts'
-import { buildScene, combinedWords, loadRules, projectScene } from './lib/scene.ts'
+import { buildScene, combinedBudgetNote, combinedWords, loadRules, projectScene } from './lib/scene.ts'
+import { compileDefaultRules } from './lib/state-rules.ts'
 import { eventsPathOf, pruneStateLog, readStateLog, StateError } from './lib/state-log.ts'
 import { run } from './lib/exec.ts'
 import { installZk, sourceLabel } from './lib/install.ts'
@@ -377,14 +378,20 @@ async function doctor(): Promise<boolean> {
   // 状态层：事件日志 + 投影（D7）。缺文件 = 未启用，不算错；坏行 / 规则回退 / 过大才值得 ⚠️。
   const scene = buildScene(cfg)
   const log = readStateLog(cfg, { windowDays: cfg.sceneWindowDays })
-  if (!log.exists || log.total === 0) {
+  if (log.readError) {
+    rows.push(`⚠️ 状态：读不了 ${eventsPathOf(cfg)} —— ${log.readError}（这一轮不注入场景）`)
+  } else if (!log.exists || log.total === 0) {
     rows.push('· 状态：未启用（.state/events.log 不存在或没有事件；写事件用 zk_state append）')
   } else {
-    const trouble = log.badLines.length > 0 || !!scene.rulesError || log.lines > 5000 || log.bytes > 2 * 1024 * 1024
+    const overBudget = combinedWords(payload.totalWords, scene) > cfg.totalPromptBudgetWords
+    const trouble = log.badLines.length > 0 || !!scene.rulesError || overBudget || log.lines > 5000 || log.bytes > 2 * 1024 * 1024
     rows.push(
       `${trouble ? '⚠️' : '✓'} 状态：${log.total} 条事件（窗口内 ${log.events.length}）· 规则 ${scene.rulesVersion} · ` +
       `场景 ${scene.words}/${cfg.sceneBudgetWords} 词 · 合计 ${combinedWords(payload.totalWords, scene)} 词`,
     )
+    if (overBudget) {
+      rows.push(`⚠️ ${combinedBudgetNote(payload.totalWords, scene, cfg.totalPromptBudgetWords)}（只告警，不自动截断）`)
+    }
     if (log.badLines.length > 0) {
       const first = log.badLines[0]
       rows.push(`⚠️ 状态日志有 ${log.badLines.length} 条坏行：第 ${first?.line} 行 ${first?.reason}（跳过，不影响投影）`)
@@ -481,6 +488,7 @@ async function main(): Promise<void> {
 
     case 'contract': {
       const payload = buildMemoryPayload(cfg)
+      const scene = buildScene(cfg)
       const c = payload.contract
       const issues = contractStatus(cfg)
       if (!json) {
@@ -492,8 +500,11 @@ async function main(): Promise<void> {
             `契约：正文（含标题）${c.contentWords}/${c.budget} 词（${files}）` +
               (c.overBudget ? ` · 超 ${c.overWords} 词（契约不截断）` : ''),
             `注入：${c.words} 词${c.noticeWords > 0 ? `（正文 ${c.contentWords} + 提示 ${c.noticeWords}）` : ''} · 记忆段之前、永远注入、不参与截断`,
-            `总量：正文 契约 ${c.contentWords} + 记忆 ${payload.words} = ${c.contentWords + payload.words} 词；记忆载荷 ${payload.totalWords} 词 + 场景 ${buildScene(cfg).words} 词 = 合计 ${combinedWords(payload.totalWords, buildScene(cfg))} 词` +
-              `（合并预算 ${cfg.totalPromptBudgetWords}，超了只告警；场景不进记忆预算）`,
+            `总量：正文 契约 ${c.contentWords} + 记忆 ${payload.words} = ${c.contentWords + payload.words} 词；记忆载荷 ${payload.totalWords} 词 + 场景 ${scene.words} 词 = 合计 ${combinedWords(payload.totalWords, scene)} 词` +
+              `（场景不进记忆预算）` +
+              (combinedBudgetNote(payload.totalWords, scene, cfg.totalPromptBudgetWords)
+                ? `\n⚠️ ${combinedBudgetNote(payload.totalWords, scene, cfg.totalPromptBudgetWords)}（只告警，不自动截断）`
+                : `\n合并预算 ${cfg.totalPromptBudgetWords} 词：未超`),
           ]
           for (const i of issues.items) lines.push(`⚠️ ${i.file} ${i.detail}`)
           print(lines.join('\n'), false)
@@ -687,18 +698,25 @@ async function main(): Promise<void> {
           if (!Number.isFinite(now)) throw new StateError(`--at 解析不了：${atRaw}`, 'ISO 格式，例如 2026-11-01T09:00:00+08:00')
           const log = readStateLog(cfg, { windowDays: cfg.sceneWindowDays, now })
           const loaded = loadRules(cfg)
-          const scene = projectScene(log, loaded.rules, now, {
-            staleHours: cfg.staleHours,
-            sceneWindowDays: cfg.sceneWindowDays,
-            budgetWords: cfg.sceneBudgetWords,
-          })
+          const opts = { staleHours: cfg.staleHours, sceneWindowDays: cfg.sceneWindowDays, budgetWords: cfg.sceneBudgetWords }
+          // 求值错与 buildScene 同口径：整份回退内置默认，把错误留给下面那行提示
+          let scene: ReturnType<typeof projectScene>
+          let label = loaded.label
+          let rulesError = loaded.error ?? ''
+          try {
+            scene = projectScene(log, loaded.rules, now, opts)
+          } catch (err) {
+            rulesError = err instanceof Error ? err.message : String(err)
+            label = 'default(fallback)'
+            scene = projectScene(log, compileDefaultRules(), now, opts)
+          }
           if (json) {
             print({
               at: new Date(now).toISOString(),
               present: scene.present,
               presence: scene.presence,
-              rulesVersion: loaded.label,
-              rulesError: loaded.error ?? '',
+              rulesVersion: label,
+              rulesError: log.readError || rulesError,
               words: scene.words,
               text: scene.text,
               values: scene.values,
@@ -706,14 +724,26 @@ async function main(): Promise<void> {
               total: log.total,
               badLines: log.badLines.length,
               dropped: scene.dropped,
+              emptyReason: log.readError ? 'error' : scene.emptyReason,
             }, true)
           } else if (!scene.present) {
-            print('场景：未启用（没有 .state/events.log，或文件里没有有效事件）\n写事件：zk_state append（agent）或 zk-kit state log 查看原文', false)
+            const why = log.readError
+              ? `场景：读不了 .state/events.log —— ${log.readError}`
+              : scene.emptyReason === 'budget'
+                ? '场景：有事件，但一句话都放不下 —— 调大 sceneBudgetWords'
+                : scene.emptyReason === 'rules'
+                  ? '场景：规则没算出可展示的值（energy / mood / satiety / 地点 / 目标 都是 null）'
+                  : atRaw && log.total > 0
+                    // 重放到第一条事件之前：文件里有事件，只是「那一刻还没发生」
+                    ? `场景：那一刻之前没有事件（文件里共 ${log.total} 条，之后才发生）`
+                    : '场景：未启用（没有 .state/events.log，或文件里没有有效事件）'
+            // 读不了的时候不追「写事件」那句：写不进一个坏掉的文件，先把问题说清楚
+            print(log.readError ? why : `${why}\n写事件：zk_state append（agent）或 zk-kit state log 查看原文`, false)
           } else {
             const presence = scene.presence === 'present' ? '在场' : scene.presence === 'absent' ? '不在' : '未知'
             const lines = [
               scene.text,
-              `规则 ${loaded.label}${loaded.error ? `（回退：${loaded.error}）` : ''} · 窗口内 ${log.events.length} 条 / 历史 ${log.total} 条 · 用户${presence}` +
+              `规则 ${label}${rulesError ? `（回退：${rulesError}）` : ''} · 窗口内 ${log.events.length} 条 / 历史 ${log.total} 条 · 用户${presence}` +
                 (scene.dropped.length ? ` · 预算裁掉：${scene.dropped.join('、')}` : '') +
                 (log.badLines.length ? ` · 坏行 ${log.badLines.length}` : ''),
             ]
@@ -742,9 +772,10 @@ async function main(): Promise<void> {
           let commitNote = ''
           if (commit) {
             try {
-              await run('git', ['-C', cfg.notebook, 'add', '-A', '--', '.state'])
-              await run('git', ['-C', cfg.notebook, 'commit', '-m', `chore(zdiary): prune .state (keep ${r.kept})`, '--', '.state'])
-              commitNote = '已提交（只含 .state/）'
+              // 只提交被压实的这一个文件：.state/rules 是人的工作面，别卷进 prune 的提交
+              await run('git', ['-C', cfg.notebook, 'add', '--', '.state/events.log'])
+              await run('git', ['-C', cfg.notebook, 'commit', '-m', `chore(zdiary): prune .state (keep ${r.kept})`, '--', '.state/events.log'])
+              commitNote = '已提交（只含 .state/events.log）'
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err)
               commitNote = /nothing to commit|无文件要提交/i.test(message) ? '没有需要提交的改动' : `提交失败：${message}`

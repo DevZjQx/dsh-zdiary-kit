@@ -119,18 +119,26 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `originalWords` 含退役条目；展示层的「原 X」会先减掉 `retiredWords`，所以退役不会再被当成截断报出来。
 契约单独一组：`contract.present / contentWords / words / noticeWords / budget / overBudget / overWords / files[]`（`contentWords` 含 `## PERSONA.md` 标题），
 外加 `totalWords`（`countWords(payload.text)`）与 `overheadWords`（框 / 做梦提醒 / notice / 契约告警等开销）。
-场景是**独立段**：`scene: { present, presence, events, rulesVersion, words }`，不进 memory text、不占记忆预算，
-`combinedWords` = `totalWords + scene.words` 才是合并总账（别叫「总 prompt」——宿主自己的系统提示不在里面）。
-`presence` 是三态：`present` / `absent` / `unknown`（布尔分不清「不在」和「没记录」）。
+场景是**独立运行时上下文**（`systemPrompt.context()`，不进系统提示 section）：`scene: { present, presence, events, rulesVersion, words, emptyReason }`，不进 memory text、不占记忆预算，
+`combinedWords` = `totalWords + scene.words` 才是合并总账（别叫「总 prompt」——宿主自己的系统提示不在里面），
+`combinedBudget` 是它的上限（`totalPromptBudgetWords`），两者一起返回，人才能自己比。
+`presence` 是三态：`present` / `absent` / `unknown`（布尔分不清「不在」和「没记录」）；
+`emptyReason` 说明「为什么没注入」：`no-log` / `budget`（有事件但一句放不下）/ `rules`（规则算出来全是 null）/ `error`（日志读不了：权限 / 是个目录，不再冒充「未启用」）。
 契约**不参与** `memoryBudgetWords` 的截断，超了只告警；`overWords` 是所有展示的唯一超量口径，别拿 `words` 再做减法。
-合并总量超 `totalPromptBudgetWords` 时只点名（按实际载荷，含框与提示），不自动截契约。
+合并总量超 `totalPromptBudgetWords` 时**只在人看的界面点名**（`zk_context` 回复 / `doctor` / 记忆页 / 设置页），
+不写进系统提示、也不自动截断 —— 那句话每轮都要花词，而模型不需要这个数字。
 `zk_dream` 的 `memory.contractWords` 是整段契约注入量；`headroom` 只扣记忆侧（`totalWords - contractWords`），契约不占记忆预算。
 
 **`zk_state`（事件流）。** `append` / `show` / `prune` 三个动作，全部落 `<notebook>/.state/`：
-`append` 一行一条事件（时间戳必须带时区、参数最多 8 个、单行 ≤ 512 字节），插件只校验格式与时间，
+`append` 一行一条事件（时间戳必须带时区、参数最多 8 个、单行 ≤ 512 字节；**含换行 / 控制字符的值直接拒绝**，
+否则一条事件会被拆成两行坏行），校验通过后的第一次 append 才 `ensureNotebook`（写错的调用不建库、不留 `.state/`），
+插件只校验格式与时间，
 不判断真假；`show` 只回投影 + 窗口内最近 20 条，不回全量日志、不回窗口外事件；
 `prune` 压实成「窗口内全部 + 每个事件名在窗口外的最后一条」（tombstone，`hoursSince` 靠它算长尾），
+人写的注释行跟着它后面那条事件走（事件被压实掉就顺延到下一条保留的事件或文件末尾），一行不丢；
+只有插件自己写的表头 `# zdiary-state v<N>` 会被重写成规范的一行。
 **不自动 commit** —— 删除证据在 git diff 里，提交由人决定。
+它不是日常操作：只在人明确要求、或 `doctor` 提示日志偏大时才用（工具描述里写明了）。
 `.state/` 不是笔记：`zk_append` / `zk_new` / `zk_rename` 的路径守卫拒绝它，`excludedNames` 也把它排除出检索。
 
 `zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关（D7）。

@@ -65,8 +65,8 @@ export interface Config {
   sceneWindowDays: number
   /** 场景新鲜度（小时）：超过它就显示「未知」而不是拿旧值当现在 */
   staleHours: number
-  /** 总 prompt 预算（词）：启用契约后按实际载荷（含框与提示）检查；超了只告警并点名，不自动截断契约。
-   *  没有契约的库不生成这条告警，保证 0.9 的 payload 逐字不变。 */
+  /** 合并预算（词）：记忆载荷（契约 + 记忆 + 框与提示）+ 场景行。超了只在人看的界面点名，
+   *  不写进系统提示、也不自动截断 —— 模型不需要这个数字。 */
   totalPromptBudgetWords: number
   /** 归档目录（supersede 后的笔记搬到这里，保留原相对路径） */
   archiveDir: string

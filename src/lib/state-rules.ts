@@ -2,7 +2,8 @@
  * `.state/rules` 的规则 DSL（包 1：严格）。
  *
  * 规则是**数据**，不是代码：一行一条 `变量 = 表达式`，自上而下求值，只能引用前面已定义的变量。
- * 宿主只提供白名单函数，不做 eval —— 人在文件里写公式，模型无权改规则（D7）。
+ * 宿主只提供白名单函数，不做 eval —— 人在文件里写公式，插件不给模型写规则的入口（D7）。
+ * 注意这只是「插件不给入口」：宿主自带的写文件工具仍能改，规则的可信度靠 git diff 审。
  *
  * 为什么严格：
  *   · 拼错变量名必须报错，不能静默当字符串 —— 否则一条 `energi = ...` 会让整段场景消失，
@@ -569,21 +570,26 @@ export function compileRules(source: string): CompiledRules | null {
 }
 
 /**
- * 内置默认规则（版本 3）。
+ * 内置默认规则（版本 4）。
  *
  * 曲线是**单调下降**的：醒得越久越累，不存在「熬夜回血」。恢复只能靠一条新的 `woke`，
  * 起点由 `woke hours=` 决定（睡 7 小时 = 70 分）；没有 `woke` 记录时 `energy` 是 null
  * ——「没记录」不等于「刚睡醒」。
  *
- * `satiety` 是饱腹度不是饥饿值：100 = 刚吃完，30 = 很久没吃。
+ * 所有会「过期」的值（energy / satiety / location / goal / present）用同一个 `staleHours`：
+ * 超过它就返回 null，交给渲染层说「未知（最后 X · N 天前）」，不拿旧值当现在。
+ * 地板 0 而不是 20：`mood` 的「力竭」分支必须够得着（energy < 20）。
+ *
+ * `satiety` 是饱腹度不是饥饿值：100 = 刚吃完，30 = 很久没吃；没记录 = null，不给中性先验。
  */
-export const DEFAULT_RULES = `version = 3
-awake = coalesce(hoursSince(woke), 0)
+export const DEFAULT_RULES = `version = 4
+woke_h = hoursSince(woke)
+awake = coalesce(woke_h, 0)
 sleep_h = coalesce(num(last(woke, hours)), 7)
-energy = if(isNull(hoursSince(woke)), null, clamp(70 + 4 * (sleep_h - 7) - 5 * awake, 20, 100))
+energy = if(isNull(woke_h), null, if(woke_h > staleHours, null, clamp(70 + 4 * (sleep_h - 7) - 5 * awake, 0, 100)))
 mood = if(isNull(energy), null, if(energy < 20, "力竭", if(energy < 45, "疲惫", "正常")))
-ate_all = coalesce(hoursSince(ate), 0)
-satiety = if(isNull(hoursSince(ate)), 50, clamp(100 - 4 * ate_all, 30, 100))
+ate_h = hoursSince(ate)
+satiety = if(isNull(ate_h), null, if(ate_h > staleHours, null, clamp(100 - 4 * ate_h, 30, 100)))
 at_h = coalesce(hoursSince(at), 0)
 location = if(isNull(hoursSince(at)), null, if(at_h > staleHours, null, last(at, place)))
 goal_h = coalesce(hoursSince(set_goal), 0)

@@ -583,26 +583,45 @@ describe('memory', () => {
     expect(p.text).not.toContain('zk_dream')
   })
 
-  test('有 systemPrompt 时注册 zdiary:memory；没有时安静跳过', async () => {
+  test('有 systemPrompt 时注册 zdiary:notebook / zdiary:memory 到 section，场景到 context', async () => {
     const plugin = (await import('../src/app/plugin.ts')).default
-    const sections: Array<{ name: string; order: number; text: string | (() => string); interpolate?: boolean }> = []
+    type Contribution = { name: string; order: number; text: string | (() => string); interpolate?: boolean; required?: boolean }
+    const sections: Contribution[] = []
+    const contexts: Contribution[] = []
     const withPrompt = {
       get: (name: string) => (name === 'systemPrompt'
-        ? { section: (s: typeof sections[number]) => { sections.push(s); return () => undefined } }
+        ? {
+            section: (s: Contribution) => { sections.push(s); return () => undefined },
+            context: (c: Contribution) => { contexts.push(c); return () => undefined },
+          }
         : undefined),
       effect: (fn: () => undefined | (() => void)) => { fn() },
     }
     plugin.apply(withPrompt as never)
-    expect(sections.map((s) => s.name)).toEqual(['zdiary:notebook', 'zdiary:memory', 'zdiary:scene'])
+    expect(sections.map((s) => s.name)).toEqual(['zdiary:notebook', 'zdiary:memory'])
     expect(sections[0].order).toBe(5190)
     expect(sections[1].order).toBe(5200)
-    expect(sections[2].order).toBe(5210)
-    expect(typeof sections[0].text).toBe('function')
-    expect(typeof sections[1].text).toBe('function')
-    expect(typeof sections[2].text).toBe('function')
-    // 笔记本提示与记忆都是内容类：不插值，`{{…}}` 原样保留
+    // 场景是运行时上下文（user-role 快照），不再占系统提示段位
+    expect(contexts.map((c) => c.name)).toEqual(['zdiary:scene'])
+    expect(contexts[0].order).toBe(220)
+    expect(typeof contexts[0].text).toBe('function')
+    // 可选运行时上下文：suppressRuntimeContext() 时跟着关掉
+    expect(contexts[0].required).toBeUndefined()
+    // 笔记本提示、记忆与场景都是内容类：不插值，`{{…}}` 原样保留
     expect(sections[0].interpolate).toBe(false)
     expect(sections[1].interpolate).toBe(false)
+    expect(contexts[0].interpolate).toBe(false)
+
+    // 老宿主只有 section 时安静降级：笔记本 / 记忆照常，场景不注册也不抛错
+    const sectionsOnly: Contribution[] = []
+    const legacy = {
+      get: (name: string) => (name === 'systemPrompt'
+        ? { section: (s: Contribution) => { sectionsOnly.push(s); return () => undefined } }
+        : undefined),
+      effect: (fn: () => undefined | (() => void)) => { fn() },
+    }
+    expect(() => plugin.apply(legacy as never)).not.toThrow()
+    expect(sectionsOnly.map((s) => s.name)).toEqual(['zdiary:notebook', 'zdiary:memory'])
 
     const bare = { get: () => undefined, effect: (fn: () => undefined | (() => void)) => { fn() } }
     expect(() => plugin.apply(bare as never)).not.toThrow()
@@ -614,7 +633,10 @@ describe('memory', () => {
     const sections: Array<{ name: string; text: string | (() => string) }> = []
     const fake = {
       get: (name: string) => (name === 'systemPrompt'
-        ? { section: (s: typeof sections[number]) => { sections.push(s); return () => undefined } }
+        ? {
+            section: (s: typeof sections[number]) => { sections.push(s); return () => undefined },
+            context: () => () => undefined,
+          }
         : undefined),
       effect: (fn: () => undefined | (() => void)) => { fn() },
     }
@@ -647,7 +669,10 @@ describe('memory', () => {
       const sections: Array<{ name: string; text: string | ((ctx?: { agent?: { id?: string } }) => string) }> = []
       const fake = {
         get: (name: string) => {
-          if (name === 'systemPrompt') return { section: (s: typeof sections[number]) => { sections.push(s); return () => undefined } }
+          if (name === 'systemPrompt') return {
+            section: (s: typeof sections[number]) => { sections.push(s); return () => undefined },
+            context: () => () => undefined,
+          }
           if (name === 'sessions') return { get: (id: string) => (id === 'sess-ws' ? { header: { cwd: ws } } : undefined) }
           return undefined
         },
@@ -3188,7 +3213,19 @@ describe('设置页', () => {
     try {
       store.writeConfig({ notebooks: { default: { path: nb, structure: 'layered' } }, active: 'default', zkPath: zkBin })
       await notebookLib.ensureNotebook(store.config())
-      expect((await call()).ok).toBe(true)
+      const fresh = await call()
+      expect(fresh.ok).toBe(true)
+      // 状态：空日志 = 未启用（不算错）；规则坏了才是 ✗ —— 自检不能只报「装没装」
+      const stateItem = fresh.items.find((item) => item.name === '状态')!
+      expect(stateItem.ok).toBe(true)
+      expect(stateItem.detail).toContain('未启用')
+      fs.mkdirSync(path.join(nb, '.state'), { recursive: true })
+      fs.writeFileSync(path.join(nb, '.state', 'rules'), 'version = 1\nenergy = 1 / 0\n')
+      fs.writeFileSync(path.join(nb, '.state', 'events.log'), `# zdiary-state v1\n${new Date().toISOString()} ate\n`)
+      const brokenRules = await call()
+      expect(brokenRules.items.find((item) => item.name === '状态')!.ok).toBe(false)
+      expect(brokenRules.ok).toBe(false)
+      fs.rmSync(path.join(nb, '.state'), { recursive: true, force: true })
 
       const file = path.join(nb, '.zk', 'config.toml')
       const original = fs.readFileSync(file, 'utf8')
@@ -3886,7 +3923,7 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
     expect(withContract.words).toBe(plain.words)
   })
 
-  test('契约预算：超了只告警不截断；总 prompt 超限点名', () => {
+  test('契约预算：超了只告警不截断；合并预算不写进载荷', () => {
     const cfg = fresh('nb-m1-budget')
     fs.mkdirSync(cfg.notebook, { recursive: true })
     const longPersona = '<!-- zdiary-persona: v2 -->\n\n# 角色契约\n\n- name: 小z\n\n' +
@@ -3911,11 +3948,12 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
     expect(u.contractWords).toBe(p.contract.words)
     expect(u.headroom).toBe(c.memoryBudgetWords - (p.totalWords - p.contract.words))
 
+    // 合并预算（记忆载荷 + 场景行）不在 payload 里量：memory 看不到场景，硬算出来的
+    // 「总 prompt」永远少一截。它只在 zk_context / doctor / 记忆页 / 设置页对人说（D4）。
     const c2 = store.normalizeConfig({ notebook: cfg.notebook, zkPath: zkBin, contractBudgetWords: 800, totalPromptBudgetWords: 200 })
     const p2 = memory.buildMemoryPayload(c2)
-    expect(p2.text).toContain('总 prompt 预算')
-    // 总 prompt 用实际载荷量（框 / 做梦提醒 / 记忆 notice 都算），不是只加两个正文词数
-    expect(p2.text).toContain('框与提示')
+    expect(p2.text).not.toContain('总 prompt 预算')
+    expect(p2.text).not.toContain('合并预算')
   })
 
   test('退役/截断分解：formatFileShares 不再把退役写成「原 X」', () => {
@@ -4029,7 +4067,7 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
     expect(persona).toMatchObject({ name: '{{name}}', role: '{{role}}', updated: '{{updated}}' })
   })
 
-  test('config：契约 / 场景 / 总 prompt 预算默认值与夹紧', () => {
+  test('config：契约 / 场景 / 合并预算默认值与夹紧', () => {
     const d = store.normalizeConfig({})
     expect(d.contractBudgetWords).toBe(240)
     expect(d.sceneBudgetWords).toBe(80)
@@ -4124,6 +4162,85 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
     } finally {
       fs.writeFileSync(paths.CFG_FILE, before)
       fs.rmSync(nb, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('运行时状态（M3 事件流）', () => {
+  const nb = path.join(home, 'state-m3')
+  const setup = () => store.writeConfig({
+    notebooks: { default: { path: nb, structure: 'flat' } },
+    zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: [],
+  })
+  const restore = () => store.writeConfig({
+    notebooks: { default: { path: notebook, structure: 'flat' } },
+    zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'],
+  })
+
+  it('.state/ 对笔记工具是只读的：zk_append / zk_rename / zk_new 都拒绝', async () => {
+    setup()
+    const c = store.config()
+    try {
+      await notebookLib.ensureNotebook(c)
+      fs.mkdirSync(path.join(nb, '.state'), { recursive: true })
+      fs.writeFileSync(path.join(nb, '.state', 'events.log'), '# zdiary-state v1' + String.fromCharCode(10))
+      expect(() => zk.appendToNote(c, '.state/events.log', 'x')).toThrow(/\.state/)
+      await expect(zk.renameNote(c, { path: '.state/events.log', to: 'notes/x.log' })).rejects.toThrow(/\.state/)
+      await expect(zk.createNote(c, { title: '偷写状态目录', dir: '.state', content: 'x' })).rejects.toThrow(/\.state/)
+    } finally {
+      fs.rmSync(nb, { recursive: true, force: true })
+      restore()
+    }
+  })
+
+  it('zk_state：append 顺手建库；换行被拒且 hint 一起返回；show / prune 可用', async () => {
+    setup()
+    try {
+      const tool = toolsFeature.buildTools().find((d) => d.name === 'zk_state')!
+      const exec = { signal: AbortSignal.timeout(30_000), agent: { id: 'state-sess' } }
+      const multiline = `第一行
+第二行`
+      // 校验在建库之前：写错的调用不该在磁盘上留下一个刚初始化好的笔记本
+      await expect(tool.execute(
+        { action: 'append', event: 'set_goal', params: [`text=${multiline}`] },
+        exec,
+      )).rejects.toThrow(/一条事件必须是一行/)
+      expect(zk.hasNotebook(store.config())).toBe(false)
+      expect(fs.existsSync(path.join(nb, '.state'))).toBe(false)
+
+      const appended = await tool.execute({ action: 'append', event: 'woke', params: ['hours=7.5'] }, exec) as Record<string, unknown>
+      expect(String(appended.line)).toContain('woke hours=7.5')
+      // 第一次 append 就把笔记本建好，而不是只留一个没有 .zk 的 .state/
+      expect(zk.hasNotebook(store.config())).toBe(true)
+      const file = fs.readFileSync(path.join(nb, '.state', 'events.log'), 'utf8')
+      expect(file.split('\n')[0]).toBe('# zdiary-state v1')
+
+      const shown = await tool.execute({ action: 'show' }, exec) as Record<string, unknown>
+      expect(String(shown.text)).toContain('energy')
+      expect(Number(shown.total)).toBe(1)
+      expect(undeclaredKeys(shown, tool.output.schema)).toEqual([])
+
+      const pruned = await tool.execute({ action: 'prune', days: 30 }, exec) as Record<string, unknown>
+      expect(Number(pruned.kept)).toBe(1)
+    } finally {
+      fs.rmSync(nb, { recursive: true, force: true })
+      restore()
+    }
+  })
+
+  it('zk_context：combinedBudget 与配置同源，场景字段（含 emptyReason）在 schema 内', async () => {
+    setup()
+    try {
+      const tool = toolsFeature.buildTools().find((d) => d.name === 'zk_context')!
+      const value = await tool.execute({}, { signal: AbortSignal.timeout(30_000), agent: { id: 'state-sess-2' } }) as Record<string, unknown>
+      expect(Number(value.combinedBudget)).toBe(store.config().totalPromptBudgetWords)
+      const scene = value.scene as Record<string, unknown>
+      expect(scene.present).toBe(false)
+      expect(scene.emptyReason).toBe('no-log')
+      expect(undeclaredKeys(value, tool.output.schema)).toEqual([])
+    } finally {
+      fs.rmSync(nb, { recursive: true, force: true })
+      restore()
     }
   })
 })

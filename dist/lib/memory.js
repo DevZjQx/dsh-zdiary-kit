@@ -251,7 +251,7 @@ function escapeFrame(text) {
     // 文件内容不许提前闭合我们自己的 <system-reminder> 框
     return text.replaceAll('</system-reminder>', '<\\/system-reminder>');
 }
-/** 载荷框：先定义成常量，契约 / 总 prompt 预算与最终拼装才能共用同一份文字（否则数出来的词对不上） */
+/** 载荷框：定义成常量，最终拼装与各处词数统计才能共用同一份文字（否则数出来的词对不上） */
 const FRAME_HEAD = '<system-reminder>\n' +
     '以下内容由 zdiary 从知识库根目录读出，是长期约定与记忆；工作约定放在 AGENTS.md，不要写进 MEMORY.md。\n\n';
 const FRAME_TAIL = '\n</system-reminder>';
@@ -296,8 +296,9 @@ function payloadKeyOf(cfg) {
     // 做梦提醒按本地日历天变化（「3 天前」→「4 天前」）：文件没动也得跟着日期失效
     const now = new Date();
     const day = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
-    // 预算都要进键：改配置不重新写入任何文件，漏一个就会拿到旧预算的载荷
-    return `${cfg.notebook}|${cfg.memoryBudgetWords}|${cfg.contractBudgetWords}|${cfg.totalPromptBudgetWords}|${day}|${stamps}`;
+    // 影响这个载荷的预算都要进键：改配置不重新写入任何文件，漏一个就会拿到旧预算的载荷。
+    // totalPromptBudgetWords 不进：它是 memory + scene 的合并总账，改它不改变 payload。
+    return `${cfg.notebook}|${cfg.memoryBudgetWords}|${cfg.contractBudgetWords}|${day}|${stamps}`;
 }
 /**
  * 生成注入载荷。纯读文件，不调 zk、不建目录：笔记本不存在时返回空载荷。
@@ -455,7 +456,8 @@ function computePayload(cfg) {
                 notice;
     }
     // ── 契约段（角色）：永远注入、在记忆段之前、不参与截断 ────
-    // 超预算只告警不静默丢；总 prompt 超限点名但不自动截契约。
+    // 超预算只告警不静默丢。合并预算（记忆载荷 + 场景）不在这里量：
+    // memory 看不到场景，硬算会得到一个少了一截的「总 prompt」—— 那是错的。
     // 没有契约文件 = 未启用：不多一个词，0.9 的老库逐字节一致。
     const contractBudget = cfg.contractBudgetWords;
     const contracts = readContracts(cfg);
@@ -467,16 +469,6 @@ function computePayload(cfg) {
     const contractNotes = [];
     if (contractOver) {
         contractNotes.push(`契约预算 ${contractBudget} 词：已用 ${contractContentWords}，超出 ${contractContentWords - contractBudget} 词（契约不截断）`);
-    }
-    if (contractBodies.length > 0) {
-        // 总 prompt 用「还没加契约告警」的完整载荷来量：框 / 做梦提醒 / 记忆 notice 都要算，
-        // 但本条告警自己不能算进自己报的数里（否则又是一个自指的口径）。
-        const provisional = frameText((contractBodyText ? contractBodyText + '\n\n' : '') + memoryInner);
-        const promptTotal = countWords(provisional);
-        if (promptTotal > cfg.totalPromptBudgetWords) {
-            const overhead = Math.max(0, promptTotal - contractContentWords - finalWords);
-            contractNotes.push(`总 prompt 预算 ${cfg.totalPromptBudgetWords} 词：契约 ${contractContentWords} + 记忆 ${finalWords} + 框与提示 ${overhead} = ${promptTotal}，超出 ${promptTotal - cfg.totalPromptBudgetWords}`);
-        }
     }
     const contractText = contractBodyText + (contractNotes.length > 0 ? `\n\n（${contractNotes.join('；')}）` : '');
     const contractWords = countWords(contractText);

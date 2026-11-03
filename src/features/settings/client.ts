@@ -71,6 +71,8 @@ interface Structure {
 interface Memory {
   words: number
   budget: number
+  /** 模型真正收到的记忆载荷（含框 / 提示 / 契约）；合计数要用它，不是 words */
+  totalWords: number
   truncatedWords: number
   /** 截断目录占的词数（0 = 没有目录） */
   tocWords: number
@@ -83,6 +85,7 @@ interface SceneStatus {
   rulesVersion: string
   words: number
   budget: number
+  emptyReason?: string
   rulesError?: string
 }
 interface Snapshot {
@@ -170,7 +173,7 @@ interface Field {
       { group: '记忆', key: 'sceneBudgetWords', label: '场景预算（词）', hint: '投影后场景行的上限，默认 80；单独成段、不计入记忆预算。超了按 energy / mood → satiety → 地点 / 目标 的顺序裁' },
       { group: '记忆', key: 'sceneWindowDays', label: '状态窗口（天）', hint: 'count 与「最近几条事件」用的窗口，默认 30；hoursSince 仍读窗口外的最后一条（prune 会留 tombstone），所以久不记录也能算「多久没见」' },
       { group: '记忆', key: 'staleHours', label: '场景新鲜度（小时）', hint: '默认 72：地点 / 目标 / 在场超过这个时间就显示「未知（最后 X）」，不拿旧值当现在' },
-      { group: '记忆', key: 'totalPromptBudgetWords', label: '合并预算（词）', hint: '记忆载荷 + 场景行的合计上限，默认 900；超了只在场景段提一句并点名，不自动截契约或记忆。没有契约、没有状态的库不产生这条告警' },
+      { group: '记忆', key: 'totalPromptBudgetWords', label: '合并预算（词）', hint: '记忆载荷 + 场景行的合计上限，默认 900；超了只在本页 / 自检 / 只读视图 / zk_context 回复里点名，不写进系统提示，也不自动截断契约或记忆' },
       { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
       { group: '写入', key: 'maxReadChars', label: 'zk_read 单次上限（字符）', hint: '默认 20000；超了会截断并明确告知模型' },
       { group: '工具', key: 'aliasTools', label: '把 [alias] 注册成工具', hint: '默认关闭。打开后，加载插件时把各笔记本 .zk/config.toml 的 [alias] 里未注释的别名注册成 zk_<名>，模型可以像调内置工具一样调它们。\n别名是 $SHELL -c 执行的任意命令 —— 打开等于把这些命令交给 agent，只在你信得过 config.toml 内容时开。\n交互式命令（edit / 带 --interactive）会卡到超时，不适合当工具。改完要重载插件（或重启 DSH）才会出现在工具列表里', type: 'bool' },
@@ -416,7 +419,23 @@ interface Field {
         : scene.present
           ? `场景 ${scene.words}/${scene.budget} 词 · 规则 ${scene.rulesVersion} · 窗口内 ${scene.events} 条事件 · 用户${{ present: '在场', absent: '不在', unknown: '未知' }[scene.presence] ?? '未知'}` +
             (scene.rulesError ? ` · ⚠️ 规则回退默认：${scene.rulesError}` : '')
-          : '场景未启用：还没有 .state/events.log（agent 用 zk_state append 记第一条）'
+          : scene.emptyReason === 'budget'
+            ? '场景：有事件，但预算一句都放不下 —— 调大「场景预算」'
+            : scene.emptyReason === 'rules'
+              ? '场景：规则没算出可展示的值（energy / mood / satiety / 地点 / 目标 都是 null）'
+              : scene.emptyReason === 'error'
+                ? '场景：读取失败（看自检）'
+                : '场景未启用：还没有 .state/events.log（agent 用 zk_state append 记第一条）'
+      // 合并预算只在人看的界面提示：不进系统提示（D4）
+      const combinedLine = !memory || !scene
+        ? ''
+        : (() => {
+          const total = memory.totalWords + scene.words
+          const budget = snap?.config.totalPromptBudgetWords ?? 0
+          return budget > 0 && total > budget
+            ? `合计 ${total}/${budget} 词（记忆载荷 + 场景）· ⚠️ 超 ${total - budget} 词`
+            : `合计 ${total}/${budget} 词（记忆载荷 + 场景）`
+        })()
       // 结构以配置为准：磁盘不一致只告警，不自动建、不自动删
       const structureWarn = !structure || !snap?.notebook.exists ? '' : !structure.ready
         ? `结构是 ${structure.mode}，但缺目录：${structure.missing.join('、')}`
@@ -456,6 +475,7 @@ interface Field {
         statusLine ? h('div', { className: 'zdk-hint' }, '📚 ' + statusLine) : null,
         memoryLine ? h('div', { className: 'zdk-hint' }, '🧠 ' + memoryLine) : null,
         sceneLine ? h('div', { className: 'zdk-hint' }, '⏱ ' + sceneLine) : null,
+        combinedLine ? h('div', { className: 'zdk-hint' }, '📐 ' + combinedLine) : null,
         configWarn
           ? h('div', { className: 'zdk-err' },
             '⚠️ ' + configWarn +

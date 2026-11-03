@@ -3,14 +3,14 @@
  *
  * 设计要点（D7）：
  *   · 场景**不进** memory payload：独立投影、独立缓存、独立预算；合并总量只在
- *     `zk_context` / `doctor` / 记忆页算（combinedWords）；
+ *     `zk_context` / `doctor` / 记忆页 / 设置页算（combinedWords），超了只对人告警；
  *   · 规则算得出但展示层只认固定几个变量（energy / mood / satiety / location / goal），
  *     其余变量不注入 —— 别把规则文件当 prompt 模板；
  *   · **没有 logs = 不注入**；只有窗口外事件时仍注入长尾（`hoursSince` 走 tombstone）；
- *   · 读不到 / 规则全挂 → 返回空串，不报错：状态层坏掉不能把整个系统提示拖下水。
+ *   · 规则编译 / 求值失败 → 整份回退内置默认并记 `rulesError`；连默认都失败才返回空串。
+ *     状态层坏掉不能把整个系统提示拖下水，也不能让场景无声消失。
  */
 import fs from 'node:fs';
-import path from 'node:path';
 import { fileStamp } from './file-stamp.js';
 import { countWords } from './memory.js';
 import { eventsPathOf, humanAge, readStateLog, rulesPathOf } from './state-log.js';
@@ -80,8 +80,12 @@ const numText = (value) => (typeof value === 'number' ? String(Math.round(value)
 const strText = (value) => (typeof value === 'string' && value.trim() ? value.trim() : null);
 /** 纯投影：不读配置、不读文件，只吃 logs + rules + now */
 export function projectScene(log, rules, now, opts) {
-    const empty = { present: false, presence: 'unknown', events: log.events.length, words: 0, text: '', values: {}, dropped: [] };
-    if (!log.exists || log.total === 0)
+    const empty = {
+        present: false, presence: 'unknown', events: log.events.length, words: 0, text: '',
+        values: {}, dropped: [], emptyReason: 'no-log',
+    };
+    // lastSeen 为空 = 这一刻之前没有任何事件（重放到第一条事件之前也走这里），不是「规则没算出值」
+    if (!log.exists || log.total === 0 || log.lastSeen.size === 0)
         return empty;
     const ctx = {
         now,
@@ -135,6 +139,7 @@ export function projectScene(log, rules, now, opts) {
         text,
         values,
         dropped,
+        emptyReason: text.length > 0 ? '' : parts.length > 0 ? 'budget' : 'rules',
     };
 }
 /** 缓存：日志 / 规则文件变了才重算；没有变化时连续 step 只付一次读盘 */
@@ -155,6 +160,9 @@ function cacheKey(cfg, now) {
 /**
  * 读盘 + 投影 + 缓存。异常一律返回空场景（不抛）：状态层是可选的，
  * 坏掉时整个系统提示必须照常装配。
+ *
+ * 求值期错误（除零 / count 越界 / null 进算术）按 D7 整份回退内置默认，
+ * 而不是让场景整段消失 —— 「规则算错了」和「没有日志」不是一回事。
  */
 export function buildScene(cfg, opts = {}) {
     const now = opts.now ?? Date.now();
@@ -163,26 +171,41 @@ export function buildScene(cfg, opts = {}) {
     if (hit)
         return hit;
     const empty = {
-        present: false, presence: 'unknown', events: 0, rulesVersion: 'default', words: 0, text: '', values: {}, dropped: [],
+        present: false, presence: 'unknown', events: 0, rulesVersion: 'default', words: 0, text: '',
+        values: {}, dropped: [], emptyReason: 'no-log',
     };
     let result = empty;
     try {
         const log = readStateLog(cfg, { windowDays: cfg.sceneWindowDays, now });
-        if (!log.exists || log.total === 0) {
+        if (log.readError) {
+            // 文件在、但读不出来：这不是「未启用」，空场景必须带上原因
+            result = { ...empty, rulesError: log.readError, emptyReason: 'error' };
+        }
+        else if (!log.exists || log.total === 0) {
             result = empty;
         }
         else {
+            const optsFor = { staleHours: cfg.staleHours, sceneWindowDays: cfg.sceneWindowDays, budgetWords: cfg.sceneBudgetWords };
             const loaded = loadRules(cfg);
-            const projected = projectScene(log, loaded.rules, now, {
-                staleHours: cfg.staleHours,
-                sceneWindowDays: cfg.sceneWindowDays,
-                budgetWords: cfg.sceneBudgetWords,
-            });
-            result = { ...projected, rulesVersion: loaded.label, ...(loaded.error ? { rulesError: loaded.error } : {}) };
+            try {
+                const projected = projectScene(log, loaded.rules, now, optsFor);
+                result = { ...projected, rulesVersion: loaded.label, ...(loaded.error ? { rulesError: loaded.error } : {}) };
+            }
+            catch (err) {
+                // 求值失败：整份规则拒绝，换内置默认重算（编译失败已在 loadRules 里回退过）
+                const message = err instanceof Error ? err.message : String(err);
+                const projected = projectScene(log, compileDefaultRules(), now, optsFor);
+                result = { ...projected, rulesVersion: 'default(fallback)', rulesError: message };
+            }
         }
     }
     catch (err) {
-        result = { ...empty, rulesVersion: 'default(fallback)', rulesError: err instanceof Error ? err.message : String(err) };
+        result = {
+            ...empty,
+            rulesVersion: 'default(fallback)',
+            rulesError: err instanceof Error ? err.message : String(err),
+            emptyReason: 'error',
+        };
     }
     if (cache.size >= SCENE_CACHE_MAX) {
         const oldest = cache.keys().next().value;
@@ -196,6 +219,18 @@ export function buildScene(cfg, opts = {}) {
 export function combinedWords(memoryTotalWords, scene) {
     return memoryTotalWords + scene.words;
 }
+/**
+ * 合并预算的超限提示；没超返回空串。
+ *
+ * 只给人看（zk_context 的回复文本 / doctor / 记忆页 / 设置页），**不写进系统提示**：
+ * 那句话每轮都要花词，而模型并不需要这个数字 —— 预算诊断是人的工作面（D4）。
+ */
+export function combinedBudgetNote(memoryTotalWords, scene, budget) {
+    const total = combinedWords(memoryTotalWords, scene);
+    if (!(budget > 0) || total <= budget)
+        return '';
+    return `合并预算 ${budget} 词：记忆载荷 ${memoryTotalWords} + 场景 ${scene.words} = ${total}，超出 ${total - budget}`;
+}
 /** 只读规则文本的原始内容（人用 CLI / 记忆页展示；模型侧不给入口） */
 export function readRulesText(cfg) {
     try {
@@ -207,7 +242,3 @@ export function readRulesText(cfg) {
 }
 /** 内置默认规则的原文（缺失时展示「将用这套」） */
 export const DEFAULT_RULES_TEXT = DEFAULT_RULES;
-/** 状态目录路径（展示用；不返回给模型） */
-export function stateRootOf(cfg) {
-    return path.dirname(eventsPathOf(cfg));
-}

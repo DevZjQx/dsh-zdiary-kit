@@ -43,13 +43,20 @@
 **注入顺序**：契约段永远在记忆段之前、**不参与记忆预算的截断**（超了只告警，点名 `contractBudgetWords`）。
 三个新预算：`contractBudgetWords`（默认 240，范围 50–800）、`sceneBudgetWords`（80，场景行独立预算，不进记忆截断）、
 `totalPromptBudgetWords`（900，记忆载荷 + 场景行的合并总账；只告警点名）。
-记忆载荷的缓存键包含真正影响它的大小项；场景有独立缓存（日志 / 规则指纹 + 分钟），互不串。
+记忆载荷的缓存键包含真正影响它的大小项（`totalPromptBudgetWords` 不在键里：它不改变 payload）；
+场景有独立缓存（日志 / 规则指纹 + 分钟），互不串。
 
 **场景层（M3）。** 场景**不在这个 payload 里**：`buildMemoryPayload` 只产出记忆段，
-场景由 `lib/scene.ts` 从 `<notebook>/.state/events.log` 独立投影，单独成段注入（order 5210，记忆之后）。
+场景由 `lib/scene.ts` 从 `<notebook>/.state/events.log` 独立投影，走 `systemPrompt.context()`
+（order 220，排在宿主内置运行时上下文之后）作为 user-role 快照注入，不进系统提示 section。
+`suppressRuntimeContext()` 会把它和其它可选运行时上下文一起关掉 —— 场景本来就是可选状态，
+`zk_state show` 仍是后备；宿主没有 `context()` 时安静降级，笔记本与记忆不受影响。
 没有日志 = 不注入、不多一个词；只有窗口外事件时仍注入长尾（`hoursSince` 读 last-seen / tombstone）。
 预算 `sceneBudgetWords` 只裁场景行：从尾部丢（地点 / 目标先丢，energy / mood 最后），一句都放不下就不注入。
-合并总量 `combinedWords = payload.totalWords + scene.words`，在 `zk_context` / `doctor` / 记忆页用同一个口径。
+合并总量 `combinedWords = payload.totalWords + scene.words`，在 `zk_context` / `doctor` / 记忆页 / 设置页用同一个口径；
+超 `totalPromptBudgetWords` 只在这些**人看的界面**点名，不写进系统提示、不自动截断（D4）。
+规则求值期报错（除零 / `count` 越界 / null 进算术）也按 D7 整份回退内置默认，不是让场景整段消失。
+日志文件读不了（权限 / 是个目录）报 `emptyReason=error`，不再冒充「未启用」——「没有日志」和「日志坏了」不是一回事。
 `truncatedWords` 在顶层、`retiredWords` 在 `files[]` 里分开报：`原 X` 从此只反映截断，退役单列一项。
 契约段再拆 `contentWords`（正文，含文件标题，预算只看它）/ `noticeWords`（告警行）/ `words`（整段注入量）/ `overWords`；
 `memoryUsage` 的 `headroom` 只按记忆侧算（`totalWords - contractWords`），dream 不再把契约误叫成「提示」。
@@ -84,7 +91,9 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 
 **Rejected.** 只在会话开始时注入一次 —— 拒绝：改完 MEMORY.md 要等下一次会话才生效，还得自己实现「这条已经注入过」的去重。
 用 `systemPrompt.context()` 而不是 `section()` —— 拒绝：`context()` 会被 `suppressRuntimeContext` 连带关掉，
-多一个开关就多一种「记忆静默消失」。依赖 DSH 自动加载 vault 根目录的 `AGENTS.md` —— 拒绝：不成立，
+多一个开关就多一种「记忆静默消失」。这条只针对记忆；场景层（M3）相反，走 `context()`：
+它每步都变，宿主用 `refreshContext()` 在准入前重读，放进 section 反而会改写系统提示、打断前缀缓存。
+依赖 DSH 自动加载 vault 根目录的 `AGENTS.md` —— 拒绝：不成立，
 内置加载器只认「项目根 → cwd」链与用户级两份，vault 不在 cwd 祖先链上时完全读不到（见计划 §4 M1）。
 
 **Exceptions.** 中文按 2 字 1 词计（空白切分在中文上严重低估，预算会变成装饰）；

@@ -21,7 +21,7 @@ import { absPathOf, allNotes, graphEdges, hasNotebook, isUnderDir, localDate, re
 import type { NoteDoc, NoteRecord } from '../../lib/zk.ts'
 import { isMetaPath } from '../../lib/meta.ts'
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
-import { buildScene, combinedWords, DEFAULT_RULES_TEXT, readRulesText } from '../../lib/scene.ts'
+import { buildScene, combinedBudgetNote, combinedWords, DEFAULT_RULES_TEXT, readRulesText } from '../../lib/scene.ts'
 import { readStateLog } from '../../lib/state-log.ts'
 import { RETIRED_ENTRY_RE } from '../../lib/memory-format.ts'
 import { parseFrontmatter } from '../../lib/frontmatter.ts'
@@ -343,14 +343,22 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
     : '<p class="meta">还没写。</p>'
 
   const dreamBody = read('DREAMS.md')
+  const combinedNote = combinedBudgetNote(payload.totalWords, scene, cfg.totalPromptBudgetWords)
   const counts =
     `契约正文 ${c.contentWords} 词 · 记忆 ${payload.words} 词 · 记忆载荷 ${payload.totalWords} 词（含框与提示 ${payload.overheadWords}）` +
-    ` · 场景 ${scene.words} 词 = 合计 ${combinedWords(payload.totalWords, scene)} 词`
+    ` · 场景 ${scene.words} 词 = 合计 ${combinedWords(payload.totalWords, scene)}/${cfg.totalPromptBudgetWords} 词` +
+    (combinedNote ? ' · ⚠️ 超合并预算' : '')
   const presence = scene.presence === 'present' ? '在场' : scene.presence === 'absent' ? '不在' : '未知'
   const sceneStatus = scene.present
     ? `已注入 ${scene.words}/${cfg.sceneBudgetWords} 词 · 规则 ${scene.rulesVersion} · 窗口内 ${scene.events} 条事件 · 用户${presence}` +
       (scene.rulesError ? ` · ⚠️ 规则回退默认：${scene.rulesError}` : '')
-    : '未启用：.state/events.log 不存在或没有事件；缺文件不算错，不注入也不报错。'
+    : scene.emptyReason === 'budget'
+      ? '有事件，但场景预算一句都放不下：调大 sceneBudgetWords。'
+      : scene.emptyReason === 'rules'
+        ? '规则没算出可展示的值（energy / mood / satiety / 地点 / 目标 都是 null）。'
+        : scene.emptyReason === 'error'
+          ? '读取失败：看 doctor 的「状态」一行。'
+          : '未启用：.state/events.log 不存在或没有事件；缺文件不算错，不注入也不报错。'
   const recent = log.events.slice(-5).reverse()
   const rulesSource = readRulesText(cfg)
 
@@ -386,6 +394,7 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
     `<details><summary>展开规则</summary><pre>${esc(rulesSource.trim() || DEFAULT_RULES_TEXT)}</pre></details>`,
     '<h2>载荷预览</h2>',
     `<p class="meta">这一轮模型实际收到的文本（转义展示、只读、与 zk_context 同源）：${esc(counts)}</p>`,
+    combinedNote ? `<p class="meta">⚠️ ${esc(combinedNote)}（只告警，不自动截断）</p>` : '',
     '<h3>记忆段</h3>',
     payload.text
       ? `<details><summary>展开</summary><pre>${esc(payload.text)}</pre></details>`

@@ -47,10 +47,12 @@ export class StateError extends Error {
 export const stateDirOf = (cfg) => path.join(cfg.notebook, STATE_DIR);
 export const eventsPathOf = (cfg) => path.join(stateDirOf(cfg), EVENTS_FILE);
 export const rulesPathOf = (cfg) => path.join(stateDirOf(cfg), RULES_FILE);
-/** 相对路径是不是状态目录（工具写守卫用；只认笔记本根下的 .state） */
-export function isStatePath(rel) {
-    const normalized = String(rel ?? '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
-    return normalized === STATE_DIR || normalized.startsWith(STATE_DIR + '/');
+/** 控制字符会破坏「一行一条事件」的格式，写入口一律拒绝 */
+const CONTROL_RE = /[\u0000-\u001f\u007f]/;
+function assertSingleLine(value, what) {
+    if (CONTROL_RE.test(value))
+        throw new StateError(`${what}里不能有换行 / 控制字符`, '一条事件必须是一行；确实要分行就记两条');
+    return value;
 }
 /** 值里有没有需要加引号的东西：空白、等号、引号、反斜杠、空串 */
 function needsQuote(value) {
@@ -62,6 +64,11 @@ export function formatValue(value) {
         return value;
     return '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"') + '"';
 }
+/**
+ * 插件自己写的表头。压实会把它重写成规范形式；人写的 `# ...` 一行都不丢 ——
+ * 所以这里必须匹配整行，不能写成 `\b` 前缀，否则「# zdiary-state 的坑：…」会被当成表头删掉。
+ */
+const STATE_HEADER_RE = /^#\s*zdiary-state\s+v\d+$/;
 /** 一条事件 → 行文本（不含换行）；调用方负责先校验 */
 export function formatEvent(at, name, params = {}) {
     const parts = [at, name];
@@ -177,7 +184,7 @@ function validateInput(input, now) {
             throw new StateError(`参数名不合法：${key}`, '小写字母开头，只含 [a-z0-9_]，最长 16');
         if (key in clean)
             throw new StateError(`参数重复：${key}`);
-        clean[key] = String(value ?? '');
+        clean[key] = assertSingleLine(String(value ?? ''), `参数 ${key} 的值`);
         count++;
         if (count > MAX_PARAMS)
             throw new StateError(`参数最多 ${MAX_PARAMS} 个`);
@@ -194,6 +201,13 @@ function validateInput(input, now) {
     if (Buffer.byteLength(line, 'utf8') > MAX_LINE_BYTES)
         throw new StateError(`一行最多 ${MAX_LINE_BYTES} 字节，现在 ${Buffer.byteLength(line, 'utf8')}`, '拆成两条事件，或缩短字符串参数');
     return { at, atMs, name, params: clean };
+}
+/**
+ * 只校验、不写盘。给「先校验再建库」的调用方用：一次写错的事件不该在磁盘上留下副作用。
+ * 抛出的错误与 `appendEvent` 完全同源（同一份 validateInput），不会有两套口径。
+ */
+export function checkAppendInput(input, now = Date.now()) {
+    validateInput(input, now);
 }
 /**
  * 追加一条事件。
@@ -220,10 +234,13 @@ function sortEvents(events) {
 /**
  * 读日志。
  *
- * 两个口径必须同时给：
+ * 三个口径：
  *   · `events` 只含窗口内（`count` / 最近几条用）；
- *   · `lastSeen` 是**每个事件名的最后一条，含窗口外** —— 只读窗口的话，
- *     40 天前的 `woke` 会让 `hoursSince` 变成 null，「从不自愈」直接坏掉。
+ *   · `lastSeen` 是**每个事件名的最后一条**，含窗口外 —— 只读窗口的话，
+ *     40 天前的 `woke` 会让 `hoursSince` 变成 null，「从不自愈」直接坏掉；
+ *   · 两者都以 `now` 为上界：`now` 是「看哪一刻」的参数（`state show --at` 重放），
+ *     之后才发生的事件不能算进来 —— 否则小时数是负的，衰减会倒着走。
+ * `total` / `lines` / `badLines` 始终描述文件本身，不随时点变化。
  */
 export function readStateLog(cfg, opts = {}) {
     const now = opts.now ?? Date.now();
@@ -233,8 +250,14 @@ export function readStateLog(cfg, opts = {}) {
     try {
         text = fs.readFileSync(file, 'utf8');
     }
-    catch {
-        return { exists: false, events: [], lastSeen: new Map(), total: 0, lines: 0, badLines: [], bytes: 0 };
+    catch (err) {
+        // ENOENT = 真没启用；其余（EACCES / EISDIR / EIO）是文件坏了，不能当成「没有日志」
+        const code = err.code;
+        const readError = code === 'ENOENT' ? undefined : err instanceof Error ? err.message : String(err);
+        return {
+            exists: false, events: [], lastSeen: new Map(), total: 0, lines: 0, badLines: [], bytes: 0,
+            ...(readError ? { readError } : {}),
+        };
     }
     const rawLines = text.split('\n');
     const badLines = [];
@@ -249,10 +272,11 @@ export function readStateLog(cfg, opts = {}) {
             badLines.push({ line: index + 1, text: raw.slice(0, 200), reason: parsed.reason });
     }
     const sorted = sortEvents(all);
+    const past = sorted.filter((e) => e.atMs <= now);
     const cutoff = now - windowDays * 24 * 3600_000;
-    const events = sorted.filter((e) => e.atMs >= cutoff);
+    const events = past.filter((e) => e.atMs >= cutoff);
     const lastSeen = new Map();
-    for (const event of sorted)
+    for (const event of past)
         lastSeen.set(event.name, event);
     return {
         exists: true,
@@ -265,11 +289,15 @@ export function readStateLog(cfg, opts = {}) {
     };
 }
 /**
- * 压实：保留表头 + 窗口内全部事件 + 每个事件名**窗口外的最后一条**（tombstone）。
+ * 压实：保留表头 + 注释 + 窗口内全部事件 + 每个事件名**窗口外的最后一条**（tombstone）。
  *
  * tombstone 不是备份，是投影的输入：`hoursSince` 需要知道「发生过，但在很久以前」，
  * 否则窗口一过就等于「从未发生」，长尾叙事直接断掉。
- * 坏行一并丢掉（`dropped` 里计数），它们对投影没有任何贡献。
+ * 坏行丢掉并计入 `dropped`（它们对投影没有任何贡献）。
+ *
+ * 注释跟着它**后面那条事件**走：事件留下，注释就在原位留下；事件被压实掉，注释顺延到
+ * 下一条保留的事件（没有就留在文件末尾）—— 压实的语义是「删旧事件」，不是「删人的批注」。
+ * 只有插件自己写的表头（`# zdiary-state v<N>`）会被重写成一行。
  */
 export function pruneStateLog(cfg, opts) {
     const now = opts.now ?? Date.now();
@@ -286,24 +314,67 @@ export function pruneStateLog(cfg, opts) {
     const dir = stateDirOf(cfg);
     let result = { dropped: 0, kept: 0, windowDays };
     withFileLockSync(path.join(dir, '.lock'), () => {
-        const log = readStateLog(cfg, { windowDays: days, now });
-        // 窗口外每个事件名各留最后一条
+        // 直接读原文，不走 readStateLog：后者以 now 为上界（重放语义），
+        // 压实要的是「文件里现在有什么」，未来几分钟的事件也必须留下。
+        const rawLines = fs.readFileSync(file, 'utf8').split('\n');
+        // 注释挂到它后面那条事件上：这样「事件留下 ⇒ 注释原位留下」是天然成立的
+        const blocks = [];
+        let pending = [];
+        let bad = 0;
+        for (const raw of rawLines) {
+            const line = raw.replace(/\r$/, '');
+            if (!line.trim())
+                continue;
+            if (line.startsWith('#')) {
+                // 旧表头不跟着搬：写回去的永远只有一行规范表头；人的注释（含以 zdiary-state 开头的）留着
+                if (!STATE_HEADER_RE.test(line.trim()))
+                    pending.push(line);
+                continue;
+            }
+            const parsed = parseEventLine(line);
+            if (!parsed.ok) {
+                bad++;
+                continue;
+            }
+            blocks.push({ comments: pending, event: parsed.event });
+            pending = [];
+        }
+        // 文件末尾没有事件可挂的注释：原样留在末尾
+        const trailing = pending;
+        const cutoff = now - days * 24 * 3600_000;
+        const keep = new Set();
+        for (const block of blocks)
+            if (block.event.atMs >= cutoff)
+                keep.add(block.event);
+        // 窗口外每个事件名各留最后一条（按时间倒序扫，先撞上的就是最新的）
         const seen = new Set();
-        const tombstones = [];
-        const outside = sortEvents([...log.lastSeen.values()].filter((e) => !log.events.includes(e)));
-        for (const event of outside.reverse()) {
+        for (const event of sortEvents(blocks.filter((b) => b.event.atMs < cutoff).map((b) => b.event)).reverse()) {
             if (seen.has(event.name))
                 continue;
             seen.add(event.name);
-            tombstones.push(event);
+            keep.add(event);
         }
-        // 按时间写回去：人用 state log 看原文时，顺序也要是时间顺序
-        const keptEvents = sortEvents([...log.events, ...tombstones]);
+        // 被压实掉的事件先把它的注释攒着，等下一条留下的事件再把注释带上去（注释一行不丢）
+        const keptBlocks = [];
+        const carry = [];
+        for (const block of blocks) {
+            if (!keep.has(block.event)) {
+                carry.push(...block.comments);
+                continue;
+            }
+            keptBlocks.push({ comments: [...carry, ...block.comments], event: block.event });
+            carry.length = 0;
+        }
+        carry.push(...trailing);
+        // 按时间写回去：人用 state log 看原文时，顺序也要是时间顺序（同毫秒保持文件顺序）
+        keptBlocks.sort((a, b) => a.event.atMs - b.event.atMs);
         const lines = [STATE_HEADER];
-        for (const event of keptEvents)
-            lines.push(formatEvent(event.at, event.name, event.params));
-        const kept = keptEvents.length;
-        const dropped = Math.max(0, log.total - kept) + log.badLines.length;
+        for (const block of keptBlocks) {
+            lines.push(...block.comments, formatEvent(block.event.at, block.event.name, block.event.params));
+        }
+        lines.push(...carry);
+        const kept = keptBlocks.length;
+        const dropped = blocks.length - kept + bad;
         const body = lines.join('\n') + '\n';
         const tmp = file + '.tmp';
         fs.writeFileSync(tmp, body, 'utf8');

@@ -146,7 +146,7 @@ AGENTS 已经是 175 词硬规则，再加就会挤掉 MEMORY；人设和事实�
   （事件全在窗口外仍要注入，见 D7「窗口与裁剪」）。
 - 场景行单独成段；memory 段只报「记忆载荷」（契约 + 记忆 + 框与提示），不要把它叫总 prompt。
 - `totalPromptBudgetWords` 是合并总账：`memory.totalWords + scene.words`；在 `zk_context` / `doctor` /
-  记忆页用同一个 `combinedWords` 算。**超了只告警给人**（`zk_context` / `doctor` / 记忆页），不在系统提示里追一句：
+  记忆页 / 设置页用同一个 `combinedWords` 算。**超了只告警给人**（这四个界面），不在系统提示里追一句：
   那句话每轮都要花词，而模型并不需要这个数字 —— 预算诊断是人的工作面。
 - 三者都出现在 `zk_context` / 记忆页：`契约 X/240 + 记忆 Y/500 = 记忆载荷 T1；场景 Z/80；合计 T1+Z`。
 - 不在本轮引入 `promptBudget` 大对象：等契约层稳定后，再单独评审是否把 AGENTS 从记忆预算移到契约预算。
@@ -289,40 +289,46 @@ AGENTS 已经是 175 词硬规则，再加就会挤掉 MEMORY；人设和事实�
 ④ 否则 → 在场。
 
 ```
-version = 3
-awake = coalesce(hoursSince(woke), 0)
+version = 4
+woke_h = hoursSince(woke)
+awake = coalesce(woke_h, 0)
 sleep_h = coalesce(num(last(woke, hours)), 7)
-energy = if(isNull(hoursSince(woke)), null, clamp(70 + 4 * (sleep_h - 7) - 5 * awake, 20, 100))
+energy = if(isNull(woke_h), null, if(woke_h > staleHours, null, clamp(70 + 4 * (sleep_h - 7) - 5 * awake, 0, 100)))
 mood = if(isNull(energy), null, if(energy < 20, "力竭", if(energy < 45, "疲惫", "正常")))
-ate_all = coalesce(hoursSince(ate), 0)
-satiety = if(isNull(hoursSince(ate)), 50, clamp(100 - 4 * ate_all, 30, 100))
+ate_h = hoursSince(ate)
+satiety = if(isNull(ate_h), null, if(ate_h > staleHours, null, clamp(100 - 4 * ate_h, 30, 100)))
 at_h = coalesce(hoursSince(at), 0)
 location = if(isNull(hoursSince(at)), null, if(at_h > staleHours, null, last(at, place)))
 goal_h = coalesce(hoursSince(set_goal), 0)
 goal = if(isNull(hoursSince(set_goal)), null, if(goal_h > staleHours, null, last(set_goal, text)))
 ```
 
-- `energy` 单调下降：`70 + 4 × (睡眠小时 − 7) − 5 × 醒着小时`，地板 20。恢复只靠新的 `woke`，
-  睡眠时长来自 `woke hours=`（`num(last(woke, hours))`，缺省 7）；**没有 `woke` 记录 = energy 为 null**，
-  「没记录」不等于「刚睡醒」。
-- `satiety`（饱腹度，不是饥饿值：100 = 刚吃完，30 = 很久没吃）地板 30；`location` / `goal` 超过
-  `staleHours` 返回 null；「最后 X · N 天前」由投影结果一并给出，渲染层不回读日志。
+- `energy` 单调下降：`70 + 4 × (睡眠小时 − 7) − 5 × 醒着小时`，**地板 0**（地板 20 会让 `mood` 的
+  「力竭」分支永远够不着）。恢复只靠新的 `woke`，睡眠时长来自 `woke hours=`（`num(last(woke, hours))`，缺省 7）；
+  **没有 `woke` 记录 = null**，「没记录」不等于「刚睡醒」；超过 `staleHours` 也归 null。
+- `satiety`（饱腹度，不是饥饿值：100 = 刚吃完，30 = 很久没吃）没记录 = null（不给中性先验），
+  超过 `staleHours` 也归 null。`location` / `goal` 同样在 `staleHours` 后返回 null；
+  「最后 X · N 天前」由投影结果一并给出，渲染层不回读日志。
 - `set_goal` 是事件，`goal` 是展示变量；分开命名，避免 `hoursSince(goal)` 读的是变量还是事件说不清。
 - 展示层只认固定变量名（`energy` / `mood` / `satiety` / `location` / `goal` / `present`）；
   其余变量算得出但不注入。事件里的字符串（`at place` / `set_goal text`）是 agent 通过
   `zk_state append` 写的——这是最短的自我注入通道，靠 80 词上限 + git diff 审计兜底，不是「人写」。
 
-40 天没记录时，场景行大致是：
+40 天没记录时（事件都在窗口外，只有 tombstone），场景行大致是：
 
 ```text
-energy 60 · mood 正常 · satiety 30 · 最近醒来 40 天前 ·
-地点未知（最后 书房 · 40 天前）· 目标未知（最后 写完 D7 · 40 天前）·
-用户状态未知（最后 离开 40 天前）
+当下：用户状态未知（最后离开 · 40 天前） · 最近醒来 40 天前 ·
+地点未知（最后 书房 · 40 天前） · 目标未知（最后 写完 D7 · 40 天前）
 ```
+
+注意这里**没有 energy / satiety**：过期值一律 null，长尾靠「最后 X · N 天前」表达。
+（旧版示例写「energy 60 · mood 正常」是错的：按公式 40 天早已远超 72 小时的新鲜度线，
+而且当时的地板 20 让「力竭」不可达。）
 
 **重放是人的能力，不是模型的默认能力**：同一份日志换一套规则，可以重新解释过去
 （「那时以为还行，其实早就在硬撑」），历史一条不丢；`zk-kit state show --at <ISO>` 做过去时点的投影。
-模型侧不给 `--at` / 历史入口。
+模型侧不给 `--at` / 历史入口（`zk_state` 没有这两个参数）；`zk_read` 按路径仍能读到原文，
+但 `.state/` 不进检索，AGENTS 也约定不主动翻 —— 这是约定，不是硬隔离。
 
 **默认不召回**：`zk_state show` 只回投影 + 窗口内最近 20 条（结构化事件）+ 派生摘要
 （「最近醒来 40 天前」「最后 书房」），不回全量原始日志、不回窗口外事件。旧事件留在 git，
@@ -331,16 +337,20 @@ git 里还在，人能用 `git show` 恢复。
 
 **注入**：
 
-- 独立 section `zdiary:scene`，order 5210（memory 5200 之后），`interpolate: false`。
-- 每步求值；日志不存在或没有有效事件 / 规则全挂 → 返回空串，**不报错**；事件全在窗口外时仍注入（长尾）。
+- 动态运行时上下文 `zdiary:scene`（`systemPrompt.context()`，order 220，排在宿主内置 context 之后），
+  `interpolate: false`；作为可选 user-role 快照，`suppressRuntimeContext()` 时一起关掉（`zk_state show` 仍是后备）。
+  比放 section 好：场景每步都变，`context()` 由宿主的 `refreshContext()` 在准入前重读，不改写系统提示，也不打断前缀缓存。
+- 每步求值；日志不存在或没有有效事件 → 返回空串，**不报错**；事件全在窗口外时仍注入（长尾）。
+  规则坏了（编译或求值）→ 整份回退内置默认并记 `rulesError`；只有连默认都算不出来才返回空串。
 - 展示层只认固定几个变量名（`energy` / `mood` / `satiety` / `location` / `goal` / `present`）；
   其余变量算得出但不注入。`present` 由渲染层用 `user_left` / `user_returned` + `staleHours` 判断。
 - 渲染目标 ≤ `sceneBudgetWords`（默认 80）；超了按变量优先级裁（energy / mood 先留，location / goal 后留），
   最后才裁「最后 X · N 天前」的注脚。
 - **不进 `buildMemoryPayload.text`**：场景独立投影、独立缓存；`memory.ts` 不再产出 `scene`。
-  合并总量只在 `zk_context` / `doctor` / 记忆页算；真超 `totalPromptBudgetWords` 时，scene 段追一句
-  `（总 X/Y，超 Z）`，这句算进 80 词预算。
-- 不存 token 余额等敏感值；如果人把敏感值写进 `note`，渲染层 redact。
+  合并总量只在 `zk_context` / `doctor` / 记忆页 / 设置页算，**超了也不在提示里追**（D4）——
+  同一条口径不能两处不同，否则「总 prompt」又会变成少一截的数。
+- 不存 token 余额等敏感值；渲染层只认白名单变量（`note` 之类根本读不到），
+  **不做通用 redact**：能进场景的只有 energy / mood / satiety / 地点 / 目标 / 在场。
 
 **窗口与裁剪**：
 
@@ -422,7 +432,7 @@ git 里还在，人能用 `git show` 恢复。
 - `authority` 默认改为 `informal` 只影响**新笔记**；旧笔记的 `authority` 不动，`zk_lint` 只报告。
 - `memoryBudgetWords` 语义不变；`contractBudgetWords` / `sceneBudgetWords` 是新配置，默认不写文件时不生效；
   `sceneBudgetWords` 的口径是「投影后的场景行」，不是存储预算。
-- `zk_context.scene` 去掉 `expired`，改为 `{ present, events, rulesVersion, words }`；
+- `zk_context.scene` 去掉 `expired`，改为 `{ present, presence, events, rulesVersion, words, emptyReason }`；
   M1 只是形状、未承诺稳定，不算破坏性变更。
 - 状态文件在 `<notebook>/.state/`，跟着笔记本走、git 跟踪、不进 zk 索引 / FTS；
   首个事件才建目录，升级不新增用户可见文件。
@@ -446,11 +456,11 @@ git 里还在，人能用 `git show` 恢复。
   不再把契约误叫成「提示」、也不让它吃掉记忆预算。
 - 版本标记后**紧跟 frontmatter**；`persona-template.ts` 提供 `stripContractMarker()`，解析前先剥标记再复用 `lib/frontmatter`。
   模板形状变了，`PERSONA_TEMPLATE_VERSION` 从 1 升到 2；M1 初版生成的 v1 模板会被 `contractStatus` 报 old，不自动覆盖。
-- 总 prompt 预算按「还没加契约告警」的完整载荷量（框 / 做梦提醒 / 记忆 notice 都算）；没有契约的库不生成这条告警。
+- 合并预算（M3 起）按「记忆载荷 + 场景行」量，只在 `zk_context` / `doctor` / 记忆页 / 设置页说，不写进 payload（D4）。
 - 契约缺失 = 未启用：`zk_lint` 不占行，`doctor` 只留一行 `·`；旧版 / 占位符才体检提醒。
 - **多 agent 边界**：M1 仍是「一本笔记本一份」；多 agent 共库会共用同一份 `PERSONA.md`。M4 之前不要在多 agent 共库里启用。
 - `doctor` 的「契约：未启用」行用 `·` 前缀，退出码判定同时接受 `·`（未启用 / 未配置不算装坏）。
-- 三个新预算都进了 payload 缓存键 —— 漏一个就会在改配置后拿到旧预算的载荷（实现时踩过）。
+- 影响 payload 的预算（记忆 / 契约）都进了缓存键；`sceneBudgetWords` / `totalPromptBudgetWords` 不进 —— 它们不改变记忆载荷。
 - 场景段本批只落形状（`scene.present` 恒 false、`words` 恒 0），等 M3。
 - `zk_context` 的契约摘要行只在有契约时输出；`zk-kit contract` 是只读子命令，可看用量 / 预算 / 体检。
 - 设置页需要 `POST /contract`（第八条路由）：smoke 的路由数断言从 11 改为 12。
@@ -498,7 +508,7 @@ git 里还在，人能用 `git show` 恢复。
 
 ### M3（P1，运行时状态：事件流 + 读时投影）
 
-**落点（未实施）**
+**落点（M3 已实施）**
 
 - `src/lib/state-log.ts`（新）：追加事件（文件锁 + 单行 `O_APPEND`）、按窗口读取 +
   每个事件名的 last-seen（含最后一条参数，供 `hoursSince` / `last` 用）、坏行跳过、
@@ -507,13 +517,14 @@ git 里还在，人能用 `git show` 恢复。
   白名单求值、内置默认、`version` 校验、失败回退 + 告警。纯函数，不读笔记 / 环境变量 / 文件系统。
 - `src/lib/scene.ts`（新）：`project(events, rules, now, { sceneWindowDays, staleHours })` 纯函数；
   独立缓存（log mtime/size + rules mtime + minute）；渲染一行并按 `sceneBudgetWords` 裁；
-  `present` 由渲染层判断；敏感值 redact；导出 `combinedWords(memory, scene)`。
+  `present` 由渲染层判断；渲染层只认白名单变量（不做通用 redact）；导出 `combinedWords` / `combinedBudgetNote`。
 - `src/lib/memory.ts`：**不再产出 `scene`**；`totalWords` 仍是 memory text；`overheadWords`
-  不再减场景；`zk_context` / 记忆页 / doctor 用 `combinedWords` 组合两段。
-- `src/app/plugin.ts`：挂 `zdiary:scene`（order 5210，memory 之后），`interpolate: false`；
+  不再减场景；`zk_context` / 记忆页 / doctor / 设置页用 `combinedWords` 组合两段。
+- `src/app/plugin.ts`：挂 `zdiary:scene`（`systemPrompt.context()`，order 220，运行时上下文最后），`interpolate: false`，
+  不设 `required`（可选运行时状态）；宿主没有 `context()` 时只跳过场景，笔记本与记忆照常；
   text 函数里先 `memoryUsage` 再 `projectScene`；异常一律返回空串。
-- `src/lib/agents-template.ts`：AGENTS 模板加一条「默认不主动翻 `.state` 历史；用户明确问过去才查；
-  `prune` 的 commit 不 `amend` / `reset`」；改 AGENTS 就升 `TEMPLATE_VERSION`。
+- `src/lib/agents-template.ts`：AGENTS 模板加一节「状态：用 `zk_state` 记事件，不翻历史」；
+  改 AGENTS 就升 `TEMPLATE_VERSION`（本次 v5 → v6，哨兵要求出现 `zk_state`）。
 - `src/features/zk-tools/feature.ts`：新增 `zk_state`（`append` 追加 / `show` 读投影 /
   `prune` 压实）；`append` 校验格式，`show` 只回投影 + 窗口内最近 20 条，`prune` 只回
   `{ dropped, kept, windowDays }`；`zk_context` 组合新的 `scene`。
@@ -542,16 +553,19 @@ git 里还在，人能用 `git show` 恢复。
   无 `.state/rules` 时用内置默认（不是不注入）。
 - 追加 `woke hours=7.5`、`ate amount=1`、`user_left` / `user_returned` 后，投影出能量 / 情绪 / 在场；
   等待数小时重新装配，数值按惰性衰减 / 自愈变化（期间没有进程在跑）。
-- `energy` 曲线（睡 7h）：0h=70、10h=20、16h=20、24h=20、40 天=20（单调下降）；睡 9h 起点 78；`mood` 在 20 是「疲惫」。
+- `energy` 曲线（睡 7h）：0h=70、10h=20、16h=0（地板 0，`mood`=「力竭」）、24h=0；超过 72h = null（不拿旧值当现在）；
+  睡 9h 起点 78；`mood` 在 20 是「疲惫」。
 - `hoursSince`：无记录 = null；40 天前 = 960 左右；`prune` 后只剩 tombstone 仍返回真实小时数，
   不返回 null、不当作 0。
 - DSL 解析：`energy = if(ate == 0, 70, 1)` 能正确切赋值与 `==`；`energi` 拼错 / 裸 `力竭` /
   字符串进算术 = 整份拒绝 + 回退默认 + `rulesVersion=default(fallback)`。
 - `count(name, days)`：`days > sceneWindowDays` 拒绝；tombstone 不计；`prune` 只保留窗口内 count。
-- `prune`：只 stage / commit `.state/`；返回 `{dropped, kept, windowDays}`，不回事件名 / diff；
-  截止天数 < `sceneWindowDays` 时拒绝；非 git 库的 `--commit` 只提示失败，不影响压实。
+- `prune`：只 stage / commit `.state/events.log`（不碰 `.state/rules`）；人写的注释跟着后面那条事件走
+  （事件被压实掉就顺延到下一条保留的事件或文件末尾）；
+  返回 `{dropped, kept, windowDays}`，不回事件名 / diff；截止天数 < `sceneWindowDays` 时拒绝；
+  非 git 库的 `--commit` 只提示失败，不影响压实。
 - 场景行 ≤ `sceneBudgetWords`；不进 `buildMemoryPayload.text`；`combinedWords` 在 `zk_context` /
-  doctor / 记忆页 / CLI 报同一个合计。
+  doctor / 记忆页 / 设置页 / CLI 报同一个合计，超了只对人告警。
 - `MEMORY.md` / `journal/` 里没有 `饥饿值` / `token 余额` 时仍能正常工作。
 
 ### M4（P2，多 agent / 取回，另案细化）
@@ -584,7 +598,7 @@ git 里还在，人能用 `git show` 恢复。
 | 事件日志 | 追加 / 窗口读取 / last-seen 索引 / prune 压实；未知事件忽略；坏行跳过不炸；并发追加不丢行；`.state/` 不进 zk find / 标签 / 双链 / RSS |
 | 状态路径 | 两个 workspace 的同名 `default` 各有自己的 `.state/`；非 git 库 `prune` 照常、`--commit` 提示失败；`--commit` 只提交 `.state/` |
 | 投影 | 内置默认；同一日志换规则重放结果变化但历史不丢；clamp 上下限；非白名单表达式拒绝加载；`==` 不被当赋值；未定义变量 / 裸中文 / count 越界整份拒绝；tombstone 仍返回真实 `hoursSince` |
-| 场景注入 | 空日志不注入；场景不进 memory text；词数 ≤ 预算；读失败返回空串；敏感值 redact |
+| 场景注入 | 空日志不注入；场景不进 memory text；词数 ≤ 预算；读失败返回空串；只注入白名单变量（`note` 之类读不到） |
 | 回归 | 无契约文件的 payload 与 0.9 一致；flat 0.1.0 产物逐字节不变；只读视图 GET-only + 回环 |
 
 **手工验收**

@@ -68,12 +68,13 @@ async function snapshot(cfg: Config) {
   }
   // 结构一致性只做检查：以配置为准，磁盘不一致就如实说缺哪个目录（不自动建、不自动删）
   const structure: StructureStatus = structureStatus(cfg)
-  let memory: Pick<MemoryPayload, 'words' | 'budget' | 'truncatedWords' | 'retiredWords' | 'tocWords' | 'files' | 'contract'> | null = null
+  let memory: Pick<MemoryPayload, 'words' | 'budget' | 'totalWords' | 'truncatedWords' | 'retiredWords' | 'tocWords' | 'files' | 'contract'> | null = null
   try {
     const payload = buildMemoryPayload(cfg)
     memory = {
       words: payload.words,
       budget: payload.budget,
+      totalWords: payload.totalWords,
       truncatedWords: payload.truncatedWords,
       retiredWords: payload.retiredWords,
       tocWords: payload.tocWords,
@@ -82,7 +83,7 @@ async function snapshot(cfg: Config) {
     }
   } catch { memory = null }
   // 状态层只读回显：没有日志时 present=false（不是错误）
-  let scene: { present: boolean; presence: string; events: number; rulesVersion: string; words: number; budget: number; rulesError?: string } | null = null
+  let scene: { present: boolean; presence: string; events: number; rulesVersion: string; words: number; budget: number; emptyReason: string; rulesError?: string } | null = null
   try {
     const s = buildScene(cfg)
     scene = {
@@ -92,6 +93,7 @@ async function snapshot(cfg: Config) {
       rulesVersion: s.rulesVersion,
       words: s.words,
       budget: cfg.sceneBudgetWords,
+      emptyReason: s.emptyReason,
       ...(s.rulesError ? { rulesError: s.rulesError } : {}),
     }
   } catch { scene = null }
@@ -355,6 +357,26 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
             : `${st.dirs.length} 个目录齐全` + drift
           : `缺目录：${st.missing.join('、')} —— 点「初始化 / 补建」` + drift,
     })
+
+    // 状态层：空日志 = 未启用（不算错）；规则回退 / 读不了才是问题 ——
+    // 那意味着模型这一轮看到的场景是错的；自检在这项上不能比 doctor 宽
+    try {
+      const s = buildScene(cfg)
+      const presence = s.presence === 'present' ? '在场' : s.presence === 'absent' ? '不在' : '未知'
+      const detail = s.present
+        ? `场景 ${s.words}/${cfg.sceneBudgetWords} 词 · 规则 ${s.rulesVersion} · 窗口内 ${s.events} 条事件 · 用户${presence}` +
+          (s.rulesError ? `；⚠️ 规则回退默认：${s.rulesError}` : '')
+        : s.emptyReason === 'budget'
+          ? `有事件，但场景预算（${cfg.sceneBudgetWords} 词）一句都放不下 —— 调大场景预算`
+          : s.emptyReason === 'rules'
+            ? '有事件，但规则没算出可展示的值（energy / mood / satiety / 地点 / 目标 都是 null）'
+            : s.emptyReason === 'error'
+              ? `读取失败：${s.rulesError ?? '看 doctor 的「状态」一行'}`
+              : '未启用：还没有 .state/events.log（agent 用 zk_state append 记第一条，缺文件不算错）'
+      items.push({ name: '状态', ok: !s.rulesError, detail })
+    } catch (err) {
+      items.push({ name: '状态', ok: false, detail: err instanceof Error ? err.message : String(err) })
+    }
 
     try {
       const payload = buildMemoryPayload(cfg)

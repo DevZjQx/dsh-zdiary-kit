@@ -12,8 +12,13 @@ import { sessionWorkspace } from '../lib/workspace.js';
 /** 系统提示里的段位：5000 是 TOOLS_SDK，9000 是交付物引用 —— 记忆落在两者之间的空档 */
 const NOTEBOOK_SECTION_ORDER = 5190;
 const MEMORY_SECTION_ORDER = 5200;
-/** 场景排在记忆之后：先给「我是谁 / 我记得什么」，再给「此刻身体与场景」 */
-const SCENE_SECTION_ORDER = 5210;
+/**
+ * 场景走运行时上下文（`systemPrompt.context()`），而不是系统提示 section：
+ * 它是每步都会变的运行时事实，宿主在准入前用 `refreshContext()` 重读，作为 user-role 快照进历史；
+ * 放进 section 会让宿主改写系统提示（in-history 时每步追加），也会打断前缀缓存。
+ * 宿主内置 CONTEXT_ORDERS 到 WEB_SURFACE = 210，场景排在环境事实之后。
+ */
+const SCENE_CONTEXT_ORDER = 220;
 export default {
     name: 'dsh-zdiary-kit',
     inject: ['tools'],
@@ -177,7 +182,7 @@ export default {
             }
         }
         /**
-         * 场景段：事件日志的投影（D7）。独立段、独立预算、`interpolate: false`。
+         * 场景段：事件日志的投影（D7）。独立的运行时上下文、独立预算、`interpolate: false`。
          * 没有日志 / 读失败 / 规则全挂 → 空串：状态层坏掉不能把整次装配拖下水。
          */
         function sceneText(assemble) {
@@ -190,7 +195,7 @@ export default {
                 return '';
             }
         }
-        function registerPromptSections(host) {
+        function registerPrompt(host) {
             const prompt = service(host, 'systemPrompt');
             if (!prompt || typeof prompt.section !== 'function')
                 return;
@@ -199,15 +204,26 @@ export default {
             // 叫 provider / model 的则会被静默改写成真实值。DSH 自己给所有「内容类」段也是这么关的。
             host.effect(() => prompt.section({ name: 'zdiary:notebook', order: NOTEBOOK_SECTION_ORDER, text: notebookText, interpolate: false }));
             host.effect(() => prompt.section({ name: 'zdiary:memory', order: MEMORY_SECTION_ORDER, text: memoryText, interpolate: false }));
-            host.effect(() => prompt.section({ name: 'zdiary:scene', order: SCENE_SECTION_ORDER, text: sceneText, interpolate: false }));
+            // 不设 required：场景是可选运行时状态，宿主 suppressRuntimeContext() 时跟着一起关掉；
+            // 状态层读不到时 zk_state show 仍是后备，没必要绕过宿主的上下文开关。
+            const addContext = prompt.context;
+            if (typeof addContext === 'function') {
+                host.effect(() => addContext.call(prompt, { name: 'zdiary:scene', order: SCENE_CONTEXT_ORDER, text: sceneText, interpolate: false }));
+            }
+            else {
+                try {
+                    console.warn('[zdiary] 宿主的 systemPrompt 没有 context()：跳过场景注入（笔记本与记忆不受影响）');
+                }
+                catch { /* ignore */ }
+            }
             try {
-                console.log('[zdiary] 提示注入已挂载：笔记本 + AGENTS.md / USER.md / MEMORY.md + 场景（有日志时）→ 系统提示');
+                console.log('[zdiary] 提示注入已挂载：笔记本 + AGENTS.md / USER.md / MEMORY.md → 系统提示；场景（有日志时）→ 运行时上下文');
             }
             catch { /* ignore */ }
         }
         if (service(ctx, 'systemPrompt')) {
             try {
-                registerPromptSections(ctx);
+                registerPrompt(ctx);
             }
             catch (err) {
                 try {
@@ -219,7 +235,7 @@ export default {
         else if (typeof ctx.inject === 'function') {
             // service 还没就绪：等它出现再注册（宿主完全没这个 service 时永不回调）
             try {
-                ctx.inject(['systemPrompt'], registerPromptSections);
+                ctx.inject(['systemPrompt'], registerPrompt);
             }
             catch { /* ignore */ }
         }

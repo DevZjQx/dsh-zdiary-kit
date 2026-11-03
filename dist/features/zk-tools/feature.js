@@ -1,5 +1,5 @@
 /**
- * zk 工具（feature 的公共入口）：14 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
+ * zk 工具（feature 的公共入口）：15 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
  *
  * 设计要点：
  *   · 除 zk_context（只读 meta 文件，不依赖 zk）外，每个工具进来先 ensureNotebook —— 第一次调用就自动建好笔记本，用户不用先点设置页；
@@ -20,7 +20,7 @@ import { configuredAliases, readAliases } from '../../lib/alias.js';
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.js';
 import { META_NAMES } from '../../lib/meta.js';
 import { buildScene, combinedWords } from '../../lib/scene.js';
-import { appendEvent, pruneStateLog, readStateLog, StateError } from '../../lib/state-log.js';
+import { appendEvent, checkAppendInput, pruneStateLog, readStateLog, StateError } from '../../lib/state-log.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from '../../lib/dream.js';
 const text = (value) => [{ type: 'text', text: value }];
@@ -192,7 +192,8 @@ const LINT_PARSE = objSchema({
     },
 }, ['total', 'items']);
 function fail(err) {
-    if (err instanceof ZkError) {
+    // StateError 与 ZkError 同为「人话 + 下一步」：hint 必须一起交给模型，否则它只知道写错了、不知道怎么写
+    if (err instanceof ZkError || err instanceof StateError) {
         throw new Error(err.hint ? `${err.message}（${err.hint}）` : err.message);
     }
     throw err instanceof Error ? err : new Error(String(err));
@@ -982,8 +983,10 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         events: { type: 'number' },
                         rulesVersion: { type: 'string' },
                         words: { type: 'number' },
-                    }, ['present', 'presence', 'events', 'rulesVersion', 'words']),
+                        emptyReason: { type: 'string' },
+                    }, ['present', 'presence', 'events', 'rulesVersion', 'words', 'emptyReason']),
                     combinedWords: { type: 'number' },
+                    combinedBudget: { type: 'number' },
                     notebook: { type: 'string' },
                     defaultNotebook: { type: 'string' },
                     pinned: { type: 'string' },
@@ -1006,7 +1009,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             retiredWords: { type: 'number' },
                         }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
                     },
-                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'scene', 'combinedWords', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
+                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'scene', 'combinedWords', 'combinedBudget', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
             },
             async run(_args, env) {
                 // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
@@ -1023,8 +1026,10 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         events: scene.events,
                         rulesVersion: scene.rulesVersion,
                         words: scene.words,
+                        emptyReason: scene.emptyReason,
                     },
                     combinedWords: combinedWords(payload.totalWords, scene),
+                    combinedBudget: cfg.totalPromptBudgetWords,
                     notebook: state.active,
                     defaultNotebook: state.defaultName,
                     pinned: state.diverged ? state.pinned : '',
@@ -1044,8 +1049,16 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     ? `笔记本「${current.name}」（${current.structure}）→ ${current.path}` +
                         (others.length ? `\n另有：${others.map((n) => `${n.name}（${n.structure}）`).join('、')} —— zk_use 切换本会话` : '')
                     : `笔记本「${v.notebook}」`;
-                if (!v.text && !v.scene.present)
-                    return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md 契约，也没有状态事件。`);
+                if (!v.text && !v.scene.present) {
+                    const why = v.scene.emptyReason === 'budget'
+                        ? '场景有事件，但一行都放不下（调大 sceneBudgetWords）'
+                        : v.scene.emptyReason === 'rules'
+                            ? '场景规则没算出可展示的值'
+                            : v.scene.emptyReason === 'error'
+                                ? '场景读取失败（看 doctor / 设置页）'
+                                : '没有状态事件';
+                    return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md 契约。\n${why}。`);
+                }
                 const contract = v.contract?.present
                     ? `\n\n契约：正文（含标题）${v.contract.contentWords}/${v.contract.budget} 词` +
                         `（${v.contract.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
@@ -1054,9 +1067,17 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 const presence = v.scene.presence === 'present' ? '在场' : v.scene.presence === 'absent' ? '不在' : '未知';
                 const scene = v.scene.present
                     ? `\n\n场景：${v.scene.words} 词（规则 ${v.scene.rulesVersion} · 窗口内 ${v.scene.events} 条事件 · 用户${presence}）`
-                    : '\n\n场景：未启用（.state/events.log 不存在或没有事件）';
-                const totals = `\n\n用量：记忆载荷 ${v.totalWords} 词 + 场景 ${v.scene.words} 词 = 合计 ${v.combinedWords} 词` +
-                    `（记忆预算 ${v.budget}，场景预算单独算；超了只告警）`;
+                    : v.scene.emptyReason === 'budget'
+                        ? '\n\n场景：有事件，但一句都放不下（调大 sceneBudgetWords）'
+                        : v.scene.emptyReason === 'rules'
+                            ? '\n\n场景：规则没算出可展示的值（energy / mood / satiety / 地点 / 目标 都是 null）'
+                            : v.scene.emptyReason === 'error'
+                                ? '\n\n场景：读取失败（看 doctor / 设置页）'
+                                : '\n\n场景：未启用（.state/events.log 不存在或没有事件）';
+                const over = v.combinedBudget > 0 && v.combinedWords > v.combinedBudget
+                    ? `，超 ${v.combinedWords - v.combinedBudget} 词（合并预算 ${v.combinedBudget}）`
+                    : `（合并预算 ${v.combinedBudget}）`;
+                const totals = `\n\n用量：记忆载荷 ${v.totalWords} 词（预算 ${v.budget}）+ 场景 ${v.scene.words} 词（预算单独算）= 合计 ${v.combinedWords} 词` + over;
                 return text(drift + head + contract + scene + totals + (v.text ? '\n\n' + v.text : ''));
             },
         }),
@@ -1067,6 +1088,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 '事件是你自己的叙述，插件只校验格式与时间，不校验真假；别把 token 余额之类宿主观测写进来。' +
                 'show：读当前投影（energy / mood / satiety / 地点 / 目标 / 在场）+ 窗口内最近 20 条事件，不回全量日志。' +
                 'prune：压实日志（保留窗口内全部 + 每个事件名在窗口外的最后一条），返回 dropped / kept；不自动 commit。' +
+                '它不是日常操作：只有人明确要求、或 doctor 提示日志偏大时才用；它会删掉旧事件，默认别碰。' +
                 '默认不翻历史：只有用户明确问「之前 / 过去」时才查；平时不要主动读 .state。',
             parameters: {
                 type: 'object',
@@ -1089,7 +1111,9 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     rulesVersion: { type: 'string' },
                     words: { type: 'number' },
                     text: { type: 'string' },
+                    emptyReason: { type: 'string' },
                     total: { type: 'number' },
+                    windowEvents: { type: 'number' },
                     badLines: { type: 'number' },
                     events: {
                         type: 'array',
@@ -1105,14 +1129,14 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     at: { type: 'string' },
                     name: { type: 'string' },
                     line: { type: 'string' },
-                }, ['action', 'present', 'presence', 'rulesVersion', 'words', 'text', 'total', 'badLines', 'events', 'dropped', 'kept', 'windowDays', 'at', 'name', 'line']),
+                }, ['action', 'present', 'presence', 'rulesVersion', 'words', 'text', 'emptyReason', 'total', 'windowEvents', 'badLines', 'events', 'dropped', 'kept', 'windowDays', 'at', 'name', 'line']),
             },
             async run(args, env) {
                 const cfg = configFor(env.workspace, env.sessionId);
                 const action = String(args.action);
                 const empty = {
-                    action, present: false, presence: 'unknown', rulesVersion: '', words: 0, text: '',
-                    total: 0, badLines: 0, events: [],
+                    action, present: false, presence: 'unknown', rulesVersion: '', words: 0, text: '', emptyReason: 'no-log',
+                    total: 0, windowEvents: 0, badLines: 0, events: [],
                     dropped: 0, kept: 0, windowDays: cfg.sceneWindowDays, at: '', name: '', line: '',
                 };
                 if (action === 'append') {
@@ -1133,7 +1157,12 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             throw new StateError(`参数重复：${key}`);
                         params[key] = value;
                     }
-                    const written = appendEvent(cfg, { name, params, at: args.at ? String(args.at) : undefined });
+                    const input = { name, params, at: args.at ? String(args.at) : undefined };
+                    // 先校验再建库：写错的事件不该在磁盘上留下一个刚初始化好的笔记本
+                    checkAppendInput(input);
+                    // 与其它写工具一致：第一个事件顺手把笔记本建好（否则只多一个没有 .zk 的 .state/）
+                    await ensureNotebook(cfg, env.signal);
+                    const written = appendEvent(cfg, input);
                     return {
                         ...empty,
                         at: written.at,
@@ -1152,7 +1181,9 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         rulesVersion: scene.rulesVersion,
                         words: scene.words,
                         text: scene.text,
+                        emptyReason: log.readError ? 'error' : scene.emptyReason,
                         total: log.total,
+                        windowEvents: log.events.length,
                         badLines: log.badLines.length,
                         events: log.events.slice(-20).reverse().map((e) => ({ at: e.at, event: e.name, params: paramsText(e.params) })),
                     };
@@ -1172,9 +1203,16 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     return text(`已压实 .state/events.log：删除 ${v.dropped} 条，保留 ${v.kept} 条（窗口 ${v.windowDays} 天）。\n没有自动 commit —— 删除证据在 git diff 里，由人决定何时提交。`);
                 }
                 const presence = v.presence === 'present' ? '在场' : v.presence === 'absent' ? '不在' : '未知';
+                const emptyText = v.emptyReason === 'budget'
+                    ? '（有事件，但场景预算一句都放不下：调大 sceneBudgetWords）'
+                    : v.emptyReason === 'rules'
+                        ? '（规则没算出可展示的值：energy / mood / satiety / 地点 / 目标 都是 null）'
+                        : v.emptyReason === 'error'
+                            ? '（场景读取失败：看 doctor / 设置页）'
+                            : '（没有可投影的场景：日志为空或窗口内没有事件）';
                 const lines = [
-                    v.text || '（没有可投影的场景：日志为空或窗口内没有事件）',
-                    `规则 ${v.rulesVersion || 'default'} · 窗口内 ${v.events.length} 条 · 历史共 ${v.total} 条` +
+                    v.text || emptyText,
+                    `规则 ${v.rulesVersion || 'default'} · 窗口内 ${v.windowEvents} 条 · 历史共 ${v.total} 条` +
                         (v.badLines > 0 ? ` · 坏行 ${v.badLines}` : '') + ` · 用户${presence}`,
                 ];
                 if (v.events.length) {
