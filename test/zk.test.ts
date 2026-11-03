@@ -2665,6 +2665,32 @@ describe('alias tools', () => {
       fs.rmSync(other, { recursive: true, force: true })
     }
   })
+  it('运行中关掉开关：已注册的别名工具立刻拒绝执行，不用等重载', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-alias-revoke-'))
+    try {
+      store.writeConfig({
+        notebooks: { default: { path: dir, structure: 'flat' } },
+        active: 'default',
+        zkPath: zkBin,
+        notesDir: 'notes',
+        dailyDir: 'journal',
+        aliasTools: true,
+      })
+      const c = store.config()
+      await notebookLib.ensureNotebook(c)
+      const file = path.join(dir, '.zk', 'config.toml')
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('[alias]\n', '[alias]\nlucky = "zk list $@"\n'), 'utf8')
+      const lucky = toolsFeature.buildTools(() => dir).find((d) => d.name === 'zk_lucky')!
+
+      // 注册之后才关：工具还在列表里，但执行必须被拦下（清单要重载才变，权限不能等）
+      store.writeConfig({ ...store.config(), aliasTools: false })
+      await expect(lucky.execute({}, { signal: AbortSignal.timeout(30_000) }))
+        .rejects.toThrow(/别名工具已停用/)
+    } finally {
+      store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'], aliasTools: false })
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('M4: 结构设置与记忆预算', () => {

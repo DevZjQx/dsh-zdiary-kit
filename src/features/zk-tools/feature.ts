@@ -360,6 +360,13 @@ function aliasTool(alias: AliasDefinition, workspaceOf: WorkspaceOf): ToolDefini
     },
     async run(args, env) {
       const cfg = configFor(env.workspace, env.sessionId)
+      // 工具列表只在下一次加载时重建，执行权不能跟着等到重载才收：开关关掉就立刻拒绝。
+      if (!cfg.aliasTools) {
+        throw new ZkError(
+          `别名工具已停用：aliasTools=false（zk_${alias.name} 不再执行）`,
+          '设置页「工具」组重新打开，或 zk-kit config set aliasTools=true；重载插件后工具列表也会同步',
+        )
+      }
       await ensureNotebook(cfg, env.signal)
       // 工具是全局注册的，会话可以随时 zk_use 切库：执行前按**当前笔记本**核对一次
       if (!readAliases(cfg).some((item) => item.name === alias.name)) {
