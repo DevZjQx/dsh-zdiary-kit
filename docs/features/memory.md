@@ -18,8 +18,8 @@
 - `lib/persona-template.ts`：`PERSONA_TEMPLATE` / `POLICY_TEMPLATE` 与独立版本标记
   （`<!-- zdiary-persona: vN -->` / `<!-- zdiary-policy: vN -->`，不复用 `zdiary-template` ——
   AGENTS 改版不该让契约误报旧版）；只走 opt-in 写入，已存在不覆盖
-- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 175 词），flat 用精简版
-  （76 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
+- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 180 词），flat 用精简版
+  （80 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
   layered 初始化自动写，flat 只有 `ensureNotebook(cfg, signal, { withAgents: true })` / `zk-kit init --with-agents` /
   设置页「写入 AGENTS.md 模板」才写；已存在一律不覆盖。
   `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
@@ -95,7 +95,8 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 `✗ 记忆：310/300 词` —— 模板吃掉整个预算，MEMORY.md 就永远被截光，所以先压到 160 词（195 词的版本把 USER + MEMORY 压到只剩 105 词），后续补 `name` / `WORKFLOW` / `rename` 规则后为 175 词，加「截断从底部往前丢」后为 187 词，
 P1-3 的日期 / 退役格式 + P2-15 的版本标记后为 189 词；P2-8 去掉 `inbox/` 后实测 186 词；
 0.9 把「超预算从底部往前丢」改成「按日期丢最旧的一条」（截断语义变了，模板必须跟着改）后为 187 词，`TEMPLATE_VERSION` 升到 3；
-v4 去掉「宿主不会自动加载本文件」一句后为 175 词（单测锁 `≤190`；flat 精简版锁 `≤90`，v4 起实测 76）。
+v4 去掉「宿主不会自动加载本文件」一句后为 175 词（单测锁 `≤190`；flat 精简版锁 `≤90`，v4 起实测 76）；
+v5 在 MEMORY 条目约定后补「先点开链接再用」后为 180 词（flat 80）。
 `AGENTS.md` 是硬规则，单独超预算也不截断，只回显告警；文件内容里的 `</system-reminder>` 会被转义，
 截断目录里的段落标题同样转义 —— 不许提前闭合插件自己的框；任何一份文件读不到都当作不存在，笔记本没建好时返回空载荷而不是报错。
 

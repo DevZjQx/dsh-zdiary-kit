@@ -3216,6 +3216,8 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
       expect(body.startsWith('<!-- zdiary-template: v')).toBe(true)
       expect(body).toContain('YYYY-MM-DD')
       expect(body).toContain('[superseded')
+      // v5：写了来源链接，还得说清「链接是拿来点开的」，否则模型只把它当脚注
+      expect(body).toContain('先点开链接再用')
     }
     expect(notebookLib.WORKFLOW_TEMPLATE.startsWith('<!-- zdiary-template: v')).toBe(true)
   })
@@ -3342,7 +3344,9 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
 
     // 只把首行数字改成当前版本、正文还留着 v3 的句子：版本号对了不算合并完
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'),
-      `<!-- zdiary-template: v${agentsTpl.TEMPLATE_VERSION} -->\n\n# 知识库工作约定\n\n> zdiary 生成；DSH 不会自动加载，插件每轮注入。\n`)
+      `<!-- zdiary-template: v${agentsTpl.TEMPLATE_VERSION} -->\n\n# 知识库工作约定\n\n` +
+      'MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]，先点开链接再用。\n\n' +
+      '> zdiary 生成；DSH 不会自动加载，插件每轮注入。\n')
     const faked = lintLib.templateStatus(cfg)
     expect(faked.stale).toBe(true)
     expect(faked.mismatch).toBe(true)
