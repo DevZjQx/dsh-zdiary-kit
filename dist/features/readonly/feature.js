@@ -285,14 +285,14 @@ async function handleMemory(res, cfg) {
     const usage = `记忆 ${payload.words}/${payload.budget} 词（${shares || '三份都空'}）` +
         (payload.truncatedWords > 0 ? ` · 已截断 ${payload.truncatedWords} 词` : '') +
         (payload.retiredWords > 0 ? ` · 退役省略 ${payload.retiredWords} 词` : '');
-    // 契约段：超预算只告警；forbidden 行的警示色等 M3 的 policy 解析
+    // 契约段：超预算只告警
     const c = payload.contract;
     const contractSummary = c.present
         ? c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ') +
             ` · 正文（含标题）${c.contentWords}/${c.budget} 词` +
             (c.overBudget ? ` · ⚠️ 超 ${c.overWords} 词（契约不截断，请缩减或调 contractBudgetWords）` : '')
-        : '未启用：根目录没有 PERSONA.md / POLICY.md —— 初始化带 --with-contract 或在设置页写入模板；缺文件不算错。';
-    const contractSections = ['PERSONA.md', 'POLICY.md'].map((name) => {
+        : '未启用：根目录没有 PERSONA.md —— 初始化带 --with-contract 或在设置页写入模板；缺文件不算错。';
+    const contractSections = ['PERSONA.md'].map((name) => {
         // 版本标记与 frontmatter 是机器元数据：页面像笔记页一样剥掉，改成一行可读的字段
         const body = stripContractMarker(read(name));
         const fields = parseFrontmatter(body).fields;

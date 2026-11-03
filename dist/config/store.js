@@ -41,6 +41,7 @@ export const DEFAULTS = {
     dailyGroup: 'daily',
     defaultTags: [],
     maxReadChars: 20_000,
+    aliasTools: false,
     memoryBudgetWords: 500,
     contractBudgetWords: 240,
     sceneBudgetWords: 80,
@@ -139,6 +140,9 @@ export function normalizeConfig(raw, workspace = processWorkspace()) {
         dailyGroup: /^[A-Za-z0-9_-]{1,32}$/.test(String(src.dailyGroup ?? '')) ? String(src.dailyGroup) : DEFAULTS.dailyGroup,
         defaultTags: tags(src.defaultTags),
         maxReadChars: clamp(Number(src.maxReadChars), 1000, 200_000, DEFAULTS.maxReadChars),
+        // 只认 true / "true"（设置页与 CLI 传字符串）：1 / "yes" / "false" 一律当未启用，
+        // 免得拼错一个值就静默把别名注册成工具
+        aliasTools: src.aliasTools === true || src.aliasTools === 'true',
         memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
         contractBudgetWords: clamp(Number(src.contractBudgetWords), 50, 800, DEFAULTS.contractBudgetWords),
         sceneBudgetWords: clamp(Number(src.sceneBudgetWords), 20, 400, DEFAULTS.sceneBudgetWords),

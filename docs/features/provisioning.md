@@ -33,20 +33,17 @@
 `entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入（Z10）；
 所有模板必须含 `{{content}}`，否则 stdin 的正文会被丢（Z9）。
 
-**契约模板（`PERSONA.md` / `POLICY.md`）。** 只走显式 opt-in：`zk-kit init --with-contract`、
+**契约模板（`PERSONA.md`）。** 只走显式 opt-in：`zk-kit init --with-contract`、
 设置页「写入契约模板」、或 `ensureNotebook(cfg, signal, { withContract: true })`。
-两种结构**都不自动写** —— 升级不多两个文件（D10），缺文件 = 契约未启用、不报错。
+两种结构**都不自动写** —— 升级不多一个文件（D10），缺文件 = 契约未启用、不报错。
 写入口只在缺失时生效，已存在的文件一字不改（契约允许人改）。
 契约不依赖 zk：`writeContractTemplates` 会先 `mkdir` 笔记本目录，所以设置页按钮在建库前也能点
-（只建目录与两份文件，不碰 `.zk`；之后 `ensureNotebook` 幂等接管同一目录）。
-首行是独立版本标记 `<!-- zdiary-persona: vN -->` / `<!-- zdiary-policy: vN -->`（`PERSONA_TEMPLATE_VERSION` /
-`POLICY_TEMPLATE_VERSION`）：不复用 `TEMPLATE_VERSION` —— 改 `AGENTS.md` 只升旧的，不该让契约误报旧版。
+（只建目录与文件，不碰 `.zk`；之后 `ensureNotebook` 幂等接管同一目录）。
+首行是独立版本标记 `<!-- zdiary-persona: vN -->`（`PERSONA_TEMPLATE_VERSION`）：
+不复用 `TEMPLATE_VERSION` —— 改 `AGENTS.md` 只升旧的，不该让契约误报旧版。
 标记与当前版本不等时只报告：低于当前 = `old`；高于当前 = `newer`（插件才是旧的那个，别改文件去配）；
 相等但正文还留着旧版内容 = `mismatch`（只改了首行数字，`CONTRACT_TEMPLATE_SENTINELS` 机械可查）。
-`POLICY.md` 形状是「首行版本标记 + 紧跟 frontmatter + 一张表」（`action / level / approval / reversible`），
-level 只认 `auto / ask / forbidden`；解析前先 `stripContractMarker()`，再复用 `lib/frontmatter`。
-只读解析见 M3a（`lib/policy.ts`）；强制执行归 M3c，这里只负责写入模板。
-两个文件都进 `META_NAMES`：不进检索、`zk_append` 等写入一律拒绝。
+`PERSONA.md` 进 `META_NAMES`：不进检索、`zk_append` 等写入一律拒绝。
 **迁移说明**：根目录曾有同名普通笔记的库，升级后它们会从检索里消失 —— 需要改名或移入子目录。
 
 ### group 收敛（配置改了之后）

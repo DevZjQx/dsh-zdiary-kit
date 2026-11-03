@@ -2,10 +2,11 @@
 
 **Purpose.** 让模型用 zk 思维工作：先查重、再写原子笔记、用双链连起来、每天记一段。
 
-**Owns.** 14 个工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
-`zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）：
+**Owns.** 14 个内置工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
+`zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
+`.zk/config.toml` 的 `[alias]` 派生的 `zk_<别名>` 工具：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
-`zk_context` 例外：它只读根目录三份 meta 文件与两份契约（`PERSONA.md` / `POLICY.md`）、解析 `POLICY.md` 的四列动作表，并列出已配置笔记本（另读 `DREAMS.md` 的「上次做梦」一行用于周节奏提醒），**不** `ensureNotebook`（读记忆不该依赖 zk）。
+`zk_context` 例外：它只读根目录三份 meta 文件与角色契约（`PERSONA.md`），并列出已配置笔记本（另读 `DREAMS.md` 的「上次做梦」一行用于周节奏提醒），**不** `ensureNotebook`（读记忆不该依赖 zk）。
 
 **多会话与笔记本归属.** 工具拿配置走 `config/session.ts` 的 `configFor(workspace, sessionId)`，不是直接 `config()`：
 会话第一次调用时把当时的 `active`（默认值）快照成自己的 pin，之后设置页 / CLI / 别的会话切库都不带动它；
@@ -14,12 +15,32 @@
 不让模型自己从「笔记不存在」里猜。`zk_read` / `zk_append` 找不到路径时还会查其他笔记本里有没有同名，
 命中就把「这篇在 X 库里」放进错误提示。
 
-**Does not own.** zk 命令行怎么拼（`lib/zk.ts`）；笔记本怎么建（`lib/notebook.ts`）；配置读写（`config/store`）；
+**Does not own.** zk 命令行怎么拼（`lib/zk.ts`）；`[alias]` 怎么解析（`lib/alias.ts`）；笔记本怎么建（`lib/notebook.ts`）；配置读写（`config/store`）；
 设置页（`features/settings`）。工具不 import settings，settings 也不 import 工具 —— 只共享 lib 与 config。
 
-**Depends on.** `config/session`（会话固定的笔记本 → 配置；每次调用现读，设置页改完立刻生效）、`lib/notebook`、`lib/zk`、`lib/memory`、`lib/policy`、`lib/tool`。
+**Depends on.** `config/session`（会话固定的笔记本 → 配置；每次调用现读，设置页改完立刻生效）、`lib/notebook`、`lib/zk`、`lib/alias`、`lib/memory`、`lib/tool`。
 
-**Public surface.** `buildTools()`（纯数据，测试用）与 `registerZkTools(tools)`（返回撤销函数）。
+**Public surface.** `buildTools()`（按默认工作区的笔记本配置构建，测试用）与 `registerZkTools(tools)`（返回撤销函数）。
+
+**Alias tools（`zk_<别名>`）.** 默认**不注册**：`aliasTools` 为 false 时 `buildTools` 连 `.zk/config.toml` 都不读，
+内置工具固定 14 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
+（设置页「工具」组的复选框，或 `zk-kit config set aliasTools=true`，只认 `true`；拼错的值归一化成 false 并在 `config set` 时回显）。
+打开后，插件加载时读所有已配置笔记本的 `.zk/config.toml`，把 `[alias]` 表里未注释的键注册成工具；
+同名只取第一本。工具名用下划线而不是点号：DSH 的 function-name 契约是 `[A-Za-z0-9_-]`（`zk.lucky` 会被 provider 拒绝）。
+只解析名字 / 命令 / 注释，不跑 `zk config --list aliases`：注册是同步的，而且 zk 可能在首次使用时才装好。
+别名名只接受 `[A-Za-z0-9][A-Za-z0-9_-]{0,60}`：首字符不许是 `-`（`zk -h` 会被当 flag 执行），
+带空格 / 引号 / 点号的别名（`zk <名>` 仍能用）会被跳过，因为装不进 `zk_<名>`；
+与内置 `zk_*` 撞名的别名（如 `search` → `zk_search`）也跳过，不能靠别名覆盖内置工具。
+紧邻别名上方的连续 `#` 注释（遇空行即断）优先作为工具说明，没有才用行尾注释；注释掉的别名不算定义。
+执行走 `zk <别名> [args]`：`args` 是工具参数里的字符串数组，原样追加，对应别名里的 `$@`；`$SHELL -c`、管道与引用全交给 zk，
+插件不拼 shell。`runAlias` 设 `ZK_NOTEBOOK_DIR`（内层 `zk` 找到同一本），并把 zk 所在目录补进 `PATH`（托管二进制不一定在 PATH 上）；
+不传 `--no-input` —— 它会出现在 `$@` 里，任意别名命令不一定接受。交互式别名（`edit` 之类）只能靠超时兜底，不适合工具调用。
+工具是全局注册的，会话可以随时 `zk_use` 切库：执行前按**当前笔记本**再核对一次，没有这个别名就明确报错，不会跑到别的库里执行。
+stdout 原样返回（不做 JSON 解析），超过 `maxReadChars` 截断；exit 0 的 stderr 作为告警附在结果里，非零退出转成 `ZkError`。
+新增 / 改名别名后要重载插件（或重启 DSH）才会出现在工具列表里。
+别名是 config.toml 里的 shell 命令：注册成工具就等于让 agent 能执行它，只保留自己信得过的别名。
+它也不受内置 `zk_*` 的守卫约束：没有 meta 拒写、没有路径校验，`args` 里传 `--notebook-dir`
+可以操作当前笔记本以外的库（`ZK_NOTEBOOK_DIR` 只是默认值）。
 
 **Rejected.** 把工具做成"一个 `zk` 大工具 + action 参数" —— 拒绝：模型的参数猜测会更多，
 且每个动作的 schema 不同（搜索有 tags/since/sort，写入有 path/text），分开才能让参数自解释。
@@ -28,7 +49,7 @@
 
 **Exceptions.** 输入校验自己写：DSH 只对 `defineTool` 注册的工具做输入校验，
 裸 JSON Schema 注册的工具要自己兜（`lib/tool.ts`），换来运行时零依赖。
-所有查询都带 `excludedNames(cfg)` 的**绝对路径**排除（`raw` / `inbox` / `archive` + 六个 meta 文件）：
+所有查询都带 `excludedNames(cfg)` 的**绝对路径**排除（`raw` / `inbox` / `archive` + 七个 meta 文件）：
 `-x` 是相对 cwd 解析的，传相对名在换工作目录后会静默失效。`zk_query` 的 `include_archived: true` 会去掉 archive 排除；
 如果没显式给 `status`，此时也不再默认卡 `active`（否则归档里的 `superseded` 永远查不出来）。
 `status` / `type` 只能靠 `metadata` 在 JS 层过滤（zk 的 `--match` 不索引 frontmatter），
@@ -96,14 +117,12 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `zk_context` 的 `files[].originalWords`（截断前词数）、`files[].retiredWords`（退役条目占的词数，只算在 `MEMORY.md` 上）、
 `tocWords`（目录占的词数）与 `ratio`（用量 = `words / budget`，两位小数，> 1 表示超预算）只用于解释预算，不改变注入内容。
 `originalWords` 含退役条目；展示层的「原 X」会先减掉 `retiredWords`，所以退役不会再被当成截断报出来。
-契约单独一组：`contract.present / contentWords / words / noticeWords / budget / overBudget / overWords / files[]`（`contentWords` 含 `## PERSONA.md` / `## POLICY.md` 标题），
+契约单独一组：`contract.present / contentWords / words / noticeWords / budget / overBudget / overWords / files[]`（`contentWords` 含 `## PERSONA.md` 标题），
 外加 `totalWords`（`countWords(payload.text)`）与 `overheadWords`（框 / 做梦提醒 / notice / 契约告警等开销）；
 场景段本批只落形状（`scene.present` 恒 false），M3 起由 `STATE` 填。
 契约**不参与** `memoryBudgetWords` 的截断，超了只告警；`overWords` 是所有展示的唯一超量口径，别拿 `words` 再做减法。
 总 prompt 超 `totalPromptBudgetWords` 时只点名（按实际载荷，含框与提示），不自动截契约。
 `zk_dream` 的 `memory.contractWords` 是整段契约注入量；`headroom` 只扣记忆侧（`totalWords - contractWords`），契约不占记忆预算。
-`policy` 是 `POLICY.md` 的只读解析（M3a）：`present / actions[] / total / issues[] / truncated`，行是 `action / level / approval / reversible`；
-坏行只进 `issues`，合法行照常返回；`issues` 最多 50 条（`total` 是完整数，`truncated` 标记截断）；缺文件时 `present:false`，missing 由 `contract` 桶报，不重复。
 
 `zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关（D7）。
 `zk_lint` = 1 次 `zk list` + 三个 zk 原生过滤器（`--orphan` / `--broken-links` / `--tagless`）+ 1 次 `zk graph`，
@@ -143,11 +162,7 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 同一份条目解析还数 `undated`（首行没有真校验过的 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）
 与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记），以及 `stale`（有日期且超过 `stale_days`，默认 90 天未复核）——
 都只报告；注入从 0.9 起省略退役条目（notice 说明省略数），文件本身不动。条目切分与日期解析统一走 `lib/memory-format`。
-`policy`（M3a）查 `POLICY.md` 的自主权契约表：表头 / 列数 / 空 `action` / 未知 `level`（`auto` / `ask` / `forbidden`）/
-未知 `approval`（`none` / `human` / `policy`）/ `reversible` 不是 `yes` / `no` / 重复动作 / frontmatter 缺 `audit`。
-`issues` 最多 50 条（`total` 是完整数，`truncated` 标记截断）。
-缺文件归 `contract` 桶，不重复报；解析失败只报告、不猜、不改文件。
-文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / 自主权契约 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
+文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
 `incomplete`（P2-13）：`type` / `status` / `authority` 缺任一的笔记（**只在 layered 下查**：flat 的笔记
 本来就不写这三个字段，整库标红不是「可发现的状态」而是噪音）。索引把缺失落成空串，
 于是「没写 authority」=「authority 正常」，dream 的 informal 门对它们静默失效。

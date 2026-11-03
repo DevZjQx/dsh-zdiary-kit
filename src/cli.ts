@@ -18,7 +18,6 @@ import {
 } from './lib/zk.ts'
 import type { NoteRecord } from './lib/zk.ts'
 import { formatLintExtras, formatMemoryLinks, lintNotebook, contractStatus } from './lib/lint.ts'
-import { policyStatus } from './lib/policy.ts'
 import type { LintResult } from './lib/lint.ts'
 import { dreamNotebook, STALE_DAYS } from './lib/dream.ts'
 import type { DreamResult } from './lib/dream.ts'
@@ -28,9 +27,9 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit doctor                       自检：zk / 笔记本 / 模板 / group / 索引
   zk-kit install [版本]                安装内置 zk（默认取配置里的版本）
   zk-kit init [--with-agents] [--with-contract]
-                                      建好（或补齐）笔记本；flat 下加 --with-agents 才写 AGENTS.md 模板；--with-contract 写 PERSONA.md / POLICY.md 契约模板（缺了才写）
+                                      建好（或补齐）笔记本；flat 下加 --with-agents 才写 AGENTS.md 模板；--with-contract 写 PERSONA.md 契约模板（缺了才写）
   zk-kit groups [--fix] [--dry-run]  对照配置与 .zk/config.toml 的 group（默认 dry-run；--fix 只改插件建的 paths，写前备份）
-  zk-kit contract                    契约状态：PERSONA.md / POLICY.md 的用量 / 预算 / 体检（只读）
+  zk-kit contract                    契约状态：PERSONA.md 的用量 / 预算 / 体检（只读）
   zk-kit new --title T [--name 文件名] [--summary 摘要] [--body B] [--tags a,b] [--dir notes] [--type source|concept|entity|pattern]
   zk-kit search [词] [--tags a,b] [--since 日期] [--limit 5] [--json]
   zk-kit read <路径> | --query 词 [--max-chars n] [--json]
@@ -373,22 +372,14 @@ async function doctor(): Promise<boolean> {
     c.present
       ? `${c.overBudget ? '⚠️' : '✓'} 契约：正文（含标题）${c.contentWords}/${c.budget} 词（${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
         (c.overBudget ? `，超 ${c.overWords} 词（契约不截断）` : '')
-      : '· 契约：未启用（根目录没有 PERSONA.md / POLICY.md —— 跑 zk-kit init --with-contract）',
+      : '· 契约：未启用（根目录没有 PERSONA.md —— 跑 zk-kit init --with-contract）',
   )
-  // 两份都没有 = 未启用，不值得再用一条 ⚠️ 重复上面那行；只启用一半 / 旧版 / 占位符才体检
+  // 缺文件 = 未启用，不值得再用一条 ⚠️ 重复上面那行；旧版 / 占位符才体检
   if (c.present) {
     const contractIssues = contractStatus(cfg).items
     if (contractIssues.length > 0) {
       rows.push(`⚠️ 契约体检：${contractIssues.map((i) => `${i.file} ${i.detail}`).join('；')}`)
     }
-  }
-  const policy = policyStatus(cfg)
-  if (policy.present && policy.total > 0) {
-    rows.push(
-      `⚠️ 自主权契约：${policy.rows} 行动作，${policy.total} 条结构问题` +
-      (policy.truncated ? `（只列前 ${policy.items.length} 条）` : '') +
-      ` — ${policy.items.map((i) => i.detail).join('；')}`,
-    )
   }
 
   if (exists) {
@@ -455,7 +446,7 @@ async function main(): Promise<void> {
       const r = await ensureNotebook(cfg, undefined, { withAgents, withContract })
       print(json ? r : `笔记本 ${r.notebook}（结构 ${cfg.structure}）\n` +
         `初始化：${r.initialized ? '是' : '已是笔记本'} · 目录：${r.dirsCreated.length ? '新建 ' + r.dirsCreated.join('、') : '已齐全'}\n` +
-        `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' || withAgents ? '已存在' : '未写（flat 要 --with-agents）')} · WORKFLOW.md：${r.workflowWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')} · 契约：${withContract ? (r.personaWritten ? '已写 PERSONA.md' : 'PERSONA.md 已存在') + ' / ' + (r.policyWritten ? '已写 POLICY.md' : 'POLICY.md 已存在') : '未写（要 --with-contract）'}` +
+        `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' || withAgents ? '已存在' : '未写（flat 要 --with-agents）')} · WORKFLOW.md：${r.workflowWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')} · 契约：${withContract ? (r.personaWritten ? '已写 PERSONA.md' : 'PERSONA.md 已存在') : '未写（要 --with-contract）'}` +
         (r.groupWarnings.length ? `\n⚠️ ${r.groupWarnings.join('\n⚠️ ')}` : ''), json)
       return
     }
@@ -464,10 +455,9 @@ async function main(): Promise<void> {
       const payload = buildMemoryPayload(cfg)
       const c = payload.contract
       const issues = contractStatus(cfg)
-      const policy = policyStatus(cfg)
       if (!json) {
         if (!c.present) {
-          print(`契约：未启用（根目录没有 PERSONA.md / POLICY.md）\n写入模板：zk-kit init --with-contract；写入后缺文件 = 未启用、不算错，占位符 {{...}} 由人填。`, false)
+          print(`契约：未启用（根目录没有 PERSONA.md）\n写入模板：zk-kit init --with-contract；写入后缺文件 = 未启用、不算错，占位符 {{...}} 由人填。`, false)
         } else {
           const files = c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')
           const lines = [
@@ -475,19 +465,12 @@ async function main(): Promise<void> {
               (c.overBudget ? ` · 超 ${c.overWords} 词（契约不截断）` : ''),
             `注入：${c.words} 词${c.noticeWords > 0 ? `（正文 ${c.contentWords} + 提示 ${c.noticeWords}）` : ''} · 记忆段之前、永远注入、不参与截断`,
             `总量：正文 契约 ${c.contentWords} + 记忆 ${payload.words} = ${c.contentWords + payload.words} 词；模型实际收到 ${payload.totalWords} 词（总 prompt 预算 ${cfg.totalPromptBudgetWords}，超了只告警）`,
-            policy.present
-              ? `自主权契约：${policy.rows} 行动作 · ${policy.total === 0 ? '表结构无误' : `${policy.total} 条结构问题`}`
-              : '自主权契约：未启用（根目录没有 POLICY.md）',
           ]
           for (const i of issues.items) lines.push(`⚠️ ${i.file} ${i.detail}`)
-          for (const i of policy.items) lines.push(`⚠️ POLICY.md ${i.detail}`)
-          if (policy.truncated) {
-            lines.push(`⚠️ 另有 ${policy.total - policy.items.length} 条结构问题未显示（最多列前 ${policy.items.length} 条）`)
-          }
           print(lines.join('\n'), false)
         }
       } else {
-        print({ contract: c, issues, policy }, true)
+        print({ contract: c, issues }, true)
       }
       return
     }

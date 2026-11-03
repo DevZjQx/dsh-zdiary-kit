@@ -2,7 +2,7 @@
  * 记忆注入（M1）：读 vault 根目录的 AGENTS.md / USER.md / MEMORY.md，
  * 按 `memoryBudgetWords` 截断，渲染成一段可注入系统提示的文本。
  * 另读 DREAMS.md 的「上次做梦」一行（不进正文、不计预算），给周节奏一句机械提醒。
- * 契约层（PERSONA.md / POLICY.md）单独一段注入、永远在记忆段之前、不参与截断，
+ * 契约层（PERSONA.md）单独一段注入、永远在记忆段之前、不参与截断，
  * 超预算只告警；缺文件 = 未启用，0.9 的老库逐字节不变。
  *
  * 硬约定（与 docs/plan-memory-layers.md §3 D6 一致）：
@@ -45,7 +45,7 @@ export interface MemoryFileInfo {
   retiredWords: number
 }
 
-/** 契约文件（PERSONA.md / POLICY.md）的一份 */
+/** 契约文件（PERSONA.md）的一份 */
 export interface ContractFileInfo {
   name: (typeof CONTRACT_META_FILES)[number]
   present: boolean
@@ -55,7 +55,7 @@ export interface ContractFileInfo {
 /** 契约段：永远注入、不参与 MEMORY 截断；超预算只告警 */
 export interface ContractSegment {
   present: boolean
-  /** 契约正文词数（含 `## PERSONA.md` / `## POLICY.md` 标题，不含告警行）—— 预算判断用这个 */
+  /** 契约正文词数（含 `## PERSONA.md` 标题，不含告警行）—— 预算判断用这个 */
   contentWords: number
   /** 契约段在载荷里的总词数（contentWords + 告警行） */
   words: number
@@ -312,7 +312,7 @@ function readMeta(cfg: Config): Array<{ name: MetaName; body: string }> {
   return out
 }
 
-/** 读契约层两份（PERSONA.md / POLICY.md）；缺文件 = 空 = 未启用，不报错 */
+/** 读契约层（PERSONA.md）；缺文件 = 空 = 未启用，不报错 */
 function readContracts(cfg: Config): Array<{ name: (typeof CONTRACT_META_FILES)[number]; body: string }> {
   return CONTRACT_META_FILES.map((name) => {
     let body = ''
@@ -522,7 +522,7 @@ function computePayload(cfg: Config): MemoryPayload {
       notice
   }
 
-  // ── 契约段（角色 + 自主权）：永远注入、在记忆段之前、不参与截断 ────
+  // ── 契约段（角色）：永远注入、在记忆段之前、不参与截断 ────
   // 超预算只告警不静默丢；总 prompt 超限点名但不自动截契约。
   // 没有契约文件 = 未启用：不多一个词，0.9 的老库逐字节一致。
   const contractBudget = cfg.contractBudgetWords

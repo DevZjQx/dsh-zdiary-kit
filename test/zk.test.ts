@@ -33,6 +33,7 @@ const toolsFeature = await import('../src/features/zk-tools/feature.ts')
 const settingsFeature = await import('../src/features/settings/feature.ts')
 const workspaceLib = await import('../src/lib/workspace.ts')
 const toolLib = await import('../src/lib/tool.ts')
+const aliasLib = await import('../src/lib/alias.ts')
 const fm = await import('../src/lib/frontmatter.ts')
 const installLib = await import('../src/lib/install.ts')
 const readonlyFeature = await import('../src/features/readonly/feature.ts')
@@ -42,7 +43,6 @@ store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } 
 const cfg = store.config()
 
 const personaTpl = await import('../src/lib/persona-template.ts')
-const policyLib = await import('../src/lib/policy.ts')
 const metaLib = await import('../src/lib/meta.ts')
 
 const available = (await zk.versionOf(zkBin)) !== null
@@ -65,6 +65,25 @@ function lossyPaths(value: unknown, at = 'value'): string[] {
     return Object.entries(value as Record<string, unknown>).flatMap(([key, item]) => lossyPaths(item, `${at}.${key}`))
   }
   return []
+}
+
+/**
+ * 返回值里有没有 output schema 没声明的 key。
+ * schema 一律 additionalProperties: false —— 多一个 key，宿主一开始校验就是整次 invalid output，
+ * 而 render 与测试都只看字段值，抓不到这种漂移。
+ */
+function undeclaredKeys(value: unknown, schema: Record<string, unknown>, at = 'value'): string[] {
+  if (Array.isArray(value)) {
+    const items = schema.items as Record<string, unknown> | undefined
+    return items ? value.flatMap((item, i) => undeclaredKeys(item, items, `${at}[${i}]`)) : []
+  }
+  if (!value || typeof value !== 'object') return []
+  if (schema.type !== 'object') return []
+  const props = (schema.properties ?? {}) as Record<string, Record<string, unknown>>
+  return Object.entries(value as Record<string, unknown>).flatMap(([key, item]) => {
+    if (!(key in props)) return [`${at}.${key}`]
+    return undeclaredKeys(item, props[key], `${at}.${key}`)
+  })
 }
 
 afterAll(() => {
@@ -2305,13 +2324,11 @@ describe('tools', () => {
     })
     try {
       fs.writeFileSync(path.join(notebook, 'PERSONA.md'), personaTpl.PERSONA_TEMPLATE)
-      fs.writeFileSync(path.join(notebook, 'POLICY.md'), personaTpl.POLICY_TEMPLATE)
       const defs = toolsFeature.buildTools()
       const ctxTool = defs.find((d) => d.name === 'zk_context')!
       const value = await ctxTool.execute({}, { signal: AbortSignal.timeout(10_000) }) as {
         notebook: string
         contract: { present: boolean; contentWords: number; overWords: number }
-        policy: { present: boolean; actions: Array<{ action: string }>; total: number; issues: Array<{ kind: string; detail: string }>; truncated: boolean }
         notebooks: Array<{ name: string; path: string; structure: string; active: boolean }>
       }
       expect(value.notebook).toBe('default')
@@ -2323,20 +2340,12 @@ describe('tools', () => {
       expect(value.contract.present).toBe(true)
       expect(value.contract.contentWords).toBeGreaterThan(0)
       expect(value.contract.overWords).toBe(0)
-      // POLICY 解析：模板 3 行、无结构问题；渲染里也要有一行（schema 与 render 各走一遍）
-      expect(value.policy.present).toBe(true)
-      expect(value.policy.actions.map((r) => r.action)).toEqual(['zk.read', 'zk.note.write', 'zk.notebook.use'])
-      expect(value.policy.total).toBe(0)
-      expect(value.policy.issues).toEqual([])
-      expect(value.policy.truncated).toBe(false)
       const blocks = ctxTool.output.render({}, value)
       expect(blocks[0].text).toContain(`笔记本「default」（flat）→ ${notebook}`)
       expect(blocks[0].text).toContain('另有：work（layered）')
       expect(blocks[0].text).toContain('正文（含标题）')
-      expect(blocks[0].text).toContain('自主权契约：3 行动作')
     } finally {
       fs.rmSync(path.join(notebook, 'PERSONA.md'), { force: true })
-      fs.rmSync(path.join(notebook, 'POLICY.md'), { force: true })
       store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
     }
   })
@@ -2383,6 +2392,15 @@ describe('tools', () => {
     expect(Array.isArray(dream.rejected)).toBe(true)
     const stats = await call('zk_stats', {})
     expect(Number(stats.notes)).toBeGreaterThan(3)
+  })
+
+  it('输出 key 不超出 output schema：zk_lint / zk_context', async () => {
+    const defs = toolsFeature.buildTools()
+    for (const name of ['zk_lint', 'zk_context']) {
+      const tool = defs.find((d) => d.name === name)!
+      const value = await tool.execute({}, { signal: AbortSignal.timeout(30_000) })
+      expect(undeclaredKeys(value, tool.output.schema)).toEqual([])
+    }
   })
 
   it('zk_query 单独传 include_archived 也能查回 superseded 归档', async () => {
@@ -2457,6 +2475,195 @@ describe('tools', () => {
     const read = defs.find((d) => d.name === 'zk_read')!
     const value = await read.execute({ path: 'MEMORY.md' }, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
     expect(String(value.content)).toContain('MEMORY-READ-TOKEN')
+  })
+})
+
+describe('alias config', () => {
+  test('只认 [alias] 段：上方注释进说明、注释掉的别名不算、非法工具名跳过', () => {
+    const text = [
+      '[note]',
+      'filename = "{{id}}"',
+      '',
+      '[alias]',
+      '# 随机抽一篇笔记',
+      'lucky = "zk list --quiet --format full --sort random --limit 1"',
+      '',
+      '# 按参数列路径',
+      "pick = 'zk list --quiet --format {{path}} $@'",
+      '',
+      'inline = "zk list --quiet $@" # 行尾说明',
+      '',
+      '#lucky2 = "ignored"',
+      '',
+      'bad name = "x"',
+      // 首字符是 `-`：`zk -h` 会被当 flag，注册成工具执行的根本不是这个别名
+      '"-h" = "不是别名"',
+      'multi = """',
+      'zk list --quiet',
+      '"""',
+      '',
+      '[[alias]]',
+      'fromArray = "不是命令表"',
+      '',
+      '[group."daily"]',
+      'paths = ["journal"]',
+      '',
+      '[alias.foo]',
+      'lucky = "不是命令表"',
+    ].join('\n')
+    const aliases = aliasLib.parseAliases(text)
+    expect(aliases.map((a) => a.name)).toEqual(['lucky', 'pick', 'inline', 'multi'])
+    expect(aliases[0]).toEqual({
+      name: 'lucky',
+      command: 'zk list --quiet --format full --sort random --limit 1',
+      description: '随机抽一篇笔记',
+    })
+    expect(aliases[1].command).toBe('zk list --quiet --format {{path}} $@')
+    expect(aliases[1].description).toBe('按参数列路径')
+    expect(aliases[2].description).toBe('行尾说明')
+    expect(aliases[3].command).toBe('zk list --quiet')
+  })
+
+  test('坏 TOML 不抛：解析不了的别名跳过，后面的照常读', () => {
+    const aliases = aliasLib.parseAliases([
+      '[alias]',
+      'broken = "unterminated',
+      'ok = "zk list $@"',
+    ].join('\n'))
+    expect(aliases.map((a) => a.name)).toEqual(['ok'])
+  })
+})
+
+describe('alias tools', () => {
+  it('把 [alias] 注册成 zk_<名>：执行 zk <名>，args 传给 $@', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-alias-'))
+    try {
+      store.writeConfig({
+        notebooks: { default: { path: dir, structure: 'flat' } },
+        active: 'default',
+        zkPath: zkBin,
+        notesDir: 'notes',
+        dailyDir: 'journal',
+        defaultTags: [],
+        aliasTools: true,
+      })
+      const c = store.config()
+      await notebookLib.ensureNotebook(c)
+      const made = await zk.createNote(c, { title: 'Alias Note', content: 'alias body' })
+      const file = path.join(dir, '.zk', 'config.toml')
+      const before = fs.readFileSync(file, 'utf8')
+      expect(before).toContain('[alias]')
+      fs.writeFileSync(file, before.replace('[alias]\n', [
+        '[alias]',
+        '# 随机抽一篇笔记',
+        'lucky = "zk list --quiet --format full --sort random --limit 1"',
+        '',
+        '# 按参数列路径',
+        'pick = "zk list --quiet --format {{path}} $@"',
+        '',
+        '# 和内置 zk_search 撞名：跳过，不能覆盖内置工具',
+        'search = "zk list $@"',
+        '',
+      ].join('\n')), 'utf8')
+
+      const defs = toolsFeature.buildTools(() => dir)
+      const names = defs.map((d) => d.name)
+      expect(names).toContain('zk_lucky')
+      expect(names).toContain('zk_pick')
+      expect(names.filter((name) => name === 'zk_search')).toHaveLength(1)
+
+      const lucky = defs.find((d) => d.name === 'zk_lucky')!
+      expect(lucky.description).toContain('随机抽一篇笔记')
+      const out = await lucky.execute({}, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
+      expect(String(out.output)).toContain('Alias Note')
+      expect(String(out.output)).toContain(made.path)
+      expect(out.truncated).toBe(false)
+
+      const pick = defs.find((d) => d.name === 'zk_pick')!
+      const picked = await pick.execute(
+        { args: ['--match', 'Alias'] },
+        { signal: AbortSignal.timeout(30_000) },
+      ) as Record<string, unknown>
+      expect(String(picked.output).trim()).toBe(made.path)
+    } finally {
+      store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'], aliasTools: false })
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('开关默认关：[alias] 里有条目也不注册成工具，内置工具仍是 14 个', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-alias-off-'))
+    try {
+      store.writeConfig({
+        notebooks: { default: { path: dir, structure: 'flat' } },
+        active: 'default',
+        zkPath: zkBin,
+        notesDir: 'notes',
+        dailyDir: 'journal',
+        aliasTools: false,
+      })
+      await notebookLib.ensureNotebook(store.config())
+      const file = path.join(dir, '.zk', 'config.toml')
+      const body = fs.readFileSync(file, 'utf8').replace('[alias]\n', [
+        '[alias]',
+        '# 注册开关关着时，这条不许变成 zk_lucky',
+        'lucky = "zk list --quiet --format full --sort random --limit 1"',
+        '',
+      ].join('\n'))
+      fs.writeFileSync(file, body, 'utf8')
+      // 别名确实写在 config.toml 里：下面的断言不是因为「没有别名」而通过
+      expect(aliasLib.aliasesIn(dir).map((a) => a.name)).toEqual(['lucky'])
+
+      const defs = toolsFeature.buildTools(() => dir)
+      expect(defs.map((d) => d.name)).not.toContain('zk_lucky')
+      expect(defs).toHaveLength(14)
+    } finally {
+      store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'], aliasTools: false })
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('开关只认 true / "true"：缺省与拼错的值都不打开', () => {
+    const nb = path.join(home, 'nb-alias-switch')
+    expect(store.normalizeConfig({ notebook: nb }).aliasTools).toBe(false)
+    expect(store.normalizeConfig({ notebook: nb, aliasTools: true }).aliasTools).toBe(true)
+    // 设置页与 zk-kit config set 传的都是字符串
+    expect(store.normalizeConfig({ notebook: nb, aliasTools: 'true' }).aliasTools).toBe(true)
+    for (const bad of [1, '1', 'yes', 'TRUE', 'True', 'false', 0, '', null, new Date(0)]) {
+      expect(store.normalizeConfig({ notebook: nb, aliasTools: bad }).aliasTools).toBe(false)
+    }
+  })
+
+  it('别名工具是全局的：当前笔记本没有这个别名时明确报错，而不是跑到别的库', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-alias-missing-'))
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-alias-other-'))
+    try {
+      store.writeConfig({
+        notebooks: {
+          default: { path: dir, structure: 'flat' },
+          other: { path: other, structure: 'flat' },
+        },
+        active: 'default',
+        zkPath: zkBin,
+        notesDir: 'notes',
+        dailyDir: 'journal',
+        aliasTools: true,
+      })
+      const c = store.config()
+      await notebookLib.ensureNotebook(c)
+      const file = path.join(dir, '.zk', 'config.toml')
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('[alias]\n', '[alias]\nlucky = "zk list $@"\n'), 'utf8')
+      const defs = toolsFeature.buildTools(() => dir)
+      const lucky = defs.find((d) => d.name === 'zk_lucky')!
+      // 本会话固定到另一本没有别名的库：工具还在，但执行要按当前笔记本核对
+      session.pinSession('missing-alias-session', 'other', dir)
+      await expect(lucky.execute({}, { signal: AbortSignal.timeout(30_000), agent: { id: 'missing-alias-session' } }))
+        .rejects.toThrow(/当前笔记本没有别名/)
+    } finally {
+      store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'], aliasTools: false })
+      fs.rmSync(dir, { recursive: true, force: true })
+      fs.rmSync(other, { recursive: true, force: true })
+    }
   })
 })
 
@@ -2850,7 +3057,7 @@ function makeReq(url: string, opts: { method?: string; host?: string; remote?: s
 }
 
 describe('设置页', () => {
-  test('group paths 解析失败时提示手动编辑，可修复时才建议 --fix', async () => {
+  test('设置页渲染：group 提示、按钮常驻、bool 字段走复选框', async () => {
     const globals = globalThis as Record<string, unknown>
     const previous = { window: globals.window, document: globals.document }
     const states: unknown[] = []
@@ -2883,10 +3090,11 @@ describe('设置页', () => {
       await import('../src/features/settings/client.ts')
       expect(Section).toBeTruthy()
       const cfg = store.config()
-      const render = (actualPaths: string[] | null, notebookExists = true): string => {
+      const render = (actualPaths: string[] | null, notebookExists = true, override: Partial<typeof cfg> = {}): string => {
+        const current = { ...cfg, ...override }
         const snap = {
           ok: true,
-          config: cfg,
+          config: current,
           zk: { found: true, version: '0.15.7', source: 'managed' },
           notebook: { path: cfg.notebook, exists: notebookExists },
           structure: {
@@ -2900,7 +3108,7 @@ describe('设置页', () => {
           counts: null,
           countsError: null,
         }
-        states.splice(0, states.length, cfg, '', JSON.stringify(cfg), snap, '', '', '', '', '', '', '')
+        states.splice(0, states.length, current, '', JSON.stringify(current), snap, '', '', '', '', '', '', '')
         stateIndex = 0
         return JSON.stringify(Section!())
       }
@@ -2913,6 +3121,17 @@ describe('设置页', () => {
       // 不能只在 notebook.exists 时出现，否则提示指向一个不存在的可点项。
       expect(manual).toContain('写入契约模板')
       expect(render(null, false)).toContain('写入契约模板')
+
+      // bool 字段（aliasTools）必须是复选框，且状态里存的是真布尔：
+      // 走文本控件会被拼成 "false" 字符串，保存时归一化当成没启用 —— 勾了却存不进。
+      // 客户端模块的 factory 只在 import 时跑一次，换文件 import 拿不到第二个 Section，所以在这里验。
+      expect(manual).toContain('把 [alias] 注册成工具')
+      expect(manual).toContain('"type":"checkbox"')
+      expect(manual).toContain('"checked":false')
+      expect(manual).toContain('已关闭')
+      const aliasOn = render(null, true, { aliasTools: true })
+      expect(aliasOn).toContain('"checked":true')
+      expect(aliasOn).toContain('已开启')
 
       // 配置读取失败时也要有可点的重试，而不是只剩一行红字
       states.splice(0, states.length, null, '', '', null, '', '读取失败', '', '', '', '', '')
@@ -2985,28 +3204,27 @@ describe('设置页', () => {
       )
       const d = JSON.parse(res.body) as {
         ok: boolean
-        result: { personaWritten: boolean; policyWritten: boolean }
+        result: { personaWritten: boolean }
         warn: string | null
         notebook: { exists: boolean }
       }
       expect(d.ok).toBe(true)
-      expect(d.result).toEqual({ personaWritten: true, policyWritten: true })
+      expect(d.result).toEqual({ personaWritten: true })
       // 契约写了不等于库建好了：必须把下一步说出来
       expect(d.notebook.exists).toBe(false)
       expect(d.warn).toContain('初始化')
       expect(fs.existsSync(path.join(nb, 'PERSONA.md'))).toBe(true)
-      expect(fs.existsSync(path.join(nb, 'POLICY.md'))).toBe(true)
 
-      // 第二次点击：两份都已存在（false/false），warn 不能再说「已写入」
+      // 第二次点击：已存在（false），warn 不能再说「已写入」
       const again = makeRes()
       await routes.get('/dsh-zdiary-kit/api/contract')!(
         makeReq('/dsh-zdiary-kit/api/contract', { method: 'POST' }) as never, again as never,
       )
       const d2 = JSON.parse(again.body) as {
-        result: { personaWritten: boolean; policyWritten: boolean }
+        result: { personaWritten: boolean }
         warn: string | null
       }
-      expect(d2.result).toEqual({ personaWritten: false, policyWritten: false })
+      expect(d2.result).toEqual({ personaWritten: false })
       expect(d2.warn).toContain('初始化')
       expect(d2.warn).not.toContain('已写入')
     } finally {
@@ -3403,7 +3621,6 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
       // D9：记忆页分契约 / 用户 / 工作约定 / 记忆 / 周审 / 场景 + 载荷预览，不再只有四份文件名
       for (const name of ['契约', '用户', '工作约定', '记忆', '周审', '场景', '载荷预览']) expect(page.body).toContain(name)
       expect(page.body).toContain('PERSONA.md')
-      expect(page.body).toContain('POLICY.md')
       expect(page.body).toContain('记忆双链目标</a>')
       expect(page.body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
       expect(page.body).not.toContain('<script>')
@@ -3606,7 +3823,7 @@ describe('0.8.2：检索 / inbox / 标签提示 / 相似标题 / 分布 / 使用
   })
 })
 
-describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () => {
+describe('0.10：角色契约（M1，契约壳与可观测）', () => {
   const fresh = (name: string, structure: 'flat' | 'layered' = 'flat') =>
     store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure })
 
@@ -3621,25 +3838,21 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     expect(plain.contract.contentWords).toBe(0)
     expect(plain.contract.overWords).toBe(0)
     expect(plain.text).not.toContain('PERSONA.md')
-    expect(plain.text).not.toContain('POLICY.md')
     expect(plain.totalWords).toBe(memory.countWords(plain.text))
     expect(plain.overheadWords).toBe(plain.totalWords - plain.words - plain.contract.contentWords - plain.scene.words)
 
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), '<!-- zdiary-persona: v2 -->\n\n# 角色\n\n- name: 小z\n- role: 助手\n- updated: 2026-11-02\n')
-    fs.writeFileSync(path.join(cfg.notebook, 'POLICY.md'), '<!-- zdiary-policy: v2 -->\n\n# 自主权\n\n| action | level |\n|---|---|\n| publish | ask |\n')
     const withContract = memory.buildMemoryPayload(cfg)
     expect(withContract.contract.present).toBe(true)
-    expect(withContract.contract.files.filter((f) => f.present).length).toBe(2)
+    expect(withContract.contract.files.filter((f) => f.present).length).toBe(1)
     // 预算只看正文（含文件标题），告警行单列；overWords 是所有展示的唯一来源
     expect(withContract.contract.contentWords).toBeGreaterThan(0)
     expect(withContract.contract.noticeWords).toBe(withContract.contract.words - withContract.contract.contentWords)
     expect(withContract.contract.overWords).toBe(Math.max(0, withContract.contract.contentWords - withContract.contract.budget))
     const personaAt = withContract.text.indexOf('## PERSONA.md')
-    const policyAt = withContract.text.indexOf('## POLICY.md')
     const agentsAt = withContract.text.indexOf('## AGENTS.md')
     expect(personaAt).toBeGreaterThan(-1)
-    expect(personaAt).toBeLessThan(policyAt)
-    expect(policyAt).toBeLessThan(agentsAt)
+    expect(personaAt).toBeLessThan(agentsAt)
     // 契约不参与记忆预算：记忆段的 words 与无契约时一致
     expect(withContract.words).toBe(plain.words)
   })
@@ -3695,11 +3908,10 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     expect(p.files.find((f) => f.name === 'MEMORY.md')?.retiredWords).toBeGreaterThan(0)
   })
 
-  test('写入守卫：PERSONA.md / POLICY.md 进 META_NAMES，zk_append 拒绝', () => {
+  test('写入守卫：PERSONA.md 进 META_NAMES，zk_append 拒绝', () => {
     const cfg = fresh('nb-m1-guard')
     fs.mkdirSync(cfg.notebook, { recursive: true })
     expect(metaLib.META_NAMES).toContain('PERSONA.md')
-    expect(metaLib.META_NAMES).toContain('POLICY.md')
     expect(metaLib.isMetaPath('PERSONA.md')).toBe(true)
     expect(metaLib.isMetaPath('notes/PERSONA.md')).toBe(false)
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), '# 人写的角色\n')
@@ -3711,42 +3923,25 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     const cfg = fresh('nb-m1-lint')
     fs.mkdirSync(cfg.notebook, { recursive: true })
     const missing = lintLib.contractStatus(cfg)
-    expect(missing.total).toBe(2)
-    expect(missing.items.map((i) => i.kind).sort()).toEqual(['missing', 'missing'])
-    // 两份都没有 = 未启用：lint 不再永久打一条 ⚠️；只缺一份才算「启用到一半」
+    expect(missing.total).toBe(1)
+    expect(missing.items.map((i) => i.kind)).toEqual(['missing'])
+    // 缺 PERSONA.md = 未启用：lint 不再永久打一条 ⚠️；有旧版 / 占位符才提醒
     expect(lintLib.formatLintExtras({
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: missing,
-      policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
     }).some((line) => line.includes('契约'))).toBe(false)
-    const half = { total: 1, items: [{ file: 'POLICY.md' as const, kind: 'missing' as const, detail: '根目录没有这份文件' }] }
-    expect(lintLib.formatLintExtras({
-      incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
-      tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
-      template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
-      contract: half,
-      policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
-      similarTitles: { total: 0, truncated: false, items: [] },
-      indexHint: false,
-    }).some((line) => line.includes('POLICY.md'))).toBe(true)
-
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), personaTpl.PERSONA_TEMPLATE)
-    fs.writeFileSync(path.join(cfg.notebook, 'POLICY.md'), '<!-- zdiary-policy: v0 -->\n\n# 旧契约\n')
     const st = lintLib.contractStatus(cfg)
-    expect(st.items.map((i) => `${i.file}:${i.kind}`).sort()).toEqual([
-      'PERSONA.md:placeholder',
-      'POLICY.md:old',
-    ])
+    expect(st.items.map((i) => `${i.file}:${i.kind}`)).toEqual(['PERSONA.md:placeholder'])
     const empty = lintLib.formatLintExtras({
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: { total: 0, items: [] },
-      policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
     })
@@ -3756,7 +3951,6 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: st,
-      policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
     }).some((line) => line.includes('契约'))).toBe(true)
@@ -3765,7 +3959,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
   test('lint：契约版本按方向报告；只改首行数字会被正文哨兵发现', () => {
     const cfg = fresh('nb-m1-contract-direction')
     fs.mkdirSync(cfg.notebook, { recursive: true })
-    const write = (name: 'PERSONA.md' | 'POLICY.md', body: string) =>
+    const write = (name: 'PERSONA.md', body: string) =>
       fs.writeFileSync(path.join(cfg.notebook, name), body)
     const extras = (c: ReturnType<typeof lintLib.contractStatus>): string =>
       lintLib.formatLintExtras({
@@ -3773,13 +3967,9 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
         tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
         template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
         contract: c,
-        policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
         similarTitles: { total: 0, truncated: false, items: [] },
         indexHint: false,
       }).join('\n')
-
-    // POLICY 保持当前版本，避免 missing / placeholder 混进来
-    write('POLICY.md', `<!-- zdiary-policy: v${personaTpl.POLICY_TEMPLATE_VERSION} -->\n\n# 自主权契约\n`)
 
     // 标记比插件新：是 newer，不是 old；文案不能让 agent 改文件去配插件
     write('PERSONA.md', `<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION + 1} -->\n\n# 未来契约\n`)
@@ -3797,39 +3987,17 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     expect(mismatch.items[0]?.detail).toContain('仍含旧版已移除的内容')
     expect(extras(mismatch)).toContain('疑似只改了版本号')
 
-    // POLICY 的哨兵靠行首锚定（v4 删掉了 frontmatter 里的 version:）：
-    // 它自带换行，detail 里必须收掉 —— 否则一条警告会被劈成两行，提示跟着掉到下一行
-    write('PERSONA.md', `<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->\n\n# 角色契约\n`)
-    write('POLICY.md', `<!-- zdiary-policy: v${personaTpl.POLICY_TEMPLATE_VERSION} -->\n---\nversion: 2\n---\n\n# 自主权契约\n`)
-    const policy = lintLib.contractStatus(cfg)
-    const policyItem = policy.items.find((i) => i.file === 'POLICY.md')
-    expect(policy.items.map((i) => `${i.file}:${i.kind}`)).toEqual(['POLICY.md:mismatch'])
-    expect(policyItem?.detail).toBe(`标记是 v${personaTpl.POLICY_TEMPLATE_VERSION}，但正文仍含旧版已移除的内容：「version:」`)
-    expect(policyItem?.detail).not.toContain('\n')
-    const policyLine = extras(policy).split('\n').find((line) => line.includes('POLICY.md')) ?? ''
-    expect(policyLine).toContain('version:')
-    expect(policyLine).toContain('疑似只改了版本号')
-
-    // 反过来：正文里提到 version: 不算旧版 —— 哨兵必须只在行首匹配
-    write('POLICY.md', `<!-- zdiary-policy: v${personaTpl.POLICY_TEMPLATE_VERSION} -->\n---\nupdated: 2026-11-03\n---\n\n- 版本说明见 version: 小节\n`)
-    expect(lintLib.contractStatus(cfg).items).toEqual([])
   })
 
   test('模板：版本标记后紧跟 frontmatter，现有解析器可直接读', () => {
     // 升版本必须补正文哨兵，否则「只改首行数字」的检查会静默失效
     expect(agentsTpl.TEMPLATE_SENTINELS[agentsTpl.TEMPLATE_VERSION]).toBeDefined()
     expect(personaTpl.CONTRACT_TEMPLATE_SENTINELS['PERSONA.md'][personaTpl.PERSONA_TEMPLATE_VERSION]).toBeDefined()
-    expect(personaTpl.CONTRACT_TEMPLATE_SENTINELS['POLICY.md'][personaTpl.POLICY_TEMPLATE_VERSION]).toBeDefined()
     // 口头禅会让模型逐轮复读；v3 起只留「语气与边界」和负向的「禁用表达」
     expect(personaTpl.PERSONA_TEMPLATE).not.toContain('## 口头禅')
     expect(personaTpl.PERSONA_TEMPLATE).toContain('## 禁用表达')
     const persona = fm.parseFrontmatter(personaTpl.stripContractMarker(personaTpl.PERSONA_TEMPLATE)).fields
     expect(persona).toMatchObject({ name: '{{name}}', role: '{{role}}', updated: '{{updated}}' })
-    const policy = fm.parseFrontmatter(personaTpl.stripContractMarker(personaTpl.POLICY_TEMPLATE)).fields
-    expect(policy).toMatchObject({ updated: '{{updated}}', audit: 'DREAMS.md' })
-    // 只保留首行模板版本标记；frontmatter 里不再有第二个版本号
-    expect(policy.version).toBeUndefined()
-    expect(personaTpl.stripContractMarker(personaTpl.POLICY_TEMPLATE).startsWith('---')).toBe(true)
   })
 
   test('config：契约 / 场景 / 总 prompt 预算默认值与夹紧', () => {
@@ -3847,15 +4015,11 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     const cfg = fresh('nb-m1-with-contract')
     const first = await notebookLib.ensureNotebook(cfg)
     expect(first.personaWritten).toBe(false)
-    expect(first.policyWritten).toBe(false)
     expect(fs.existsSync(path.join(cfg.notebook, 'PERSONA.md'))).toBe(false)
 
     const withC = await notebookLib.ensureNotebook(cfg, undefined, { withContract: true })
     expect(withC.personaWritten).toBe(true)
-    expect(withC.policyWritten).toBe(true)
     expect(fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')).toContain(`<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->`)
-    expect(fs.readFileSync(path.join(cfg.notebook, 'POLICY.md'), 'utf8')).toContain(`<!-- zdiary-policy: v${personaTpl.POLICY_TEMPLATE_VERSION} -->`)
-    expect(fs.readFileSync(path.join(cfg.notebook, 'POLICY.md'), 'utf8')).toContain('zk.notebook.use')
 
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), '# 我自己写的\n')
     const again = await notebookLib.ensureNotebook(cfg, undefined, { withContract: true })
@@ -3868,14 +4032,14 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     try {
       expect(fs.existsSync(cfg.notebook)).toBe(false)
       const first = notebookLib.writeContractTemplates(cfg)
-      expect(first).toEqual({ personaWritten: true, policyWritten: true })
+      expect(first).toEqual({ personaWritten: true })
       // 只建目录 + 两份契约，不假装已经初始化
       expect(fs.existsSync(path.join(cfg.notebook, '.zk'))).toBe(false)
       const persona = fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')
       expect(persona).toContain(`<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->`)
 
       const second = notebookLib.writeContractTemplates(cfg)
-      expect(second).toEqual({ personaWritten: false, policyWritten: false })
+      expect(second).toEqual({ personaWritten: false })
 
       // 关键链路：先定角色、再建库。zk init 要能在已有目录（且里面有契约文件）上幂等接管，
       // 契约一个字都不能被覆盖。
@@ -3889,7 +4053,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     }
   })
 
-  it('记忆页：退役行有徽标与删除线；PERSONA/POLICY 不能按路径打开；载荷预览同源', async () => {
+  it('记忆页：退役行有徽标与删除线；PERSONA 不能按路径打开；载荷预览同源', async () => {
     const paths = await import('../src/config/paths.ts')
     const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
     const nb = path.join(home, 'readonly-m1')
@@ -3928,224 +4092,9 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
 
       const persona = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=note&path=PERSONA.md'))
       expect(persona.statusCode).toBe(400)
-      const policy = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=note&path=POLICY.md'))
-      expect(policy.statusCode).toBe(400)
     } finally {
       fs.writeFileSync(paths.CFG_FILE, before)
       fs.rmSync(nb, { recursive: true, force: true })
     }
-  })
-})
-
-describe('0.10 M3a：自主权契约解析（只读）', () => {
-  const fresh = (name: string) => store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin })
-
-  test('缺文件 = 未启用：parsePolicy 返回 null，policyStatus 不重复报 missing', () => {
-    const cfg = fresh('nb-m3a-missing')
-    fs.mkdirSync(cfg.notebook, { recursive: true })
-    expect(policyLib.parsePolicy(cfg)).toBeNull()
-    expect(policyLib.policyStatus(cfg)).toEqual({ present: false, rows: 0, total: 0, items: [], truncated: false })
-  })
-
-  test('模板解析出三行；audit 从 frontmatter 读出', () => {
-    const cfg = fresh('nb-m3a-valid')
-    fs.mkdirSync(cfg.notebook, { recursive: true })
-    fs.writeFileSync(path.join(cfg.notebook, 'POLICY.md'), personaTpl.POLICY_TEMPLATE)
-    const doc = policyLib.parsePolicy(cfg)
-    expect(doc).not.toBeNull()
-    expect(doc!.audit).toBe('DREAMS.md')
-    expect(doc!.rows).toEqual([
-      { action: 'zk.read', level: 'auto', approval: 'none', reversible: true },
-      { action: 'zk.note.write', level: 'auto', approval: 'none', reversible: true },
-      { action: 'zk.notebook.use', level: 'auto', approval: 'none', reversible: true },
-    ])
-    expect(doc!.issues).toEqual([])
-    expect(policyLib.policyStatus(cfg)).toEqual({ present: true, rows: 3, total: 0, items: [], truncated: false })
-  })
-
-  test('坏表只报告：合法行照常返回，坏行各自带原因', () => {
-    const doc = policyLib.parsePolicyText([
-      '<!-- zdiary-policy: v4 -->',
-      '---',
-      'updated: 2026-11-03',
-      '---',
-      '',
-      '# 自主权契约',
-      '',
-      '| action | level | approval | reversible |',
-      '|---|---|---|---|',
-      '| zk.read | auto | none | yes |',
-      '| bili.comment | sometimes | none | no |',
-      '| bili.approve | auto | sometimes | no |',
-      '| bili.coin | auto | none | maybe |',
-      '|  | auto | none | yes |',
-      '| zk.read | auto | none | yes |',
-      '| bili.like | auto | none | yes | extra |',
-    ].join('\n'))
-    expect(doc.rows.map((r) => r.action)).toEqual(['zk.read'])
-    expect(doc.issues.map((i) => i.kind)).toEqual([
-      'no-audit',
-      'unknown-level',
-      'unknown-approval',
-      'bad-reversible',
-      'empty-action',
-      'duplicate-action',
-      'row',
-    ])
-  })
-
-  test('没有表头 / 表头多一列：只报告，不猜', () => {
-    const noTable = policyLib.parsePolicyText('---\naudit: DREAMS.md\n---\n\n# 自主权契约\n\n没有表\n')
-    expect(noTable.rows).toEqual([])
-    expect(noTable.issues.map((i) => i.kind)).toEqual(['table'])
-
-    const fiveCols = policyLib.parsePolicyText([
-      '---',
-      'audit: DREAMS.md',
-      '---',
-      '| action | level | approval | reversible | trigger |',
-      '|---|---|---|---|---|',
-      '| zk.read | auto | none | yes | 随时 |',
-    ].join('\n'))
-    expect(fiveCols.rows).toEqual([])
-    expect(fiveCols.issues.map((i) => i.kind)).toEqual(['table', 'row'])
-  })
-
-  test('分隔行列数不对要报；表头多一列、数据行四列时动作仍按前四列解析', () => {
-    const fiveSep = policyLib.parsePolicyText([
-      '---',
-      'audit: DREAMS.md',
-      '---',
-      '| action | level | approval | reversible |',
-      '|---|---|---|---|---|',
-      '| zk.read | auto | none | yes |',
-    ].join('\n'))
-    expect(fiveSep.rows.map((r) => r.action)).toEqual(['zk.read'])
-    expect(fiveSep.issues).toEqual([{ kind: 'table', detail: '分隔行有 5 列，应为 4' }])
-
-    const fiveHeader = policyLib.parsePolicyText([
-      '---',
-      'audit: DREAMS.md',
-      '---',
-      '| action | level | approval | reversible | trigger |',
-      '|---|---|---|---|---|',
-      '| zk.read | auto | none | yes |',
-    ].join('\n'))
-    expect(fiveHeader.rows.map((r) => r.action)).toEqual(['zk.read'])
-    expect(fiveHeader.issues.map((i) => i.kind)).toEqual(['table'])
-  })
-
-  test('全坏行不叠「没有合法动作行」；空表才补这一条', () => {
-    const allBad = policyLib.parsePolicyText([
-      '---',
-      'audit: DREAMS.md',
-      '---',
-      '| action | level | approval | reversible |',
-      '|---|---|---|---|',
-      '| a | nope | none | yes |',
-    ].join('\n'))
-    expect(allBad.rows).toEqual([])
-    expect(allBad.issues.map((i) => i.kind)).toEqual(['unknown-level'])
-
-    const empty = policyLib.parsePolicyText([
-      '---',
-      'audit: DREAMS.md',
-      '---',
-      '| action | level | approval | reversible |',
-      '|---|---|---|---|',
-    ].join('\n'))
-    expect(empty.rows).toEqual([])
-    expect(empty.issues).toEqual([{ kind: 'table', detail: '表里没有合法的动作行' }])
-  })
-
-  test('空文件也算未启用：parsePolicy 返回 null', () => {
-    const cfg = fresh('nb-m3a-empty')
-    fs.mkdirSync(cfg.notebook, { recursive: true })
-    fs.writeFileSync(path.join(cfg.notebook, 'POLICY.md'), ' \n\n')
-    expect(policyLib.parsePolicy(cfg)).toBeNull()
-    expect(policyLib.policyStatus(cfg)).toEqual({ present: false, rows: 0, total: 0, items: [], truncated: false })
-  })
-
-  test('issues 最多 50 条：total 仍是完整数，truncated 标记截断', () => {
-    const cfg = fresh('nb-m3a-many')
-    fs.mkdirSync(cfg.notebook, { recursive: true })
-    const lines = [
-      '---',
-      'audit: DREAMS.md',
-      '---',
-      '| action | level | approval | reversible |',
-      '|---|---|---|---|',
-    ]
-    for (let i = 0; i < 60; i++) lines.push(`| a${i} | nope | none | yes |`)
-    fs.writeFileSync(path.join(cfg.notebook, 'POLICY.md'), lines.join('\n'))
-    const st = policyLib.policyStatus(cfg)
-    expect(st.present).toBe(true)
-    expect(st.rows).toBe(0)
-    expect(st.total).toBe(60)
-    expect(st.items.length).toBe(50)
-    expect(st.truncated).toBe(true)
-  })
-
-  test('缺分隔行不丢数据行；重复动作按大小写不敏感算', () => {
-    const noSep = policyLib.parsePolicyText([
-      '---',
-      'audit: DREAMS.md',
-      '---',
-      '| action | level | approval | reversible |',
-      '| zk.read | auto | none | yes |',
-      '| bili.publish | ask | human | no |',
-    ].join('\n'))
-    expect(noSep.rows.map((r) => r.action)).toEqual(['zk.read', 'bili.publish'])
-    expect(noSep.issues.map((i) => i.kind)).toEqual(['table'])
-
-    const dup = policyLib.parsePolicyText([
-      '---',
-      'audit: DREAMS.md',
-      '---',
-      '| action | level | approval | reversible |',
-      '|---|---|---|---|',
-      '| zk.read | auto | none | yes |',
-      '| ZK.READ | auto | none | yes |',
-    ].join('\n'))
-    expect(dup.rows.map((r) => r.action)).toEqual(['zk.read'])
-    expect(dup.issues.map((i) => i.kind)).toEqual(['duplicate-action'])
-  })
-
-  test('lint 文案：已启用才报结构问题；缺文件交给 contract 桶', () => {
-    const base = {
-      incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
-      tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
-      template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
-      contract: { total: 0, items: [] },
-      similarTitles: { total: 0, truncated: false, items: [] },
-      indexHint: false,
-    }
-    const lines = lintLib.formatLintExtras({
-      ...base,
-      policy: {
-        present: true,
-        rows: 1,
-        total: 1,
-        items: [{ kind: 'unknown-level', detail: 'bili.comment 的 level 是「sometimes」，只认 auto / ask / forbidden' }],
-        truncated: false,
-      },
-    })
-    expect(lines.some((line) => line.includes('自主权契约'))).toBe(true)
-    expect(lines.join('\n')).toContain('只认 auto / ask / forbidden')
-    const truncated = lintLib.formatLintExtras({
-      ...base,
-      policy: {
-        present: true,
-        rows: 0,
-        total: 60,
-        items: [{ kind: 'unknown-level', detail: 'x 的 level 不合法' }],
-        truncated: true,
-      },
-    })
-    expect(truncated.join('\n')).toContain('issues 已截断')
-    expect(lintLib.formatLintExtras({
-      ...base,
-      policy: { present: false, rows: 0, total: 0, items: [], truncated: false },
-    }).some((line) => line.includes('自主权契约'))).toBe(false)
   })
 })

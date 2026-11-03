@@ -9,9 +9,9 @@
 - `GET /status`：zk 位置/版本/来源、笔记本是否存在、笔记/标签/断链/孤立计数
 - `POST /init`：`ensureNotebook`（幂等；layered 时一并写 `AGENTS.md`）
 - `POST /agents`：`writeAgentsTemplate` —— flat 库的 opt-in，已存在不覆盖；返回 `result.written` 与最新快照
-- `POST /contract`：`writeContractTemplates` —— `PERSONA.md` / `POLICY.md` 的 opt-in，缺了才写，已存在不覆盖；
-  返回 `result.personaWritten` / `result.policyWritten` 与最新快照。
-  契约不依赖 zk：笔记本还没初始化时也能写（只 `mkdir` 笔记本目录 + 两份文件，不碰 `.zk`），
+- `POST /contract`：`writeContractTemplates` —— `PERSONA.md` 的 opt-in，缺了才写，已存在不覆盖；
+  返回 `result.personaWritten` 与最新快照。
+  契约不依赖 zk：笔记本还没初始化时也能写（只 `mkdir` 笔记本目录 + 文件，不碰 `.zk`），
   这时回包带 `warn` 提醒「点「初始化 / 补建」建库」；按钮因此不按 `notebook.exists` 隐藏。
 - `POST /index`：`zk index`
 - `POST /install`：内置 zk（下载 → 解包 → `--version` 验证）；`detail` 里回显下载源（自定义镜像会点名）
@@ -33,19 +33,22 @@
 快照里的 `workspace` 与 `notebook.path` 按插件进程工作区解析；agent 工具按各自会话工作区解析 ——
 空 / 相对路径下两者可能不是同一个目录，界面要如实标出来，别让人以为 agent 一定用的是这一份。
 
-浏览器半边 `client.ts`：声明式字段清单 `FIELDS`（文本键值行）、状态行、动作按钮、输出面板。
+浏览器半边 `client.ts`：声明式字段清单 `FIELDS`（默认是文本键值行；`type: 'bool'` 渲染成复选框，
+状态里存真布尔 —— 拼成 `"false"` 字符串会被归一化当成没启用，勾了却存不进）、状态行、动作按钮、输出面板。
 笔记本那一块不是 `FIELDS`（它是「名字 → {路径, 结构}」的表，字段清单表达不了）：
 当前笔记本下拉 + 每个笔记本一行（路径可改、结构下拉 `flat`/`layered`、可删，至少留一个）+ 新增一行，改完同样靠「保存」落盘。
 结构是**每个笔记本自己的**，就摆在那一行上；`flat → layered` 保存前弹窗明确写「只建目录与模板，不搬已有笔记」。
 `flat` 且缺 `AGENTS.md` 时，操作区多一个「写入 AGENTS.md 模板」按钮（走 `POST /agents`）；记忆状态行同时提示
 「缺 AGENTS.md：约定与周提醒未启用」。已有文件不覆盖，按钮点了也不会动用户的定制。
-操作区常驻「写入契约模板」按钮（走 `POST /contract`）：缺 `PERSONA.md` / `POLICY.md` 时写入，
+操作区常驻「写入契约模板」按钮（走 `POST /contract`）：缺 `PERSONA.md` 时写入，
 已存在就只回「已存在，没有覆盖」（契约允许人改，插件不做第二份真相）。
-这个按钮**不依赖 `notebook.exists`**：建库前也可以先定角色（服务端只建目录与两份契约，不碰 `.zk`），
+这个按钮**不依赖 `notebook.exists`**：建库前也可以先定角色（服务端只建目录与契约，不碰 `.zk`），
 成功提示里会带一条「还不是 zk 笔记本，点「初始化 / 补建」」的 `warn` ——
 否则自检说「点「写入契约模板」」时，未初始化的库根本没有对应的可点项。
 「记忆」分组里多三行配置：契约预算（`contractBudgetWords`，默认 240）、场景预算（`sceneBudgetWords`，80）、
 总 prompt 预算（`totalPromptBudgetWords`，900，启用契约后按实际载荷检查，只告警）。
+「工具」分组只有一个开关：`aliasTools`（默认关）—— 打开后插件加载时才把 `.zk/config.toml` 的 `[alias]`
+注册成 `zk_<名>`。注册发生在加载时，勾完保存还要重载插件（或重启 DSH）才会出现在工具列表里；hint 里写明了。
 分组标题直接标作用范围（「笔记本」是每本自己的，其余是全局）；删除笔记本先确认「只删配置，磁盘目录与笔记保留」。
 切换「当前笔记本」保存后自动建好目标笔记本（`ensureNotebook` 幂等）；改路径 / 新增不自动建（防手滑）。
 但**切的是新会话的默认值**：每个会话第一次用 zk_* 时就把当时的默认值固定下来，之后各走各的 ——

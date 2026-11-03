@@ -19,11 +19,20 @@
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题）；meta 文件不作为来源或目标 |
 | `zk_supersede` | 废弃过时结论：标 `superseded` + 写 `reason` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演；meta 文件不能废弃 |
 | `zk_rename` | 改名 / 换目录并修断链：入链（`[[…]]` 与 Markdown 链接，保留 `#锚点` 与 `\|别名`）按实际解析结果改到新路径，根目录 meta 里的 `[[来源]]` 一起改，被搬走那篇自己的相对 Markdown 链接按新位置重算；默认只预演 |
-| `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）与契约 `PERSONA.md` / `POLICY.md`（单独成段、不截断），另解析 `POLICY.md` 的四列动作表（只读，结构问题放 `policy.issues`，最多 50 条，`total` / `truncated` 给完整口径），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时这些内容每轮已自动带进系统提示 |
-| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本 / 契约（缺失·旧版·比插件新·标记与内容不符·未填占位符）/ 自主权契约表（表头·列数·level·approval·reversible·重复动作·缺 audit），每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；只报告不改写 |
+| `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）与角色契约 `PERSONA.md`（单独成段、不截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时这些内容每轮已自动带进系统提示 |
+| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本 / 契约（缺失·旧版·比插件新·标记与内容不符·未填占位符），每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、已在 MEMORY 的、窗口外积压、daily 未完成项、被引最多（先按「被日记提到几天」排）；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded），以及顶层目录与前 10 个标签的实时分布 |
 | `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |
+| `zk_<别名>` | 笔记本 `.zk/config.toml` 的 `[alias]` 里定义的自定义命令（例如 `lucky = "zk list --quiet --format full --sort random --limit 1"`）注册成工具：调用等于 `zk <别名> [args]`，`args` 追加到命令里的 `$@`；输出按原样返回。紧邻别名上方的注释（或行尾注释）作为工具说明；改完 config.toml 要重载插件才会出现新工具。**默认关闭**，见下 |
+
+别名工具在插件加载时读取各笔记本 `.zk/config.toml` 的 `[alias]` 段，把每个**未注释**的别名注册成 `zk_<别名>`（与内置 `zk_*` 撞名的别名会跳过）：
+执行交给 `zk <别名>`，`$@`、管道与 `$SHELL` 语义都由 zk 处理，插件不拼 shell；交互式命令（如 `edit`）不适合工具调用。
+工具名用 `zk_` 前缀而不是 `zk.`：DSH 的 function-name 契约只接受 `[A-Za-z0-9_-]`，点号会被 provider 拒绝。
+别名是 config.toml 里的 shell 命令 —— 注册成工具就等于让 agent 能执行它，只保留自己信得过的别名。
+它也不受内置 `zk_*` 的守卫约束：没有 meta 拒写、没有路径校验，`args` 里传 `--notebook-dir` 可以操作当前笔记本以外的库。
+**默认不注册**（`aliasTools` 默认 false，关着时不读 config.toml）：在设置页「工具」组勾选，或 `zk-kit config set aliasTools=true`，再重载插件；
+值只认 `true`（拼错的值会被归一化成 false 并在 `config set` 时回显）。
 
 写笔记前 agent 会先 `zk_search` 查重；flat 笔记本的 `zk_new` 还会按标题再查一次，重复直接报错。
 layered 笔记本的文件名是标题的 slug：英文标题自然得到英文文件名，短不短看标题本身；中文标题会变成很长的拼音名，要短名就在 `zk_new` 时传 `name`；老笔记不自动改名，**手工 `mv` 会断入链**，要改名用 `zk_rename`（默认预演，会重写引用）。
@@ -54,18 +63,13 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 `zk-kit init --with-agents`，或在设置页点「写入 AGENTS.md 模板」—— 已存在的文件绝不覆盖。
 模板首行有 `<!-- zdiary-template: vN -->` 版本标记：老库的 `AGENTS.md` 是旧版时 `zk_lint` 只提示，不自动改；标记比插件新时提示升级插件；标记等于当前版本但正文还留着旧句时按「标记与内容不符」报（只改数字不算合并）。
 
-**角色契约**：根目录还可以放 `PERSONA.md`（名字 / 身份 / 语气 / 边界）与 `POLICY.md`（读 / 写 / 发布 / 花钱 / 对外发言的
-`auto | ask | forbidden` 与审批入口）。两份与 `MEMORY.md` 同级：人和 agent 直接编辑，`zk_append` / `zk_new` 一律拒写，
-**缺文件 = 未启用**（旧库行为一个词不变）。它们单独成段、永远在记忆段之前注入，**不参与记忆预算的截断**：
+**角色契约**：根目录还可以放 `PERSONA.md`（名字 / 身份 / 语气 / 边界）。它与 `MEMORY.md` 同级：人和 agent 直接编辑，`zk_append` / `zk_new` 一律拒写，
+**缺文件 = 未启用**（旧库行为一个词不变）。它单独成段、永远在记忆段之前注入，**不参与记忆预算的截断**：
 契约是硬规则，超了只告警（`zk_context` / `doctor` / 记忆页都会点名），不会静默丢掉半份人设。
 三个预算可以分开调（设置页「记忆」组）：记忆 500 · 契约 240 · 场景 80，总 prompt 默认 900（启用契约后按实际载荷检查，超了只告警点名；没有契约的库不多一个词）。
 写入是 opt-in：`zk-kit init --with-contract` 或设置页「写入契约模板」，已存在的文件绝不覆盖。
-设置页的按钮不依赖 zk 初始化：笔记本还没建好时也能先写两份契约（只建根目录与文件，不碰 `.zk`），
+设置页的按钮不依赖 zk 初始化：笔记本还没建好时也能先写契约（只建根目录与文件，不碰 `.zk`），
 写完会提醒你仍需要点「初始化 / 补建」建库。
-`POLICY.md` 的**只读解析**已落地（M3a）：`zk_context.policy` 给动作行与结构问题，`zk_lint.policy` / `zk-kit contract` / `doctor` 只报告 ——
-表头、列数、`level` / `approval` / `reversible` 的取值、重复动作、缺 `audit` 都能看见；解析失败不猜，坏行逐条列原因；`issues` 最多 50 条（`total` / `truncated` 给完整口径）。
-**强制执行**仍属下一批（M3c）：插件只管自己的 `zk_*`，`publish` / `spend` 这类外部动作由 `bili_*` 等工具自己读同一份契约执行，
-插件不假装能管住别的插件 —— 契约是给人看、给模型读的边界，不是跨插件的权限中间件。
 **边界**：M1 是「一本笔记本一份」契约；多个 agent 共用一个库时先别启用，等 M4 的 per-agent persona ——
 否则 A 的人格会串到 B。
 
@@ -129,6 +133,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 | 目录与 group | 归档目录 | `supersede` 后搬到这里（保留原相对路径），默认 `archive` |
 | 记忆 | 注入预算（词） | AGENTS + USER + MEMORY 的合计上限，默认 500（中文按 2 字 1 词） |
 | 写入 | 默认标签 / zk_read 上限 | 新笔记自动带标签；单次读取字符上限 |
+| 工具 | 把 `[alias]` 注册成工具 | 复选框，默认关。打开后 `.zk/config.toml` 的 `[alias]` 变成 `zk_<名>` 工具；**加载时才注册**，勾完保存要重载插件 |
 | zk | zk 路径 / 内置版本 | 路径空 = 自动找；版本默认 0.15.7 |
 
 按钮：**保存** · **初始化 / 补建（按钮上带当前笔记本名）** · **重建索引** · **安装内置 zk** · **自检** · **只读视图** · **刷新**；
@@ -307,7 +312,7 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 ```bash
 zk-kit init                          # 建库 / 补齐目录、模板、group、AGENTS.md（幂等）
 zk-kit init --with-agents            # flat 库也写一份精简版 AGENTS.md（已存在不覆盖）
-zk-kit init --with-contract          # 写 PERSONA.md / POLICY.md 契约模板（缺了才写，已存在不覆盖）
+zk-kit init --with-contract          # 写 PERSONA.md 契约模板（缺了才写，已存在不覆盖）
 zk-kit contract                      # 契约状态：用量 / 预算 / 体检（只读）
 zk-kit groups                        # 对照配置与 .zk/config.toml 的 group（默认 dry-run）
 zk-kit groups --fix                  # 只改插件建的 group 的 paths / 组头（写前备份 .zk/config.toml.bak）
@@ -400,7 +405,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉，并检查没有顶层声明
   （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：14 个工具各跑一遍 + 7 条设置路由都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
+  `bun run smoke`（加载 dist：14 个内置工具各跑一遍 + 7 条设置路由都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
   `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
@@ -418,8 +423,9 @@ src/
 ├── config/                       # paths（唯一路径真相）+ store（默认值/白名单/归一化）+ session（会话级笔记本）
 ├── lib/
 │   ├── zk.ts                     # zk 唯一的调用面：解析二进制、list/new/append/link/daily/graph、路径守卫
+│   ├── alias.ts                  # 读 .zk/config.toml 的 [alias]（工具注册用，不执行）
 │   ├── frontmatter.ts            # 只改 status / superseded-by 这类标量，其余行原样保留
-│   ├── meta.ts                   # meta 文件清单（注入 3 份 / 排除 6 份，一个真相）
+│   ├── meta.ts                   # meta 文件清单（注入 3 份 / 排除 7 份，一个真相）
 │   ├── lint.ts / dream.ts        # 巡检与做梦：只报告，绝不写文件
 │   ├── notebook.ts               # 自举：zk init + 日记模板 + group 配置（幂等）
 │   ├── install.ts / platform.ts  # 内置 zk：平台映射、下载、解包、验证
@@ -428,7 +434,7 @@ src/
 │   ├── dsh.ts                    # 宿主契约（纯类型，编译后为空）
 │   └── exec.ts / http.ts / json-file.ts
 ├── features/
-│   ├── zk-tools/feature.ts       # 14 个工具
+│   ├── zk-tools/feature.ts       # 14 个内置工具 + [alias] 别名工具
 │   ├── settings/                 # 宿主 API + 浏览器 section
 │   └── readonly/                 # 只读视图：GET-only 路由 + Web 1.0 渲染（无 JS）
 └── cli.ts                        # zk-kit 命令行

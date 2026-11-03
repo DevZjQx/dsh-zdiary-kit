@@ -238,7 +238,7 @@ export function registerSettings({ route, isTrusted }) {
             json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }
     });
-    // ── 写入契约模板（PERSONA.md / POLICY.md；opt-in，已存在不覆盖）──
+    // ── 写入角色契约模板（PERSONA.md；opt-in，已存在不覆盖）──
     route(`${P}/contract`, async (req, res) => {
         if (!requireTrusted(req, res))
             return;
@@ -251,7 +251,7 @@ export function registerSettings({ route, isTrusted }) {
             const result = writeContractTemplates(cfg);
             // 契约不依赖 zk：允许在建库前先写。缺 .zk/config.toml 时明确提醒下一步，
             // 别让人以为写完契约笔记本就建好了。文案不区分「这次写没写」：
-            // 第二次点击时两份都已存在（false/false），说「已写入」会和「已存在，没有覆盖」自相矛盾。
+            // 第二次点击时文件已存在（false），说「已写入」会和「已存在，没有覆盖」自相矛盾。
             const warn = hasNotebook(cfg) ? null : '契约已就位（缺的才写，已存在不覆盖），但这还不是 zk 笔记本（缺 .zk/config.toml）—— 点「初始化 / 补建」建库';
             json(res, 200, { ok: true, result, warn, ...(await snapshot(cfg)) });
         }
@@ -366,7 +366,7 @@ export function registerSettings({ route, isTrusted }) {
             });
             const c = payload.contract;
             // 缺文件 = 未启用（不算错）；只有超预算才是 ✗（契约不截断）。
-            // 只启用一半 / 旧版 / 占位符不翻转 ok，但必须在 detail 里说出来 —— 自检不能比 doctor 还宽。
+            // 旧版 / 占位符不翻转 ok，但必须在 detail 里说出来 —— 自检不能比 doctor 还宽。
             const contractIssues = c.present ? contractStatus(cfg).items : [];
             const contractIssueText = contractIssues.map((i) => `${i.file} ${i.detail}`).join('；');
             items.push({
@@ -377,9 +377,9 @@ export function registerSettings({ route, isTrusted }) {
                         (c.overBudget ? `，超 ${c.overWords} 词（契约不截断，请缩减或调大契约预算）` : '') +
                         (contractIssueText ? `；⚠️ ${contractIssueText}` : '')
                     : exists
-                        ? '未启用：根目录没有 PERSONA.md / POLICY.md（点「写入契约模板」，缺文件不算错）'
+                        ? '未启用：根目录没有 PERSONA.md（点「写入契约模板」，缺文件不算错）'
                         // 契约不依赖 .zk：按钮在被测页面上始终可见，所以先写契约也是合法下一步
-                        : '未启用：根目录没有 PERSONA.md / POLICY.md（点「写入契约模板」可先写；再点「初始化 / 补建」建库，缺文件不算错）',
+                        : '未启用：根目录没有 PERSONA.md（点「写入契约模板」可先写；再点「初始化 / 补建」建库，缺文件不算错）',
             });
         }
         catch (err) {

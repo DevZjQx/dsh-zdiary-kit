@@ -31,9 +31,7 @@ import { parseFrontmatter } from './frontmatter.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './memory-format.ts'
 import type { FrontmatterFields } from './frontmatter.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION } from './agents-template.ts'
-import { CONTRACT_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION, POLICY_TEMPLATE_VERSION } from './persona-template.ts'
-import { policyStatus } from './policy.ts'
-import type { PolicyStatus } from './policy.ts'
+import { CONTRACT_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION } from './persona-template.ts'
 
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50
@@ -214,9 +212,9 @@ export interface LintTemplateBucket {
   currentText?: string
 }
 
-/** 契约体检（M1：missing / old / newer / mismatch / placeholder；policy 表结构等 M3 的 policy.ts） */
+/** 契约体检（M1：missing / old / newer / mismatch / placeholder） */
 export interface LintContractIssue {
-  file: 'PERSONA.md' | 'POLICY.md'
+  file: 'PERSONA.md'
   kind: 'missing' | 'old' | 'newer' | 'mismatch' | 'placeholder'
   /** 人读说明（old / newer 带当前 / 盘上版本；mismatch 带不符原因；placeholder 带占位符清单） */
   detail: string
@@ -265,10 +263,8 @@ export interface LintResult {
   tags: LintTagBucket
   /** 根目录 AGENTS.md 是不是当前版本的模板（只报告，不覆盖） */
   template: LintTemplateBucket
-  /** 契约层体检：PERSONA.md / POLICY.md 缺失 / 旧版 / 未填占位符（只报告） */
+  /** 契约层体检：PERSONA.md 缺失 / 旧版 / 未填占位符（只报告） */
   contract: LintContractBucket
-  /** 自主权契约体检：POLICY.md 的表结构（缺文件由 contract 桶负责，这里不重复报） */
-  policy: PolicyStatus
   /**
    * 非日记笔记已到 150 篇、根目录却没有 INDEX.md（P2-11）：只是提示，不生成静态索引。
    * 实时分布看 zk_stats（byDir / byTag），静态索引会过期、还要决定谁负责更新。
@@ -527,14 +523,14 @@ export function formatMemoryLinks(bucket: LintMemoryBucket): string | null {
  * `zk-kit lint` 与 `zk_lint` 各写一遍就会改到一半。返回空数组 = 这一库三项都没问题，不占行。
  */
 export function formatLintExtras(
-  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'contract' | 'policy' | 'similarTitles' | 'indexHint'>,
+  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'contract' | 'similarTitles' | 'indexHint'>,
 ): string[] {
   const lines: string[] = []
-  // 两份都没有 = 契约未启用（默认状态）：不报错、不占行。只启用一半（缺一份）或
-  // 有旧版 / 占位符时才提醒 —— 否则每个老库每次 lint 都多一条永久 ⚠️，反而训练人忽略告警。
+  // 缺文件 = 契约未启用（默认状态）：不报错、不占行。
+  // 有旧版 / 占位符 / 标记不符时才提醒 —— 否则每个老库每次 lint 都多一条永久 ⚠️，反而训练人忽略告警。
   const contract = r.contract.items
-  const bothMissing = contract.length > 1 && contract.every((i) => i.kind === 'missing')
-  if (!bothMissing && contract.length > 0) {
+  const allMissing = contract.length > 0 && contract.every((i) => i.kind === 'missing')
+  if (!allMissing && contract.length > 0) {
     // 不同方向给不同指令：旧版要合并内容，比插件新要升级插件，标记与内容不符要查哨兵。
     // 混成一句「旧版由人按需处理」会把「v4 > 当前 v3」也说成旧版，模型最省力的动作就是改数字。
     const groups: Array<{ label: string; hint: string; items: LintContractIssue[] }> = [
@@ -556,7 +552,7 @@ export function formatLintExtras(
       {
         label: '',
         items: contract.filter((i) => i.kind === 'missing' || i.kind === 'placeholder'),
-        hint: '只报告：缺一份 = 尚未启用完整契约，占位符由人填',
+        hint: '只报告：缺文件 = 未启用，占位符由人填',
       },
     ]
     for (const group of groups) {
@@ -565,16 +561,6 @@ export function formatLintExtras(
         `⚠️ 契约${group.label}：${group.items.map((i) => `${i.file} ${i.detail}`).join('；')}｜${group.hint}`,
       )
     }
-  }
-  // 已启用但表结构坏了才报；缺文件归 contract 桶，同一个缺口不报两条。
-  if (r.policy.present && r.policy.total > 0) {
-    const sample = r.policy.items.slice(0, 5).map((i) => i.detail).join('；')
-    lines.push(
-      `⚠️ 自主权契约：${r.policy.rows} 行动作，${r.policy.total} 条结构问题 — ${sample}` +
-      (r.policy.total > 5 ? ' …' : '') +
-      (r.policy.truncated ? '（issues 已截断）' : '') +
-      '｜只报告，不改文件；表头写 action / level / approval / reversible',
-    )
   }
   if (r.incomplete.total > 0) {
     lines.push(
@@ -759,12 +745,11 @@ export function tagHygiene(notes: NoteRecord[], max = 20): LintTagBucket {
 
 const TEMPLATE_MARK_RE = /<!--\s*zdiary-template:\s*v(\d+)\s*-->/
 const PERSONA_MARK_RE = /<!--\s*zdiary-persona:\s*v(\d+)\s*-->/
-const POLICY_MARK_RE = /<!--\s*zdiary-policy:\s*v(\d+)\s*-->/
 const PLACEHOLDER_RE = /\{\{\s*[^}]+\s*\}\}/g
 
 /**
  * 哨兵文本的人读形态：detail 会被塞进 lint / doctor / 设置页的**单行**警告，
- * 而哨兵自己可能带换行（POLICY 的 `\nversion:` 靠行首锚定 frontmatter 字段）——
+ * 而哨兵自己可能带换行（靠行首锚定 frontmatter 字段的那类）——
  * 直接拼进去会把一条警告劈成两行，后面的「｜提示」也跟着掉到下一行。
  */
 function showSentinel(text: string): string {
@@ -796,7 +781,6 @@ export function contractStatus(cfg: Config): LintContractBucket {
   const items: LintContractIssue[] = []
   const files = [
     { name: 'PERSONA.md', mark: PERSONA_MARK_RE, current: PERSONA_TEMPLATE_VERSION },
-    { name: 'POLICY.md', mark: POLICY_MARK_RE, current: POLICY_TEMPLATE_VERSION },
   ] as const
   for (const f of files) {
     let body = ''
@@ -1024,7 +1008,6 @@ export async function lintNotebook(
     tags: tagHygiene(notes),
     template: templateStatus(cfg),
     contract: contractStatus(cfg),
-    policy: policyStatus(cfg),
     // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
     indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
   }

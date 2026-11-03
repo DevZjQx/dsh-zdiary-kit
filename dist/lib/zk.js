@@ -150,6 +150,46 @@ export async function zk(cfg, args, opts = {}) {
         throw err;
     }
 }
+/**
+ * 执行 `zk <别名> [argv...]`。
+ *
+ * 为什么不自己 `$SHELL -c`：别名里可以有 `$@`、管道、`$SHELL` 语法，这些语义只有 zk
+ * 自己完整；插件把 argv 当数组交给 zk，由 zk 负责引用，模型给的参数不会拼进 shell。
+ *
+ * 两个环境细节：
+ *   · `ZK_NOTEBOOK_DIR`：别名里通常写 `zk list …`，内层 zk 靠它找到同一本笔记本；
+ *   · `PATH`：内层 `zk` 必须能解析 —— 用户可能把 zk 放在托管目录 / 自定义路径，不一定在 PATH 里。
+ *
+ * 不传 `--no-input`：它会出现在别名的 `$@` 里（`zk ls --no-input` 能接受，任意命令不一定）。
+ * 交互式别名（`edit` 之类）本来就不适合工具调用，靠超时兜底。
+ */
+export async function runAlias(cfg, name, argv = [], opts = {}) {
+    const loc = await requireZk(cfg);
+    const env = { ...process.env, ZK_NOTEBOOK_DIR: cfg.notebook };
+    // 保证别名里的 `zk ...` 用的就是这次解析到的二进制（PATH 里可能先撞上另一个版本）
+    const resolved = path.isAbsolute(loc.bin) ? loc.bin : findOnPath(loc.bin);
+    let parts = String(process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+    if (resolved) {
+        const binDir = path.dirname(resolved);
+        parts = [binDir, ...parts.filter((dir) => dir !== binDir)];
+    }
+    env.PATH = parts.join(path.delimiter);
+    try {
+        const r = await run(loc.bin, [name, ...argv], {
+            cwd: opts.cwd ?? cfg.notebook,
+            env,
+            signal: opts.signal,
+            timeoutMs: opts.timeoutMs ?? 60_000,
+        });
+        return { alias: name, stdout: r.stdout, stderr: r.stderr };
+    }
+    catch (err) {
+        if (err instanceof ExecError) {
+            throw new ZkError(`别名「${name}」执行失败：${err.stderr.trim() || err.message}`, '检查 .zk/config.toml 的 [alias] 命令；交互式命令（如 edit）不适合工具调用', 'zk-failed');
+        }
+        throw err;
+    }
+}
 /** `zk: warning: error parsing note content <absPath>: <reason>` */
 const PARSE_WARNING = /^zk: warning: error parsing note content (.+?): (.+)$/;
 /**

@@ -49,9 +49,15 @@ export interface Config {
   defaultTags: string[]
   /** zk_read 单次最多返回多少字符 */
   maxReadChars: number
+  /**
+   * 是否把笔记本 `.zk/config.toml` 的 `[alias]` 注册成 `zk_<名>` 工具。
+   * 默认关：别名是 `$SHELL -c` 执行的任意命令，注册成工具等于把它交到模型手里 ——
+   * 要显式打开（`zk-kit config set aliasTools=true`），不是默认生效。
+   */
+  aliasTools: boolean
   /** 注入预算（词）：AGENTS.md + USER.md + MEMORY.md 的总载荷，中文按 2 字 1 词 */
   memoryBudgetWords: number
-  /** 契约预算（词）：PERSONA.md + POLICY.md 合计上限；超了只告警，不截断 */
+  /** 契约预算（词）：PERSONA.md 上限；超了只告警，不截断 */
   contractBudgetWords: number
   /** 场景预算（词）：运行时场景块（STATE，M3 起注入；M1 只落配置） */
   sceneBudgetWords: number
@@ -91,6 +97,7 @@ export const DEFAULTS: Config = {
   dailyGroup: 'daily',
   defaultTags: [],
   maxReadChars: 20_000,
+  aliasTools: false,
   memoryBudgetWords: 500,
   contractBudgetWords: 240,
   sceneBudgetWords: 80,
@@ -192,6 +199,9 @@ export function normalizeConfig(raw: unknown, workspace: string = processWorkspa
     dailyGroup: /^[A-Za-z0-9_-]{1,32}$/.test(String(src.dailyGroup ?? '')) ? String(src.dailyGroup) : DEFAULTS.dailyGroup,
     defaultTags: tags(src.defaultTags),
     maxReadChars: clamp(Number(src.maxReadChars), 1000, 200_000, DEFAULTS.maxReadChars),
+    // 只认 true / "true"（设置页与 CLI 传字符串）：1 / "yes" / "false" 一律当未启用，
+    // 免得拼错一个值就静默把别名注册成工具
+    aliasTools: src.aliasTools === true || src.aliasTools === 'true',
     memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
     contractBudgetWords: clamp(Number(src.contractBudgetWords), 50, 800, DEFAULTS.contractBudgetWords),
     sceneBudgetWords: clamp(Number(src.sceneBudgetWords), 20, 400, DEFAULTS.sceneBudgetWords),

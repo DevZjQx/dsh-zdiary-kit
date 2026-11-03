@@ -14,7 +14,7 @@ import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import { ZkError, zk } from './zk.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
-import { PERSONA_TEMPLATE, POLICY_TEMPLATE } from './persona-template.ts'
+import { PERSONA_TEMPLATE } from './persona-template.ts'
 import { effectivePaths, isPluginOwned, normGroupPath, parseGroupBlocks, sameGroupPath, samePaths } from './notebook-config.ts'
 import type { GroupBlock } from './notebook-config.ts'
 
@@ -23,7 +23,7 @@ export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agen
 /** ensureNotebook 的可选动作：flat 下是否顺手写 AGENTS.md（默认不写，守住 M0 的「不多一个文件」） */
 export interface EnsureOptions {
   withAgents?: boolean
-  /** 是否顺手写契约模板（PERSONA.md / POLICY.md；opt-in，缺了才写，已存在绝不覆盖） */
+  /** 是否顺手写角色契约模板（PERSONA.md；opt-in，缺了才写，已存在绝不覆盖） */
   withContract?: boolean
 }
 
@@ -46,8 +46,6 @@ export interface EnsureResult {
   workflowWritten: boolean
   /** 本次写了根目录的 PERSONA.md（只在 withContract 且缺失时写） */
   personaWritten: boolean
-  /** 本次写了根目录的 POLICY.md（同上） */
-  policyWritten: boolean
 }
 
 export const DAILY_TEMPLATE = `# {{format-date now "%Y-%m-%d"}}
@@ -457,21 +455,18 @@ export function writeAgentsTemplate(cfg: Config): boolean {
 }
 
 /**
- * 写根目录契约模板（PERSONA.md / POLICY.md；缺了才写，已存在绝不覆盖 —— 契约允许人改）。
+ * 写根目录角色契约模板（PERSONA.md；缺了才写，已存在绝不覆盖 —— 契约允许人改）。
  * 只走显式 opt-in（zk-kit init --with-contract / 设置页按钮）：默认升级不多一个文件。
  *
  * 先 mkdir 再写：设置页的按钮在笔记本还没初始化时也可点（「先定角色、再建库」是合法顺序）。
- * 这里只建目录与两份契约，不碰 .zk / 模板 / 笔记；之后 ensureNotebook 幂等接管同一目录。
+ * 这里只建目录与契约，不碰 .zk / 模板 / 笔记；之后 ensureNotebook 幂等接管同一目录。
  */
-export function writeContractTemplates(cfg: Config): { personaWritten: boolean; policyWritten: boolean } {
+export function writeContractTemplates(cfg: Config): { personaWritten: boolean } {
   const persona = path.join(cfg.notebook, 'PERSONA.md')
-  const policy = path.join(cfg.notebook, 'POLICY.md')
   const personaWritten = !fs.existsSync(persona)
-  const policyWritten = !fs.existsSync(policy)
-  if (personaWritten || policyWritten) fs.mkdirSync(cfg.notebook, { recursive: true })
+  if (personaWritten) fs.mkdirSync(cfg.notebook, { recursive: true })
   if (personaWritten) fs.writeFileSync(persona, PERSONA_TEMPLATE, 'utf8')
-  if (policyWritten) fs.writeFileSync(policy, POLICY_TEMPLATE, 'utf8')
-  return { personaWritten, policyWritten }
+  return { personaWritten }
 }
 
 /** 建好（或补好）笔记本；返回每一步各自做了没有，设置页直接展示 */
@@ -505,10 +500,10 @@ export async function ensureNotebook(
   // 不写的话，默认安装既没有约定、也没有周节奏提醒（P1-6），所以要有一个 opt-in 入口。
   const agentsWritten = layered || opts.withAgents === true ? writeAgentsTemplate(cfg) : false
 
-  // 契约层（角色 / 自主权）只走显式 opt-in：两种结构都不自动多两个文件（D10）。
+  // 契约层（角色）只走显式 opt-in：两种结构都不自动多一个文件（D10）。
   const contractWritten = opts.withContract === true
     ? writeContractTemplates(cfg)
-    : { personaWritten: false, policyWritten: false }
+    : { personaWritten: false }
 
   // WORKFLOW.md 是「动已有笔记」时才读的细则：不注入（省预算），但不进检索（是 meta）
   const workflowFile = path.join(cfg.notebook, 'WORKFLOW.md')
@@ -572,7 +567,6 @@ export async function ensureNotebook(
     agentsWritten,
     workflowWritten,
     personaWritten: contractWritten.personaWritten,
-    policyWritten: contractWritten.policyWritten,
   }
 }
 

@@ -1,11 +1,12 @@
 /**
- * zk 工具（feature 的公共入口）：14 个模型可调用的工具，全部经 lib/zk.ts。
+ * zk 工具（feature 的公共入口）：14 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
  *
  * 设计要点：
  *   · 除 zk_context（只读 meta 文件，不依赖 zk）外，每个工具进来先 ensureNotebook —— 第一次调用就自动建好笔记本，用户不用先点设置页；
  *   · 参数在 execute 里手动校验（DSH 对裸注册的工具不做输入校验）；
  *   · output.schema 只用 DSH 支持的子集（type/properties/required/items/enum + 注释）；
- *   · render 是纯函数：模型看到人话，程序拿到结构化值。
+ *   · render 是纯函数：模型看到人话，程序拿到结构化值；
+ *   · 别名工具在注册时按 `.zk/config.toml` 的 `[alias]` 追加，执行交给 `zk <别名>`（插件不拼 shell）。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -20,11 +21,12 @@ import { ensureNotebook, newNoteDir } from '../../lib/notebook.ts'
 import {
   searchNotes, searchNotesDetailed, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily,
   linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir,
-  localDate as dateOnly, ZkError,
+  localDate as dateOnly, runAlias, ZkError,
 } from '../../lib/zk.ts'
 import type { NoteRecord, NoteDoc, SupersedeResult, RenameResult } from '../../lib/zk.ts'
+import { configuredAliases, readAliases } from '../../lib/alias.ts'
+import type { AliasDefinition } from '../../lib/alias.ts'
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
-import { capPolicyIssues, parsePolicy, POLICY_APPROVALS, POLICY_ISSUE_KINDS, POLICY_LEVELS } from '../../lib/policy.ts'
 import { META_NAMES } from '../../lib/meta.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.ts'
@@ -193,28 +195,6 @@ const LINT_TEMPLATE = objSchema(
   },
   ['present', 'version', 'current', 'stale'],
 )
-/** 自主权契约的一条结构问题：lint 与 zk_context 共用，enum 从 POLICY_ISSUE_KINDS 取，避免两处漂移 */
-const POLICY_ISSUE = objSchema(
-  {
-    kind: { type: 'string', enum: [...POLICY_ISSUE_KINDS] },
-    detail: { type: 'string' },
-  },
-  ['kind', 'detail'],
-)
-/** 自主权契约体检：表头 / 列数 / level / approval / reversible / 重复动作 / 审计落点（只报告） */
-const LINT_POLICY = objSchema(
-  {
-    present: { type: 'boolean' },
-    rows: { type: 'number' },
-    total: { type: 'number' },
-    items: {
-      type: 'array',
-      items: POLICY_ISSUE,
-    },
-    truncated: { type: 'boolean' },
-  },
-  ['present', 'rows', 'total', 'items', 'truncated'],
-)
 /** 契约体检：缺失 / 旧版 / 比插件新 / 标记与内容不符 / 未填占位符（只报告，不覆盖） */
 const LINT_CONTRACT = objSchema(
   {
@@ -223,7 +203,7 @@ const LINT_CONTRACT = objSchema(
       type: 'array',
       items: objSchema(
         {
-          file: { type: 'string', enum: ['PERSONA.md', 'POLICY.md'] },
+          file: { type: 'string', enum: ['PERSONA.md'] },
           kind: { type: 'string', enum: ['missing', 'old', 'newer', 'mismatch', 'placeholder'] },
           detail: { type: 'string' },
         },
@@ -350,9 +330,72 @@ function def(spec: ToolSpec, workspaceOf: WorkspaceOf): ToolDefinitionLike {
   }
 }
 
+/** `[alias]` 自定义命令 → `zk_<名>` 工具：执行完全交给 zk，插件只负责把 argv 传进去 */
+function aliasTool(alias: AliasDefinition, workspaceOf: WorkspaceOf): ToolDefinitionLike {
+  const command = alias.command.length > 200 ? alias.command.slice(0, 200) + '…' : alias.command
+  const detail = alias.description
+    ? `${alias.description.replace(/[。.!！]\s*$/, '')}${command ? `（命令：${command}）` : ''}`
+    : (command ? `运行命令 ${command}` : '运行 config.toml 里定义的命令')
+  return def({
+    name: `zk_${alias.name}`,
+    description:
+      `笔记本 .zk/config.toml 的 [alias] 里定义的自定义命令「${alias.name}」：${detail}。` +
+      '调用等于 `zk <别名> [args]`：args 按顺序追加到别名命令里的 $@；输出按原样返回，不做 JSON 解析。' +
+      '它是人写的 shell 命令，不受内置 zk_* 的路径 / meta 守卫约束（args 也可能改变它操作的库）。',
+    parameters: {
+      type: 'object',
+      properties: {
+        args: S.arr('额外参数，按顺序追加到 zk <别名> 之后（对应别名命令里的 $@）', S.str('参数值')),
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: objSchema({
+        alias: { type: 'string' },
+        output: { type: 'string' },
+        stderr: { type: 'string' },
+        chars: { type: 'number' },
+        truncated: { type: 'boolean' },
+      }, ['alias', 'output', 'stderr', 'chars', 'truncated']),
+    },
+    async run(args, env) {
+      const cfg = configFor(env.workspace, env.sessionId)
+      await ensureNotebook(cfg, env.signal)
+      // 工具是全局注册的，会话可以随时 zk_use 切库：执行前按**当前笔记本**核对一次
+      if (!readAliases(cfg).some((item) => item.name === alias.name)) {
+        throw new ZkError(
+          `当前笔记本没有别名「${alias.name}」：${cfg.notebook}`,
+          `在 ${path.join(cfg.notebook, '.zk', 'config.toml')} 的 [alias] 里定义它，或用 zk_use 切到定义了它的笔记本`,
+        )
+      }
+      const argv = Array.isArray(args.args) ? args.args.map(String) : []
+      const r = await runAlias(cfg, alias.name, argv, { cwd: env.workspace, signal: env.signal })
+      const limit = Math.min(200_000, Math.max(1000, Math.trunc(cfg.maxReadChars)))
+      const truncated = r.stdout.length > limit
+      const stderr = r.stderr.trim()
+      return {
+        alias: alias.name,
+        output: truncated ? r.stdout.slice(0, limit) : r.stdout,
+        stderr: stderr.length > 2_000 ? stderr.slice(0, 2_000) + '…' : stderr,
+        chars: r.stdout.length,
+        truncated,
+      }
+    },
+    render(_args, value) {
+      const v = value as { alias: string; output: string; stderr: string; chars: number; truncated: boolean }
+      if (!v.output.trim() && !v.stderr) return text(`别名 ${v.alias}：没有输出`)
+      const parts: string[] = []
+      if (v.output.trim()) parts.push(v.output.trimEnd())
+      if (v.truncated) parts.push(`…（已截断：原输出 ${v.chars} 字，可在 config.toml 里改用更短的 --format）`)
+      if (v.stderr) parts.push('⚠️ ' + v.stderr)
+      return text(parts.join('\n'))
+    },
+  }, workspaceOf)
+}
+
 export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()): ToolDefinitionLike[] {
   const t = (spec: ToolSpec): ToolDefinitionLike => def(spec, workspaceOf)
-  return [
+  const builtins: ToolDefinitionLike[] = [
     t({
       name: 'zk_search',
       description:
@@ -968,9 +1011,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       name: 'zk_context',
       description:
         '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回；' +
-        '角色契约与自主权契约（PERSONA.md / POLICY.md）单独成段、在记忆段之前、不参与截断。' +
-        '另解析 POLICY.md 的四列动作表（只读；结构问题放 issues，不执行权限）；' +
-        'issues 最多 50 条，total / truncated 给完整口径。' +
+        '角色契约（PERSONA.md）单独成段、在记忆段之前、不参与截断。' +
         '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前）。' +
         '宿主支持注入时这些内容每轮已自动进入系统提示；宿主不支持、或想核对「被截断了多少」时用它。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -1007,24 +1048,6 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             expired: { type: 'boolean' },
             words: { type: 'number' },
           }, ['present', 'expired', 'words']),
-          policy: objSchema({
-            present: { type: 'boolean' },
-            actions: {
-              type: 'array',
-              items: objSchema({
-                action: { type: 'string' },
-                level: { type: 'string', enum: [...POLICY_LEVELS] },
-                approval: { type: 'string', enum: [...POLICY_APPROVALS] },
-                reversible: { type: 'boolean' },
-              }, ['action', 'level', 'approval', 'reversible']),
-            },
-            total: { type: 'number' },
-            issues: {
-              type: 'array',
-              items: POLICY_ISSUE,
-            },
-            truncated: { type: 'boolean' },
-          }, ['present', 'actions', 'total', 'issues', 'truncated']),
           notebook: { type: 'string' },
           defaultNotebook: { type: 'string' },
           pinned: { type: 'string' },
@@ -1047,25 +1070,14 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               retiredWords: { type: 'number' },
             }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
           },
-        }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'scene', 'policy', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
+        }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'scene', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
       },
       async run(_args, env) {
         // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
         const cfg = configFor(env.workspace, env.sessionId)
         const state = sessionState(env.workspace, env.sessionId)
-        const policy = parsePolicy(cfg)
-        const policyIssues = capPolicyIssues(policy?.issues ?? [])
         return {
           ...buildMemoryPayload(cfg),
-          policy: policy
-            ? {
-                present: true,
-                actions: policy.rows,
-                total: policyIssues.total,
-                issues: policyIssues.items,
-                truncated: policyIssues.truncated,
-              }
-            : { present: false, actions: [], total: 0, issues: [], truncated: false },
           notebook: state.active,
           defaultNotebook: state.defaultName,
           pinned: state.diverged ? state.pinned : '',
@@ -1077,13 +1089,6 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           notebook: string
           defaultNotebook?: string
           pinned?: string
-          policy?: {
-            present: boolean
-            actions: Array<{ action: string; level: string; approval: string; reversible: boolean }>
-            total: number
-            issues: Array<{ kind: string; detail: string }>
-            truncated: boolean
-          }
           notebooks?: Array<{ name: string; path: string; structure: string; active: boolean }>
         }
         // 别的会话切过全局默认、而本会话还钉在原库时，先把这件事说破
@@ -1097,18 +1102,13 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           ? `笔记本「${current.name}」（${current.structure}）→ ${current.path}` +
             (others.length ? `\n另有：${others.map((n) => `${n.name}（${n.structure}）`).join('、')} —— zk_use 切换本会话` : '')
           : `笔记本「${v.notebook}」`
-        if (!v.text) return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md / POLICY.md 契约。`)
+        if (!v.text) return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md 契约。`)
         const contract = v.contract?.present
           ? `\n\n契约：正文（含标题）${v.contract.contentWords}/${v.contract.budget} 词` +
             `（${v.contract.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
             (v.contract.overBudget ? `，超 ${v.contract.overWords} 词（契约不截断）` : '')
-          : '\n\n契约：未启用（根目录没有 PERSONA.md / POLICY.md）'
-        const policy = v.policy?.present
-          ? `\n自主权契约：${v.policy.actions.length} 行动作` +
-            (v.policy.total > 0 ? ` · ${v.policy.total} 条结构问题（zk_lint 看明细）` : '') +
-            (v.policy.truncated ? `，issues 只列前 ${v.policy.issues.length} 条` : '')
-          : ''
-        return text(drift + head + contract + policy + '\n\n' + v.text)
+          : '\n\n契约：未启用（根目录没有 PERSONA.md）'
+        return text(drift + head + contract + '\n\n' + v.text)
       },
     }),
 
@@ -1122,8 +1122,6 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         '没写日期（undated）、已退役（retired）、退役后新结论失效（retiredBroken）与超过 90 天没复核（stale）的条目。' +
         'incomplete 是 frontmatter 缺 type / status / authority 的笔记：缺失被索引落成空串，机械门会静默失效。' +
         'tags 查标签卫生（大小写变体 / 单例，标签总数 ≥ 30 才报）；template 说根目录 AGENTS.md 是不是当前版本。' +
-        'policy 查 POLICY.md 的自主权契约表（表头 / 列数 / level / approval / reversible / 重复动作 / 审计落点）；' +
-        'issues 最多 50 条（total 是完整数，truncated 标记截断）；缺文件归 contract，不在这里重复报。' +
         'similarTitles 是「改一两个字」的疑似重复（同目录、二元组相似度 ≥ 0.6）：与全等重名分开，只报告。' +
         'indexHint=true 表示笔记（不含日记）已到 150 篇而根目录还没有 INDEX.md（只是提示，不生成静态索引）。' +
         '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
@@ -1161,9 +1159,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           tags: LINT_TAGS,
           template: LINT_TEMPLATE,
           contract: LINT_CONTRACT,
-          policy: LINT_POLICY,
           indexHint: { type: 'boolean' },
-        }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'contract', 'policy', 'indexHint']),
+        }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'contract', 'indexHint']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -1547,6 +1544,22 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       },
     }),
   ]
+  // 别名工具跟着笔记本里的 [alias] 走：没有定义别名时这里就是空数组，内置工具数量不变。
+  // 默认不注册（aliasTools=false）：别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，
+  // 得由人显式打开；关着时连 config.toml 都不读。
+  // 配置读不了 / 宿主工作区取不到都不能拖垮内置工具：别名只是附加能力。
+  let aliases: ToolDefinitionLike[] = []
+  try {
+    const workspace = workspaceOf(undefined)
+    const cfg = config(workspace)
+    const taken = new Set(builtins.map((tool) => tool.name))
+    if (cfg.aliasTools) {
+      aliases = configuredAliases(cfg, workspace)
+        .filter((alias) => !taken.has(`zk_${alias.name}`)) // 别名 search → zk_search 会和内置工具撞名
+        .map((alias) => aliasTool(alias, workspaceOf))
+    }
+  } catch { /* 内置工具照常注册 */ }
+  return [...builtins, ...aliases]
 }
 
 /** 注册全部工具，返回撤销函数（workspaceOf 由 app 注入：会话 cwd 优先） */

@@ -4,7 +4,7 @@
  *
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
- *   · 14 个工具能注册、能执行、能渲染（zk_context 也执行一次）；
+ *   · 14 个内置工具能注册、能执行、能渲染（zk_context 也执行一次；`[alias]` 别名工具按配置另行追加）；
  *   · 8 条设置路由 + 4 条只读路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
@@ -190,20 +190,19 @@ console.log('[POST /agents] 已存在不覆盖 ✓ · 缺失才写模板 ✓')
 
 // 契约模板：同样是 opt-in + 缺了才写；写完再删掉，让后面的记忆注入仍按「无契约」夹具跑
 const contractWrite = await postJson('/contract')
-const cw = contractWrite.result as { personaWritten?: boolean; policyWritten?: boolean } | undefined
-if (cw?.personaWritten !== true || cw.policyWritten !== true) {
-  throw new Error('POST /contract 缺失时应该写入两份模板：' + JSON.stringify(contractWrite.result))
+const cw = contractWrite.result as { personaWritten?: boolean } | undefined
+if (cw?.personaWritten !== true) {
+  throw new Error('POST /contract 缺失时应该写入 PERSONA 模板：' + JSON.stringify(contractWrite.result))
 }
 if (!fs.readFileSync(path.join(notebook, 'PERSONA.md'), 'utf8').includes('<!-- zdiary-persona')) {
   throw new Error('POST /contract 写的不是 PERSONA 模板')
 }
 const contractKeep = await postJson('/contract')
-const ck = contractKeep.result as { personaWritten?: boolean; policyWritten?: boolean } | undefined
-if (ck?.personaWritten !== false || ck.policyWritten !== false) {
+const ck = contractKeep.result as { personaWritten?: boolean } | undefined
+if (ck?.personaWritten !== false) {
   throw new Error('POST /contract 对已存在的契约应该返回 false：' + JSON.stringify(contractKeep.result))
 }
 fs.rmSync(path.join(notebook, 'PERSONA.md'))
-fs.rmSync(path.join(notebook, 'POLICY.md'))
 console.log('[POST /contract] 缺失才写模板 ✓ · 已存在不覆盖 ✓')
 
 // ── 只读视图：GET 能看、写方法 405、JSON 不吐文件系统路径 ──

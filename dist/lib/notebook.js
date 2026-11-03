@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ZkError, zk } from './zk.js';
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.js';
-import { PERSONA_TEMPLATE, POLICY_TEMPLATE } from './persona-template.js';
+import { PERSONA_TEMPLATE } from './persona-template.js';
 import { effectivePaths, isPluginOwned, normGroupPath, parseGroupBlocks, sameGroupPath, samePaths } from './notebook-config.js';
 export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.js';
 export const DAILY_TEMPLATE = `# {{format-date now "%Y-%m-%d"}}
@@ -340,24 +340,20 @@ export function writeAgentsTemplate(cfg) {
     return true;
 }
 /**
- * 写根目录契约模板（PERSONA.md / POLICY.md；缺了才写，已存在绝不覆盖 —— 契约允许人改）。
+ * 写根目录角色契约模板（PERSONA.md；缺了才写，已存在绝不覆盖 —— 契约允许人改）。
  * 只走显式 opt-in（zk-kit init --with-contract / 设置页按钮）：默认升级不多一个文件。
  *
  * 先 mkdir 再写：设置页的按钮在笔记本还没初始化时也可点（「先定角色、再建库」是合法顺序）。
- * 这里只建目录与两份契约，不碰 .zk / 模板 / 笔记；之后 ensureNotebook 幂等接管同一目录。
+ * 这里只建目录与契约，不碰 .zk / 模板 / 笔记；之后 ensureNotebook 幂等接管同一目录。
  */
 export function writeContractTemplates(cfg) {
     const persona = path.join(cfg.notebook, 'PERSONA.md');
-    const policy = path.join(cfg.notebook, 'POLICY.md');
     const personaWritten = !fs.existsSync(persona);
-    const policyWritten = !fs.existsSync(policy);
-    if (personaWritten || policyWritten)
+    if (personaWritten)
         fs.mkdirSync(cfg.notebook, { recursive: true });
     if (personaWritten)
         fs.writeFileSync(persona, PERSONA_TEMPLATE, 'utf8');
-    if (policyWritten)
-        fs.writeFileSync(policy, POLICY_TEMPLATE, 'utf8');
-    return { personaWritten, policyWritten };
+    return { personaWritten };
 }
 /** 建好（或补好）笔记本；返回每一步各自做了没有，设置页直接展示 */
 export async function ensureNotebook(cfg, signal, opts = {}) {
@@ -381,10 +377,10 @@ export async function ensureNotebook(cfg, signal, opts = {}) {
     // layered 自动写；flat 只有显式 withAgents 才写 —— 0.1.0 的 vault 升级过来必须一个文件都不多（M0）。
     // 不写的话，默认安装既没有约定、也没有周节奏提醒（P1-6），所以要有一个 opt-in 入口。
     const agentsWritten = layered || opts.withAgents === true ? writeAgentsTemplate(cfg) : false;
-    // 契约层（角色 / 自主权）只走显式 opt-in：两种结构都不自动多两个文件（D10）。
+    // 契约层（角色）只走显式 opt-in：两种结构都不自动多一个文件（D10）。
     const contractWritten = opts.withContract === true
         ? writeContractTemplates(cfg)
-        : { personaWritten: false, policyWritten: false };
+        : { personaWritten: false };
     // WORKFLOW.md 是「动已有笔记」时才读的细则：不注入（省预算），但不进检索（是 meta）
     const workflowFile = path.join(cfg.notebook, 'WORKFLOW.md');
     let workflowWritten = false;
@@ -443,7 +439,6 @@ export async function ensureNotebook(cfg, signal, opts = {}) {
         agentsWritten,
         workflowWritten,
         personaWritten: contractWritten.personaWritten,
-        policyWritten: contractWritten.policyWritten,
     };
 }
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

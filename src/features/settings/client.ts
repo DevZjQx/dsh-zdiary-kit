@@ -38,6 +38,8 @@ interface ZkConfig {
   dailyGroup: string
   defaultTags: string[]
   maxReadChars: number
+  /** 是否把 .zk/config.toml 的 [alias] 注册成 zk_<名> 工具（默认 false） */
+  aliasTools: boolean
   memoryBudgetWords: number
   contractBudgetWords: number
   sceneBudgetWords: number
@@ -98,6 +100,8 @@ interface Field {
   key: keyof ZkConfig | 'defaultTagsText'
   label: string
   hint: string
+  /** 控件形态：默认单行文本；bool = 复选框（值为布尔，不走字符串） */
+  type?: 'text' | 'bool'
 }
 
 ;(window as unknown as { __ModuleLoader__?: ModuleLoader }).__ModuleLoader__?.load({
@@ -124,6 +128,8 @@ interface Field {
       '.zdk-hint{color:var(--dsw-alias-label-tertiary);margin-top:3px;font-size:11.5px;line-height:17px;white-space:pre-line}',
       '.zdk-input{background:transparent;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;color:var(--dsw-alias-label-primary);font-size:12.5px;height:28px;padding:0 8px;min-width:240px;outline:none}',
       '.zdk-input:focus-visible{border-color:var(--dsw-alias-brand-primary)}',
+      '.zdk-check{display:flex;align-items:center;gap:8px;height:28px;font-size:12.5px;color:var(--dsw-alias-label-secondary);cursor:pointer;user-select:none}',
+      '.zdk-check input{width:15px;height:15px;margin:0;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}',
       '.zdk-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:.5px solid var(--dsw-alias-border-l2)}',
       '.zdk-btn{background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-foreground,#fff);border:none;border-radius:6px;font-size:12.5px;height:30px;padding:0 12px;cursor:pointer}',
       '.zdk-btn:disabled{opacity:.5;cursor:default}',
@@ -148,11 +154,12 @@ interface Field {
       { group: '目录与 group', key: 'dailyGroup', label: '日记 group 名', hint: 'zk 配置里的 [group."…"]，默认 daily —— 初始化时会自动补上；所有笔记本共用' },
       { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；所有笔记本共用。旧归档目录非空时拒绝改动 —— 插件不会自动迁移文件' },
       { group: '记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 500（中文按 2 字 1 词）。超了先丢 MEMORY 里日期最旧的条目（一条日期都没有才退回从尾部丢），并回显截断了多少' },
-      { group: '记忆', key: 'contractBudgetWords', label: '契约预算（词）', hint: 'PERSONA.md + POLICY.md 的合计上限，默认 240（50-800）。契约是硬规则，永远注入、不参与截断；超了只告警' },
+      { group: '记忆', key: 'contractBudgetWords', label: '契约预算（词）', hint: 'PERSONA.md 的上限，默认 240（50-800）。契约是硬规则，永远注入、不参与截断；超了只告警' },
       { group: '记忆', key: 'sceneBudgetWords', label: '场景预算（词）', hint: '运行时场景块（STATE）的上限，默认 80；不计入记忆预算，过期不注入' },
       { group: '记忆', key: 'totalPromptBudgetWords', label: '总 prompt 预算（词）', hint: '启用契约后按实际载荷（含框与提示）检查，默认 900；超了只告警并点名，不自动截契约。没有契约的库不产生这条告警' },
       { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
       { group: '写入', key: 'maxReadChars', label: 'zk_read 单次上限（字符）', hint: '默认 20000；超了会截断并明确告知模型' },
+      { group: '工具', key: 'aliasTools', label: '把 [alias] 注册成工具', hint: '默认关闭。打开后，加载插件时把各笔记本 .zk/config.toml 的 [alias] 里未注释的别名注册成 zk_<名>，模型可以像调内置工具一样调它们。\n别名是 $SHELL -c 执行的任意命令 —— 打开等于把这些命令交给 agent，只在你信得过 config.toml 内容时开。\n交互式命令（edit / 带 --interactive）会卡到超时，不适合当工具。改完要重载插件（或重启 DSH）才会出现在工具列表里', type: 'bool' },
       { group: 'zk', key: 'zkPath', label: 'zk 路径（可空）', hint: '空 = 自动找：配置 → $ZK_BIN → PATH → 插件内置（~/.dsh/zdiary/bin）' },
       { group: 'zk', key: 'zkVersion', label: '内置 zk 版本', hint: '「安装内置 zk」下载的版本，默认 0.15.7；改完点安装即升级' },
     ]
@@ -164,6 +171,7 @@ interface Field {
       '目录与 group': '目录与 group · 全局（所有笔记本共用）',
       '记忆': '记忆 · 全局（所有笔记本共用）',
       '写入': '写入 · 全局（所有笔记本共用）',
+      '工具': '工具 · 全局（所有笔记本共用）',
       'zk': 'zk · 全局（整台机器共用）',
     }
 
@@ -277,14 +285,9 @@ interface Field {
           if (name === 'index') setOkMsg('✓ 索引已重建')
           if (name === 'agents') setOkMsg(d.result?.written === true ? '✓ 已写入 AGENTS.md 模板' : '✓ AGENTS.md 已存在，没有覆盖')
           if (name === 'contract') {
-            const res = d.result as { personaWritten?: boolean; policyWritten?: boolean } | undefined
+            const res = d.result as { personaWritten?: boolean } | undefined
             const r = res || {}
-            const parts: string[] = []
-            if (r.personaWritten) parts.push('写入 PERSONA.md')
-            else parts.push('PERSONA.md 已存在，没有覆盖')
-            if (r.policyWritten) parts.push('写入 POLICY.md')
-            else parts.push('POLICY.md 已存在，没有覆盖')
-            setOkMsg('✓ ' + parts.join(' · ') + (d.warn ? '\n⚠️ ' + d.warn : ''))
+            setOkMsg('✓ ' + (r.personaWritten ? '写入 PERSONA.md' : 'PERSONA.md 已存在，没有覆盖') + (d.warn ? '\n⚠️ ' + d.warn : ''))
           }
         } catch (e) { setErr(String((e as Error).message || e)) }
         finally { setBusy('') }
@@ -352,11 +355,23 @@ interface Field {
 
       const dirty = saved !== JSON.stringify({ ...cfg, defaultTags: tagsText.split(/[,，]/).map((s) => s.trim()).filter(Boolean) })
       const input = { className: 'zdk-input', autoComplete: 'off', spellCheck: false }
-      const up = (key: string, value: string) => setCfg((s) => (s ? { ...s, [key]: value } as ZkConfig : s))
+      const up = (key: string, value: unknown) => setCfg((s) => (s ? { ...s, [key]: value } as ZkConfig : s))
       const groups = [...new Set(FIELDS.map((f) => f.group))]
 
-      /** 一个字段 → 文本控件（枚举值在笔记本行的结构下拉里，不走字段清单） */
+      /** 一个字段 → 控件（枚举值在笔记本行的结构下拉里，不走字段清单） */
       const control = (f: Field) => {
+        // 布尔字段保持真正的 true / false 进状态：拼成 "false" 字符串会被归一化当成没启用，
+        // 界面上勾了却存不进（值和显示对不上）
+        if (f.type === 'bool') {
+          const on = (cfg as unknown as Record<string, unknown>)[f.key] === true
+          return h('label', { className: 'zdk-check' },
+            h('input', {
+              type: 'checkbox',
+              checked: on,
+              onChange: (e: { target: { checked: boolean } }) => up(f.key, e.target.checked === true),
+            }),
+            h('span', null, on ? '已开启' : '已关闭'))
+        }
         const value = f.key === 'defaultTagsText'
           ? tagsText
           : String((cfg as unknown as Record<string, unknown>)[f.key] ?? '')
