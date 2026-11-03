@@ -32,15 +32,19 @@ export interface PolicyRow {
   reversible: boolean
 }
 
-export type PolicyIssueKind =
-  | 'table'
-  | 'row'
-  | 'empty-action'
-  | 'unknown-level'
-  | 'unknown-approval'
-  | 'bad-reversible'
-  | 'duplicate-action'
-  | 'no-audit'
+/** 结构问题种类（运行时也要用：工具输出 schema 的 enum 从这里取，别在 feature.ts 里再抄一份） */
+export const POLICY_ISSUE_KINDS = [
+  'table',
+  'row',
+  'empty-action',
+  'unknown-level',
+  'unknown-approval',
+  'bad-reversible',
+  'duplicate-action',
+  'no-audit',
+] as const
+
+export type PolicyIssueKind = (typeof POLICY_ISSUE_KINDS)[number]
 
 export interface PolicyIssue {
   kind: PolicyIssueKind
@@ -107,11 +111,14 @@ export function parsePolicyText(content: string): PolicyDoc {
       detail: `表头有 ${header.length} 列，应为 ${POLICY_COLUMNS.length}：${POLICY_COLUMNS.join(' | ')}`,
     })
   }
-  if (!isSeparator(lines[headAt + 1] ?? '')) {
+  // 分隔行缺失时 headAt+1 就是第一条数据行：跳过它会静默丢一条动作
+  const hasSeparator = isSeparator(lines[headAt + 1] ?? '')
+  if (!hasSeparator) {
     issues.push({ kind: 'table', detail: '表头下缺分隔行（| --- | --- | --- | --- |）' })
   }
+  const start = hasSeparator ? headAt + 2 : headAt + 1
 
-  for (let i = headAt + 2; i < lines.length; i++) {
+  for (let i = start; i < lines.length; i++) {
     const line = lines[i] ?? ''
     if (!line.trim().startsWith('|')) break
     if (isSeparator(line)) continue
@@ -143,11 +150,13 @@ export function parsePolicyText(content: string): PolicyDoc {
       issues.push({ kind: 'bad-reversible', detail: `${action} 的 reversible 是「${rawReversible}」，只认 yes / no` })
       continue
     }
-    if (seen.has(action)) {
+    // level / approval 都按小写归一，动作名也照此办理：ZK.READ 与 zk.read 是同一个动作
+    const key = action.toLowerCase()
+    if (seen.has(key)) {
       issues.push({ kind: 'duplicate-action', detail: `${action} 重复出现，只保留第一行` })
       continue
     }
-    seen.add(action)
+    seen.add(key)
     rows.push({
       action,
       level: level as PolicyLevel,

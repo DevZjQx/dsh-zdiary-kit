@@ -322,7 +322,7 @@ updated: 2026-11-02
 **没做** `zk_*` 强制（M3c），也没做 `state.ts` / 场景注入（M3b）—— 按「先用 3 次开口验证形状」的约定后置。
 
 **落点**
-- `src/lib/policy.ts`（新）：解析 `POLICY.md` 的 frontmatter + 表；只读，解析失败返回 `null`。
+- `src/lib/policy.ts`（新）：解析 `POLICY.md` 的 frontmatter + 表；只读，缺文件 / 空文件返回 `null`，坏表只进 `issues`。
 - `src/lib/state.ts`（新）：读 `STATE` JSON；TTL、过期、敏感字段 redact；不写文件。
 - `src/lib/memory.ts`：payload 增加 `scene` 段（`{ present, expired, words, text }`）。
 - `src/features/zk-tools/feature.ts`：`zk_context` 返回 policy / state；`zk_*` 的 notebook 操作做最小 policy 检查（读 / 写 / 改 meta）。

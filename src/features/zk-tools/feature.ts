@@ -24,7 +24,7 @@ import {
 } from '../../lib/zk.ts'
 import type { NoteRecord, NoteDoc, SupersedeResult, RenameResult } from '../../lib/zk.ts'
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
-import { parsePolicy } from '../../lib/policy.ts'
+import { parsePolicy, POLICY_ISSUE_KINDS } from '../../lib/policy.ts'
 import { META_NAMES } from '../../lib/meta.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.ts'
@@ -193,6 +193,14 @@ const LINT_TEMPLATE = objSchema(
   },
   ['present', 'version', 'current', 'stale'],
 )
+/** 自主权契约的一条结构问题：lint 与 zk_context 共用，enum 从 POLICY_ISSUE_KINDS 取，避免两处漂移 */
+const POLICY_ISSUE = objSchema(
+  {
+    kind: { type: 'string', enum: [...POLICY_ISSUE_KINDS] },
+    detail: { type: 'string' },
+  },
+  ['kind', 'detail'],
+)
 /** 自主权契约体检：表头 / 列数 / level / approval / reversible / 重复动作 / 审计落点（只报告） */
 const LINT_POLICY = objSchema(
   {
@@ -201,13 +209,7 @@ const LINT_POLICY = objSchema(
     total: { type: 'number' },
     items: {
       type: 'array',
-      items: objSchema({
-        kind: {
-          type: 'string',
-          enum: ['table', 'row', 'empty-action', 'unknown-level', 'unknown-approval', 'bad-reversible', 'duplicate-action', 'no-audit'],
-        },
-        detail: { type: 'string' },
-      }, ['kind', 'detail']),
+      items: POLICY_ISSUE,
     },
   },
   ['present', 'rows', 'total', 'items'],
@@ -1005,7 +1007,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           }, ['present', 'expired', 'words']),
           policy: objSchema({
             present: { type: 'boolean' },
-            rows: {
+            actions: {
               type: 'array',
               items: objSchema({
                 action: { type: 'string' },
@@ -1016,15 +1018,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             },
             issues: {
               type: 'array',
-              items: objSchema({
-                kind: {
-                  type: 'string',
-                  enum: ['table', 'row', 'empty-action', 'unknown-level', 'unknown-approval', 'bad-reversible', 'duplicate-action', 'no-audit'],
-                },
-                detail: { type: 'string' },
-              }, ['kind', 'detail']),
+              items: POLICY_ISSUE,
             },
-          }, ['present', 'rows', 'issues']),
+          }, ['present', 'actions', 'issues']),
           notebook: { type: 'string' },
           defaultNotebook: { type: 'string' },
           pinned: { type: 'string' },
@@ -1057,8 +1053,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         return {
           ...buildMemoryPayload(cfg),
           policy: policy
-            ? { present: true, rows: policy.rows, issues: policy.issues }
-            : { present: false, rows: [], issues: [] },
+            ? { present: true, actions: policy.rows, issues: policy.issues }
+            : { present: false, actions: [], issues: [] },
           notebook: state.active,
           defaultNotebook: state.defaultName,
           pinned: state.diverged ? state.pinned : '',
@@ -1072,7 +1068,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           pinned?: string
           policy?: {
             present: boolean
-            rows: Array<{ action: string; level: string; approval: string; reversible: boolean }>
+            actions: Array<{ action: string; level: string; approval: string; reversible: boolean }>
             issues: Array<{ kind: string; detail: string }>
           }
           notebooks?: Array<{ name: string; path: string; structure: string; active: boolean }>
@@ -1095,7 +1091,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             (v.contract.overBudget ? `，超 ${v.contract.overWords} 词（契约不截断）` : '')
           : '\n\n契约：未启用（根目录没有 PERSONA.md / POLICY.md）'
         const policy = v.policy?.present
-          ? `\n自主权契约：${v.policy.rows.length} 行动作` +
+          ? `\n自主权契约：${v.policy.actions.length} 行动作` +
             (v.policy.issues.length ? ` · ${v.policy.issues.length} 条结构问题（zk_lint 看明细）` : '')
           : ''
         return text(drift + head + contract + policy + '\n\n' + v.text)

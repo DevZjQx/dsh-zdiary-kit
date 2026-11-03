@@ -57,11 +57,11 @@
 而 `AGENTS.md` 已是硬规则且永不截断，再往里塞 persona 只会挤掉 MEMORY。
 
 **自主权契约解析（M3a，只读）。** `parsePolicy(cfg)` 读根目录 `POLICY.md`：首行版本标记 → frontmatter → 一张四列表。
-合法行动作进 `rows`（`action` / `level` / `approval` / `reversible`），坏行进 `issues`：表头缺失或列数不对、行缺列、
+合法行动作进 `rows`（`zk_context.policy` 里叫 `actions`；字段是 `action` / `level` / `approval` / `reversible`），坏行进 `issues`：表头缺失或列数不对、行缺列、
 空 `action`、未知 `level`（只认 `auto` / `ask` / `forbidden`）、未知 `approval`（`none` / `human` / `policy`）、
 `reversible` 不是 `yes` / `no`、重复 `action`、frontmatter 缺 `audit`。
 缺文件 / 空文件返回 `null` —— 「未启用」不是结构错误，`contract` 桶已经报 missing，这里不重复报。
-解析失败不抛异常；`zk_context.policy` 返回 `rows` + `issues`，`zk_lint.policy` / `zk-kit contract` / `doctor` 只报告。
+解析失败不抛异常；`zk_context.policy` 返回 `actions` + `issues`，`zk_lint.policy` / `zk-kit contract` / `doctor` 只报告。
 **不执行权限**：`zk_*` 的强制检查与 `bili_*` 等外部动作的读取都在后续（M3b / M3c）—— 本层只把表读成可核对的结构。
 
 **记忆层与事实层的一致性。** `MEMORY.md` 每条结论后附 `[[来源路径]]`（写进 AGENTS 模板）；
@@ -96,7 +96,7 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 P1-3 的日期 / 退役格式 + P2-15 的版本标记后为 189 词；P2-8 去掉 `inbox/` 后实测 186 词；
 0.9 把「超预算从底部往前丢」改成「按日期丢最旧的一条」（截断语义变了，模板必须跟着改）后为 187 词，`TEMPLATE_VERSION` 升到 3；
 v4 去掉「宿主不会自动加载本文件」一句后为 175 词（单测锁 `≤190`；flat 精简版锁 `≤90`，v4 起实测 76）；
-v5 在 MEMORY 条目约定后补「先点开链接再用」后为 180 词（flat 80）。
+v5 在 MEMORY 条目约定后补「先 zk_read 核对来源」后为 180 词（flat 80）。
 `AGENTS.md` 是硬规则，单独超预算也不截断，只回显告警；文件内容里的 `</system-reminder>` 会被转义，
 截断目录里的段落标题同样转义 —— 不许提前闭合插件自己的框；任何一份文件读不到都当作不存在，笔记本没建好时返回空载荷而不是报错。
 

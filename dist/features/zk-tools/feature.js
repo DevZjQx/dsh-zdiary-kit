@@ -16,7 +16,7 @@ import { S, validateArgs } from '../../lib/tool.js';
 import { ensureNotebook, newNoteDir } from '../../lib/notebook.js';
 import { searchNotes, searchNotesDetailed, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, ZkError, } from '../../lib/zk.js';
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.js';
-import { parsePolicy } from '../../lib/policy.js';
+import { parsePolicy, POLICY_ISSUE_KINDS } from '../../lib/policy.js';
 import { META_NAMES } from '../../lib/meta.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from '../../lib/dream.js';
@@ -149,6 +149,11 @@ const LINT_TEMPLATE = objSchema({
     mismatchDetail: { type: 'string' },
     currentText: { type: 'string' },
 }, ['present', 'version', 'current', 'stale']);
+/** 自主权契约的一条结构问题：lint 与 zk_context 共用，enum 从 POLICY_ISSUE_KINDS 取，避免两处漂移 */
+const POLICY_ISSUE = objSchema({
+    kind: { type: 'string', enum: [...POLICY_ISSUE_KINDS] },
+    detail: { type: 'string' },
+}, ['kind', 'detail']);
 /** 自主权契约体检：表头 / 列数 / level / approval / reversible / 重复动作 / 审计落点（只报告） */
 const LINT_POLICY = objSchema({
     present: { type: 'boolean' },
@@ -156,13 +161,7 @@ const LINT_POLICY = objSchema({
     total: { type: 'number' },
     items: {
         type: 'array',
-        items: objSchema({
-            kind: {
-                type: 'string',
-                enum: ['table', 'row', 'empty-action', 'unknown-level', 'unknown-approval', 'bad-reversible', 'duplicate-action', 'no-audit'],
-            },
-            detail: { type: 'string' },
-        }, ['kind', 'detail']),
+        items: POLICY_ISSUE,
     },
 }, ['present', 'rows', 'total', 'items']);
 /** 契约体检：缺失 / 旧版 / 比插件新 / 标记与内容不符 / 未填占位符（只报告，不覆盖） */
@@ -929,7 +928,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     }, ['present', 'expired', 'words']),
                     policy: objSchema({
                         present: { type: 'boolean' },
-                        rows: {
+                        actions: {
                             type: 'array',
                             items: objSchema({
                                 action: { type: 'string' },
@@ -940,15 +939,9 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         },
                         issues: {
                             type: 'array',
-                            items: objSchema({
-                                kind: {
-                                    type: 'string',
-                                    enum: ['table', 'row', 'empty-action', 'unknown-level', 'unknown-approval', 'bad-reversible', 'duplicate-action', 'no-audit'],
-                                },
-                                detail: { type: 'string' },
-                            }, ['kind', 'detail']),
+                            items: POLICY_ISSUE,
                         },
-                    }, ['present', 'rows', 'issues']),
+                    }, ['present', 'actions', 'issues']),
                     notebook: { type: 'string' },
                     defaultNotebook: { type: 'string' },
                     pinned: { type: 'string' },
@@ -981,8 +974,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 return {
                     ...buildMemoryPayload(cfg),
                     policy: policy
-                        ? { present: true, rows: policy.rows, issues: policy.issues }
-                        : { present: false, rows: [], issues: [] },
+                        ? { present: true, actions: policy.rows, issues: policy.issues }
+                        : { present: false, actions: [], issues: [] },
                     notebook: state.active,
                     defaultNotebook: state.defaultName,
                     pinned: state.diverged ? state.pinned : '',
@@ -1010,7 +1003,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         (v.contract.overBudget ? `，超 ${v.contract.overWords} 词（契约不截断）` : '')
                     : '\n\n契约：未启用（根目录没有 PERSONA.md / POLICY.md）';
                 const policy = v.policy?.present
-                    ? `\n自主权契约：${v.policy.rows.length} 行动作` +
+                    ? `\n自主权契约：${v.policy.actions.length} 行动作` +
                         (v.policy.issues.length ? ` · ${v.policy.issues.length} 条结构问题（zk_lint 看明细）` : '')
                     : '';
                 return text(drift + head + contract + policy + '\n\n' + v.text);

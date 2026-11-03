@@ -2311,7 +2311,7 @@ describe('tools', () => {
       const value = await ctxTool.execute({}, { signal: AbortSignal.timeout(10_000) }) as {
         notebook: string
         contract: { present: boolean; contentWords: number; overWords: number }
-        policy: { present: boolean; rows: Array<{ action: string }>; issues: Array<{ kind: string; detail: string }> }
+        policy: { present: boolean; actions: Array<{ action: string }>; issues: Array<{ kind: string; detail: string }> }
         notebooks: Array<{ name: string; path: string; structure: string; active: boolean }>
       }
       expect(value.notebook).toBe('default')
@@ -2325,7 +2325,7 @@ describe('tools', () => {
       expect(value.contract.overWords).toBe(0)
       // POLICY 解析：模板 3 行、无结构问题；渲染里也要有一行（schema 与 render 各走一遍）
       expect(value.policy.present).toBe(true)
-      expect(value.policy.rows.map((r) => r.action)).toEqual(['zk.read', 'zk.note.write', 'zk.notebook.use'])
+      expect(value.policy.actions.map((r) => r.action)).toEqual(['zk.read', 'zk.note.write', 'zk.notebook.use'])
       expect(value.policy.issues).toEqual([])
       const blocks = ctxTool.output.render({}, value)
       expect(blocks[0].text).toContain(`笔记本「default」（flat）→ ${notebook}`)
@@ -3216,8 +3216,8 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
       expect(body.startsWith('<!-- zdiary-template: v')).toBe(true)
       expect(body).toContain('YYYY-MM-DD')
       expect(body).toContain('[superseded')
-      // v5：写了来源链接，还得说清「链接是拿来点开的」，否则模型只把它当脚注
-      expect(body).toContain('先点开链接再用')
+      // v5：写了来源链接，还得说清「要真的去读它」，否则模型只把它当脚注
+      expect(body).toContain('先 zk_read 核对来源')
     }
     expect(notebookLib.WORKFLOW_TEMPLATE.startsWith('<!-- zdiary-template: v')).toBe(true)
   })
@@ -3345,7 +3345,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     // 只把首行数字改成当前版本、正文还留着 v3 的句子：版本号对了不算合并完
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'),
       `<!-- zdiary-template: v${agentsTpl.TEMPLATE_VERSION} -->\n\n# 知识库工作约定\n\n` +
-      'MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]，先点开链接再用。\n\n' +
+      'MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]，先 zk_read 核对来源。\n\n' +
       '> zdiary 生成；DSH 不会自动加载，插件每轮注入。\n')
     const faked = lintLib.templateStatus(cfg)
     expect(faked.stale).toBe(true)
@@ -3356,6 +3356,14 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(fakedExtras).toContain('疑似只改了版本号')
     expect(fakedExtras).toContain('DSH 不会自动加载')
     expect(fakedExtras).toContain('--- 新版模板开始 ---')
+
+    // 哨兵的另一半：数字改成当前版本、正文却缺了只有当前版本才有的那句
+    fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'),
+      `<!-- zdiary-template: v${agentsTpl.TEMPLATE_VERSION} -->\n\n# 知识库工作约定\n\n` +
+      'MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]；退役写 - [superseded]。\n')
+    const missing = lintLib.templateStatus(cfg)
+    expect(missing.mismatch).toBe(true)
+    expect(missing.mismatchDetail).toContain('先 zk_read 核对来源')
 
     // flat 库拿 flat 模板：不能把 raw/ archive/ WORKFLOW.md 这些它没有的路径塞回去
     const flat = fresh('nb-p215-flat')
@@ -3997,6 +4005,31 @@ describe('0.10 M3a：自主权契约解析（只读）', () => {
     ].join('\n'))
     expect(fiveCols.rows).toEqual([])
     expect(fiveCols.issues.map((i) => i.kind)).toEqual(['table', 'row'])
+  })
+
+  test('缺分隔行不丢数据行；重复动作按大小写不敏感算', () => {
+    const noSep = policyLib.parsePolicyText([
+      '---',
+      'audit: DREAMS.md',
+      '---',
+      '| action | level | approval | reversible |',
+      '| zk.read | auto | none | yes |',
+      '| bili.publish | ask | human | no |',
+    ].join('\n'))
+    expect(noSep.rows.map((r) => r.action)).toEqual(['zk.read', 'bili.publish'])
+    expect(noSep.issues.map((i) => i.kind)).toEqual(['table'])
+
+    const dup = policyLib.parsePolicyText([
+      '---',
+      'audit: DREAMS.md',
+      '---',
+      '| action | level | approval | reversible |',
+      '|---|---|---|---|',
+      '| zk.read | auto | none | yes |',
+      '| ZK.READ | auto | none | yes |',
+    ].join('\n'))
+    expect(dup.rows.map((r) => r.action)).toEqual(['zk.read'])
+    expect(dup.issues.map((i) => i.kind)).toEqual(['duplicate-action'])
   })
 
   test('lint 文案：已启用才报结构问题；缺文件交给 contract 桶', () => {
