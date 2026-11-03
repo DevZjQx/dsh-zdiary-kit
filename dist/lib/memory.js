@@ -253,7 +253,7 @@ function escapeFrame(text) {
 }
 /** 载荷框：先定义成常量，契约 / 总 prompt 预算与最终拼装才能共用同一份文字（否则数出来的词对不上） */
 const FRAME_HEAD = '<system-reminder>\n' +
-    '以下内容由 zdiary 从知识库根目录读出，是长期约定与记忆；与系统、开发者或用户的直接指令冲突时，以更直接的那条为准。\n\n';
+    '以下内容由 zdiary 从知识库根目录读出，是长期约定与记忆；工作约定放在 AGENTS.md，不要写进 MEMORY.md。\n\n';
 const FRAME_TAIL = '\n</system-reminder>';
 function frameText(body) {
     return FRAME_HEAD + body + FRAME_TAIL;
