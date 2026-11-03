@@ -64,7 +64,7 @@ window.__ModuleLoader__?.load({
             { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；所有笔记本共用。旧归档目录非空时拒绝改动 —— 插件不会自动迁移文件' },
             { group: '记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 500（中文按 2 字 1 词）。超了先丢 MEMORY 里日期最旧的条目（一条日期都没有才退回从尾部丢），并回显截断了多少' },
             { group: '记忆', key: 'contractBudgetWords', label: '契约预算（词）', hint: 'PERSONA.md 的上限，默认 240（50-800）。契约是硬规则，永远注入、不参与截断；超了只告警' },
-            { group: '记忆', key: 'sceneBudgetWords', label: '场景预算（词）', hint: '投影后场景行的上限，默认 80；单独成段、不计入记忆预算。超了按 energy / mood → satiety → 地点 / 目标 的顺序裁' },
+            { group: '记忆', key: 'sceneBudgetWords', label: '场景预算（词）', hint: '投影后场景行的上限，默认 80；单独成段、不计入记忆预算。超了从尾部裁：自定义事件 → 地点 / 目标 → satiety → mood / energy' },
             { group: '记忆', key: 'sceneWindowDays', label: '状态窗口（天）', hint: 'count 与「最近几条事件」用的窗口，默认 30；hoursSince 仍读窗口外的最后一条（prune 会留 tombstone），所以久不记录也能算「多久没见」' },
             { group: '记忆', key: 'staleHours', label: '场景新鲜度（小时）', hint: '默认 72：地点 / 目标 / 在场超过这个时间就显示「未知（最后 X）」，不拿旧值当现在' },
             { group: '记忆', key: 'totalPromptBudgetWords', label: '合并预算（词）', hint: '记忆载荷 + 场景行的合计上限，默认 900；超了只在本页 / 自检 / 只读视图 / zk_context 回复里点名，不写进系统提示，也不自动截断契约或记忆' },

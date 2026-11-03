@@ -120,11 +120,12 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 契约单独一组：`contract.present / contentWords / words / noticeWords / budget / overBudget / overWords / files[]`（`contentWords` 含 `## PERSONA.md` 标题），
 外加 `totalWords`（`countWords(payload.text)`）与 `overheadWords`（框 / 做梦提醒 / notice / 契约告警等开销）。
 场景是**独立运行时上下文**（`systemPrompt.context()`，不进系统提示 section）：`scene: { present, presence, events, rulesVersion, words, emptyReason }`，不进 memory text、不占记忆预算；
-`stateEvents` 是当前规则的事件词汇行、`stateRulesVersion` 是它的规则版本（`v3` / `default` / `default(fallback)`；与 `zdiary:state` 同源；没有状态文件时为空串），宿主没有 `systemPrompt` 时的后备与核对用，
+`stateEvents` 是当前规则的事件词汇行（规则事件 + 在场事件；默认规则还含 `slept`）、`stateRulesVersion` 是它的规则版本（`v3` / `default` / `default(fallback)`；与 `zdiary:state` 同源；没有状态文件时为空串），宿主没有 `systemPrompt` 时的后备与核对用，
 `combinedWords` = `totalWords + scene.words` 才是合并总账（别叫「总 prompt」——宿主自己的系统提示不在里面），
 `combinedBudget` 是它的上限（`totalPromptBudgetWords`），两者一起返回，人才能自己比。
 `presence` 是三态：`present` / `absent` / `unknown`（布尔分不清「不在」和「没记录」）；
-`emptyReason` 说明「为什么没注入」：`no-log` / `budget`（有事件但一句放不下）/ `rules`（规则算出来全是 null）/ `error`（日志读不了：权限 / 是个目录，不再冒充「未启用」）。
+`emptyReason` 说明「为什么没注入」：`no-log` / `budget`（有事件但一句放不下）/ `rules`（规则算出来全是 null，且窗口内没有可展示的自定义事件）/ `error`（日志读不了：权限 / 是个目录，不再冒充「未启用」）。
+场景行末尾可能带一段「记录」：窗口内、规则没消费、也不是内置事件（`slept` / 在场事件）的名字，最多 3 个，按最后发生时间倒序，只给名字 + 时间（`记录 coffee（2 小时前）`），不读参数值；它只是让 agent 自己起的事件下一轮还能看见，不参与 energy / mood 等投影。没有自定义事件时这句不出现；预算紧时它最先被裁。
 契约**不参与** `memoryBudgetWords` 的截断，超了只告警；`overWords` 是所有展示的唯一超量口径，别拿 `words` 再做减法。
 合并总量超 `totalPromptBudgetWords` 时**只在人看的界面点名**（`zk_context` 回复 / `doctor` / 记忆页 / 设置页），
 不写进系统提示、也不自动截断 —— 那句话每轮都要花词，而模型不需要这个数字。
@@ -138,6 +139,8 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 有 `.state/rules` / `.state/events.log` 时，`lib/state-contract.ts` 从当前规则 AST 提取事件名 / 参数名，作为 `zdiary:state` 系统提示段注入：
 规则来自文件时只列规则读取的事件，用默认规则（含只有 `events.log`）时补上内置 `slept`；参数写成 `place=<值>`（占位，别照抄空值）；
 整行上限 160 词 / 1200 字符，超了从尾部截断并注明「另有 N 个未列出」，在场事件永远保留。
+**日志里的事件名不进词表**：这一行是系统提示段，append 不该让它每轮变（会打断提示前缀缓存）；
+agent 自己起的事件名由场景行的「记录」尾巴负责露出（见上），不参与投影，要参与就得人写进 `.state/rules`。
 （没有状态文件时不注入；规则一改下一轮就换，不需要手工同步 AGENTS.md）；插件不校验事件名是否属于内置集；
 `show` 只回投影 + 窗口内最近 20 条，不回全量日志、不回窗口外事件；
 `prune` 压实成「窗口内全部 + 每个事件名在窗口外的最后一条」（tombstone，`hoursSince` 靠它算长尾），

@@ -1035,6 +1035,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     combinedWords: combinedWords(payload.totalWords, scene),
                     combinedBudget: cfg.totalPromptBudgetWords,
                     // 宿主没有 systemPrompt 时的后备：把当前规则的事件词汇带在 context 里
+                    // （只含会参与投影的词汇：自定义事件在场景的「记录」尾巴里，不进系统提示段）
                     stateEvents: stateContract?.text ?? '',
                     stateRulesVersion: stateContract?.rulesVersion ?? '',
                     notebook: state.active,
@@ -1095,9 +1096,9 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
         t({
             name: 'zk_state',
             description: '运行时状态：一行一条事件，场景是日志的投影（不存快照、不跑定时器）。' +
-                'append：记一件已经发生的事（不写计划）。内置事件示例：slept（入睡）/ woke hours=7.5（醒来，时长为睡眠小时数）/ ate（吃过）/ at place=书房（所在位置）/ set_goal text="写完 D7"（当前目标）/ user_left（用户离开）/ user_returned（用户回来）；参数写成 key=value，值含空格要加引号。' +
-                '有 `.state/rules` 时，系统提示里的「状态事件」是当前规则认可的词汇，以它为准；事件是你自己的叙述，插件只校验格式与时间，不校验真假，也不校验事件名是否属于内置集；别把 token 余额之类宿主观测写进来。' +
-                'show：读当前投影（energy / mood / satiety / 地点 / 目标 / 在场）+ 窗口内最近 20 条事件，不回全量日志。' +
+                'append：记一件已经发生的事（不写计划）。事件名可以自己起（小写字母开头，只含 [a-z0-9_]，≤32）；内置示例：slept（入睡）/ woke hours=7.5（醒来，时长为睡眠小时数）/ ate（吃过）/ at place=书房（所在位置）/ set_goal text="写完 D7"（当前目标）/ user_left（用户离开）/ user_returned（用户回来）；参数写成 key=value，值含空格要加引号。' +
+                '有 `.state/rules` 时，系统提示里的「状态事件」是当前规则认可的词汇，以它为准；不在规则里的事件只是记录：窗口内的会以「记录」尾巴出现在场景行（最多 3 个，只名字 + 时间，不读参数），不参与 energy / mood 等投影。事件是你自己的叙述，插件只校验格式与时间，不校验真假，也不校验事件名是否属于内置集；别把 token 余额之类宿主观测写进来。' +
+                'show：读当前投影（energy / mood / satiety / 地点 / 目标 / 在场 + 记录的自定义事件）+ 窗口内最近 20 条事件，不回全量日志。' +
                 'prune：压实日志（保留窗口内全部 + 每个事件名在窗口外的最后一条），返回 dropped / kept；不自动 commit。' +
                 '它不是日常操作：只有人明确要求、或 doctor 提示日志偏大时才用；它会删掉旧事件，默认别碰。' +
                 '默认不翻历史：只有用户明确问「之前 / 过去」时才查；平时不要主动读 .state。',
@@ -1105,7 +1106,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 type: 'object',
                 properties: {
                     action: S.enum('append 追加事件 / show 读投影 / prune 压实', ['append', 'show', 'prune']),
-                    event: S.str('append 用：事件名（内置 slept / woke / ate / at / set_goal / user_left / user_returned；自定义规则以系统提示的状态事件为准；小写字母开头，只含 [a-z0-9_]，最长 32）'),
+                    event: S.str('append 用：事件名（自由命名：小写字母开头，只含 [a-z0-9_]，最长 32；内置示例 slept / woke / ate / at / set_goal / user_left / user_returned；不在规则里的事件只进场景「记录」尾巴（窗口内最多 3 个），不参与投影）'),
                     params: S.arr('append 用：参数列表，形如 key=value（如 woke 的 hours=7.5；最多 8 个；字符串含空格要加引号）', S.str('key=value')),
                     at: S.str('append 用：回填时间（ISO，必须带时区，如 2026-11-04T07:10:00+08:00）；缺省 = 现在'),
                     days: S.num('prune 用：窗口外的截止天数（必须 ≥ 投影窗口）'),

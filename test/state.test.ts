@@ -214,6 +214,20 @@ describe('状态事件词汇', () => {
     // 结构化字段保留完整词汇，方便调用方判断是否被截断
     expect(contract.events.length).toBe(252)
   })
+
+  test('日志里的自定义事件不进词表：系统提示段不随 append 变（前缀缓存 / 投影口径）', () => {
+    const c = withNotebook('contract-5')
+    const now = Date.now()
+    log.appendEvent(c, { name: 'ate', at: new Date(now - 3_600_000).toISOString() }, now)
+    const before = stateContract.buildStateContract(c)!
+    log.appendEvent(c, { name: 'coffee', params: { kind: '手冲', cups: '1' }, at: new Date(now - 1_800_000).toISOString() }, now)
+    const after = stateContract.buildStateContract(c)!
+    expect(after.text).toBe(before.text)
+    expect(after.text).not.toContain('coffee')
+    expect(after.text).not.toContain('手冲')
+    // 词汇只回答「什么参与投影」；日志里的名字交给场景「记录」尾巴
+    expect(after.events.map((event) => event.name)).toEqual(['woke', 'ate', 'at', 'set_goal', 'slept', 'user_left', 'user_returned'])
+  })
 })
 
 describe('事件日志', () => {
@@ -406,7 +420,8 @@ describe('场景投影', () => {
     fs.mkdirSync(log.stateDirOf(c), { recursive: true })
     // 31 个词的 mood：比 20 词的场景预算长，整行都放不下（不是没值，是放不下）
     const long = Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ')
-    fs.writeFileSync(log.rulesPathOf(c), `version = 1\nmood = "${long}"\n`)
+    // 规则里引用 ate，避免它落进「记录」尾巴，干扰「只有一段放不下」的断言
+    fs.writeFileSync(log.rulesPathOf(c), `version = 1\nn = count(ate, 7)\nmood = "${long}"\n`)
     log.appendEvent(c, { name: 'ate', params: {}, at: at(0, 1) }, NOW)
     const projected = scene.buildScene(c, { now: NOW })
     expect(projected.present).toBe(false)
@@ -436,6 +451,86 @@ describe('场景投影', () => {
     // 真没启用时仍然是 no-log —— 两种原因不能混为一谈
     fs.rmSync(file, { recursive: true, force: true })
     expect(scene.buildScene(c, { now: NOW }).emptyReason).toBe('no-log')
+  })
+
+  test('规则没消费的事件以「记录」尾巴出现：只名字 + 时间，不读参数', () => {
+    const c = withNotebook('scene-10')
+    log.appendEvent(c, { name: 'coffee', params: { kind: '手冲' }, at: at(0, 2) }, NOW)
+    log.appendEvent(c, { name: 'ate', params: {}, at: at(0, 1) }, NOW)
+    const projected = scene.buildScene(c, { now: NOW })
+    expect(projected.present).toBe(true)
+    expect(projected.text).toContain('记录 coffee（2 小时前）')
+    expect(projected.text).not.toContain('手冲')
+    // 规则已经消费的 ate 不重复出现在尾巴里
+    expect(projected.text).not.toContain('记录 ate')
+  })
+
+  test('「记录」最多 3 个，按最后发生时间倒序', () => {
+    const c = withNotebook('scene-11')
+    log.appendEvent(c, { name: 'coffee', at: at(0, 5) }, NOW)
+    log.appendEvent(c, { name: 'focus', at: at(0, 4) }, NOW)
+    log.appendEvent(c, { name: 'reading', at: at(0, 3) }, NOW)
+    log.appendEvent(c, { name: 'music', at: at(0, 2) }, NOW)
+    const projected = scene.buildScene(c, { now: NOW })
+    expect(projected.text).toContain('记录 music（2 小时前） / reading（3 小时前） / focus（4 小时前）')
+    expect(projected.text).not.toContain('coffee')
+  })
+
+  test('场景自己回读的 woke / at / set_goal 不重复落进「记录」尾巴', () => {
+    const c = withNotebook('scene-13')
+    fs.mkdirSync(log.stateDirOf(c), { recursive: true })
+    fs.writeFileSync(log.rulesPathOf(c), 'version = 1\nn = 1\n')
+    log.appendEvent(c, { name: 'at', params: { place: '书房' }, at: at(0, 1) }, NOW)
+    log.appendEvent(c, { name: 'set_goal', params: { text: '写完 D7' }, at: at(0, 2) }, NOW)
+    log.appendEvent(c, { name: 'woke', params: { hours: '7' }, at: at(40) }, NOW)
+    const projected = scene.buildScene(c, { now: NOW })
+    expect(projected.text).toContain('地点未知（最后 书房')
+    expect(projected.text).toContain('目标未知（最后 写完 D7')
+    expect(projected.text).toContain('最近醒来 40 天前')
+    expect(projected.text).not.toContain('记录')
+  })
+
+  test('内置的 slept 不算「记录」：照工具说明写下的事件不该挂在「当下」行上', () => {
+    const c = withNotebook('scene-14')
+    log.appendEvent(c, { name: 'ate', at: at(0, 2) }, NOW)
+    log.appendEvent(c, { name: 'slept', at: at(0, 1) }, NOW)
+    const projected = scene.buildScene(c, { now: NOW })
+    expect(projected.present).toBe(true)
+    expect(projected.text).toContain('satiety')
+    expect(projected.text).not.toContain('记录')
+    expect(projected.text).not.toContain('slept')
+  })
+
+  test('窗口外的自定义事件不进「记录」：一个死名字不会让场景永久 present', () => {
+    const c = withNotebook('scene-15')
+    log.appendEvent(c, { name: 'coffee', at: at(40) }, NOW)
+    const projected = scene.buildScene(c, { now: NOW })
+    expect(projected.present).toBe(false)
+    expect(projected.text).toBe('')
+    expect(projected.emptyReason).toBe('rules')
+  })
+
+  test('prune 留下的 tombstone 不回到词表 / 「记录」尾巴', () => {
+    const c = withNotebook('scene-16')
+    log.appendEvent(c, { name: 'deadname', at: at(40) }, NOW)
+    log.appendEvent(c, { name: 'ate', at: at(0, 1) }, NOW)
+    log.pruneStateLog(c, { days: 30, windowDays: 30, now: NOW })
+    // tombstone 仍在 lastSeen（hoursSince 要用），但既不属于「当下」，也不属于「参与投影的词汇」
+    const projected = scene.buildScene(c, { now: NOW })
+    expect(projected.text).not.toContain('deadname')
+    expect(stateContract.buildStateContract(c)!.text).not.toContain('deadname')
+  })
+
+  test('自定义事件尾巴预算紧时最先被裁', () => {
+    const c = withNotebook('scene-12')
+    log.appendEvent(c, { name: 'woke', params: { hours: '7' }, at: at(0, 1) }, NOW)
+    log.appendEvent(c, { name: 'coffee', at: at(0, 2) }, NOW)
+    const logData = log.readStateLog(c, { windowDays: 30, now: NOW })
+    const compiled = rules.compileDefaultRules()
+    const tight = scene.projectScene(logData, compiled, NOW, { staleHours: 72, sceneWindowDays: 30, budgetWords: 8 })
+    expect(tight.text).toContain('energy')
+    expect(tight.text).not.toContain('记录')
+    expect(tight.dropped.join(' ')).toContain('记录')
   })
 
   test('combinedWords / combinedBudgetNote 口径一致', () => {

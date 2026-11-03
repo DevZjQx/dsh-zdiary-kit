@@ -21,7 +21,7 @@
   设置页「写入 AGENTS.md 模板」才写；已存在一律不覆盖。
   `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
 - `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册三段：`zdiary:notebook`（order 5190，一行当前笔记本名字 / 结构 / 路径 + 其余已配置库名，每步跟随会话 pin；**不进记忆预算**）、`zdiary:memory`（order 5200，`interpolate: false` —— 记忆是文件原文，
-  `{{…}}` 一律原样保留：插值会让未注册变量在装配时抛错、`{{model}}` 这类被静默改写）与 `zdiary:state`（order 5210，从当前 `.state/rules` 的 AST 取事件名 / 参数名，参数写成 `key=<值>`；用默认规则时补上内置 `slept`，自定义规则只列规则读取的事件；整行上限 160 词 / 1200 字符；规则一改下一轮就换；没有状态文件时为空串，也不占记忆预算），`text` 是函数，每个 step 重新求值（按文件指纹 + 预算 + 日期缓存，变了才重读重算）；
+  `{{…}}` 一律原样保留：插值会让未注册变量在装配时抛错、`{{model}}` 这类被静默改写）与 `zdiary:state`（order 5210，从当前 `.state/rules` 的 AST 取事件名 / 参数名，参数写成 `key=<值>`；用默认规则时补上内置 `slept`，自定义规则只列规则读取的事件；整行上限 160 词 / 1200 字符；规则一改下一轮就换；日志里的自定义事件**不进**这段（否则 append 会让系统提示每轮变、打断前缀缓存，交给场景「记录」尾巴）；没有状态文件时为空串，也不占记忆预算），`text` 是函数，每个 step 重新求值（按文件指纹 + 预算 + 日期缓存，变了才重读重算）；
   装配上下文带 `agent.id` 时按**会话工作区 + 该会话固定的笔记本**解析（`config/session`，和 `zk_*` 工具同口径）；
   别的会话切了默认值不会把已开的会话换库，裸装配才退回进程工作区 + 全局默认
 - `zk_context` 工具：同一份 payload（含 `ratio` 用量），给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用；
@@ -52,7 +52,9 @@
 `suppressRuntimeContext()` 会把它和其它可选运行时上下文一起关掉 —— 场景本来就是可选状态，
 `zk_state show` 仍是后备；宿主没有 `context()` 时安静降级，笔记本与记忆不受影响。
 没有日志 = 不注入、不多一个词；只有窗口外事件时仍注入长尾（`hoursSince` 读 last-seen / tombstone）。
-预算 `sceneBudgetWords` 只裁场景行：从尾部丢（地点 / 目标先丢，energy / mood 最后），一句都放不下就不注入。
+规则没消费、也不是内置的事件名（agent 自己起的 `coffee` / `focus`）以「记录」尾巴附在场景行末尾：
+只取窗口内、最多 3 个，只名字 + 时间、不读参数值；窗口外的 tombstone 不进尾巴，否则一个死名字会让场景永远 present。
+预算 `sceneBudgetWords` 只裁场景行：从尾部丢（自定义事件尾巴先丢，地点 / 目标次之，energy / mood 最后），一句都放不下就不注入。
 合并总量 `combinedWords = payload.totalWords + scene.words`，在 `zk_context` / `doctor` / 记忆页 / 设置页用同一个口径；
 超 `totalPromptBudgetWords` 只在这些**人看的界面**点名，不写进系统提示、不自动截断（D4）。
 规则求值期报错（除零 / `count` 越界 / null 进算术）也按 D7 整份回退内置默认，不是让场景整段消失。

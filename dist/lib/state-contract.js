@@ -11,6 +11,11 @@
  *   · 默认规则 / 回退默认 = 规则事件 + `slept`（内置词汇里规则不读、但工具说明允许记）；
  *   · 在场事件 `user_left` / `user_returned` 始终补上：投影层直接读，不写在规则里。
  *
+ * **日志里的自定义事件故意不进词表**：这一行是系统提示段，append 不该让它每轮变 ——
+ * 那会打断宿主的提示前缀缓存（场景走 `systemPrompt.context()` 就是为了避开这点）。
+ * agent 自己起的事件名由场景行的「记录」尾巴负责露出（窗口内、最多 3 个，见 `scene.ts`）。
+ * 词汇表只回答「哪些事件会参与投影」，不回答「你可能记过什么」。
+ *
  * 只暴露**词汇**，不暴露公式：模型要做的仍然是 `zk_state append woke hours=7.5`，
  * 算 energy / mood 的表达式留在规则里，由投影层求值。
  *
@@ -26,10 +31,8 @@
 import fs from 'node:fs';
 import { fileStamp } from './file-stamp.js';
 import { countWords } from './memory.js';
-import { loadRules, PRESENCE_LEFT_EVENT, PRESENCE_RETURNED_EVENT } from './scene.js';
+import { BUILTIN_ONLY_EVENTS, loadRules, PRESENCE_LEFT_EVENT, PRESENCE_RETURNED_EVENT } from './scene.js';
 import { eventsPathOf, rulesPathOf } from './state-log.js';
-/** 内置词汇里规则不读的事件：`slept` 只有「入睡」语义，投影不依赖它，但工具说明允许记 */
-const BUILTIN_ONLY_EVENTS = [{ name: 'slept', params: [] }];
 /** 在场判定用的事件不写在规则里（`scene.ts` 直接读），但模型同样需要知道 */
 const PRESENCE_EVENTS = [
     { name: PRESENCE_LEFT_EVENT, params: [] },

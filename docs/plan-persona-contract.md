@@ -214,7 +214,7 @@ AGENTS 已经是 175 词硬规则，再加就会挤掉 MEMORY；人设和事实�
 - 事件名 `[a-z][a-z0-9_]{0,31}`；参数 `key=value`，最多 8 个；key `[a-z][a-z0-9_]{0,15}`；value 是数字、带引号字符串或无空格裸词；单行 ≤ 512 字节；禁止换行 / 回车；重复 key 拒绝；未知 key 保留。事件参数允许裸词；规则里的字符串必须加引号，两套语法别混。
 - `#` 开头的行和空行跳过；坏行跳过并在 `doctor` 计数，不让整段投影失败。
 - `slept` 记入睡，`woke` 记醒来；时长挂在结束事件上（`woke hours=7.5`）。不要写 `user_absent 3d`：`3d` 是计划还是已发生分不清，用 `user_left` / `user_returned`。
-- **词汇必须可见且自动同步**：内置事件词汇（`woke hours=` / `ate` / `at place=` / `set_goal text=` / `user_left` / `user_returned`，以及 `slept`）写在 `zk_state` 工具说明里作为示例；有 `.state/rules` / `.state/events.log` 时，`state-contract` 从当前规则 AST 提取事件名 / 参数名，作为 `zdiary:state` 系统提示段注入（没有状态文件时不注入）。参数占位写成 `key=<值>`（不是 `key=`，后者会被照抄成空值）；整行上限 160 词 / 1200 字符，超了从尾部截断并注明未列出数量。用默认规则时词表补内置 `slept`，自定义规则只列规则读取的事件。投影只给数值；词汇不能只活在 `.state/rules` 里，否则模型不知道该 append 什么。自定义规则换事件名时**不需要**手工同步 AGENTS.md。
+- **词汇必须可见且自动同步**：内置事件词汇（`woke hours=` / `ate` / `at place=` / `set_goal text=` / `user_left` / `user_returned`，以及 `slept`）写在 `zk_state` 工具说明里作为示例；有 `.state/rules` / `.state/events.log` 时，`state-contract` 从当前规则 AST 提取事件名 / 参数名，作为 `zdiary:state` 系统提示段注入（没有状态文件时不注入）。参数占位写成 `key=<值>`（不是 `key=`，后者会被照抄成空值）；整行上限 160 词 / 1200 字符，超了从尾部截断并注明未列出数量。用默认规则时词表补内置 `slept`，自定义规则只列规则读取的事件。日志里的自定义事件名**不进**词表：系统提示段不能随 append 每轮变（打断前缀缓存），它们由场景的「记录」尾巴露出。投影只给数值；词汇不能只活在 `.state/rules` 里，否则模型不知道该 append 什么。自定义规则换事件名时**不需要**手工同步 AGENTS.md。
 - 追加写 + 文件锁；正常 append 不 rewrite、不排序；只有 `prune` 做压实（见「窗口与裁剪」）。
 
 **规则 DSL（包 1：严格）**
@@ -312,7 +312,7 @@ goal = if(isNull(hoursSince(set_goal)), null, if(goal_h > staleHours, null, last
   「最后 X · N 天前」由投影结果一并给出，渲染层不回读日志。
 - `set_goal` 是事件，`goal` 是展示变量；分开命名，避免 `hoursSince(goal)` 读的是变量还是事件说不清。
 - 展示层只认固定变量名（`energy` / `mood` / `satiety` / `location` / `goal` / `present`）；
-  其余变量算得出但不注入。事件里的字符串（`at place` / `set_goal text`）是 agent 通过
+  其余变量算得出但不注入。规则没消费的事件名以「记录 name（N 小时前）」尾巴出现（只取窗口内、最多 3 个，只名字 + 时间，不读参数值）。事件里的字符串（`at place` / `set_goal text`）是 agent 通过
   `zk_state append` 写的——这是最短的自我注入通道，靠 80 词上限 + git diff 审计兜底，不是「人写」。
 
 40 天没记录时（事件都在窗口外，只有 tombstone），场景行大致是：
@@ -344,14 +344,14 @@ git 里还在，人能用 `git show` 恢复。
 - 每步求值；日志不存在或没有有效事件 → 返回空串，**不报错**；事件全在窗口外时仍注入（长尾）。
   规则坏了（编译或求值）→ 整份回退内置默认并记 `rulesError`；只有连默认都算不出来才返回空串。
 - 展示层只认固定几个变量名（`energy` / `mood` / `satiety` / `location` / `goal` / `present`）；
-  其余变量算得出但不注入。`present` 由渲染层用 `user_left` / `user_returned` + `staleHours` 判断。
-- 渲染目标 ≤ `sceneBudgetWords`（默认 80）；超了按变量优先级裁（energy / mood 先留，location / goal 后留），
-  最后才裁「最后 X · N 天前」的注脚。
+  其余变量算得出但不注入。规则没消费的事件名以「记录」尾巴出现（只取窗口内、最多 3 个，只名字 + 时间）；`present` 由渲染层用 `user_left` / `user_returned` + `staleHours` 判断。
+- 渲染目标 ≤ `sceneBudgetWords`（默认 80）；超了按变量优先级裁（energy / mood 先留，location / goal 后留，
+  自定义事件尾巴最先裁），最后才裁「最后 X · N 天前」的注脚。
 - **不进 `buildMemoryPayload.text`**：场景独立投影、独立缓存；`memory.ts` 不再产出 `scene`。
   合并总量只在 `zk_context` / `doctor` / 记忆页 / 设置页算，**超了也不在提示里追**（D4）——
   同一条口径不能两处不同，否则「总 prompt」又会变成少一截的数。
 - 不存 token 余额等敏感值；渲染层只认白名单变量（`note` 之类根本读不到），
-  **不做通用 redact**：能进场景的只有 energy / mood / satiety / 地点 / 目标 / 在场。
+  **不做通用 redact**：能进场景的只有 energy / mood / satiety / 地点 / 目标 / 在场，以及规则没消费的事件名（只取窗口内，只有名字，不带参数值）。
 
 **窗口与裁剪**：
 
@@ -533,6 +533,8 @@ git 里还在，人能用 `git show` 恢复。
 - `src/lib/state-contract.ts`（新）：从 `CompiledRules.events` 生成事件词汇行，补上在场事件
   `user_left` / `user_returned`；用默认规则时补内置 `slept`，自定义规则只列规则读取的事件；
   按 rules 指纹 + events 是否存在缓存（append 不触发重新编译），状态层未启用时返回 null。
+  日志里的自定义事件**故意不进词表**：这一行是系统提示段，append 不该让它每轮变（前缀缓存）；
+  它们由 `scene.ts` 的「记录」尾巴露出（窗口内，最多 3 个）。
 - `src/features/zk-tools/feature.ts`：新增 `zk_state`（`append` 追加 / `show` 读投影 /
   `prune` 压实）；`append` 校验格式，`show` 只回投影 + 窗口内最近 20 条，`prune` 只回
   `{ dropped, kept, windowDays }`；`zk_context` 组合新的 `scene` 与 `stateEvents` / `stateRulesVersion`
@@ -670,7 +672,8 @@ git 里还在，人能用 `git show` 恢复。
 2. `contractBudgetWords` 默认 240 是否合适？参考库 AGENTS 187 + MEMORY 117 已经在 500 内；加 240 后总 prompt 会变长，需要在真机上量。
 3. ~~事件词汇怎么定~~ 已定（2026-11-04）：M3 内置最小集（`ate` / `slept` / `woke` / `at` / `set_goal` / `user_left` / `user_returned`），
    其余自由文本；词汇必须可发现且自动同步 —— 内置词汇写在 `zk_state` 工具说明（示例），自定义规则的事件名由 `zdiary:state`
-   从规则 AST 自动提取并注入，默认规则额外补 `slept`；参数占位 `key=<值>`，整行有 160 词 / 1200 字符上限，不需要人同步 AGENTS.md。
+   从规则 AST 自动提取，默认规则额外补 `slept`；参数占位 `key=<值>`，整行有 160 词 / 1200 字符上限，不需要人同步 AGENTS.md。
+   日志里的自定义事件名只进场景「记录」尾巴（窗口内、最多 3 个），不进系统提示段 —— 后者每轮变会打断前缀缓存。
 4. `agent.id` 到 persona 的映射放在配置、文件命名还是 frontmatter？跨会话时谁负责 pin？
 5. `sourceTrust` 只能抓显式的 `via` 关键词；没有 `via` 的二手来源无法机械识别，是否接受这个边界？
 6. `MEMORY.md` 的 `[user|agent|persona]` 标记会占词；是否只在 `zk_context` 显示、不写入文件？如果写入，预算怎么算？

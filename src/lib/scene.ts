@@ -6,6 +6,11 @@
  *     `zk_context` / `doctor` / 记忆页 / 设置页算（combinedWords），超了只对人告警；
  *   · 规则算得出但展示层只认固定几个变量（energy / mood / satiety / location / goal），
  *     其余变量不注入 —— 别把规则文件当 prompt 模板；
+ *   · 规则没消费的事件名（agent 自己起的 `coffee` / `focus`）以「记录 name（N 小时前）」
+ *     附在末尾：只取窗口内的最后一条，只给名字 + 时间，不读参数值；最多 3 个，预算紧时最先被裁 ——
+ *     这是「自定义事件」不需要先改规则就能被下一轮看见的最小通道；
+ *     窗口外的 tombstone 不进尾巴（那是 `hoursSince` 的长尾），否则一个用过一次的名字
+ *     会永久挂在「当下」这行上，场景再也不会变空；`slept` 等内置事件也不算「记录」（见 BUILTIN_ONLY_EVENTS）；
  *   · **没有 logs = 不注入**；只有窗口外事件时仍注入长尾（`hoursSince` 走 tombstone）；
  *   · 规则编译 / 求值失败 → 整份回退内置默认并记 `rulesError`；连默认都失败才返回空串。
  *     状态层坏掉不能把整个系统提示拖下水，也不能让场景无声消失。
@@ -15,9 +20,9 @@ import type { Config } from '../config/store.ts'
 import { fileStamp } from './file-stamp.ts'
 import { countWords } from './memory.ts'
 import { eventsPathOf, humanAge, readStateLog, rulesPathOf } from './state-log.ts'
-import type { StateLog } from './state-log.ts'
+import type { LoggedEvent, StateLog } from './state-log.ts'
 import { DEFAULT_RULES, RulesCompileError, compileDefaultRules, compileRules } from './state-rules.ts'
-import type { CompiledRules, RuleContext, RuleValue } from './state-rules.ts'
+import type { CompiledRules, RuleContext, RuleEvent, RuleValue } from './state-rules.ts'
 
 export type Presence = 'present' | 'absent' | 'unknown'
 
@@ -38,7 +43,7 @@ export interface SceneProjection {
   /**
    * present=false 的原因：
    * 'no-log' 没有日志 / 没有事件；'budget' 有候选段但预算一句都放不下；
-   * 'rules' 规则算出来都是 null（没有可展示的变量）；'error' 读取本身失败。
+   * 'rules' 规则算出来都是 null，且窗口内没有可展示的自定义事件；'error' 读取本身失败。
    */
   emptyReason: '' | 'no-log' | 'budget' | 'rules' | 'error'
   /** 规则回退时的第一条错误（doctor / zk_context 用） */
@@ -87,9 +92,39 @@ const SEP = ' · '
 export const PRESENCE_LEFT_EVENT = 'user_left'
 export const PRESENCE_RETURNED_EVENT = 'user_returned'
 
+/**
+ * 内置词汇里规则不读的事件：`slept` 只有「入睡」语义，投影不依赖它，但工具说明允许记。
+ * 词汇表（state-contract）用它补默认词表；场景渲染用它把 `slept` 排除在「记录」尾巴之外 ——
+ * 否则一条照工具说明写下的事件会被当成 agent 自己起的名字挂在「当下」行上。
+ * 放在 scene 里而不是 state-contract 里：scene 是更底层的模块，反向 import 会成环。
+ */
+export const BUILTIN_ONLY_EVENTS: RuleEvent[] = [{ name: 'slept', params: [] }]
+
 /** 时间点 → 人话（脚注用；只接受毫秒） */
 function ago(now: number, atMs: number): string {
   return humanAge((now - atMs) / 3600_000)
+}
+
+/** 场景尾巴最多列几个没被展示消费的事件名（只名字 + 时间，不读参数） */
+const MAX_RECENT_EVENTS = 3
+
+/**
+ * 没被场景展示消费的事件名：agent 自己起的事件（`coffee` / `focus` …）。
+ * 只回名字与最后发生时间 —— 参数值一律不进场景（与展示白名单同一口径，防注入 / 泄漏）。
+ * 只看**窗口内**的 `log.events`，不看 lastSeen：窗口外的 tombstone 是给 `hoursSince` 用的，
+ * 不该让 40 天前用过一次的名字永久占住「当下」。按最后发生时间倒序，最多 MAX_RECENT_EVENTS 个。
+ * 没有就返回 null。
+ */
+function recentEventsNote(log: StateLog, shown: Set<string>, now: number): string | null {
+  // events 按时间升序：后写覆盖先写，同一事件名留窗口内最后一条
+  const last = new Map<string, LoggedEvent>()
+  for (const event of log.events) last.set(event.name, event)
+  const recent = [...last.entries()]
+    .filter(([name]) => !shown.has(name))
+    .sort((a, b) => b[1].atMs - a[1].atMs)
+    .slice(0, MAX_RECENT_EVENTS)
+  if (!recent.length) return null
+  return `记录 ${recent.map(([name, event]) => `${name}（${ago(now, event.atMs)}）`).join(' / ')}`
 }
 
 function presenceOf(log: StateLog, now: number, staleHours: number): { presence: Presence; note: string } {
@@ -146,8 +181,15 @@ export function projectScene(log: StateLog, rules: CompiledRules, now: number, o
   const values = rules.evaluate(ctx)
   const presence = presenceOf(log, now, opts.staleHours)
 
-  // 展示顺序 = 裁剪优先级（后面的先被丢）：energy / mood 先留，地点 / 目标后留
+  // 展示顺序 = 裁剪优先级（后面的先被丢）：energy / mood 先留，地点 / 目标次之，自定义事件尾巴最先丢
   const parts: string[] = []
+  // 已被规则 / 场景消费的事件名：不重复落进「记录」尾巴
+  const shownEvents = new Set<string>([
+    PRESENCE_LEFT_EVENT,
+    PRESENCE_RETURNED_EVENT,
+    ...BUILTIN_ONLY_EVENTS.map((event) => event.name),
+  ])
+  for (const event of rules.events) shownEvents.add(event.name)
   const energy = numText(values.energy ?? null)
   if (energy) parts.push(`energy ${energy}`)
   const mood = strText(values.mood ?? null)
@@ -156,14 +198,25 @@ export function projectScene(log: StateLog, rules: CompiledRules, now: number, o
   if (satiety) parts.push(`satiety ${satiety}`)
   if (presence.note && presence.presence !== 'present') parts.push(presence.note)
   const woke = log.lastSeen.get('woke')
-  if (woke && (now - woke.atMs) / 3600_000 > opts.staleHours) parts.push(`最近醒来 ${ago(now, woke.atMs)}`)
+  if (woke && (now - woke.atMs) / 3600_000 > opts.staleHours) {
+    parts.push(`最近醒来 ${ago(now, woke.atMs)}`)
+    shownEvents.add('woke')
+  }
   const location = strText(values.location ?? null)
   if (location) parts.push(`地点 ${location}`)
-  else if (log.lastSeen.has('at')) parts.push(lastNote(log, now, 'at', 'place', '地点'))
+  else if (log.lastSeen.has('at')) {
+    parts.push(lastNote(log, now, 'at', 'place', '地点'))
+    shownEvents.add('at')
+  }
   const goal = strText(values.goal ?? null)
   if (goal) parts.push(`目标 ${goal}`)
-  else if (log.lastSeen.has('set_goal')) parts.push(lastNote(log, now, 'set_goal', 'text', '目标'))
+  else if (log.lastSeen.has('set_goal')) {
+    parts.push(lastNote(log, now, 'set_goal', 'text', '目标'))
+    shownEvents.add('set_goal')
+  }
   if (presence.presence === 'present' && presence.note) parts.push(presence.note)
+  const recent = recentEventsNote(log, shownEvents, now)
+  if (recent) parts.push(recent)
 
   // 预算：从尾部丢，直到放得下；一个都放不下就返回空串（不注入半行）
   const dropped: string[] = []
