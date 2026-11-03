@@ -151,6 +151,7 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `template`（P2-15）：读根目录 `AGENTS.md` 首行的 `<!-- zdiary-template: vN -->`；无标记按 v0 算，
 与 `TEMPLATE_VERSION` 不等时提示，并把当前结构对应的模板全文放进 `currentText`。只报告，不覆盖（模板允许用户改）。
 `version < current` 才给全文；`version > current`（插件被降级过）只报「模板比插件新」，不给旧模板 —— 否则 agent 会照旧版合并、把标记改回去。
+`version === current` 时再查正文哨兵（`TEMPLATE_SENTINELS`）：正文还留着当前版本删掉的句子 → `mismatch`，仍给全文，提示「疑似只改了版本号」。
 v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版模板」+ 新模板全文 —— 这是有意的：
 它每轮注入，停旧版本等于按旧路径写；而插件安装后 docs 在包内、工作区外读不到，不能只给相对路径。
 `zk_dream` 的拒绝规则只有两条（`authority=informal`、无标签），日记不进候选/拒绝（它的未完成项单独一栏）：

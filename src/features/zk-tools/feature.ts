@@ -186,11 +186,13 @@ const LINT_TEMPLATE = objSchema(
     version: { type: 'number' },
     current: { type: 'number' },
     stale: { type: 'boolean' },
+    mismatch: { type: 'boolean' },
+    mismatchDetail: { type: 'string' },
     currentText: { type: 'string' },
   },
   ['present', 'version', 'current', 'stale'],
 )
-/** 契约体检：缺失 / 旧版 / 未填占位符（只报告，不覆盖） */
+/** 契约体检：缺失 / 旧版 / 比插件新 / 标记与内容不符 / 未填占位符（只报告，不覆盖） */
 const LINT_CONTRACT = objSchema(
   {
     total: { type: 'number' },
@@ -199,7 +201,7 @@ const LINT_CONTRACT = objSchema(
       items: objSchema(
         {
           file: { type: 'string', enum: ['PERSONA.md', 'POLICY.md'] },
-          kind: { type: 'string', enum: ['missing', 'old', 'placeholder'] },
+          kind: { type: 'string', enum: ['missing', 'old', 'newer', 'mismatch', 'placeholder'] },
           detail: { type: 'string' },
         },
         ['file', 'kind', 'detail'],

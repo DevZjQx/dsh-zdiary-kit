@@ -27,8 +27,8 @@ import { allNotes, graphEdges, localDate, MAX_SCAN, notesWithFlag, parseErrorWar
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './memory-format.js';
-import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_VERSION } from './agents-template.js';
-import { PERSONA_TEMPLATE_VERSION, POLICY_TEMPLATE_VERSION } from './persona-template.js';
+import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION } from './agents-template.js';
+import { CONTRACT_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION, POLICY_TEMPLATE_VERSION } from './persona-template.js';
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50;
 /** 标题归一化与链接解析在 `lib/wikilink.ts`（dream 也用同一套）；这里保留导出，免得调用方跟着搬 */
@@ -284,11 +284,38 @@ export function formatLintExtras(r) {
     const lines = [];
     // 两份都没有 = 契约未启用（默认状态）：不报错、不占行。只启用一半（缺一份）或
     // 有旧版 / 占位符时才提醒 —— 否则每个老库每次 lint 都多一条永久 ⚠️，反而训练人忽略告警。
-    const missing = r.contract.items.filter((i) => i.kind === 'missing');
-    const bothMissing = missing.length > 1 && missing.length === r.contract.items.length;
-    if (!bothMissing && r.contract.items.length > 0) {
-        lines.push(`⚠️ 契约：${r.contract.items.map((i) => `${i.file} ${i.detail}`).join('；')}` +
-            '｜只报告：缺一份 = 尚未启用完整契约，占位符与旧版由人按需处理');
+    const contract = r.contract.items;
+    const bothMissing = contract.length > 1 && contract.every((i) => i.kind === 'missing');
+    if (!bothMissing && contract.length > 0) {
+        // 不同方向给不同指令：旧版要合并内容，比插件新要升级插件，标记与内容不符要查哨兵。
+        // 混成一句「旧版由人按需处理」会把「v4 > 当前 v3」也说成旧版，模型最省力的动作就是改数字。
+        const groups = [
+            {
+                label: '旧版',
+                items: contract.filter((i) => i.kind === 'old'),
+                hint: '合并新版内容后再改首行标记；只改数字不算升级',
+            },
+            {
+                label: '版本比插件新',
+                items: contract.filter((i) => i.kind === 'newer'),
+                hint: '插件才是旧的那个，别改文件里的版本号；升级插件后再看',
+            },
+            {
+                label: '标记与内容不符',
+                items: contract.filter((i) => i.kind === 'mismatch'),
+                hint: '疑似只改了版本号；按新版模板合并内容，别只改数字',
+            },
+            {
+                label: '',
+                items: contract.filter((i) => i.kind === 'missing' || i.kind === 'placeholder'),
+                hint: '只报告：缺一份 = 尚未启用完整契约，占位符由人填',
+            },
+        ];
+        for (const group of groups) {
+            if (group.items.length === 0)
+                continue;
+            lines.push(`⚠️ 契约${group.label}：${group.items.map((i) => `${i.file} ${i.detail}`).join('；')}｜${group.hint}`);
+        }
     }
     if (r.incomplete.total > 0) {
         lines.push(`✗ frontmatter 缺字段：${r.incomplete.total} 篇 — ` +
@@ -308,7 +335,12 @@ export function formatLintExtras(r) {
     }
     if (r.template.stale) {
         const t = r.template;
-        if (t.version > t.current) {
+        if (t.mismatch) {
+            lines.push(`⚠️ AGENTS.md 标记是 v${t.version}，但正文与 v${t.version} 不符` +
+                (t.mismatchDetail ? `（${t.mismatchDetail}）` : '') +
+                '—— 疑似只改了版本号；标记是声明不是开关，按下面的新版模板合并后再改。');
+        }
+        else if (t.version > t.current) {
             // 插件比库旧（用户降级过插件 / 手写了更高标记）：给旧模板等于让 agent 把规则改回去
             lines.push(`⚠️ AGENTS.md 的模板版本比插件新（v${t.version} > 当前 v${t.current}）—— ` +
                 '插件是旧的那个，别改文件去配它；升级插件后再看。这里不给旧模板，免得把规则改回去。');
@@ -317,13 +349,13 @@ export function formatLintExtras(r) {
             lines.push(`⚠️ AGENTS.md 是${t.version === 0 ? '旧版 / 无版本标记' : `旧版模板 v${t.version}`}` +
                 `（当前 v${t.current}）—— 只报告，不覆盖。` +
                 (t.currentText
-                    ? `新版模板全文如下：按需合并，别整篇覆盖你改过的规则；合并后把首行标记更新为 v${t.current}。`
+                    ? `新版模板全文如下：按需合并，别整篇覆盖你改过的规则；合并完内容再把首行标记更新为 v${t.current}（只改数字不算升级）。`
                     : ''));
-            if (t.currentText) {
-                lines.push('--- 新版模板开始 ---');
-                lines.push(t.currentText.trimEnd());
-                lines.push('--- 新版模板结束 ---');
-            }
+        }
+        if (t.currentText) {
+            lines.push('--- 新版模板开始 ---');
+            lines.push(t.currentText.trimEnd());
+            lines.push('--- 新版模板结束 ---');
         }
     }
     if (r.similarTitles.total > 0) {
@@ -444,9 +476,32 @@ const PERSONA_MARK_RE = /<!--\s*zdiary-persona:\s*v(\d+)\s*-->/;
 const POLICY_MARK_RE = /<!--\s*zdiary-policy:\s*v(\d+)\s*-->/;
 const PLACEHOLDER_RE = /\{\{\s*[^}]+\s*\}\}/g;
 /**
+ * 哨兵文本的人读形态：detail 会被塞进 lint / doctor / 设置页的**单行**警告，
+ * 而哨兵自己可能带换行（POLICY 的 `\nversion:` 靠行首锚定 frontmatter 字段）——
+ * 直接拼进去会把一条警告劈成两行，后面的「｜提示」也跟着掉到下一行。
+ */
+function showSentinel(text) {
+    return text.split(/\r?\n/).map((part) => part.trim()).filter(Boolean).join(' ');
+}
+/** 返回 null = 正文符合哨兵；否则是给人看的不符原因 */
+function sentinelIssue(body, rule) {
+    if (!rule)
+        return null;
+    const quote = (texts) => texts.map((text) => `「${showSentinel(text)}」`).join('、');
+    const missing = (rule.required ?? []).filter((text) => !body.includes(text));
+    if (missing.length > 0)
+        return `缺少当前版本才有的内容：${quote(missing)}`;
+    const leftover = (rule.forbidden ?? []).filter((text) => body.includes(text));
+    if (leftover.length > 0)
+        return `仍含旧版已移除的内容：${quote(leftover)}`;
+    return null;
+}
+/**
  * 契约体检（M1）：缺文件 = 未启用（不算错，但要让 zk_lint 可见）；
- * 旧版 = 版本标记比当前模板旧（只报告，不覆盖 —— 契约允许人改）；
+ * 旧版 = 标记比当前模板旧；比插件新 = 插件才是旧的那个，别改文件去配；
+ * 标记与内容不符 = 标记已是当前版本，正文还留着旧版内容（只改了首行数字）；
  * 占位符 = 模板里的 {{...}} 还没填（“未填”是机械可发现的“未启用一半”状态）。
+ * 全部只报告，不覆盖 —— 契约允许人改。
  */
 export function contractStatus(cfg) {
     const items = [];
@@ -465,7 +520,14 @@ export function contractStatus(cfg) {
         }
         const hit = f.mark.exec(body);
         const version = hit ? Number(hit[1]) : 0;
-        if (version !== f.current) {
+        if (version > f.current) {
+            items.push({
+                file: f.name,
+                kind: 'newer',
+                detail: `版本标记比插件新（v${version} > 当前 v${f.current}）`,
+            });
+        }
+        else if (version !== f.current) {
             items.push({
                 file: f.name,
                 kind: 'old',
@@ -473,6 +535,12 @@ export function contractStatus(cfg) {
                     ? `没有版本标记（当前 v${f.current}）`
                     : `是旧版 v${version}（当前 v${f.current}）`,
             });
+        }
+        else {
+            const mismatch = sentinelIssue(body, CONTRACT_TEMPLATE_SENTINELS[f.name]?.[version]);
+            if (mismatch) {
+                items.push({ file: f.name, kind: 'mismatch', detail: `标记是 v${version}，但正文${mismatch}` });
+            }
         }
         const placeholders = [...new Set(body.match(PLACEHOLDER_RE) ?? [])];
         if (placeholders.length > 0) {
@@ -484,6 +552,9 @@ export function contractStatus(cfg) {
 /**
  * 模板版本（P2-15）：模板是行为契约，不是静态文档 —— 它每轮注入，写错一句就是每轮都在执行错规则。
  * 但模板允许用户改，不能自动覆盖；版本标记把「过期」变成可发现状态，只报告。
+ *
+ * 标记等于当前版本时再查正文哨兵：只把首行数字改成 vN、正文还是旧版，
+ * 会让 lint 误以为已经合并完 —— 这种情况仍报，并给出当前模板全文。
  */
 export function templateStatus(cfg) {
     let body = '';
@@ -495,13 +566,17 @@ export function templateStatus(cfg) {
     }
     const hit = TEMPLATE_MARK_RE.exec(body);
     const version = hit ? Number(hit[1]) : 0;
-    const stale = version !== TEMPLATE_VERSION;
+    const mismatchDetail = version === TEMPLATE_VERSION
+        ? sentinelIssue(body, TEMPLATE_SENTINELS[TEMPLATE_VERSION])
+        : null;
+    const stale = version !== TEMPLATE_VERSION || mismatchDetail !== null;
     const base = { present: true, version, current: TEMPLATE_VERSION, stale };
+    const currentText = cfg.structure === 'flat' ? AGENTS_TEMPLATE_FLAT : AGENTS_TEMPLATE;
     // 不 stale 时不要留下 currentText: undefined —— 宿主按无损 JSON 校验，undefined 会让整次调用 invalid；
     // 版本比插件新时也不给：那是插件该升级，不是用户该回退
-    return stale && version < TEMPLATE_VERSION
-        ? { ...base, currentText: cfg.structure === 'flat' ? AGENTS_TEMPLATE_FLAT : AGENTS_TEMPLATE }
-        : base;
+    if (mismatchDetail !== null)
+        return { ...base, mismatch: true, mismatchDetail, currentText };
+    return version < TEMPLATE_VERSION ? { ...base, currentText } : base;
 }
 export async function lintNotebook(cfg, opts = {}, signal) {
     const staleDays = Math.min(3650, Math.max(1, Math.trunc(opts.staleDays ?? 90)));

@@ -23,6 +23,26 @@ export const PERSONA_TEMPLATE_VERSION = 3
  */
 export const POLICY_TEMPLATE_VERSION = 4
 
+/** 契约正文哨兵：标记写着当前版本时，正文必须满足的文本条件 */
+export interface ContractSentinels {
+  required?: readonly string[]
+  forbidden?: readonly string[]
+}
+
+/**
+ * 每个文件只列当前版本的哨兵，用来发现「只改了首行数字」：
+ * - PERSONA v3 删掉了「## 口头禅」；
+ * - POLICY v4 删掉了 frontmatter 里的 schema `version:`。
+ * 升版本时同步补；命中也只报告，不覆盖（契约允许人改）。
+ */
+export const CONTRACT_TEMPLATE_SENTINELS: Record<
+  'PERSONA.md' | 'POLICY.md',
+  Record<number, ContractSentinels>
+> = {
+  'PERSONA.md': { 3: { forbidden: ['## 口头禅'] } },
+  'POLICY.md': { 4: { forbidden: ['\nversion:'] } },
+}
+
 /**
  * 去掉首行契约版本标记，剩下的可以直接交给 `parseFrontmatter()`。
  * M3 的 policy / persona 解析必须走这里，别自己再写一套「跳过第几行」的规则。

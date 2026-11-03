@@ -3333,6 +3333,19 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(now.stale).toBe(false)
     expect(now.currentText).toBeUndefined()
 
+    // 只把首行数字改成当前版本、正文还留着 v3 的句子：版本号对了不算合并完
+    fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'),
+      `<!-- zdiary-template: v${agentsTpl.TEMPLATE_VERSION} -->\n\n# 知识库工作约定\n\n> zdiary 生成；DSH 不会自动加载，插件每轮注入。\n`)
+    const faked = lintLib.templateStatus(cfg)
+    expect(faked.stale).toBe(true)
+    expect(faked.mismatch).toBe(true)
+    expect(faked.mismatchDetail).toContain('DSH 不会自动加载')
+    expect(faked.currentText).toBe(notebookLib.AGENTS_TEMPLATE)
+    const fakedExtras = lintLib.formatLintExtras({ ...(await lintLib.lintNotebook(cfg)) }).join('\n')
+    expect(fakedExtras).toContain('疑似只改了版本号')
+    expect(fakedExtras).toContain('DSH 不会自动加载')
+    expect(fakedExtras).toContain('--- 新版模板开始 ---')
+
     // flat 库拿 flat 模板：不能把 raw/ archive/ WORKFLOW.md 这些它没有的路径塞回去
     const flat = fresh('nb-p215-flat')
     await notebookLib.ensureNotebook(flat)
@@ -3724,7 +3737,63 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     }).some((line) => line.includes('契约'))).toBe(true)
   })
 
+  test('lint：契约版本按方向报告；只改首行数字会被正文哨兵发现', () => {
+    const cfg = fresh('nb-m1-contract-direction')
+    fs.mkdirSync(cfg.notebook, { recursive: true })
+    const write = (name: 'PERSONA.md' | 'POLICY.md', body: string) =>
+      fs.writeFileSync(path.join(cfg.notebook, name), body)
+    const extras = (c: ReturnType<typeof lintLib.contractStatus>): string =>
+      lintLib.formatLintExtras({
+        incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
+        tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
+        template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
+        contract: c,
+        similarTitles: { total: 0, truncated: false, items: [] },
+        indexHint: false,
+      }).join('\n')
+
+    // POLICY 保持当前版本，避免 missing / placeholder 混进来
+    write('POLICY.md', `<!-- zdiary-policy: v${personaTpl.POLICY_TEMPLATE_VERSION} -->\n\n# 自主权契约\n`)
+
+    // 标记比插件新：是 newer，不是 old；文案不能让 agent 改文件去配插件
+    write('PERSONA.md', `<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION + 1} -->\n\n# 未来契约\n`)
+    const newer = lintLib.contractStatus(cfg)
+    expect(newer.items.map((i) => `${i.file}:${i.kind}`)).toEqual(['PERSONA.md:newer'])
+    expect(newer.items[0]?.detail).toContain('比插件新')
+    const newerText = extras(newer)
+    expect(newerText).toContain('别改文件里的版本号')
+    expect(newerText).not.toContain('是旧版')
+
+    // 标记是当前版本、正文还留着 v3 删掉的「口头禅」：mismatch，不是 old
+    write('PERSONA.md', `<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->\n\n# 角色契约\n\n## 口头禅\n\n- 待填\n`)
+    const mismatch = lintLib.contractStatus(cfg)
+    expect(mismatch.items.map((i) => `${i.file}:${i.kind}`)).toEqual(['PERSONA.md:mismatch'])
+    expect(mismatch.items[0]?.detail).toContain('仍含旧版已移除的内容')
+    expect(extras(mismatch)).toContain('疑似只改了版本号')
+
+    // POLICY 的哨兵靠行首锚定（v4 删掉了 frontmatter 里的 version:）：
+    // 它自带换行，detail 里必须收掉 —— 否则一条警告会被劈成两行，提示跟着掉到下一行
+    write('PERSONA.md', `<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->\n\n# 角色契约\n`)
+    write('POLICY.md', `<!-- zdiary-policy: v${personaTpl.POLICY_TEMPLATE_VERSION} -->\n---\nversion: 2\n---\n\n# 自主权契约\n`)
+    const policy = lintLib.contractStatus(cfg)
+    const policyItem = policy.items.find((i) => i.file === 'POLICY.md')
+    expect(policy.items.map((i) => `${i.file}:${i.kind}`)).toEqual(['POLICY.md:mismatch'])
+    expect(policyItem?.detail).toBe(`标记是 v${personaTpl.POLICY_TEMPLATE_VERSION}，但正文仍含旧版已移除的内容：「version:」`)
+    expect(policyItem?.detail).not.toContain('\n')
+    const policyLine = extras(policy).split('\n').find((line) => line.includes('POLICY.md')) ?? ''
+    expect(policyLine).toContain('version:')
+    expect(policyLine).toContain('疑似只改了版本号')
+
+    // 反过来：正文里提到 version: 不算旧版 —— 哨兵必须只在行首匹配
+    write('POLICY.md', `<!-- zdiary-policy: v${personaTpl.POLICY_TEMPLATE_VERSION} -->\n---\nupdated: 2026-11-03\n---\n\n- 版本说明见 version: 小节\n`)
+    expect(lintLib.contractStatus(cfg).items).toEqual([])
+  })
+
   test('模板：版本标记后紧跟 frontmatter，现有解析器可直接读', () => {
+    // 升版本必须补正文哨兵，否则「只改首行数字」的检查会静默失效
+    expect(agentsTpl.TEMPLATE_SENTINELS[agentsTpl.TEMPLATE_VERSION]).toBeDefined()
+    expect(personaTpl.CONTRACT_TEMPLATE_SENTINELS['PERSONA.md'][personaTpl.PERSONA_TEMPLATE_VERSION]).toBeDefined()
+    expect(personaTpl.CONTRACT_TEMPLATE_SENTINELS['POLICY.md'][personaTpl.POLICY_TEMPLATE_VERSION]).toBeDefined()
     // 口头禅会让模型逐轮复读；v3 起只留「语气与边界」和负向的「禁用表达」
     expect(personaTpl.PERSONA_TEMPLATE).not.toContain('## 口头禅')
     expect(personaTpl.PERSONA_TEMPLATE).toContain('## 禁用表达')

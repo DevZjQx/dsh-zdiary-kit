@@ -41,6 +41,8 @@
 （只建目录与两份文件，不碰 `.zk`；之后 `ensureNotebook` 幂等接管同一目录）。
 首行是独立版本标记 `<!-- zdiary-persona: vN -->` / `<!-- zdiary-policy: vN -->`（`PERSONA_TEMPLATE_VERSION` /
 `POLICY_TEMPLATE_VERSION`）：不复用 `TEMPLATE_VERSION` —— 改 `AGENTS.md` 只升旧的，不该让契约误报旧版。
+标记与当前版本不等时只报告：低于当前 = `old`；高于当前 = `newer`（插件才是旧的那个，别改文件去配）；
+相等但正文还留着旧版内容 = `mismatch`（只改了首行数字，`CONTRACT_TEMPLATE_SENTINELS` 机械可查）。
 `POLICY.md` 形状是「首行版本标记 + 紧跟 frontmatter + 一张表」（`action / level / approval / reversible`），
 level 只认 `auto / ask / forbidden`；解析前先 `stripContractMarker()`，再复用 `lib/frontmatter`。
 解析与强制执行归 M3，这里只负责写入模板。

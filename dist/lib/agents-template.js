@@ -21,6 +21,17 @@
 export const TEMPLATE_VERSION = 4;
 /** 首行版本标记（实测 4 词）；不许带日期 —— 带日期的写法实测 6 词，白花 2 词 */
 export const TEMPLATE_MARK = `<!-- zdiary-template: v${TEMPLATE_VERSION} -->`;
+/**
+ * 当前版本的正文哨兵：只查「标记已经是当前版本」的文件，用来发现
+ * 「只把首行数字改成 vN、正文还是旧版」。v4 删掉了「宿主不会自动加载」一句，
+ * v2 / v3 的正文都还留着它 —— 标记说 v4、正文还有这句，就是只改了版本号。
+ *
+ * 用户合法保留旧句也会被提示，但只报告、不覆盖；升模板版本时在这里补一条，
+ * 否则哨兵永远只认旧版。
+ */
+export const TEMPLATE_SENTINELS = {
+    4: { forbidden: ['DSH 不会自动加载', '从底部往前丢'] },
+};
 export const AGENTS_TEMPLATE = `${TEMPLATE_MARK}
 
 # 知识库工作约定
