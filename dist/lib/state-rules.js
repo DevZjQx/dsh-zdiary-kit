@@ -394,6 +394,46 @@ function unify(a, b, line, pos) {
         throw new RulesCompileError([{ message: `两边类型不一致：${a} 与 ${b}`, line, col: pos.col }]);
     return a;
 }
+/**
+ * 收集规则里引用的事件 / 参数（`hoursSince` / `count` / `last` 的裸词参数）。
+ * 只遍历 AST，不求值：自定义规则换了事件名，模型侧词汇表要跟着变。
+ */
+function collectEvents(node, acc) {
+    switch (node.k) {
+        case 'bin':
+            collectEvents(node.left, acc);
+            collectEvents(node.right, acc);
+            return;
+        case 'un':
+            collectEvents(node.expr, acc);
+            return;
+        case 'call': {
+            if (EVENT_ARG_FUNCS.has(node.name)) {
+                const first = node.args[0];
+                if (first && first.k === 'var') {
+                    const params = acc.get(first.name) ?? new Set();
+                    if (node.name === 'last') {
+                        const second = node.args[1];
+                        if (second && second.k === 'var')
+                            params.add(second.name);
+                    }
+                    acc.set(first.name, params);
+                }
+                // count 的第二参数是表达式（天数），里面还可能嵌套函数；last 的参数是裸词，不遍历
+                if (node.name !== 'hoursSince' && node.name !== 'last') {
+                    for (const arg of node.args.slice(1))
+                        collectEvents(arg, acc);
+                }
+                return;
+            }
+            for (const arg of node.args)
+                collectEvents(arg, acc);
+            return;
+        }
+        default:
+            return;
+    }
+}
 function evalNode(node, env, ctx, line) {
     switch (node.k) {
         case 'num': return node.v;
@@ -569,9 +609,13 @@ export function compileRules(source) {
         }
         env.set(assignment.name, type);
     }
+    const eventMap = new Map();
+    for (const assignment of assignments)
+        collectEvents(assignment.expr, eventMap);
     return {
         version,
         vars: assignments.map((a) => a.name),
+        events: [...eventMap].map(([name, params]) => ({ name, params: [...params] })),
         evaluate(ctx) {
             const values = new Map();
             for (const assignment of assignments) {

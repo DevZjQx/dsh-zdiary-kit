@@ -80,14 +80,21 @@ export function loadRules(cfg: Config): LoadedRules {
 const SCENE_PREFIX = '当下：'
 const SEP = ' · '
 
+/**
+ * 在场事件名：投影层直接读 lastSeen，不经过规则。
+ * 导出给词汇表复用 —— 两处各写一遍字符串，改名时必然漏一处。
+ */
+export const PRESENCE_LEFT_EVENT = 'user_left'
+export const PRESENCE_RETURNED_EVENT = 'user_returned'
+
 /** 时间点 → 人话（脚注用；只接受毫秒） */
 function ago(now: number, atMs: number): string {
   return humanAge((now - atMs) / 3600_000)
 }
 
 function presenceOf(log: StateLog, now: number, staleHours: number): { presence: Presence; note: string } {
-  const left = log.lastSeen.get('user_left')
-  const returned = log.lastSeen.get('user_returned')
+  const left = log.lastSeen.get(PRESENCE_LEFT_EVENT)
+  const returned = log.lastSeen.get(PRESENCE_RETURNED_EVENT)
   // ① 两个事件都没有 → 未知：不能因为「没记录」就默认在场，否则只记 ate 的日志永远显示在场
   if (!left && !returned) return { presence: 'unknown', note: '' }
   const latest = left && returned ? (left.atMs >= returned.atMs ? left : returned) : (left ?? returned) as { atMs: number }

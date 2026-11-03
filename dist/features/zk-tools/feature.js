@@ -20,6 +20,7 @@ import { configuredAliases, readAliases } from '../../lib/alias.js';
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.js';
 import { META_NAMES } from '../../lib/meta.js';
 import { buildScene, combinedWords } from '../../lib/scene.js';
+import { buildStateContract } from '../../lib/state-contract.js';
 import { appendEvent, checkAppendInput, pruneStateLog, readStateLog, StateError } from '../../lib/state-log.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from '../../lib/dream.js';
@@ -946,7 +947,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
             name: 'zk_context',
             description: '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回；' +
                 '角色契约（PERSONA.md）单独成段、在记忆段之前、不参与截断。' +
-                '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前）。' +
+                '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前），并回带场景投影与当前规则的事件词汇（stateEvents / stateRulesVersion）。' +
                 '宿主支持注入时这些内容每轮已自动进入系统提示；宿主不支持、或想核对「被截断了多少」时用它。',
             parameters: { type: 'object', properties: {}, additionalProperties: false },
             output: {
@@ -987,6 +988,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     }, ['present', 'presence', 'events', 'rulesVersion', 'words', 'emptyReason']),
                     combinedWords: { type: 'number' },
                     combinedBudget: { type: 'number' },
+                    stateEvents: { type: 'string' },
+                    stateRulesVersion: { type: 'string' },
                     notebook: { type: 'string' },
                     defaultNotebook: { type: 'string' },
                     pinned: { type: 'string' },
@@ -1009,7 +1012,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             retiredWords: { type: 'number' },
                         }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
                     },
-                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'scene', 'combinedWords', 'combinedBudget', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
+                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'scene', 'combinedWords', 'combinedBudget', 'stateEvents', 'stateRulesVersion', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
             },
             async run(_args, env) {
                 // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
@@ -1017,6 +1020,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 const state = sessionState(env.workspace, env.sessionId);
                 const payload = buildMemoryPayload(cfg);
                 const scene = buildScene(cfg);
+                const stateContract = buildStateContract(cfg);
                 return {
                     ...payload,
                     // 场景单独投影、单独预算（D7）：不进 memory text，也不占记忆预算
@@ -1030,6 +1034,9 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     },
                     combinedWords: combinedWords(payload.totalWords, scene),
                     combinedBudget: cfg.totalPromptBudgetWords,
+                    // 宿主没有 systemPrompt 时的后备：把当前规则的事件词汇带在 context 里
+                    stateEvents: stateContract?.text ?? '',
+                    stateRulesVersion: stateContract?.rulesVersion ?? '',
                     notebook: state.active,
                     defaultNotebook: state.defaultName,
                     pinned: state.diverged ? state.pinned : '',
@@ -1049,6 +1056,10 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     ? `笔记本「${current.name}」（${current.structure}）→ ${current.path}` +
                         (others.length ? `\n另有：${others.map((n) => `${n.name}（${n.structure}）`).join('、')} —— zk_use 切换本会话` : '')
                     : `笔记本「${v.notebook}」`;
+                // 宿主没有 systemPrompt、或想核对当前规则时，词汇跟 context 一起回
+                const stateLine = v.stateEvents
+                    ? `\n\n${v.stateEvents}${v.stateRulesVersion ? ` · 规则 ${v.stateRulesVersion}` : ''}`
+                    : '';
                 if (!v.text && !v.scene.present) {
                     const why = v.scene.emptyReason === 'budget'
                         ? '场景有事件，但一行都放不下（调大 sceneBudgetWords）'
@@ -1057,7 +1068,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             : v.scene.emptyReason === 'error'
                                 ? '场景读取失败（看 doctor / 设置页）'
                                 : '没有状态事件';
-                    return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md 契约。\n${why}。`);
+                    return text(drift + head + stateLine + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md 契约。\n${why}。`);
                 }
                 const contract = v.contract?.present
                     ? `\n\n契约：正文（含标题）${v.contract.contentWords}/${v.contract.budget} 词` +
@@ -1078,14 +1089,14 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     ? `，超 ${v.combinedWords - v.combinedBudget} 词（合并预算 ${v.combinedBudget}）`
                     : `（合并预算 ${v.combinedBudget}）`;
                 const totals = `\n\n用量：记忆载荷 ${v.totalWords} 词（预算 ${v.budget}）+ 场景 ${v.scene.words} 词（预算单独算）= 合计 ${v.combinedWords} 词` + over;
-                return text(drift + head + contract + scene + totals + (v.text ? '\n\n' + v.text : ''));
+                return text(drift + head + contract + stateLine + scene + totals + (v.text ? '\n\n' + v.text : ''));
             },
         }),
         t({
             name: 'zk_state',
             description: '运行时状态：一行一条事件，场景是日志的投影（不存快照、不跑定时器）。' +
-                'append：记一件已经发生的事 —— 事件名 + 可选 key=value 参数，例：woke hours=7.5 / ate amount=1 / at place=书房 / set_goal text="写完 D7" / user_left / user_returned。' +
-                '事件是你自己的叙述，插件只校验格式与时间，不校验真假；别把 token 余额之类宿主观测写进来。' +
+                'append：记一件已经发生的事（不写计划）。内置事件示例：slept（入睡）/ woke hours=7.5（醒来，时长为睡眠小时数）/ ate（吃过）/ at place=书房（所在位置）/ set_goal text="写完 D7"（当前目标）/ user_left（用户离开）/ user_returned（用户回来）；参数写成 key=value，值含空格要加引号。' +
+                '有 `.state/rules` 时，系统提示里的「状态事件」是当前规则认可的词汇，以它为准；事件是你自己的叙述，插件只校验格式与时间，不校验真假，也不校验事件名是否属于内置集；别把 token 余额之类宿主观测写进来。' +
                 'show：读当前投影（energy / mood / satiety / 地点 / 目标 / 在场）+ 窗口内最近 20 条事件，不回全量日志。' +
                 'prune：压实日志（保留窗口内全部 + 每个事件名在窗口外的最后一条），返回 dropped / kept；不自动 commit。' +
                 '它不是日常操作：只有人明确要求、或 doctor 提示日志偏大时才用；它会删掉旧事件，默认别碰。' +
@@ -1094,8 +1105,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 type: 'object',
                 properties: {
                     action: S.enum('append 追加事件 / show 读投影 / prune 压实', ['append', 'show', 'prune']),
-                    event: S.str('append 用：事件名（小写字母开头，只含 [a-z0-9_]，最长 32）'),
-                    params: S.arr('append 用：参数列表，形如 key=value（最多 8 个；字符串含空格要加引号）', S.str('key=value')),
+                    event: S.str('append 用：事件名（内置 slept / woke / ate / at / set_goal / user_left / user_returned；自定义规则以系统提示的状态事件为准；小写字母开头，只含 [a-z0-9_]，最长 32）'),
+                    params: S.arr('append 用：参数列表，形如 key=value（如 woke 的 hours=7.5；最多 8 个；字符串含空格要加引号）', S.str('key=value')),
                     at: S.str('append 用：回填时间（ISO，必须带时区，如 2026-11-04T07:10:00+08:00）；缺省 = 现在'),
                     days: S.num('prune 用：窗口外的截止天数（必须 ≥ 投影窗口）'),
                     force: S.bool('prune 用：截止天数小于投影窗口时强行压实'),

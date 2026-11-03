@@ -214,6 +214,7 @@ AGENTS 已经是 175 词硬规则，再加就会挤掉 MEMORY；人设和事实�
 - 事件名 `[a-z][a-z0-9_]{0,31}`；参数 `key=value`，最多 8 个；key `[a-z][a-z0-9_]{0,15}`；value 是数字、带引号字符串或无空格裸词；单行 ≤ 512 字节；禁止换行 / 回车；重复 key 拒绝；未知 key 保留。事件参数允许裸词；规则里的字符串必须加引号，两套语法别混。
 - `#` 开头的行和空行跳过；坏行跳过并在 `doctor` 计数，不让整段投影失败。
 - `slept` 记入睡，`woke` 记醒来；时长挂在结束事件上（`woke hours=7.5`）。不要写 `user_absent 3d`：`3d` 是计划还是已发生分不清，用 `user_left` / `user_returned`。
+- **词汇必须可见且自动同步**：内置事件词汇（`woke hours=` / `ate` / `at place=` / `set_goal text=` / `user_left` / `user_returned`，以及 `slept`）写在 `zk_state` 工具说明里作为示例；有 `.state/rules` / `.state/events.log` 时，`state-contract` 从当前规则 AST 提取事件名 / 参数名，作为 `zdiary:state` 系统提示段注入（没有状态文件时不注入）。参数占位写成 `key=<值>`（不是 `key=`，后者会被照抄成空值）；整行上限 160 词 / 1200 字符，超了从尾部截断并注明未列出数量。用默认规则时词表补内置 `slept`，自定义规则只列规则读取的事件。投影只给数值；词汇不能只活在 `.state/rules` 里，否则模型不知道该 append 什么。自定义规则换事件名时**不需要**手工同步 AGENTS.md。
 - 追加写 + 文件锁；正常 append 不 rewrite、不排序；只有 `prune` 做压实（见「窗口与裁剪」）。
 
 **规则 DSL（包 1：严格）**
@@ -514,7 +515,8 @@ git 里还在，人能用 `git show` 恢复。
   每个事件名的 last-seen（含最后一条参数，供 `hoursSince` / `last` 用）、坏行跳过、
   tombstone / 行数统计、显式 prune 压实。只碰 `<notebook>/.state/`，不进 zk 索引。
 - `src/lib/state-rules.ts`（新）：`.state/rules` 的严格 DSL（包 1）：词法 / AST、类型检查、
-  白名单求值、内置默认、`version` 校验、失败回退 + 告警。纯函数，不读笔记 / 环境变量 / 文件系统。
+  白名单求值、内置默认、`version` 校验、失败回退 + 告警；同时收集规则引用的
+  事件名 / 参数名（`CompiledRules.events`），只给词汇表用，不暴露公式。纯函数，不读笔记 / 环境变量 / 文件系统。
 - `src/lib/scene.ts`（新）：`project(events, rules, now, { sceneWindowDays, staleHours })` 纯函数；
   独立缓存（log mtime/size + rules mtime + minute）；渲染一行并按 `sceneBudgetWords` 裁；
   `present` 由渲染层判断；渲染层只认白名单变量（不做通用 redact）；导出 `combinedWords` / `combinedBudgetNote`。
@@ -523,11 +525,18 @@ git 里还在，人能用 `git show` 恢复。
 - `src/app/plugin.ts`：挂 `zdiary:scene`（`systemPrompt.context()`，order 220，运行时上下文最后），`interpolate: false`，
   不设 `required`（可选运行时状态）；宿主没有 `context()` 时只跳过场景，笔记本与记忆照常；
   text 函数里先 `memoryUsage` 再 `projectScene`；异常一律返回空串。
+  另挂 `zdiary:state`（`systemPrompt.section()`，order 5210，不进记忆预算）：文本来自当前规则的词汇表，
+  参数写作 `key=<值>`，整行上限 160 词 / 1200 字符（超了从尾部截断并注明未列出数量）；
+  没有 `.state/rules` / `.state/events.log` 时返回空串，规则一改下一轮重算。
 - `src/lib/agents-template.ts`：AGENTS 模板加一节「状态：用 `zk_state` 记事件，不翻历史」；
   改 AGENTS 就升 `TEMPLATE_VERSION`（本次 v5 → v6，哨兵要求出现 `zk_state`）。
+- `src/lib/state-contract.ts`（新）：从 `CompiledRules.events` 生成事件词汇行，补上在场事件
+  `user_left` / `user_returned`；用默认规则时补内置 `slept`，自定义规则只列规则读取的事件；
+  按 rules 指纹 + events 是否存在缓存（append 不触发重新编译），状态层未启用时返回 null。
 - `src/features/zk-tools/feature.ts`：新增 `zk_state`（`append` 追加 / `show` 读投影 /
   `prune` 压实）；`append` 校验格式，`show` 只回投影 + 窗口内最近 20 条，`prune` 只回
-  `{ dropped, kept, windowDays }`；`zk_context` 组合新的 `scene`。
+  `{ dropped, kept, windowDays }`；`zk_context` 组合新的 `scene` 与 `stateEvents` / `stateRulesVersion`
+  （事件词汇行与规则版本，宿主没有 `systemPrompt` 时的后备；没有状态文件时为空串）。
 - `src/features/readonly/feature.ts`：记忆页「场景」段显示投影、事件条数、规则版本、最近几条事件；
   载荷预览分两段显示 memory text + scene text；用量行用 `combinedWords`。
 - `src/lib/zk.ts`：`excludedNames()` 加 `.state`；`zk_append` / `zk_new` / `zk_link` / `zk_supersede`
@@ -659,8 +668,9 @@ git 里还在，人能用 `git show` 恢复。
 
 1. `PERSONA.md` 的默认文件是「一本库一份」还是「一个 agent 一份」？M1 先按一本库一份，M4 再扩。
 2. `contractBudgetWords` 默认 240 是否合适？参考库 AGENTS 187 + MEMORY 117 已经在 500 内；加 240 后总 prompt 会变长，需要在真机上量。
-3. 事件词汇怎么定：M3 先内置最小集（`ate` / `slept` / `woke` / `at` / `set_goal` / `user_left` / `user_returned`），
-   其余自由文本；是否需要一份可发现的词汇表？
+3. ~~事件词汇怎么定~~ 已定（2026-11-04）：M3 内置最小集（`ate` / `slept` / `woke` / `at` / `set_goal` / `user_left` / `user_returned`），
+   其余自由文本；词汇必须可发现且自动同步 —— 内置词汇写在 `zk_state` 工具说明（示例），自定义规则的事件名由 `zdiary:state`
+   从规则 AST 自动提取并注入，默认规则额外补 `slept`；参数占位 `key=<值>`，整行有 160 词 / 1200 字符上限，不需要人同步 AGENTS.md。
 4. `agent.id` 到 persona 的映射放在配置、文件命名还是 frontmatter？跨会话时谁负责 pin？
 5. `sourceTrust` 只能抓显式的 `via` 关键词；没有 `via` 的二手来源无法机械识别，是否接受这个边界？
 6. `MEMORY.md` 的 `[user|agent|persona]` 标记会占词；是否只在 `zk_context` 显示、不写入文件？如果写入，预算怎么算？

@@ -15,17 +15,17 @@
 - `lib/wikilink.ts`：`[[链接]]` 的解析口径（路径 → `.md` → `archive/` → 活笔记标题），lint 与 dream 共用一份
 - `lib/persona-template.ts`：`PERSONA_TEMPLATE` 与独立版本标记（`<!-- zdiary-persona: vN -->`，
   不复用 `zdiary-template` —— AGENTS 改版不该让契约误报旧版）；只走 opt-in 写入，已存在不覆盖
-- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 180 词），flat 用精简版
-  （80 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
+- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 189 词），flat 用精简版
+  （89 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
   layered 初始化自动写，flat 只有 `ensureNotebook(cfg, signal, { withAgents: true })` / `zk-kit init --with-agents` /
   设置页「写入 AGENTS.md 模板」才写；已存在一律不覆盖。
   `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
-- `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册两段：`zdiary:notebook`（order 5190，一行当前笔记本名字 / 结构 / 路径 + 其余已配置库名，每步跟随会话 pin；**不进记忆预算**）与 `zdiary:memory`（order 5200，`interpolate: false` —— 记忆是文件原文，
-  `{{…}}` 一律原样保留：插值会让未注册变量在装配时抛错、`{{model}}` 这类被静默改写），`text` 是函数，每个 step 重新求值（按文件指纹 + 预算 + 日期缓存，变了才重读重算）；
+- `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册三段：`zdiary:notebook`（order 5190，一行当前笔记本名字 / 结构 / 路径 + 其余已配置库名，每步跟随会话 pin；**不进记忆预算**）、`zdiary:memory`（order 5200，`interpolate: false` —— 记忆是文件原文，
+  `{{…}}` 一律原样保留：插值会让未注册变量在装配时抛错、`{{model}}` 这类被静默改写）与 `zdiary:state`（order 5210，从当前 `.state/rules` 的 AST 取事件名 / 参数名，参数写成 `key=<值>`；用默认规则时补上内置 `slept`，自定义规则只列规则读取的事件；整行上限 160 词 / 1200 字符；规则一改下一轮就换；没有状态文件时为空串，也不占记忆预算），`text` 是函数，每个 step 重新求值（按文件指纹 + 预算 + 日期缓存，变了才重读重算）；
   装配上下文带 `agent.id` 时按**会话工作区 + 该会话固定的笔记本**解析（`config/session`，和 `zk_*` 工具同口径）；
   别的会话切了默认值不会把已开的会话换库，裸装配才退回进程工作区 + 全局默认
 - `zk_context` 工具：同一份 payload（含 `ratio` 用量），给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用；
-  另返回 `notebooks`（名字 / 路径 / 结构 / 当前），没有提示注入时模型也能发现已配置的库
+  另返回 `notebooks`（名字 / 路径 / 结构 / 当前）、`scene` 与 `stateEvents` / `stateRulesVersion`（事件词汇行及其规则版本），没有提示注入时模型也能发现已配置的库与当前该怎么记事件
 - 设置页「记忆」：注入预算、契约预算、场景预算、状态窗口、场景新鲜度、合并预算；「目录与 group」：归档目录。
   快照里带 `memory.words/budget/truncatedWords/retiredWords/contract` 状态行；自检多一项「角色契约」
 

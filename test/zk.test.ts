@@ -583,7 +583,7 @@ describe('memory', () => {
     expect(p.text).not.toContain('zk_dream')
   })
 
-  test('有 systemPrompt 时注册 zdiary:notebook / zdiary:memory 到 section，场景到 context', async () => {
+  test('有 systemPrompt 时注册 zdiary:notebook / zdiary:memory / zdiary:state 到 section，场景到 context', async () => {
     const plugin = (await import('../src/app/plugin.ts')).default
     type Contribution = { name: string; order: number; text: string | (() => string); interpolate?: boolean; required?: boolean }
     const sections: Contribution[] = []
@@ -598,21 +598,26 @@ describe('memory', () => {
       effect: (fn: () => undefined | (() => void)) => { fn() },
     }
     plugin.apply(withPrompt as never)
-    expect(sections.map((s) => s.name)).toEqual(['zdiary:notebook', 'zdiary:memory'])
+    expect(sections.map((s) => s.name)).toEqual(['zdiary:notebook', 'zdiary:memory', 'zdiary:state'])
     expect(sections[0].order).toBe(5190)
     expect(sections[1].order).toBe(5200)
+    expect(sections[2].order).toBe(5210)
+    // 状态事件词汇跟着 .state/rules 走，不是手写死的：空状态时 text 为空串
+    expect(typeof sections[2].text).toBe('function')
+    expect((sections[2].text as () => string)()).toBe('')
     // 场景是运行时上下文（user-role 快照），不再占系统提示段位
     expect(contexts.map((c) => c.name)).toEqual(['zdiary:scene'])
     expect(contexts[0].order).toBe(220)
     expect(typeof contexts[0].text).toBe('function')
     // 可选运行时上下文：suppressRuntimeContext() 时跟着关掉
     expect(contexts[0].required).toBeUndefined()
-    // 笔记本提示、记忆与场景都是内容类：不插值，`{{…}}` 原样保留
+    // 笔记本提示、记忆、状态词汇与场景都是内容类：不插值，`{{…}}` 原样保留
     expect(sections[0].interpolate).toBe(false)
     expect(sections[1].interpolate).toBe(false)
+    expect(sections[2].interpolate).toBe(false)
     expect(contexts[0].interpolate).toBe(false)
 
-    // 老宿主只有 section 时安静降级：笔记本 / 记忆照常，场景不注册也不抛错
+    // 老宿主只有 section 时安静降级：笔记本 / 记忆 / 状态词汇照常，场景不注册也不抛错
     const sectionsOnly: Contribution[] = []
     const legacy = {
       get: (name: string) => (name === 'systemPrompt'
@@ -621,7 +626,7 @@ describe('memory', () => {
       effect: (fn: () => undefined | (() => void)) => { fn() },
     }
     expect(() => plugin.apply(legacy as never)).not.toThrow()
-    expect(sectionsOnly.map((s) => s.name)).toEqual(['zdiary:notebook', 'zdiary:memory'])
+    expect(sectionsOnly.map((s) => s.name)).toEqual(['zdiary:notebook', 'zdiary:memory', 'zdiary:state'])
 
     const bare = { get: () => undefined, effect: (fn: () => undefined | (() => void)) => { fn() } }
     expect(() => plugin.apply(bare as never)).not.toThrow()
@@ -4228,6 +4233,42 @@ describe('运行时状态（M3 事件流）', () => {
     }
   })
 
+  it('zdiary:state：按当前 .state/rules 自动生成事件词汇，规则一改就换', async () => {
+    setup()
+    try {
+      await notebookLib.ensureNotebook(store.config())
+      fs.mkdirSync(path.join(nb, '.state'), { recursive: true })
+      fs.writeFileSync(path.join(nb, '.state', 'rules'), 'version = 3\np = last(at, place)\nn = count(coffee, 7)\n')
+      const sections: Array<{ name: string; text: string | (() => string) }> = []
+      const plugin = (await import('../src/app/plugin.ts')).default
+      const fake = {
+        get: (name: string) => (name === 'systemPrompt'
+          ? {
+              section: (s: typeof sections[number]) => { sections.push(s); return () => undefined },
+              context: () => () => undefined,
+            }
+          : undefined),
+        effect: (fn: () => undefined | (() => void)) => { fn() },
+      }
+      plugin.apply(fake as never)
+      const section = sections.find((s) => s.name === 'zdiary:state')!
+      const text = section.text as () => string
+      expect(text()).toContain('at place=<值>')
+      expect(text()).toContain('coffee')
+      expect(text()).toContain('user_left')
+      expect(text()).not.toContain('woke')
+      // 文件规则 = 人换的那套词汇：内置 slept 不混进来
+      expect(text()).not.toContain('slept')
+
+      fs.writeFileSync(path.join(nb, '.state', 'rules'), 'version = 4\nh = num(last(woke, hours))\n')
+      expect(text()).toContain('woke hours=<值>')
+      expect(text()).not.toContain('coffee')
+    } finally {
+      fs.rmSync(nb, { recursive: true, force: true })
+      restore()
+    }
+  })
+
   it('zk_context：combinedBudget 与配置同源，场景字段（含 emptyReason）在 schema 内', async () => {
     setup()
     try {
@@ -4237,7 +4278,17 @@ describe('运行时状态（M3 事件流）', () => {
       const scene = value.scene as Record<string, unknown>
       expect(scene.present).toBe(false)
       expect(scene.emptyReason).toBe('no-log')
+      // 没有状态文件时词汇为空；有 rules 时跟 context 一起回（宿主没有 systemPrompt 的后备）
+      expect(value.stateEvents).toBe('')
+      expect(value.stateRulesVersion).toBe('')
+      fs.mkdirSync(path.join(nb, '.state'), { recursive: true })
+      fs.writeFileSync(path.join(nb, '.state', 'rules'), 'version = 2\np = last(at, place)\n')
+      const withRules = await tool.execute({}, { signal: AbortSignal.timeout(30_000), agent: { id: 'state-sess-2' } }) as Record<string, unknown>
+      expect(String(withRules.stateEvents)).toContain('at place=<值>')
+      expect(String(withRules.stateEvents)).toContain('user_left')
+      expect(String(withRules.stateRulesVersion)).toBe('v2')
       expect(undeclaredKeys(value, tool.output.schema)).toEqual([])
+      expect(undeclaredKeys(withRules, tool.output.schema)).toEqual([])
     } finally {
       fs.rmSync(nb, { recursive: true, force: true })
       restore()

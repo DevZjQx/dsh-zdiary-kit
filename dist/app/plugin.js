@@ -7,11 +7,18 @@ import { registerReadOnly } from '../features/readonly/feature.js';
 import { registerSettings } from '../features/settings/feature.js';
 import { buildMemoryPayload } from '../lib/memory.js';
 import { buildScene } from '../lib/scene.js';
+import { buildStateContract } from '../lib/state-contract.js';
 import { structureStatus } from '../lib/notebook.js';
 import { sessionWorkspace } from '../lib/workspace.js';
 /** 系统提示里的段位：5000 是 TOOLS_SDK，9000 是交付物引用 —— 记忆落在两者之间的空档 */
 const NOTEBOOK_SECTION_ORDER = 5190;
 const MEMORY_SECTION_ORDER = 5200;
+/**
+ * 事件词汇表跟着 `.state/rules` 走，单独一段（不进记忆预算）：
+ * 记忆里的 AGENTS.md 是人的文档，不该要求人手工同步规则里的事件名；
+ * 规则一改，这里下一次装配就重算。没有状态文件时 text 返回空串。
+ */
+const STATE_SECTION_ORDER = 5210;
 /**
  * 场景走运行时上下文（`systemPrompt.context()`），而不是系统提示 section：
  * 它是每步都会变的运行时事实，宿主在准入前用 `refreshContext()` 重读，作为 user-role 快照进历史；
@@ -195,6 +202,20 @@ export default {
                 return '';
             }
         }
+        /**
+         * 事件词汇：从当前规则 AST 取事件名 / 参数名，模型不用读公式就知道 append 什么。
+         * 没有 `.state/rules` / `.state/events.log` → 空串（老库不多一个词）。
+         */
+        function stateText(assemble) {
+            try {
+                const sessions = service(ctx, 'sessions');
+                const workspace = sessionWorkspace(assemble, sessions) ?? processWorkspace();
+                return buildStateContract(configFor(workspace, assemble?.agent?.id))?.text ?? '';
+            }
+            catch {
+                return '';
+            }
+        }
         function registerPrompt(host) {
             const prompt = service(host, 'systemPrompt');
             if (!prompt || typeof prompt.section !== 'function')
@@ -204,6 +225,7 @@ export default {
             // 叫 provider / model 的则会被静默改写成真实值。DSH 自己给所有「内容类」段也是这么关的。
             host.effect(() => prompt.section({ name: 'zdiary:notebook', order: NOTEBOOK_SECTION_ORDER, text: notebookText, interpolate: false }));
             host.effect(() => prompt.section({ name: 'zdiary:memory', order: MEMORY_SECTION_ORDER, text: memoryText, interpolate: false }));
+            host.effect(() => prompt.section({ name: 'zdiary:state', order: STATE_SECTION_ORDER, text: stateText, interpolate: false }));
             // 不设 required：场景是可选运行时状态，宿主 suppressRuntimeContext() 时跟着一起关掉；
             // 状态层读不到时 zk_state show 仍是后备，没必要绕过宿主的上下文开关。
             const addContext = prompt.context;
@@ -217,7 +239,7 @@ export default {
                 catch { /* ignore */ }
             }
             try {
-                console.log('[zdiary] 提示注入已挂载：笔记本 + AGENTS.md / USER.md / MEMORY.md → 系统提示；场景（有日志时）→ 运行时上下文');
+                console.log('[zdiary] 提示注入已挂载：笔记本 + AGENTS.md / USER.md / MEMORY.md → 系统提示；状态事件词汇（有状态文件时）→ 系统提示；场景（有日志时）→ 运行时上下文');
             }
             catch { /* ignore */ }
         }

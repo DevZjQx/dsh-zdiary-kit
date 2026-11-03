@@ -119,7 +119,8 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `originalWords` 含退役条目；展示层的「原 X」会先减掉 `retiredWords`，所以退役不会再被当成截断报出来。
 契约单独一组：`contract.present / contentWords / words / noticeWords / budget / overBudget / overWords / files[]`（`contentWords` 含 `## PERSONA.md` 标题），
 外加 `totalWords`（`countWords(payload.text)`）与 `overheadWords`（框 / 做梦提醒 / notice / 契约告警等开销）。
-场景是**独立运行时上下文**（`systemPrompt.context()`，不进系统提示 section）：`scene: { present, presence, events, rulesVersion, words, emptyReason }`，不进 memory text、不占记忆预算，
+场景是**独立运行时上下文**（`systemPrompt.context()`，不进系统提示 section）：`scene: { present, presence, events, rulesVersion, words, emptyReason }`，不进 memory text、不占记忆预算；
+`stateEvents` 是当前规则的事件词汇行、`stateRulesVersion` 是它的规则版本（`v3` / `default` / `default(fallback)`；与 `zdiary:state` 同源；没有状态文件时为空串），宿主没有 `systemPrompt` 时的后备与核对用，
 `combinedWords` = `totalWords + scene.words` 才是合并总账（别叫「总 prompt」——宿主自己的系统提示不在里面），
 `combinedBudget` 是它的上限（`totalPromptBudgetWords`），两者一起返回，人才能自己比。
 `presence` 是三态：`present` / `absent` / `unknown`（布尔分不清「不在」和「没记录」）；
@@ -133,7 +134,12 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `append` 一行一条事件（时间戳必须带时区、参数最多 8 个、单行 ≤ 512 字节；**含换行 / 控制字符的值直接拒绝**，
 否则一条事件会被拆成两行坏行），校验通过后的第一次 append 才 `ensureNotebook`（写错的调用不建库、不留 `.state/`），
 插件只校验格式与时间，
-不判断真假；`show` 只回投影 + 窗口内最近 20 条，不回全量日志、不回窗口外事件；
+不判断真假；**事件词汇**默认 `slept` / `woke hours=` / `ate` / `at place=` / `set_goal text=` / `user_left` / `user_returned`，写在 `zk_state` 工具说明里作为示例；
+有 `.state/rules` / `.state/events.log` 时，`lib/state-contract.ts` 从当前规则 AST 提取事件名 / 参数名，作为 `zdiary:state` 系统提示段注入：
+规则来自文件时只列规则读取的事件，用默认规则（含只有 `events.log`）时补上内置 `slept`；参数写成 `place=<值>`（占位，别照抄空值）；
+整行上限 160 词 / 1200 字符，超了从尾部截断并注明「另有 N 个未列出」，在场事件永远保留。
+（没有状态文件时不注入；规则一改下一轮就换，不需要手工同步 AGENTS.md）；插件不校验事件名是否属于内置集；
+`show` 只回投影 + 窗口内最近 20 条，不回全量日志、不回窗口外事件；
 `prune` 压实成「窗口内全部 + 每个事件名在窗口外的最后一条」（tombstone，`hoursSince` 靠它算长尾），
 人写的注释行跟着它后面那条事件走（事件被压实掉就顺延到下一条保留的事件或文件末尾），一行不丢；
 只有插件自己写的表头 `# zdiary-state v<N>` 会被重写成规范的一行。

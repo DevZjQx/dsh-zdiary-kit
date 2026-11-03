@@ -18,6 +18,10 @@ const store = await import('../src/config/store.ts')
 const log = await import('../src/lib/state-log.ts')
 const rules = await import('../src/lib/state-rules.ts')
 const scene = await import('../src/lib/scene.ts')
+const stateContract = await import('../src/lib/state-contract.ts')
+const memory = await import('../src/lib/memory.ts')
+
+const countWords = memory.countWords
 
 const notebook = path.join(root, 'notebook')
 fs.mkdirSync(notebook, { recursive: true })
@@ -123,6 +127,92 @@ describe('规则 DSL', () => {
       staleHours: 72,
     })
     expect(values.p).toBeNull()
+  })
+  test('规则事件词汇：只收 hoursSince / count / last 的裸词，不暴露公式', () => {
+    expect(rules.compileDefaultRules().events).toEqual([
+      { name: 'woke', params: ['hours'] },
+      { name: 'ate', params: [] },
+      { name: 'at', params: ['place'] },
+      { name: 'set_goal', params: ['text'] },
+    ])
+    const custom = rules.compileRules('version = 1\np = last(at, place)\nn = count(coffee, 7)\n')!
+    expect(custom.events).toEqual([
+      { name: 'at', params: ['place'] },
+      { name: 'coffee', params: [] },
+    ])
+  })
+})
+
+describe('状态事件词汇', () => {
+  test('没有状态文件 = 不注入；有 .state/rules 时按当前规则生成，改规则自动重算', () => {
+    const c = withNotebook('contract-1')
+    expect(stateContract.buildStateContract(c)).toBeNull()
+
+    // 空 .state/ 目录不算启用：只有人不小心建了目录，不该多一行注入
+    fs.mkdirSync(log.stateDirOf(c), { recursive: true })
+    expect(stateContract.buildStateContract(c)).toBeNull()
+
+    fs.writeFileSync(log.rulesPathOf(c), 'version = 1\np = last(at, place)\nn = count(coffee, 7)\n')
+    const first = stateContract.buildStateContract(c)!
+    // 参数写成 key=<值>：key= 会被照抄成空值（hours="" → num 0），见 state-contract.ts 顶部
+    expect(first.text).toContain('状态事件：at place=<值> / coffee')
+    expect(first.text).not.toContain('place= /')
+    expect(first.text).toContain('user_left')
+    expect(first.text).toContain('user_returned')
+    expect(first.text).toContain('zk_state append')
+    expect(first.text).not.toContain('woke')
+    // 文件规则 = 人换的那套词汇：内置的 slept 也不出现
+    expect(first.text).not.toContain('slept')
+
+    // 改规则后同一进程里也要立刻换词汇（按文件指纹缓存，不是进程级缓存）
+    fs.writeFileSync(log.rulesPathOf(c), 'version = 2\nh = num(last(woke, hours))\nenergy = clamp(100 - h, 0, 100)\n')
+    const second = stateContract.buildStateContract(c)!
+    expect(second.text).toContain('woke hours=<值>')
+    expect(second.text).not.toContain('coffee')
+    expect(second.rulesVersion).toBe('v2')
+  })
+
+  test('只有 events.log、没有 rules：用内置默认规则的事件（状态层已启用）', () => {
+    const c = withNotebook('contract-2')
+    expect(stateContract.buildStateContract(c)).toBeNull()
+    log.appendEvent(c, { name: 'ate' }, NOW)
+    const contract = stateContract.buildStateContract(c)!
+    expect(contract.rulesVersion).toBe('default')
+    expect(contract.events.map((event) => event.name)).toEqual(['woke', 'ate', 'at', 'set_goal', 'slept', 'user_left', 'user_returned'])
+    expect(contract.text).toContain('woke hours=<值>')
+    expect(contract.text).toContain('at place=<值>')
+    expect(contract.text).toContain('set_goal text=<值>')
+    // 工具说明里的内置事件 slept 与词表同源，不能只在一边出现
+    expect(contract.text).toContain('slept')
+  })
+
+  test('规则编译失败回退默认时，词汇也跟着回退（而不是空 / 旧文件）', () => {
+    const c = withNotebook('contract-3')
+    fs.mkdirSync(log.stateDirOf(c), { recursive: true })
+    fs.writeFileSync(log.rulesPathOf(c), 'version = 1\nx = nope\n')
+    const contract = stateContract.buildStateContract(c)!
+    expect(contract.rulesVersion).toBe('default(fallback)')
+    expect(contract.text).toContain('woke hours=<值>')
+    expect(contract.text).toContain('slept')
+    expect(contract.text).toContain('user_left')
+  })
+
+  test('词表有硬上限：规则再长也不许无界注入，超了注明未列出数量', () => {
+    const c = withNotebook('contract-4')
+    fs.mkdirSync(log.stateDirOf(c), { recursive: true })
+    const lines = ['version = 1']
+    for (let i = 0; i < 250; i++) lines.push(`n${i} = count(e${i}, 7)`)
+    fs.writeFileSync(log.rulesPathOf(c), lines.join('\n') + '\n')
+    const contract = stateContract.buildStateContract(c)!
+    expect(countWords(contract.text)).toBeLessThanOrEqual(160)
+    expect(contract.text.length).toBeLessThanOrEqual(1200)
+    expect(contract.text).toContain('另有')
+    expect(contract.text).toContain('未列出')
+    // 在场事件不能被截断挤掉
+    expect(contract.text).toContain('user_left')
+    expect(contract.text).toContain('user_returned')
+    // 结构化字段保留完整词汇，方便调用方判断是否被截断
+    expect(contract.events.length).toBe(252)
   })
 })
 

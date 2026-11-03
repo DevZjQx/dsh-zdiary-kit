@@ -86,6 +86,7 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 **没有日志 = 不注入**（老库行为逐字不变）；只有窗口外事件时仍注入长尾（prune 会留每个事件名的最后一条）。
 `zk_state append` 只校验格式与时间（含「一条事件必须是一行」），事件是 agent 的自述；`.state/` 不进检索，`zk_append` / `zk_new` / `zk_rename` 拒绝写它。
 `.state/rules` 是人的工作面：插件不提供写入口，但宿主自带的文件工具仍能改 —— 规则的可信度靠 git diff。
+**事件词汇自动同步**：有 `.state/rules` / `.state/events.log` 时，插件从当前规则 AST 取事件名 / 参数名，作为 `zdiary:state` 系统提示段注入（参数写成 `key=<值>`，整行上限 160 词 / 1200 字符，超了注明未列出数量）。规则一改，下一轮装配就换词汇，不需要手工改 AGENTS.md；用默认规则时词表含内置的 `slept`，自定义规则只列规则读取的事件。没有状态文件时不注入（老库不多一个词）；内置词汇另见 `zk_state` 工具说明，插件只校验事件格式，不校验事件名是否属于内置集。
 energy / satiety / 地点 / 目标 / 在场都按 `staleHours`（默认 72 小时）过期：过期的值显示「未知（最后 X · N 天前）」，不拿旧值当现在。
 人用 `zk-kit state show [--at ISO]` 重放过去（只看那一刻之前的事件）、`zk-kit state log` 看原文、
 `zk-kit state prune --days N` 压实（人写的注释跟着后面那条事件保留；`--commit` 只提交 `.state/events.log`）。
