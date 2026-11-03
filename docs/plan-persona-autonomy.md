@@ -176,20 +176,16 @@ AGENTS 已经是 187 词硬规则，再加就会挤掉 MEMORY；人设和事实�
 版本标记必须在 frontmatter 之前（与 `PERSONA.md` 同一套模板规则），解析前先 `stripContractMarker()`：
 
 ```markdown
-<!-- zdiary-policy: v2 -->
+<!-- zdiary-policy: v3 -->
 ---
-version: 1
+version: 2
 updated: 2026-11-02
 ---
 | action | level | approval | reversible |
 |---|---|---|---|
-| read-note | auto | none | yes |
-| write-note | auto | none | yes |
-| publish | ask | human | no |
-| spend | ask | human | no |
-| edit-persona | forbidden | human | yes |
-| edit-memory | forbidden | human | yes |
-| impersonate-human | forbidden | human | no |
+| zk.read | auto | none | yes |
+| zk.note.write | auto | none | yes |
+| zk.notebook.use | auto | none | yes |
 ```
 
 - 级别只认 `auto` / `ask` / `forbidden`；`approval` 只认 `none` / `human` / `policy`。

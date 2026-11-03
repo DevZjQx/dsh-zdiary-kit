@@ -3730,7 +3730,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     const persona = fm.parseFrontmatter(personaTpl.stripContractMarker(personaTpl.PERSONA_TEMPLATE)).fields
     expect(persona).toMatchObject({ name: '{{name}}', role: '{{role}}', updated: '{{updated}}' })
     const policy = fm.parseFrontmatter(personaTpl.stripContractMarker(personaTpl.POLICY_TEMPLATE)).fields
-    expect(policy).toMatchObject({ version: '1', updated: '{{updated}}', audit: 'DREAMS.md' })
+    expect(policy).toMatchObject({ version: '2', updated: '{{updated}}', audit: 'DREAMS.md' })
     expect(personaTpl.stripContractMarker(personaTpl.POLICY_TEMPLATE).startsWith('---')).toBe(true)
   })
 
@@ -3757,7 +3757,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
     expect(withC.policyWritten).toBe(true)
     expect(fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')).toContain(`<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->`)
     expect(fs.readFileSync(path.join(cfg.notebook, 'POLICY.md'), 'utf8')).toContain(`<!-- zdiary-policy: v${personaTpl.POLICY_TEMPLATE_VERSION} -->`)
-    expect(fs.readFileSync(path.join(cfg.notebook, 'POLICY.md'), 'utf8')).toContain('publish')
+    expect(fs.readFileSync(path.join(cfg.notebook, 'POLICY.md'), 'utf8')).toContain('zk.notebook.use')
 
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), '# 我自己写的\n')
     const again = await notebookLib.ensureNotebook(cfg, undefined, { withContract: true })

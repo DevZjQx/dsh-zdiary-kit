@@ -14,8 +14,12 @@
  */
 /** PERSONA.md 模板版本：改模板就 +1（独立于 TEMPLATE_VERSION） */
 export const PERSONA_TEMPLATE_VERSION = 3;
-/** POLICY.md 模板版本：改模板就 +1 */
-export const POLICY_TEMPLATE_VERSION = 2;
+/**
+ * POLICY.md 模板版本：改模板就 +1。
+ * 注意与模板 frontmatter 里的 `version:` 区分：那个是**机器可读 schema 版本**（表头 / 字段语义变了才升），
+ * 不随模板版本走 —— 模板 v1→v2 时它一直是 1。M3 解析按 `version` 分支，别把两者混成一条线。
+ */
+export const POLICY_TEMPLATE_VERSION = 3;
 /**
  * 去掉首行契约版本标记，剩下的可以直接交给 `parseFrontmatter()`。
  * M3 的 policy / persona 解析必须走这里，别自己再写一套「跳过第几行」的规则。
@@ -45,22 +49,16 @@ updated: {{updated}}
 `;
 export const POLICY_TEMPLATE = `<!-- zdiary-policy: v${POLICY_TEMPLATE_VERSION} -->
 ---
-version: 1
+version: 2
 updated: {{updated}}
 audit: DREAMS.md
 ---
 
 # 自主权契约
 
-> zdiary 生成；人类所有。插件只做最小检查；publish / spend 等动作工具自己读、自己执行。
-
 | action | level | approval | reversible |
 |---|---|---|---|
-| read-note | auto | none | yes |
-| write-note | auto | none | yes |
-| publish | ask | human | no |
-| spend | ask | human | no |
-| edit-persona | forbidden | human | yes |
-| edit-memory | forbidden | human | yes |
-| impersonate-human | forbidden | human | no |
+| zk.read | auto | none | yes |
+| zk.note.write | auto | none | yes |
+| zk.notebook.use | auto | none | yes |
 `;
