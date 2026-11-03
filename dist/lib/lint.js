@@ -29,6 +29,7 @@ import { parseFrontmatter } from './frontmatter.js';
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './memory-format.js';
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION } from './agents-template.js';
 import { CONTRACT_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION, POLICY_TEMPLATE_VERSION } from './persona-template.js';
+import { policyStatus } from './policy.js';
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50;
 /** 标题归一化与链接解析在 `lib/wikilink.ts`（dream 也用同一套）；这里保留导出，免得调用方跟着搬 */
@@ -316,6 +317,13 @@ export function formatLintExtras(r) {
                 continue;
             lines.push(`⚠️ 契约${group.label}：${group.items.map((i) => `${i.file} ${i.detail}`).join('；')}｜${group.hint}`);
         }
+    }
+    // 已启用但表结构坏了才报；缺文件归 contract 桶，同一个缺口不报两条。
+    if (r.policy.present && r.policy.total > 0) {
+        const sample = r.policy.items.slice(0, 5).map((i) => i.detail).join('；');
+        lines.push(`⚠️ 自主权契约：${r.policy.rows} 行动作，${r.policy.total} 条结构问题 — ${sample}` +
+            (r.policy.total > 5 ? ' …' : '') +
+            '｜只报告，不改文件；表头写 action / level / approval / reversible');
     }
     if (r.incomplete.total > 0) {
         lines.push(`✗ frontmatter 缺字段：${r.incomplete.total} 篇 — ` +
@@ -735,6 +743,7 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         tags: tagHygiene(notes),
         template: templateStatus(cfg),
         contract: contractStatus(cfg),
+        policy: policyStatus(cfg),
         // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
         indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
     };

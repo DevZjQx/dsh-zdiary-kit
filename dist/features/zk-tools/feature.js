@@ -16,6 +16,7 @@ import { S, validateArgs } from '../../lib/tool.js';
 import { ensureNotebook, newNoteDir } from '../../lib/notebook.js';
 import { searchNotes, searchNotesDetailed, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, ZkError, } from '../../lib/zk.js';
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.js';
+import { parsePolicy } from '../../lib/policy.js';
 import { META_NAMES } from '../../lib/meta.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from '../../lib/dream.js';
@@ -148,6 +149,22 @@ const LINT_TEMPLATE = objSchema({
     mismatchDetail: { type: 'string' },
     currentText: { type: 'string' },
 }, ['present', 'version', 'current', 'stale']);
+/** 自主权契约体检：表头 / 列数 / level / approval / reversible / 重复动作 / 审计落点（只报告） */
+const LINT_POLICY = objSchema({
+    present: { type: 'boolean' },
+    rows: { type: 'number' },
+    total: { type: 'number' },
+    items: {
+        type: 'array',
+        items: objSchema({
+            kind: {
+                type: 'string',
+                enum: ['table', 'row', 'empty-action', 'unknown-level', 'unknown-approval', 'bad-reversible', 'duplicate-action', 'no-audit'],
+            },
+            detail: { type: 'string' },
+        }, ['kind', 'detail']),
+    },
+}, ['present', 'rows', 'total', 'items']);
 /** 契约体检：缺失 / 旧版 / 比插件新 / 标记与内容不符 / 未填占位符（只报告，不覆盖） */
 const LINT_CONTRACT = objSchema({
     total: { type: 'number' },
@@ -873,6 +890,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
             name: 'zk_context',
             description: '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回；' +
                 '角色契约与自主权契约（PERSONA.md / POLICY.md）单独成段、在记忆段之前、不参与截断。' +
+                '另解析 POLICY.md 的四列动作表（只读；结构问题放 issues，不执行权限）。' +
                 '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前）。' +
                 '宿主支持注入时这些内容每轮已自动进入系统提示；宿主不支持、或想核对「被截断了多少」时用它。',
             parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -909,6 +927,28 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         expired: { type: 'boolean' },
                         words: { type: 'number' },
                     }, ['present', 'expired', 'words']),
+                    policy: objSchema({
+                        present: { type: 'boolean' },
+                        rows: {
+                            type: 'array',
+                            items: objSchema({
+                                action: { type: 'string' },
+                                level: { type: 'string', enum: ['auto', 'ask', 'forbidden'] },
+                                approval: { type: 'string', enum: ['none', 'human', 'policy'] },
+                                reversible: { type: 'boolean' },
+                            }, ['action', 'level', 'approval', 'reversible']),
+                        },
+                        issues: {
+                            type: 'array',
+                            items: objSchema({
+                                kind: {
+                                    type: 'string',
+                                    enum: ['table', 'row', 'empty-action', 'unknown-level', 'unknown-approval', 'bad-reversible', 'duplicate-action', 'no-audit'],
+                                },
+                                detail: { type: 'string' },
+                            }, ['kind', 'detail']),
+                        },
+                    }, ['present', 'rows', 'issues']),
                     notebook: { type: 'string' },
                     defaultNotebook: { type: 'string' },
                     pinned: { type: 'string' },
@@ -931,14 +971,18 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             retiredWords: { type: 'number' },
                         }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
                     },
-                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'scene', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
+                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'scene', 'policy', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
             },
             async run(_args, env) {
                 // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
                 const cfg = configFor(env.workspace, env.sessionId);
                 const state = sessionState(env.workspace, env.sessionId);
+                const policy = parsePolicy(cfg);
                 return {
                     ...buildMemoryPayload(cfg),
+                    policy: policy
+                        ? { present: true, rows: policy.rows, issues: policy.issues }
+                        : { present: false, rows: [], issues: [] },
                     notebook: state.active,
                     defaultNotebook: state.defaultName,
                     pinned: state.diverged ? state.pinned : '',
@@ -965,7 +1009,11 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         `（${v.contract.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
                         (v.contract.overBudget ? `，超 ${v.contract.overWords} 词（契约不截断）` : '')
                     : '\n\n契约：未启用（根目录没有 PERSONA.md / POLICY.md）';
-                return text(drift + head + contract + '\n\n' + v.text);
+                const policy = v.policy?.present
+                    ? `\n自主权契约：${v.policy.rows.length} 行动作` +
+                        (v.policy.issues.length ? ` · ${v.policy.issues.length} 条结构问题（zk_lint 看明细）` : '')
+                    : '';
+                return text(drift + head + contract + policy + '\n\n' + v.text);
             },
         }),
         t({
@@ -977,6 +1025,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 '没写日期（undated）、已退役（retired）、退役后新结论失效（retiredBroken）与超过 90 天没复核（stale）的条目。' +
                 'incomplete 是 frontmatter 缺 type / status / authority 的笔记：缺失被索引落成空串，机械门会静默失效。' +
                 'tags 查标签卫生（大小写变体 / 单例，标签总数 ≥ 30 才报）；template 说根目录 AGENTS.md 是不是当前版本。' +
+                'policy 查 POLICY.md 的自主权契约表（表头 / 列数 / level / approval / reversible / 重复动作 / 审计落点）；' +
+                '缺文件归 contract，不在这里重复报。' +
                 'similarTitles 是「改一两个字」的疑似重复（同目录、二元组相似度 ≥ 0.6）：与全等重名分开，只报告。' +
                 'indexHint=true 表示笔记（不含日记）已到 150 篇而根目录还没有 INDEX.md（只是提示，不生成静态索引）。' +
                 '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
@@ -1014,8 +1064,9 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     tags: LINT_TAGS,
                     template: LINT_TEMPLATE,
                     contract: LINT_CONTRACT,
+                    policy: LINT_POLICY,
                     indexHint: { type: 'boolean' },
-                }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'contract', 'indexHint']),
+                }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'contract', 'policy', 'indexHint']),
             },
             async run(args, env) {
                 const cfg = configFor(env.workspace, env.sessionId);

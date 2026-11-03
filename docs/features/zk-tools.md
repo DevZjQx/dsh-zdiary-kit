@@ -5,7 +5,7 @@
 **Owns.** 14 个工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
 `zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
-`zk_context` 例外：它只读根目录三份 meta 文件与两份契约（`PERSONA.md` / `POLICY.md`）并列出已配置笔记本（另读 `DREAMS.md` 的「上次做梦」一行用于周节奏提醒），**不** `ensureNotebook`（读记忆不该依赖 zk）。
+`zk_context` 例外：它只读根目录三份 meta 文件与两份契约（`PERSONA.md` / `POLICY.md`）、解析 `POLICY.md` 的四列动作表，并列出已配置笔记本（另读 `DREAMS.md` 的「上次做梦」一行用于周节奏提醒），**不** `ensureNotebook`（读记忆不该依赖 zk）。
 
 **多会话与笔记本归属.** 工具拿配置走 `config/session.ts` 的 `configFor(workspace, sessionId)`，不是直接 `config()`：
 会话第一次调用时把当时的 `active`（默认值）快照成自己的 pin，之后设置页 / CLI / 别的会话切库都不带动它；
@@ -17,7 +17,7 @@
 **Does not own.** zk 命令行怎么拼（`lib/zk.ts`）；笔记本怎么建（`lib/notebook.ts`）；配置读写（`config/store`）；
 设置页（`features/settings`）。工具不 import settings，settings 也不 import 工具 —— 只共享 lib 与 config。
 
-**Depends on.** `config/session`（会话固定的笔记本 → 配置；每次调用现读，设置页改完立刻生效）、`lib/notebook`、`lib/zk`、`lib/memory`、`lib/tool`。
+**Depends on.** `config/session`（会话固定的笔记本 → 配置；每次调用现读，设置页改完立刻生效）、`lib/notebook`、`lib/zk`、`lib/memory`、`lib/policy`、`lib/tool`。
 
 **Public surface.** `buildTools()`（纯数据，测试用）与 `registerZkTools(tools)`（返回撤销函数）。
 
@@ -102,6 +102,8 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 契约**不参与** `memoryBudgetWords` 的截断，超了只告警；`overWords` 是所有展示的唯一超量口径，别拿 `words` 再做减法。
 总 prompt 超 `totalPromptBudgetWords` 时只点名（按实际载荷，含框与提示），不自动截契约。
 `zk_dream` 的 `memory.contractWords` 是整段契约注入量；`headroom` 只扣记忆侧（`totalWords - contractWords`），契约不占记忆预算。
+`policy` 是 `POLICY.md` 的只读解析（M3a）：`present / rows[] / issues[]`，行是 `action / level / approval / reversible`；
+坏行只进 `issues`，合法行照常返回；缺文件时 `present:false`，missing 由 `contract` 桶报，不重复。
 
 `zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关（D7）。
 `zk_lint` = 1 次 `zk list` + 三个 zk 原生过滤器（`--orphan` / `--broken-links` / `--tagless`）+ 1 次 `zk graph`，
@@ -141,7 +143,10 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 同一份条目解析还数 `undated`（首行没有真校验过的 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）
 与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记），以及 `stale`（有日期且超过 `stale_days`，默认 90 天未复核）——
 都只报告；注入从 0.9 起省略退役条目（notice 说明省略数），文件本身不动。条目切分与日期解析统一走 `lib/memory-format`。
-文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
+`policy`（M3a）查 `POLICY.md` 的自主权契约表：表头 / 列数 / 空 `action` / 未知 `level`（`auto` / `ask` / `forbidden`）/
+未知 `approval`（`none` / `human` / `policy`）/ `reversible` 不是 `yes` / `no` / 重复动作 / frontmatter 缺 `audit`。
+缺文件归 `contract` 桶，不重复报；解析失败只报告、不猜、不改文件。
+文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / 自主权契约 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
 `incomplete`（P2-13）：`type` / `status` / `authority` 缺任一的笔记（**只在 layered 下查**：flat 的笔记
 本来就不写这三个字段，整库标红不是「可发现的状态」而是噪音）。索引把缺失落成空串，
 于是「没写 authority」=「authority 正常」，dream 的 informal 门对它们静默失效。

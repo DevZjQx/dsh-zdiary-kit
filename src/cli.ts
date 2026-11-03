@@ -18,6 +18,7 @@ import {
 } from './lib/zk.ts'
 import type { NoteRecord } from './lib/zk.ts'
 import { formatLintExtras, formatMemoryLinks, lintNotebook, contractStatus } from './lib/lint.ts'
+import { policyStatus } from './lib/policy.ts'
 import type { LintResult } from './lib/lint.ts'
 import { dreamNotebook, STALE_DAYS } from './lib/dream.ts'
 import type { DreamResult } from './lib/dream.ts'
@@ -381,6 +382,10 @@ async function doctor(): Promise<boolean> {
       rows.push(`⚠️ 契约体检：${contractIssues.map((i) => `${i.file} ${i.detail}`).join('；')}`)
     }
   }
+  const policy = policyStatus(cfg)
+  if (policy.present && policy.total > 0) {
+    rows.push(`⚠️ 自主权契约：${policy.rows} 行动作，${policy.total} 条结构问题 — ${policy.items.map((i) => i.detail).join('；')}`)
+  }
 
   if (exists) {
     // 记忆在跑、但没有工作约定：默认安装里这是常态（flat 不自动写 AGENTS.md），
@@ -455,6 +460,7 @@ async function main(): Promise<void> {
       const payload = buildMemoryPayload(cfg)
       const c = payload.contract
       const issues = contractStatus(cfg)
+      const policy = policyStatus(cfg)
       if (!json) {
         if (!c.present) {
           print(`契约：未启用（根目录没有 PERSONA.md / POLICY.md）\n写入模板：zk-kit init --with-contract；写入后缺文件 = 未启用、不算错，占位符 {{...}} 由人填。`, false)
@@ -465,12 +471,16 @@ async function main(): Promise<void> {
               (c.overBudget ? ` · 超 ${c.overWords} 词（契约不截断）` : ''),
             `注入：${c.words} 词${c.noticeWords > 0 ? `（正文 ${c.contentWords} + 提示 ${c.noticeWords}）` : ''} · 记忆段之前、永远注入、不参与截断`,
             `总量：正文 契约 ${c.contentWords} + 记忆 ${payload.words} = ${c.contentWords + payload.words} 词；模型实际收到 ${payload.totalWords} 词（总 prompt 预算 ${cfg.totalPromptBudgetWords}，超了只告警）`,
+            policy.present
+              ? `自主权契约：${policy.rows} 行动作 · ${policy.total === 0 ? '表结构无误' : `${policy.total} 条结构问题`}`
+              : '自主权契约：未启用（根目录没有 POLICY.md）',
           ]
           for (const i of issues.items) lines.push(`⚠️ ${i.file} ${i.detail}`)
+          for (const i of policy.items) lines.push(`⚠️ POLICY.md ${i.detail}`)
           print(lines.join('\n'), false)
         }
       } else {
-        print({ contract: c, issues }, true)
+        print({ contract: c, issues, policy }, true)
       }
       return
     }

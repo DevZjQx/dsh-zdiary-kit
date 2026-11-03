@@ -1,6 +1,7 @@
 # 计划：角色契约与自主权（「赋予」层，v0.10 候选）
 
-**状态**：M1 已实施（2026-11-02，提交 `9f365b2`；词数 / 模板口径修复随本批提交；基线 v0.9.0 → 0.10 候选）；M2 / M3 / M4 待实施
+**状态**：M1 已实施（2026-11-02，提交 `9f365b2`；词数 / 模板口径修复随本批提交；基线 v0.9.0 → 0.10 候选）；
+M3a（POLICY 只读解析）已实施（2026-11-03）；M2 / M3b（STATE / 场景）/ M3c（zk_* 检查）/ M4 待实施
 **目标批次**：0.10（若与 0.9 / 质量计划同批，则并入 0.10.0，不抢跑）
 **关系**：不重复 Q1 / Q3 / Q8 / Q10 / Q11；Q12 只借用 `origin` / `via` 两个字段做可信度检查，
 不重复完整的三段来源链设计。本计划只做「契约层 / 状态层 / 可信层」，
@@ -316,12 +317,16 @@ updated: 2026-11-02
 
 ### M3（P1，自主权与状态）
 
+**M3a 已实施（2026-11-03）**：`lib/policy.ts` 只读解析（四列表 → rows + issues）+ `zk_context.policy` +
+`lint.policy` + `zk-kit contract` / `doctor` 报告。缺文件归 `contract` 桶，不重复报；解析失败不猜。
+**没做** `zk_*` 强制（M3c），也没做 `state.ts` / 场景注入（M3b）—— 按「先用 3 次开口验证形状」的约定后置。
+
 **落点**
 - `src/lib/policy.ts`（新）：解析 `POLICY.md` 的 frontmatter + 表；只读，解析失败返回 `null`。
 - `src/lib/state.ts`（新）：读 `STATE` JSON；TTL、过期、敏感字段 redact；不写文件。
 - `src/lib/memory.ts`：payload 增加 `scene` 段（`{ present, expired, words, text }`）。
 - `src/features/zk-tools/feature.ts`：`zk_context` 返回 policy / state；`zk_*` 的 notebook 操作做最小 policy 检查（读 / 写 / 改 meta）。
-- `src/lib/lint.ts`：`policy` 桶（缺文件 / 表头不合法 / 未知 level / 缺审计落点）；`state` 桶（过期 / 读不到）。
+- `src/lib/lint.ts`：`policy` 桶（table / row / level / approval / reversible / duplicate / no-audit；缺文件归 contract）；`state` 桶（过期 / 读不到）。
 - `src/app/plugin.ts`：场景段单独注入，order 在 memory 之后、notebook 之前/之后按现有约定选；
   `interpolate: false`，与记忆一致。
 - 设置页：状态路径、TTL、policy 只读预览；不提供编辑（人直接改文件）。

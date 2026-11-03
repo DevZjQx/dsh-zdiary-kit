@@ -32,6 +32,8 @@ import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './
 import type { FrontmatterFields } from './frontmatter.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION } from './agents-template.ts'
 import { CONTRACT_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION, POLICY_TEMPLATE_VERSION } from './persona-template.ts'
+import { policyStatus } from './policy.ts'
+import type { PolicyStatus } from './policy.ts'
 
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50
@@ -265,6 +267,8 @@ export interface LintResult {
   template: LintTemplateBucket
   /** 契约层体检：PERSONA.md / POLICY.md 缺失 / 旧版 / 未填占位符（只报告） */
   contract: LintContractBucket
+  /** 自主权契约体检：POLICY.md 的表结构（缺文件由 contract 桶负责，这里不重复报） */
+  policy: PolicyStatus
   /**
    * 非日记笔记已到 150 篇、根目录却没有 INDEX.md（P2-11）：只是提示，不生成静态索引。
    * 实时分布看 zk_stats（byDir / byTag），静态索引会过期、还要决定谁负责更新。
@@ -523,7 +527,7 @@ export function formatMemoryLinks(bucket: LintMemoryBucket): string | null {
  * `zk-kit lint` 与 `zk_lint` 各写一遍就会改到一半。返回空数组 = 这一库三项都没问题，不占行。
  */
 export function formatLintExtras(
-  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'contract' | 'similarTitles' | 'indexHint'>,
+  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'contract' | 'policy' | 'similarTitles' | 'indexHint'>,
 ): string[] {
   const lines: string[] = []
   // 两份都没有 = 契约未启用（默认状态）：不报错、不占行。只启用一半（缺一份）或
@@ -561,6 +565,15 @@ export function formatLintExtras(
         `⚠️ 契约${group.label}：${group.items.map((i) => `${i.file} ${i.detail}`).join('；')}｜${group.hint}`,
       )
     }
+  }
+  // 已启用但表结构坏了才报；缺文件归 contract 桶，同一个缺口不报两条。
+  if (r.policy.present && r.policy.total > 0) {
+    const sample = r.policy.items.slice(0, 5).map((i) => i.detail).join('；')
+    lines.push(
+      `⚠️ 自主权契约：${r.policy.rows} 行动作，${r.policy.total} 条结构问题 — ${sample}` +
+      (r.policy.total > 5 ? ' …' : '') +
+      '｜只报告，不改文件；表头写 action / level / approval / reversible',
+    )
   }
   if (r.incomplete.total > 0) {
     lines.push(
@@ -1010,6 +1023,7 @@ export async function lintNotebook(
     tags: tagHygiene(notes),
     template: templateStatus(cfg),
     contract: contractStatus(cfg),
+    policy: policyStatus(cfg),
     // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
     indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
   }

@@ -42,6 +42,7 @@ store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } 
 const cfg = store.config()
 
 const personaTpl = await import('../src/lib/persona-template.ts')
+const policyLib = await import('../src/lib/policy.ts')
 const metaLib = await import('../src/lib/meta.ts')
 
 const available = (await zk.versionOf(zkBin)) !== null
@@ -2310,6 +2311,7 @@ describe('tools', () => {
       const value = await ctxTool.execute({}, { signal: AbortSignal.timeout(10_000) }) as {
         notebook: string
         contract: { present: boolean; contentWords: number; overWords: number }
+        policy: { present: boolean; rows: Array<{ action: string }>; issues: Array<{ kind: string; detail: string }> }
         notebooks: Array<{ name: string; path: string; structure: string; active: boolean }>
       }
       expect(value.notebook).toBe('default')
@@ -2321,10 +2323,15 @@ describe('tools', () => {
       expect(value.contract.present).toBe(true)
       expect(value.contract.contentWords).toBeGreaterThan(0)
       expect(value.contract.overWords).toBe(0)
+      // POLICY 解析：模板 3 行、无结构问题；渲染里也要有一行（schema 与 render 各走一遍）
+      expect(value.policy.present).toBe(true)
+      expect(value.policy.rows.map((r) => r.action)).toEqual(['zk.read', 'zk.note.write', 'zk.notebook.use'])
+      expect(value.policy.issues).toEqual([])
       const blocks = ctxTool.output.render({}, value)
       expect(blocks[0].text).toContain(`笔记本「default」（flat）→ ${notebook}`)
       expect(blocks[0].text).toContain('另有：work（layered）')
       expect(blocks[0].text).toContain('正文（含标题）')
+      expect(blocks[0].text).toContain('自主权契约：3 行动作')
     } finally {
       fs.rmSync(path.join(notebook, 'PERSONA.md'), { force: true })
       fs.rmSync(path.join(notebook, 'POLICY.md'), { force: true })
@@ -3698,6 +3705,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: missing,
+      policy: { present: false, rows: 0, total: 0, items: [] },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
     }).some((line) => line.includes('契约'))).toBe(false)
@@ -3707,6 +3715,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: half,
+      policy: { present: false, rows: 0, total: 0, items: [] },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
     }).some((line) => line.includes('POLICY.md'))).toBe(true)
@@ -3723,6 +3732,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: { total: 0, items: [] },
+      policy: { present: false, rows: 0, total: 0, items: [] },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
     })
@@ -3732,6 +3742,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: st,
+      policy: { present: false, rows: 0, total: 0, items: [] },
       similarTitles: { total: 0, truncated: false, items: [] },
       indexHint: false,
     }).some((line) => line.includes('契约'))).toBe(true)
@@ -3748,6 +3759,7 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
         tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
         template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
         contract: c,
+        policy: { present: false, rows: 0, total: 0, items: [] },
         similarTitles: { total: 0, truncated: false, items: [] },
         indexHint: false,
       }).join('\n')
@@ -3908,5 +3920,104 @@ describe('0.10：角色契约与自主权（M1，契约壳与可观测）', () =
       fs.writeFileSync(paths.CFG_FILE, before)
       fs.rmSync(nb, { recursive: true, force: true })
     }
+  })
+})
+
+describe('0.10 M3a：自主权契约解析（只读）', () => {
+  const fresh = (name: string) => store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin })
+
+  test('缺文件 = 未启用：parsePolicy 返回 null，policyStatus 不重复报 missing', () => {
+    const cfg = fresh('nb-m3a-missing')
+    fs.mkdirSync(cfg.notebook, { recursive: true })
+    expect(policyLib.parsePolicy(cfg)).toBeNull()
+    expect(policyLib.policyStatus(cfg)).toEqual({ present: false, rows: 0, total: 0, items: [] })
+  })
+
+  test('模板解析出三行；audit 从 frontmatter 读出', () => {
+    const cfg = fresh('nb-m3a-valid')
+    fs.mkdirSync(cfg.notebook, { recursive: true })
+    fs.writeFileSync(path.join(cfg.notebook, 'POLICY.md'), personaTpl.POLICY_TEMPLATE)
+    const doc = policyLib.parsePolicy(cfg)
+    expect(doc).not.toBeNull()
+    expect(doc!.audit).toBe('DREAMS.md')
+    expect(doc!.rows).toEqual([
+      { action: 'zk.read', level: 'auto', approval: 'none', reversible: true },
+      { action: 'zk.note.write', level: 'auto', approval: 'none', reversible: true },
+      { action: 'zk.notebook.use', level: 'auto', approval: 'none', reversible: true },
+    ])
+    expect(doc!.issues).toEqual([])
+    expect(policyLib.policyStatus(cfg)).toEqual({ present: true, rows: 3, total: 0, items: [] })
+  })
+
+  test('坏表只报告：合法行照常返回，坏行各自带原因', () => {
+    const doc = policyLib.parsePolicyText([
+      '<!-- zdiary-policy: v4 -->',
+      '---',
+      'updated: 2026-11-03',
+      '---',
+      '',
+      '# 自主权契约',
+      '',
+      '| action | level | approval | reversible |',
+      '|---|---|---|---|',
+      '| zk.read | auto | none | yes |',
+      '| bili.comment | sometimes | none | no |',
+      '| bili.coin | auto | none | maybe |',
+      '|  | auto | none | yes |',
+      '| zk.read | auto | none | yes |',
+      '| bili.like | auto | none | yes | extra |',
+    ].join('\n'))
+    expect(doc.rows.map((r) => r.action)).toEqual(['zk.read'])
+    expect(doc.issues.map((i) => i.kind)).toEqual([
+      'no-audit',
+      'unknown-level',
+      'bad-reversible',
+      'empty-action',
+      'duplicate-action',
+      'row',
+    ])
+  })
+
+  test('没有表头 / 表头多一列：只报告，不猜', () => {
+    const noTable = policyLib.parsePolicyText('---\naudit: DREAMS.md\n---\n\n# 自主权契约\n\n没有表\n')
+    expect(noTable.rows).toEqual([])
+    expect(noTable.issues.map((i) => i.kind)).toEqual(['table'])
+
+    const fiveCols = policyLib.parsePolicyText([
+      '---',
+      'audit: DREAMS.md',
+      '---',
+      '| action | level | approval | reversible | trigger |',
+      '|---|---|---|---|---|',
+      '| zk.read | auto | none | yes | 随时 |',
+    ].join('\n'))
+    expect(fiveCols.rows).toEqual([])
+    expect(fiveCols.issues.map((i) => i.kind)).toEqual(['table', 'row'])
+  })
+
+  test('lint 文案：已启用才报结构问题；缺文件交给 contract 桶', () => {
+    const base = {
+      incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
+      tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
+      template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
+      contract: { total: 0, items: [] },
+      similarTitles: { total: 0, truncated: false, items: [] },
+      indexHint: false,
+    }
+    const lines = lintLib.formatLintExtras({
+      ...base,
+      policy: {
+        present: true,
+        rows: 1,
+        total: 1,
+        items: [{ kind: 'unknown-level', detail: 'bili.comment 的 level 是「sometimes」，只认 auto / ask / forbidden' }],
+      },
+    })
+    expect(lines.some((line) => line.includes('自主权契约'))).toBe(true)
+    expect(lines.join('\n')).toContain('只认 auto / ask / forbidden')
+    expect(lintLib.formatLintExtras({
+      ...base,
+      policy: { present: false, rows: 0, total: 0, items: [] },
+    }).some((line) => line.includes('自主权契约'))).toBe(false)
   })
 })

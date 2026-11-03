@@ -9,6 +9,8 @@
 - `lib/memory.ts`：读 `<vault>/AGENTS.md` / `USER.md` / `MEMORY.md` → 词数 → 机械截断 → `<system-reminder>` 框；
   另读 `DREAMS.md` 的「上次做梦」一行（不进正文、不计预算）；
   `memoryUsage(cfg)` 是同一份载荷的投影（内容词 / 总词 / 预算 / 余量），给 dream 与后续页面用
+- `lib/policy.ts`：`POLICY.md` 的只读解析（M3a）—— 四列表 → 动作行 + 结构问题；
+  缺文件返回 `null`（`contract` 桶负责 missing），坏行只报告不猜；不执行权限
 - `lib/memory-format.ts`：条目的唯一切分口径 —— `splitMemoryEntries` / `isRetiredEntry` / `entryDate` /
   `stripRetiredEntries` / `daysSinceDate`；memory、dream、lint 共用，禁止各写一套
 - `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）；`dreamNotebook` 用它算默认窗口
@@ -54,6 +56,14 @@
 为什么不分层不行：人设与事实混在 `MEMORY.md` 时，「我是谁」会跟「事实」一起被按日期丢、被预算截；
 而 `AGENTS.md` 已是硬规则且永不截断，再往里塞 persona 只会挤掉 MEMORY。
 
+**自主权契约解析（M3a，只读）。** `parsePolicy(cfg)` 读根目录 `POLICY.md`：首行版本标记 → frontmatter → 一张四列表。
+合法行动作进 `rows`（`action` / `level` / `approval` / `reversible`），坏行进 `issues`：表头缺失或列数不对、行缺列、
+空 `action`、未知 `level`（只认 `auto` / `ask` / `forbidden`）、未知 `approval`（`none` / `human` / `policy`）、
+`reversible` 不是 `yes` / `no`、重复 `action`、frontmatter 缺 `audit`。
+缺文件 / 空文件返回 `null` —— 「未启用」不是结构错误，`contract` 桶已经报 missing，这里不重复报。
+解析失败不抛异常；`zk_context.policy` 返回 `rows` + `issues`，`zk_lint.policy` / `zk-kit contract` / `doctor` 只报告。
+**不执行权限**：`zk_*` 的强制检查与 `bili_*` 等外部动作的读取都在后续（M3b / M3c）—— 本层只把表读成可核对的结构。
+
 **记忆层与事实层的一致性。** `MEMORY.md` 每条结论后附 `[[来源路径]]`（写进 AGENTS 模板）；
 `zk_lint` 的 `memoryLinks` 只做机械核对：原路径 → 加 `.md` → `archive/` 下同名 → 活笔记标题 / 文件名，
 旧路径在 `archive/` 下找到同名（或活文件带 `status: superseded`）报 `superseded`，都找不到报 `missing`；
@@ -69,6 +79,7 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 
 **Public surface.** `buildMemoryPayload(cfg)`、`memoryUsage(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、
 `CONTRACT_META_FILES`、`PERSONA_TEMPLATE` / `POLICY_TEMPLATE`、`stripContractMarker`、
+`parsePolicy` / `parsePolicyText` / `policyStatus`、
 `AGENTS_TEMPLATE` / `AGENTS_TEMPLATE_FLAT`、`TEMPLATE_VERSION` / `TEMPLATE_MARK`、`WORKFLOW_TEMPLATE`。
 笔记本侧：`writeAgentsTemplate(cfg)` / `writeContractTemplates(cfg)`（缺才写，返回是否写入）与
 `ensureNotebook(cfg, signal, { withAgents, withContract })`。
