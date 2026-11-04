@@ -358,9 +358,11 @@ async function doctor() {
         drift);
     if (exists) {
         const timeline = timelineStatus(cfg);
+        // 跳过的篇数也点名：不写就等于「这块查过了、没问题」
+        const skipped = timeline.skipped > 0 ? `；跳过 ${timeline.skipped} 篇` : '';
         rows.push(timeline.total > 0
-            ? `· 时间轴：${timeline.total} 处（${timeline.notes} 篇；zk_lint 看详情）`
-            : '· 时间轴：0 处');
+            ? `· 时间轴：${timeline.total} 处（${timeline.notes} 篇${skipped}；zk_lint 看详情）`
+            : `· 时间轴：0 处${skipped}`);
     }
     const payload = buildMemoryPayload(cfg);
     const present = payload.files.filter((f) => f.present);

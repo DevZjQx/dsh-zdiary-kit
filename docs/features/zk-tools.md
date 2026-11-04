@@ -91,7 +91,8 @@ group 的子目录照旧放行（zk 按路径前缀归组）。理由：`notes/`
 `inbox/` 从 0.8.2 起不再创建、也不再宣传（P2-8）：layered 下它不属于任何 group，flat 下能写进去但从索引里消失；
 盘上已有的 `inbox/` 不删，继续当隔离区（读得到、搜不到、写不进）。
 `archive/` 同理只放 `zk_supersede` 搬进去的旧结论：`zk_new` 建在 `archive/`（或它的子目录）下会直接报错，
-flat 在 `newNoteDir` 就拦、layered / 直接调用 `createNote` 在 `mkdir` 前拦；`zk_rename` 搬进归档仍允许并提示。
+flat 在 `newNoteDir` 就拦、layered / 直接调用 `createNote` 在 `mkdir` 前拦；`zk_rename` 把笔记改名进归档一律拒绝
+（归档只由 `zk_supersede` 写入，它是重写入链的目标，搬动会让历史链接再断一次）。
 这是 3.1 唯一有意的写入收紧 —— 新建进 archive 不报错、却会从检索与统计里消失。
 `zk_stats` 除笔记 / 标签 / 断链 / 孤立外，还给 `archived`（索引里 archive/ 下的笔记数）与
 `superseded`（全部笔记中 `status: superseded` 的数量，含已归档与手工标的）—— 一次 `allNotes(includeArchived)`
@@ -120,9 +121,9 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 **读取交给宿主。** 不提供 `zk_read`：DSH 原生 `read` 已经处理行号、分页、沙箱与 read-before-write。
 `zk_search` / `zk_query` 的每条笔记、`zk_new` / `zk_daily` 的返回都带 `absPath`（相对笔记本的 `path` 仍在，
 双链与 `zk_*` 参数用得上），模型直接把 `absPath` 传给 `read`；根目录 meta 文件（`MEMORY.md` / `USER.md`）
-同理，注入截断时留下的目录就是让 agent 用 `read` 取回原文。前提是宿主挂载了 `dsh-tool-fs`
-（默认 web profile 有）；精简 / headless 宿主没挂 `read` 时，读取路径不存在 —— 这是有意的取舍，
-不为了兼容它再维护第二套读文件工具。
+同理，注入截断时留下的目录就是让 agent 用 `read` 取回原文。前提是宿主提供了 `read` 工具
+（默认 web profile 有；精简 / headless 宿主没挂 `read` 时，读取路径不存在 —— 这是有意的取舍，
+不为了兼容它再维护第二套读文件工具）。
 
 **为什么删 `zk_read`、却留着 `zk_append`.** 读文件是宿主的事；追加不是：原生 `edit` 没有 append，而且要求
 先整篇 `read`、`old_string` 唯一匹配 —— 追加一行会变成「读全篇 + 找锚点」。`zk_append` 保留一次调用完成
@@ -148,11 +149,14 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 与 `duplicateTitles` 分开报：全等的直接进重名，不再进疑似；只在内存里比较，同目录超过 300 篇或扫描触顶时置 `truncated`。只报告，合并由人裁决。
 **日记与纯数字标题不参与**：日记标题就是日期（`2026-10-01` / `2026-10-02` 的二元组相似度是 0.86），
 不排除的话一年日记能吐出上千组误报、把真问题淹掉；按日期 / 编号命名的笔记同理（`isDaily` 在调用方过滤，纯数字 key 在函数内跳过）。
-`timeline`（3.1）查日记时间轴，只报告、不改文件：layered（有 `## Events`）要求 `### HH:MM` 落在 Events 与下一个 `##` 之间；
+`timeline`（3.1）查日记时间轴，只报告、不改文件：layered（有 `## Events`，大小写不敏感，与 `appendDaily` 找小节的口径一致）
+要求 `### HH:MM` 落在 Events 与下一个 `##` 之间；
 flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间只认 `00:00–23:59` 的两位 `HH:MM`（可跟全角 / 半角括号说明）：
 `11:5x` / `9:5` / `24:00` / `12:45 标题` 报格式，layered 里的 `## HH:MM`、或落在 `## Observations` / `## Loose ends` 之后的时间块报位置；
 空块与倒序只报位置正确的条目，同分钟相邻允许。围栏代码与 frontmatter 里的标题不算。
-`zk_lint` 只扫最近 90 天（`TIMELINE_WINDOW_DAYS`；按文件名 `YYYY-MM-DD` 判日期，非日期形状退回创建时间），每篇最多 50 条；
+`zk_lint` 只扫最近 90 天（`TIMELINE_WINDOW_DAYS`；按文件名 `YYYY-MM-DD` 判日期，非日期形状退回创建时间），
+`total` / `counts` 按全量算、`items` 里每篇最多 50 条明细（整个桶最多 50 篇），所以四项分类相加始终等于 `total`；
+超过 2 MiB 或读不到的文件不会静默略过：计入 `skipped`，输出里点名「跳过 N 篇」。
 笔记页的时间轴警告不受这个窗口限制 —— 打开哪篇查哪篇。自动重排会改正文顺序、diff 不可审，所以不给自动修复开关。
 「单向链接」（`oneWayLinks`）在 JS 里按 `zk graph` 的边算：存在 S→X、X 没回链 S，且 **S、X 都不是日记**。
 不用 zk 的 `--missing-backlink`：它的原义是「至少有一条单向链接」，日记天然是一串出边，

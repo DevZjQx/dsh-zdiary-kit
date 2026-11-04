@@ -96,10 +96,10 @@
 
 ### D1：时间轴严格 `HH:MM`，layered / flat 分开
 
-- **layered**（有 `## Events`）：时间条目必须是 `### HH:MM`，且位于 `## Events` 与下一个 `##` 之间。`## HH:MM` 是错的；`### HH:MM` 在 `## Observations` / `## Loose ends` 之后也是错的。
+- **layered**（有 `## Events`，大小写不敏感）：时间条目必须是 `### HH:MM`，且位于 `## Events` 与下一个 `##` 之间。`## HH:MM` 是错的；`### HH:MM` 在 `## Observations` / `## Loose ends` 之后也是错的。
 - **flat**（没有 `## Events`）：时间条目必须是 `## HH:MM`，按文件顺序追加；`### HH:MM` 报位置错。
 - 时间格式只认 `00:00`–`23:59` 的两位 `HH:MM`；标题可以跟在全角 / 半角括号里：`### 12:45（…）`、`### 12:45(…)`。`11:5x`、`9:5`、`24:00`、`12:60`、`12:45 标题`（无括号）都算格式错。
-- 结构判定 `auto`：先找第一个 `## Events`（跳过围栏代码与 frontmatter）；有就用 layered，没有就用 flat。
+- 结构判定 `auto`：先找第一个 `## Events`（跳过围栏代码与 frontmatter，大小写不敏感 —— 与 `appendDaily` 的 `sectionRange` 同口径）；有就用 layered，没有就用 flat。
 
 **为什么分开**：flat 是默认结构，`appendDaily` 在 flat 下写的就是 `## HH:MM`；统一要求 `## Events` 会让所有 flat 日记一次性全红。
 
@@ -135,7 +135,7 @@
 
 - `createNote` 在 `mkdir` 之前检查目标相对路径：落在 `cfg.archiveDir` 下直接 `ZkError`，文案说明「archive 只放 supersede 搬进去的废弃笔记；新笔记请写 notes/ 或 journal/」。
 - `newNoteDir` 的 flat 分支同样提前拒绝，给 `zk_new` 更早的错误；两处共用一个 `assertNotArchiveCreate`。
-- `supersedeNote` 的 `fs.rename` 不受影响；`zk_rename` 到 archive 仍允许（人明确要归档），但结果里提示。
+- `supersedeNote` 的 `fs.rename` 不受影响；`zk_rename` 把笔记改名进 archive 仍按既有守卫拒绝（归档只由 supersede 写入，搬动它会让历史入链再断一次）。
 - 不把 archive 加进全局 `assertWritablePath`：`zk_append` 对 archive 里旧笔记的修正不在本轮范围，避免误伤。
 
 ### D7：dream 用 `noteDate`（Q6）
@@ -176,8 +176,9 @@
    - 空块判断：合法时间标题到下一个同级/更高级标题之间没有非空行。
 2. `lintNotebook` 加 `timeline` 桶：
    - 只扫 `cfg.dailyDir` 下、日期在最近 90 天的日记；
-   - 每篇最多 50 条 issue；桶里 `{ scanned, notes, total, items }`；
-   - 读文件失败 / 超过 2 MiB 跳过，不误报。
+   - 每篇明细最多 50 条 issue，整个桶最多 50 篇；`total` / `counts` 按全量算（四项相加恒等于 `total`）；
+   - 桶里 `{ scanned, skipped, notes, total, counts, items }`；
+   - 读文件失败 / 超过 2 MiB 跳过，计入 `skipped` 并在输出里点名（不静默）。
 3. `zk_lint` 文本输出：`时间轴：12 处（1 篇；扫描 1 篇）` + 明细；`doctor` 加 `· 时间轴：N 处（zk_lint 看详情）`，不翻退出码。
 4. 测试：layered / flat 分开、空块、倒序、`11:5x`、`## HH:MM` 在 layered、围栏代码、同分钟、90 天窗口、空 `## Events`。
 
@@ -218,7 +219,7 @@
 **任务**：
 1. `assertNotArchiveCreate(cfg, rel)`：`rel === archiveDir` 或 `startsWith(archiveDir + '/')` → `ZkError`。
 2. `createNote` 在 `mkdir` 前调用；`newNoteDir` flat 分支提前调用。
-3. `supersedeNote` 不受影响；`zk_rename` 到 archive 仍允许并在结果里提示。
+3. `supersedeNote` 不受影响；`zk_rename` 把笔记改名进 archive 仍拒绝（既有守卫，本轮只改文档措辞）。
 4. 测试：`dir=archive`、`dir=archive/sub` 拒绝；`supersede` 正常；flat 0.1.0 产物不变。
 
 **验收**：
@@ -268,7 +269,7 @@
 | 时间轴 / layered | 合法 `### 09:05` / `### 09:05（标题）` 不报；空块报 `empty`；倒序报 `order`；`## 12:30` 报 `placement`；`## 11:5x` 报 `format`；`## 12:47` 在 Loose ends 后报 `placement` |
 | 时间轴 / flat | `## 09:05` 不报；`### 09:05` 报 `placement`；没有 `## Events` 不要求 Events；顺序检查跨全文 |
 | 时间轴 / 边界 | 围栏代码里的 `## 12:00` 不报；frontmatter 里的 `12:00` 不报；同分钟两条都有正文不报；同分钟一条空报 `empty`；`24:00` / `12:60` / `9:5` 报 `format` |
-| 时间轴 / 窗口 | 90 天内旧日记进 `timeline`；90 天外不进 `zk_lint`；页面警告不受窗口限制；读文件失败 / 2 MiB 跳过 |
+| 时间轴 / 窗口 | 90 天内旧日记进 `timeline`；90 天外不进 `zk_lint`；页面警告不受窗口限制；读文件失败 / 超过 2 MiB 计入 `skipped` 并点名 |
 | 时间轴 / 页面 | 日记页有 `.notice` + `详情`；普通笔记没有；无 issue 没有；`</details>` 被转义 |
 | archive | `zk_new dir=archive` / `archive/sub` 拒绝；`supersede` 正常；flat 0.1.0 产物不变 |
 | dream 日期 | 补写旧日记不进窗口；`dailyLooseEnds.date` 用文件名；非法日期不误报；无日期退回 `created` |

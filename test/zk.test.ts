@@ -4168,9 +4168,12 @@ describe('v3.1: 时间轴 / archive / dream 日期', () => {
       .toHaveLength(4)
     // 空 ## Events 不算错
     expect(timelineLib.timelineIssues('## Events\n\n## Observations\n正文', 'auto')).toEqual([])
+    // ATX 收尾井号是装饰；`## Events` 大小写不敏感（与 appendDaily 找小节同口径）
+    expect(timelineLib.timelineIssues('## Events\n### 12:00 ##\n正文', 'auto')).toEqual([])
+    expect(timelineLib.timelineIssues('## EVENTS\n### 12:00\n正文', 'auto')).toEqual([])
   })
 
-  test('timelineStatus：按文件名日期只扫最近 90 天，递归子目录，坏文件跳过', () => {
+  test('timelineStatus：按文件名日期只扫最近 90 天，递归子目录，坏文件与超大文件计入 skipped', () => {
     const cfg = fresh('nb-v31-window', 'flat')
     const dir = path.join(cfg.notebook, 'journal')
     fs.mkdirSync(path.join(dir, 'sub'), { recursive: true })
@@ -4178,13 +4181,18 @@ describe('v3.1: 时间轴 / archive / dream 日期', () => {
     fs.writeFileSync(path.join(dir, '2026-10-31.md'), '## 09:00\n正文')
     fs.writeFileSync(path.join(dir, 'sub', '2026-11-02.md'), '## 10:00\n')
     fs.writeFileSync(path.join(dir, '2026-01-01.md'), '## 09:00\n')
+    // 超过 2 MiB 的日记不读盘：不静默跳过，计入 skipped
+    fs.writeFileSync(path.join(dir, '2026-11-03.md'), Buffer.alloc(2 * 1024 * 1024 + 1, 0x78))
     const bucket = lintLib.timelineStatus(cfg, new Date('2026-11-04T12:00:00'))
     expect(bucket.scanned).toBe(3)
+    expect(bucket.skipped).toBe(1)
     expect(bucket.notes).toBe(2)
     expect(bucket.total).toBe(2)
+    // counts 与 total 同源：分类相加恒等于 total
+    expect(bucket.counts).toEqual({ empty: 2, order: 0, format: 0, placement: 0 })
     expect(bucket.items.map((i) => i.path)).toEqual(['journal/2026-11-01.md', 'journal/sub/2026-11-02.md'])
-    expect(lintLib.formatTimeline(bucket)).toContain('时间轴：2 处（2 篇；扫描 3 篇）')
-    expect(lintLib.formatTimeline({ scanned: 1, notes: 0, total: 0, items: [] })).toBe('')
+    expect(lintLib.formatTimeline(bucket)).toContain('时间轴：2 处（2 篇；扫描 3 篇；跳过 1 篇）')
+    expect(lintLib.formatTimeline({ scanned: 1, skipped: 0, notes: 0, total: 0, counts: { empty: 0, order: 0, format: 0, placement: 0 }, items: [] })).toBe('')
   })
 
   it('lint：timeline 桶进 LintResult，只报窗口内日记', async () => {
@@ -4282,6 +4290,9 @@ describe('v3.1: 时间轴 / archive / dream 日期', () => {
         '### 09:00',
         '### 09:10',
         '正文',
+        // 标题里的 HTML 必须被转义：明细列表与正文都不得把 </details> / <script> 放进来
+        '### 09:20</details><script>alert(1)</script>',
+        '正文',
         '',
         '## Observations',
         '正文',
@@ -4292,9 +4303,12 @@ describe('v3.1: 时间轴 / archive / dream 日期', () => {
       const daily = await call('?p=note&path=' + encodeURIComponent('journal/2026-11-04.md'))
       expect(daily.statusCode).toBe(200)
       expect(daily.body).toContain('class="notice"')
-      expect(daily.body).toContain('时间轴：1 处（空块 1）')
+      expect(daily.body).toContain('时间轴：2 处（空块 1 · 格式 1）')
       expect(daily.body).toContain('<details><summary>明细</summary>')
       expect(daily.body).toContain('<h3>09:00</h3>')
+      // 转义：标题里的 </details> / <script> 不能变成真标签
+      expect(daily.body).toContain('&lt;/details&gt;&lt;script&gt;')
+      expect(daily.body).not.toContain('<script>')
 
       const plain = await call('?p=note&path=' + encodeURIComponent('notes/plain.md'))
       expect(plain.statusCode).toBe(200)

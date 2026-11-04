@@ -6,9 +6,11 @@
  * diff 不可审，所以这里只产出问题清单，修不修由人或 agent 决定。
  *
  * 两种结构分开判：
- *   · layered（有 `## Events`）：时间条目必须是 `### HH:MM`，且落在 Events 与下一个 `##` 之间；
+ *   · layered（有 `## Events`，大小写不敏感）：时间条目必须是 `### HH:MM`，且落在 Events 与下一个 `##` 之间；
  *   · flat（没有 `## Events`）：时间条目必须是 `## HH:MM`，按文件顺序追加。
  * 统一要求 `## Events` 会让所有 flat 日记一次性全红，所以用第一个 `## Events` 决定结构。
+ * 大小写不敏感是为了跟 `appendDaily` 对齐：`sectionRange` 用 `/^##\s+Events\s*$/i` 找小节，
+ * 这里若区分大小写，`## EVENTS` 会被判成 flat、然后 `### HH:MM` 全报位置错。
  */
 export type TimelineIssueKind = 'empty' | 'order' | 'format' | 'placement'
 
@@ -30,6 +32,8 @@ const TIME_TITLE = /^(?:[01]\d|2[0-3]):[0-5]\d(?:\s*[（(].*[）)])?$/
 const TIME_LIKE = /^\d{1,2}:\d{1,2}/
 /** ATX 标题；不认 Setext（日记不用那种写法，认了反而把分隔线当标题） */
 const HEADING = /^(#{1,6})[ \t]+(.*?)[ \t]*$/
+/** ATX 收尾井号是装饰（`### 12:00 ##` 的标题仍是 `12:00`），与 zk 的 atxHeading 同口径 */
+const CLOSING_HASHES = /[ \t]+#+$/
 const FENCE = /^\s{0,3}(?:```|~~~)/
 
 /**
@@ -78,7 +82,7 @@ function parseHeadings(lines: string[]): ParsedHeading[] {
       index: i,
       line: i + 1,
       level: (hit[1] ?? '').length,
-      title: (hit[2] ?? '').trim(),
+      title: (hit[2] ?? '').replace(CLOSING_HASHES, '').trim(),
     })
   }
   return out
@@ -117,7 +121,8 @@ export function timelineIssues(
   const headings = parseHeadings(lines)
   const issues: TimelineIssue[] = []
 
-  const eventsAt = headings.findIndex((h) => h.level === 2 && h.title === 'Events')
+  // 与 appendDaily 的 sectionRange 同口径（大小写不敏感）：否则 `## EVENTS` 会被判成 flat
+  const eventsAt = headings.findIndex((h) => h.level === 2 && h.title.toLowerCase() === 'events')
   const events = eventsAt >= 0 ? headings[eventsAt] : null
   const mode: 'layered' | 'flat' = structure === 'auto'
     ? (events ? 'layered' : 'flat')
@@ -218,14 +223,6 @@ export function timelineIssues(
 
   issues.sort((a, b) => a.line - b.line)
   return issues.slice(0, max)
-}
-
-/** 严格的 YYYY-MM-DD（2 月 30 日、13 月都不算） */
-export function isDayString(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
-  const [year, month, day] = value.split('-').map(Number)
-  const at = new Date(year as number, (month as number) - 1, day as number)
-  return at.getFullYear() === year && at.getMonth() === (month as number) - 1 && at.getDate() === day
 }
 
 /** 四类计数；页面与 lint 的汇总共用一份口径 */

@@ -19,7 +19,7 @@ import { parseFrontmatter } from './frontmatter.js';
 // 循环引用在 ESM 下安全 —— 不要在模块顶层调用 memoryUsage。
 import { memoryUsage } from './memory.js';
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.js';
-import { isDayString } from './timeline.js';
+import { isDayString } from './dates.js';
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
 export const MAX_ITEMS = 50;

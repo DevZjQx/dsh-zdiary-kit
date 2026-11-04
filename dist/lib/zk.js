@@ -548,7 +548,8 @@ function assertWritablePath(cfg, abs) {
 /**
  * archive/ 只放 `supersede` 搬进去的旧结论（计划 §2 D6）：新建写进去不会报错，
  * 但 archive 在 excludedNames 里 —— 笔记会从检索、统计、反链里全部消失。
- * supersede / rename 仍可进 archive；这里只拦「新建」。
+ * 只有 supersede 能往 archive 里搬：`zk_rename` 改名进 archive 是另一条既有守卫
+ * （见 renameNote），这里只拦「新建」。
  */
 export function assertNotArchiveCreate(cfg, rel) {
     const clean = (value) => String(value ?? '').replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/, '');

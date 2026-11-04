@@ -404,7 +404,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「补建 *名* 的目录」，别手改配置去将就磁盘 |
 | 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |
 | 新建时提示「归档里有同名旧结论」 | 允许复用标题，但先 `read` 归档那篇，确认不是同一个错误；插件只警告、不拦 |
-| 往 `raw/` 或 `inbox/` 写笔记报「只读」 | 两者都被排除出索引，写进去的笔记不会报错、只是永远搜不到；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 直接拒绝 | 结论写到 `notes/`；原文留在原位，用原生 `read` 读 `raw/xxx.md` 或直接读文件对照。`inbox/` 是停用入口，老目录只读保留 |
+| 往 `raw/` 或 `inbox/` 写笔记报「只读」 | 两者都被排除出索引，写进去的笔记不会报错、只是永远搜不到；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 直接拒绝。结论写到 `notes/`；原文留在原位，用原生 `read` 读 `raw/xxx.md` 或直接读文件对照。`inbox/` 是停用入口，老目录只读保留 |
 | `config set notebook=…` 报「派生值」 | `notebook` 是 `notebooks[active]` 解析后的派生值、不落盘也不可写：改路径用 `zk-kit notebooks add 名 路径`，切换用 `use` |
 
 ## 开发
@@ -413,7 +413,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉，并检查没有顶层声明
   （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：13 个内置工具各跑一遍 + 7 条设置路由都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
+  `bun run smoke`（加载 dist：13 个内置工具各跑一遍 + 12 条路由（设置 8 + 只读 4）都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
   `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。

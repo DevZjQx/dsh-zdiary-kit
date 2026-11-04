@@ -4,6 +4,8 @@ const TIME_TITLE = /^(?:[01]\d|2[0-3]):[0-5]\d(?:\s*[（(].*[）)])?$/;
 const TIME_LIKE = /^\d{1,2}:\d{1,2}/;
 /** ATX 标题；不认 Setext（日记不用那种写法，认了反而把分隔线当标题） */
 const HEADING = /^(#{1,6})[ \t]+(.*?)[ \t]*$/;
+/** ATX 收尾井号是装饰（`### 12:00 ##` 的标题仍是 `12:00`），与 zk 的 atxHeading 同口径 */
+const CLOSING_HASHES = /[ \t]+#+$/;
 const FENCE = /^\s{0,3}(?:```|~~~)/;
 /**
  * 按行遮掉 frontmatter 与围栏代码：内容换成空行，行号保持不变。
@@ -44,7 +46,7 @@ function parseHeadings(lines) {
             index: i,
             line: i + 1,
             level: (hit[1] ?? '').length,
-            title: (hit[2] ?? '').trim(),
+            title: (hit[2] ?? '').replace(CLOSING_HASHES, '').trim(),
         });
     }
     return out;
@@ -78,7 +80,8 @@ export function timelineIssues(body, structure = 'auto', max = 50) {
     const lines = maskLines(body);
     const headings = parseHeadings(lines);
     const issues = [];
-    const eventsAt = headings.findIndex((h) => h.level === 2 && h.title === 'Events');
+    // 与 appendDaily 的 sectionRange 同口径（大小写不敏感）：否则 `## EVENTS` 会被判成 flat
+    const eventsAt = headings.findIndex((h) => h.level === 2 && h.title.toLowerCase() === 'events');
     const events = eventsAt >= 0 ? headings[eventsAt] : null;
     const mode = structure === 'auto'
         ? (events ? 'layered' : 'flat')
@@ -167,14 +170,6 @@ export function timelineIssues(body, structure = 'auto', max = 50) {
     }
     issues.sort((a, b) => a.line - b.line);
     return issues.slice(0, max);
-}
-/** 严格的 YYYY-MM-DD（2 月 30 日、13 月都不算） */
-export function isDayString(value) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value))
-        return false;
-    const [year, month, day] = value.split('-').map(Number);
-    const at = new Date(year, month - 1, day);
-    return at.getFullYear() === year && at.getMonth() === month - 1 && at.getDate() === day;
 }
 /** 四类计数；页面与 lint 的汇总共用一份口径 */
 export function timelineCounts(issues) {

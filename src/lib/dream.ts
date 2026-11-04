@@ -22,7 +22,7 @@ import { parseFrontmatter } from './frontmatter.ts'
 import { memoryUsage } from './memory.ts'
 import type { MemoryUsage } from './memory.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
-import { isDayString } from './timeline.ts'
+import { isDayString } from './dates.ts'
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
 
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */

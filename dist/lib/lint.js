@@ -29,11 +29,14 @@ import { parseFrontmatter } from './frontmatter.js';
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './memory-format.js';
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION } from './agents-template.js';
 import { CONTRACT_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION } from './persona-template.js';
-import { isDayString, timelineCounts, timelineIssues } from './timeline.js';
+import { timelineCounts, timelineIssues } from './timeline.js';
+import { isDayString } from './dates.js';
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50;
 /** 时间轴只扫最近多少天（计划 §2 D4）：一年日记会报几百条旧问题，把今天的问题挤出 50 条上限 */
 export const TIMELINE_WINDOW_DAYS = 90;
+/** 超过这个大小的日记不读（doctor / lint 不该把 2 GiB 的日志拉进内存）：跳过并计入 skipped */
+export const TIMELINE_MAX_BYTES = 2 * 1024 * 1024;
 /** 标题归一化与链接解析在 `lib/wikilink.ts`（dream 也用同一套）；这里保留导出，免得调用方跟着搬 */
 export { normalizeTitle };
 /** 同一标题出现在多篇里（slug 命名下不同目录可以同名，检索时容易挑错） */
@@ -289,14 +292,15 @@ const TIMELINE_KINDS = [
 export function formatTimeline(bucket) {
     if (bucket.total === 0)
         return '';
-    const counts = timelineCounts(bucket.items.flatMap((item) => item.issues));
-    const parts = TIMELINE_KINDS.filter(([kind]) => counts[kind] > 0)
-        .map(([kind, label]) => `${label} ${counts[kind]}`);
+    // 分类计数用桶里全量的 counts，不从被截断的 items 重算：否则「12 处」和「空块 5 · 倒序 2」会对不上
+    const parts = TIMELINE_KINDS.filter(([kind]) => bucket.counts[kind] > 0)
+        .map(([kind, label]) => `${label} ${bucket.counts[kind]}`);
+    const skipped = bucket.skipped > 0 ? `；跳过 ${bucket.skipped} 篇` : '';
     const sample = bucket.items.slice(0, 3).map((item) => {
         const first = item.issues[0];
         return `${item.path}（行 ${first.line}：${first.title} — ${first.detail}）`;
     });
-    return `✗ 时间轴：${bucket.total} 处（${bucket.notes} 篇；扫描 ${bucket.scanned} 篇）｜${parts.join(' · ')}` +
+    return `✗ 时间轴：${bucket.total} 处（${bucket.notes} 篇；扫描 ${bucket.scanned} 篇${skipped}）｜${parts.join(' · ')}` +
         (sample.length > 0 ? ` — ${sample.join('；')}` : '');
 }
 /**
@@ -637,7 +641,9 @@ export function timelineStatus(cfg, now = new Date(), max = MAX_ITEMS) {
     const nowMs = now.getTime();
     const cutoff = nowMs - TIMELINE_WINDOW_DAYS * 86_400_000;
     let scanned = 0;
+    let skipped = 0;
     let total = 0;
+    const counts = { empty: 0, order: 0, format: 0, placement: 0 };
     const items = [];
     for (const abs of files.sort()) {
         const rel = path.relative(cfg.notebook, abs).split(path.sep).join('/');
@@ -651,6 +657,7 @@ export function timelineStatus(cfg, now = new Date(), max = MAX_ITEMS) {
                 day = localDate(fs.statSync(abs).birthtime.toISOString());
             }
             catch {
+                skipped += 1;
                 continue;
             }
         }
@@ -662,21 +669,29 @@ export function timelineStatus(cfg, now = new Date(), max = MAX_ITEMS) {
             continue;
         let body = '';
         try {
-            if (fs.statSync(abs).size > 2 * 1024 * 1024)
+            if (fs.statSync(abs).size > TIMELINE_MAX_BYTES) {
+                skipped += 1;
                 continue;
+            }
             body = fs.readFileSync(abs, 'utf8');
         }
         catch {
+            skipped += 1;
             continue;
         }
         scanned += 1;
-        const issues = timelineIssues(body, 'auto', MAX_ITEMS);
+        // 计数取全量、items 里每篇只留前 MAX_ITEMS 条：分类相加必须等于 total，
+        // 否则「60 处」配上只数了前 50 篇明细的拆分会自相矛盾。
+        const issues = timelineIssues(body, 'auto', Number.MAX_SAFE_INTEGER);
         if (issues.length === 0)
             continue;
         total += issues.length;
-        items.push({ path: rel, issues });
+        const own = timelineCounts(issues);
+        for (const kind of Object.keys(counts))
+            counts[kind] += own[kind];
+        items.push({ path: rel, issues: issues.slice(0, MAX_ITEMS) });
     }
-    return { scanned, notes: items.length, total, items: items.slice(0, max) };
+    return { scanned, skipped, notes: items.length, total, counts, items: items.slice(0, max) };
 }
 export async function lintNotebook(cfg, opts = {}, signal) {
     const staleDays = Math.min(3650, Math.max(1, Math.trunc(opts.staleDays ?? 90)));
