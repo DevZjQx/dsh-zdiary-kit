@@ -16,10 +16,10 @@ import { json, readBody, ROUTE_BASE } from '../../lib/http.ts'
 import { CFG_FILE, processWorkspace } from '../../config/paths.ts'
 import { ArchiveDirChangeError, config, configStamp, ConfigConflictError, writeConfig } from '../../config/store.ts'
 import type { Config } from '../../config/store.ts'
-import { ensureNotebook, structureStatus, writeAgentsTemplate, writeContractTemplates } from '../../lib/notebook.ts'
+import { ensureNotebook, structureStatus, writeAgentsTemplate, writePersonaTemplate } from '../../lib/notebook.ts'
 import type { StructureStatus } from '../../lib/notebook.ts'
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
-import { contractStatus } from '../../lib/lint.ts'
+import { personaStatus } from '../../lib/lint.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
 import { installZk, sourceLabel } from '../../lib/install.ts'
 import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.ts'
@@ -67,7 +67,7 @@ async function snapshot(cfg: Config) {
   }
   // 结构一致性只做检查：以配置为准，磁盘不一致就如实说缺哪个目录（不自动建、不自动删）
   const structure: StructureStatus = structureStatus(cfg)
-  let memory: Pick<MemoryPayload, 'words' | 'budget' | 'totalWords' | 'truncatedWords' | 'retiredWords' | 'tocWords' | 'files' | 'contract'> | null = null
+  let memory: Pick<MemoryPayload, 'words' | 'budget' | 'totalWords' | 'truncatedWords' | 'retiredWords' | 'tocWords' | 'files' | 'persona'> | null = null
   try {
     const payload = buildMemoryPayload(cfg)
     memory = {
@@ -78,7 +78,7 @@ async function snapshot(cfg: Config) {
       retiredWords: payload.retiredWords,
       tocWords: payload.tocWords,
       files: payload.files,
-      contract: payload.contract,
+      persona: payload.persona,
     }
   } catch { memory = null }
   return {
@@ -236,17 +236,17 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
     }
   })
 
-  // ── 写入角色契约模板（PERSONA.md；opt-in，已存在不覆盖）──
-  route(`${P}/contract`, async (req, res) => {
+  // ── 写入角色人格模板（PERSONA.md；opt-in，已存在不覆盖）──
+  route(`${P}/persona`, async (req, res) => {
     if (!requireTrusted(req, res)) return
     if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return }
     const cfg = config()
     try {
-      const result = writeContractTemplates(cfg)
-      // 契约不依赖 zk：允许在建库前先写。缺 .zk/config.toml 时明确提醒下一步，
-      // 别让人以为写完契约笔记本就建好了。文案不区分「这次写没写」：
+      const result = writePersonaTemplate(cfg)
+      // 人格文件不依赖 zk：允许在建库前先写。缺 .zk/config.toml 时明确提醒下一步，
+      // 别让人以为写完人格文件笔记本就建好了。文案不区分「这次写没写」：
       // 第二次点击时文件已存在（false），说「已写入」会和「已存在，没有覆盖」自相矛盾。
-      const warn = hasNotebook(cfg) ? null : '契约已就位（缺的才写，已存在不覆盖），但这还不是 zk 笔记本（缺 .zk/config.toml）—— 点「初始化 / 补建」建库'
+      const warn = hasNotebook(cfg) ? null : '人格文件已就位（缺的才写，已存在不覆盖），但这还不是 zk 笔记本（缺 .zk/config.toml）—— 点「初始化 / 补建」建库'
       json(res, 200, { ok: true, result, warn, ...(await snapshot(cfg)) })
     } catch (err) {
       json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) })
@@ -354,22 +354,22 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
             (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : '') +
             (payload.retiredWords > 0 ? `，退役省略 ${payload.retiredWords} 词` : ''),
       })
-      const c = payload.contract
-      // 缺文件 = 未启用（不算错）；只有超预算才是 ✗（契约不截断）。
+      const c = payload.persona
+      // 缺文件 = 未启用（不算错）；只有超上限才是 ✗（人格不截断）。
       // 旧版 / 占位符不翻转 ok，但必须在 detail 里说出来 —— 自检不能比 doctor 还宽。
-      const contractIssues = c.present ? contractStatus(cfg).items : []
-      const contractIssueText = contractIssues.map((i) => `${i.file} ${i.detail}`).join('；')
+      const personaIssues = c.present ? personaStatus(cfg).items : []
+      const personaIssueText = personaIssues.map((i) => `${i.file} ${i.detail}`).join('；')
       items.push({
-        name: '角色契约',
+        name: '角色人格',
         ok: !c.overBudget,
         detail: c.present
           ? `正文（含标题）${c.contentWords}/${c.budget} 词（${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
-            (c.overBudget ? `，超 ${c.overWords} 词（契约不截断，请缩减或调大契约预算）` : '') +
-            (contractIssueText ? `；⚠️ ${contractIssueText}` : '')
+            (c.overBudget ? `，超 ${c.overWords} 词（人格不截断，请缩减或调大人格上限）` : '') +
+            (personaIssueText ? `；⚠️ ${personaIssueText}` : '')
           : exists
-            ? '未启用：根目录没有 PERSONA.md（点「写入契约模板」，缺文件不算错）'
-            // 契约不依赖 .zk：按钮在被测页面上始终可见，所以先写契约也是合法下一步
-            : '未启用：根目录没有 PERSONA.md（点「写入契约模板」可先写；再点「初始化 / 补建」建库，缺文件不算错）',
+            ? '未启用：根目录没有 PERSONA.md（点「写入人格模板」，缺文件不算错）'
+            // 人格文件不依赖 .zk：按钮在被测页面上始终可见，所以先写人格文件也是合法下一步
+            : '未启用：根目录没有 PERSONA.md（点「写入人格模板」可先写；再点「初始化 / 补建」建库，缺文件不算错）',
       })
     } catch (err) {
       items.push({ name: '长期记忆', ok: false, detail: err instanceof Error ? err.message : String(err) })

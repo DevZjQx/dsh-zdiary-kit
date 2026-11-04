@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 3.1.0
+# dsh-zdiary-kit 3.2.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -18,8 +18,8 @@
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题）；meta 文件不作为来源或目标 |
 | `zk_supersede` | 废弃过时结论：标 `superseded` + 写 `reason` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演；meta 文件不能废弃 |
 | `zk_rename` | 改名 / 换目录并修断链：入链（`[[…]]` 与 Markdown 链接，保留 `#锚点` 与 `\|别名`）按实际解析结果改到新路径，根目录 meta 里的 `[[来源]]` 一起改，被搬走那篇自己的相对 Markdown 链接按新位置重算；默认只预演 |
-| `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）与角色契约 `PERSONA.md`（单独成段、不截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时这些内容每轮已自动带进系统提示 |
-| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本 / 契约（缺失·旧版·比插件新·标记与内容不符·未填占位符）/ 日记时间轴（最近 90 天的空块·倒序·格式·位置），每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；只报告不改写 |
+| `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）与角色人格 `PERSONA.md`（单独成段、不截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时这些内容每轮已自动带进系统提示 |
+| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本 / 人格（缺失·旧版·比插件新·标记与内容不符·未填占位符）/ 日记时间轴（最近 90 天的空块·倒序·格式·位置），每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、已在 MEMORY 的、窗口外积压、daily 未完成项、被引最多（先按「被日记提到几天」排）；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded），以及顶层目录与前 10 个标签的实时分布 |
 | `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |
@@ -64,15 +64,15 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 `zk-kit init --with-agents`，或在设置页点「写入 AGENTS.md 模板」—— 已存在的文件绝不覆盖。
 模板首行有 `<!-- zdiary-template: vN -->` 版本标记：老库的 `AGENTS.md` 是旧版时 `zk_lint` 只提示，不自动改；标记比插件新时提示升级插件；标记等于当前版本但正文还留着旧句时按「标记与内容不符」报（只改数字不算合并）。
 
-**角色契约**：根目录还可以放 `PERSONA.md`（名字 / 身份 / 语气 / 边界）。它与 `MEMORY.md` 同级：人和 agent 直接编辑，`zk_append` / `zk_new` 一律拒写，
+**角色人格**：根目录还可以放 `PERSONA.md`（名字 / 身份 / 语气 / 边界）。它与 `MEMORY.md` 同级：人和 agent 直接编辑，`zk_append` / `zk_new` 一律拒写，
 **缺文件 = 未启用**（旧库行为一个词不变）。它单独成段、永远在记忆段之前注入，**不参与记忆预算的截断**：
-契约是硬规则，超了只告警（`zk_context` / `doctor` / 记忆页都会点名），不会静默丢掉半份人设。
-两个预算可以分开调（设置页「记忆」组）：记忆 500 · 契约 240。
-契约超了只在**人看的界面**点名（`zk_context` 回复、`doctor`、记忆页、设置页），不写进系统提示，也不自动截断；没有契约的库不多一个词。
-写入是 opt-in：`zk-kit init --with-contract` 或设置页「写入契约模板」，已存在的文件绝不覆盖。
-设置页的按钮不依赖 zk 初始化：笔记本还没建好时也能先写契约（只建根目录与文件，不碰 `.zk`），
+超了只告警（`zk_context` / `doctor` / 记忆页都会点名），不会静默丢掉半份人设。
+两个上限可以分开调（设置页「记忆」组）：记忆 500 · 人格 240。
+人格超了只在**人看的界面**点名（`zk_context` 回复、`doctor`、记忆页、设置页），不写进系统提示，也不自动截断；没有人格的库不多一个词。
+写入是 opt-in：`zk-kit init --with-persona` 或设置页「写入人格模板」，已存在的文件绝不覆盖。
+设置页的按钮不依赖 zk 初始化：笔记本还没建好时也能先写人格文件（只建根目录与文件，不碰 `.zk`），
 写完会提醒你仍需要点「初始化 / 补建」建库。
-**边界**：M1 是「一本笔记本一份」契约；多个 agent 共用一个库时先别启用，等 M4 的 per-agent persona ——
+**边界**：M1 是「一本笔记本一份」人格；多个 agent 共用一个库时先别启用，等 M4 的 per-agent persona ——
 否则 A 的人格会串到 B。
 
 **从 1.x 升级**：根目录的 `POLICY.md` 不再解析或注入（2.0.0 移除）；文件不会被删，但会按普通笔记处理
@@ -126,7 +126,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
    **安装内置 zk**（从 GitHub 官方 release 下 `zk-v<版本>-<平台>.tar.gz`，解到 `~/.dsh/zdiary/bin`，
    装完真跑一次 `zk --version` 才算成功）。装完会回显下载源：设了 `ZK_DOWNLOAD_BASE` 就明确标成
    「自定义镜像」并给出实际 URL —— 上游 release 不带校验和，至少让你知道刚才信任了谁；
-3. 点 **自检** 看八项：zk、笔记本、日记模板、日记 group、结构、长期记忆、角色契约、索引。
+3. 点 **自检** 看八项：zk、笔记本、日记模板、日记 group、结构、长期记忆、角色人格、索引。
    zk / 索引会真起进程，笔记本 / 模板 / group / 结构直接读磁盘与配置，长期记忆会重算一遍载荷。
 
 ## 设置页里有什么
@@ -139,7 +139,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 | 目录与 group | 日记 group 名 | 默认 `daily`，初始化时自动补配置 |
 | 目录与 group | 归档目录 | `supersede` 后搬到这里（保留原相对路径），默认 `archive` |
 | 记忆 | 注入预算（词） | AGENTS + USER + MEMORY 的合计上限，默认 500（中文按 2 字 1 词） |
-| 记忆 | 契约预算 | 契约 240（不截断、超了告警） |
+| 记忆 | 人格上限 | PERSONA.md 240（不截断、超了告警） |
 | 写入 | 默认标签 / 单次读取上限 | 新笔记自动带标签；`zk-kit read` 与别名工具的输出上限 |
 | 工具 | 把 `[alias]` 注册成工具 | 复选框，默认关。打开后 `.zk/config.toml` 的 `[alias]` 变成 `zk_<名>` 工具；**加载时才注册**，勾完保存要重载插件 |
 | zk | zk 路径 / 内置版本 | 路径空 = 自动找；版本默认 0.15.7 |
@@ -320,8 +320,8 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 ```bash
 zk-kit init                          # 建库 / 补齐目录、模板、group、AGENTS.md（幂等）
 zk-kit init --with-agents            # flat 库也写一份精简版 AGENTS.md（已存在不覆盖）
-zk-kit init --with-contract          # 写 PERSONA.md 契约模板（缺了才写，已存在不覆盖）
-zk-kit contract                      # 契约状态：用量 / 预算 / 体检（只读）
+zk-kit init --with-persona           # 写 PERSONA.md 人格模板（缺了才写，已存在不覆盖）
+zk-kit persona                       # 人格状态：用量 / 上限 / 体检（只读）
 zk-kit groups                        # 对照配置与 .zk/config.toml 的 group（默认 dry-run）
 zk-kit groups --fix                  # 只改插件建的 group 的 paths / 组头（写前备份 .zk/config.toml.bak）
 zk-kit new --title "示例笔记" --body "正文" --tags demo --type concept
@@ -333,7 +333,7 @@ zk-kit query -- -t demo --limit 5    # 透传 zk list：--notebook-dir / --forma
 zk-kit index
 zk-kit config get structure          # 看一个配置项（不传键 = 全量）
 zk-kit config set structure=layered  # 只落盘配置，不建目录 —— 目录要 zk-kit init 补
-zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group / 结构 / 记忆 / 契约 / 索引
+zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group / 结构 / 记忆 / 人格 / 索引
 ```
 
 按路径用的子命令（`<…>` 要换成真实路径，所以不放进可跑清单）：
@@ -393,7 +393,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 体检报「N 个条目没写日期 / 已退役」 | 按 `AGENTS.md` 的格式补 `结论（YYYY-MM-DD）[[来源路径]]`；退役行写 `- [superseded …] 旧结论 → [[新结论]]`，行留着不删（注入时会省略退役条目，文件本身不动）。只报告 |
 | 体检报「N 条超过 90 天未复核」 | 条目的日期太旧：确认结论还成立就改日期，否则按退役格式写一行 `- [superseded …]`。`zk_dream` 的「可考虑退役」会给同一批材料 |
 | 体检报「AGENTS.md 是旧版 / 无版本标记 / 标记与内容不符」 | 模板升级过，老库不会自动覆盖（可能有你自己的改动）：`zk_lint` 的输出里会直接附上新版模板全文，按需合并到自己的 `AGENTS.md`；合并完内容再改首行标记，只把数字改成 vN 会被正文哨兵发现。不合并也能用，只是少新加的约定 |
-| 体检报「契约版本比插件新」 | 文件里的标记来自更新版本的插件：插件才是旧的那个，别改文件里的版本号，升级插件后再看 |
+| 体检报「人格版本比插件新」 | 文件里的标记来自更新版本的插件：插件才是旧的那个，别改文件里的版本号，升级插件后再看 |
 | 体检报「疑似重复标题」 | 同目录里有两篇标题只差一两个字（二元组相似度 ≥ 0.6，或短标题被长标题包含）。只报告：确认是同一结论就用 `zk_supersede` 合并，不是就留着 |
 | 体检提示「笔记已到 150 篇（不含日记）」 | 检索开始变糊的拐点，但插件不生成 `INDEX.md`（静态索引会过期）。用 `zk_stats` 看目录 / 标签分布决定先读哪里；真要总索引就自己写，提示会消失 |
 | 中文搜索只回来几条 | `zk_search` 对含中文的查询会 FTS + 子串各跑一次并合并（`matchStrategy: mixed`）；`zk_query` 是 `zk list` 的透传，仍只在 0 命中时兜底 —— 查中文优先用 `zk_search`，或配合 tags |

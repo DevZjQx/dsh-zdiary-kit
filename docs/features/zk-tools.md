@@ -6,7 +6,7 @@
 `zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
 `.zk/config.toml` 的 `[alias]` 派生的 `zk_<别名>` 工具：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
-`zk_context` 例外：它只读根目录三份 meta 文件与角色契约（`PERSONA.md`），并列出已配置笔记本（另读 `DREAMS.md` 的「上次做梦」一行用于周节奏提醒），**不** `ensureNotebook`（读记忆不该依赖 zk）。
+`zk_context` 例外：它只读根目录三份 meta 文件与角色人格（`PERSONA.md`），并列出已配置笔记本（另读 `DREAMS.md` 的「上次做梦」一行用于周节奏提醒），**不** `ensureNotebook`（读记忆不该依赖 zk）。
 
 **多会话与笔记本归属.** 工具拿配置走 `config/session.ts` 的 `configFor(workspace, sessionId)`，不是直接 `config()`：
 会话第一次调用时把当时的 `active`（默认值）快照成自己的 pin，之后设置页 / CLI / 别的会话切库都不带动它；
@@ -131,10 +131,10 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `zk_context` 的 `files[].originalWords`（截断前词数）、`files[].retiredWords`（退役条目占的词数，只算在 `MEMORY.md` 上）、
 `tocWords`（目录占的词数）与 `ratio`（用量 = `words / budget`，两位小数，> 1 表示超预算）只用于解释预算，不改变注入内容。
 `originalWords` 含退役条目；展示层的「原 X」会先减掉 `retiredWords`，所以退役不会再被当成截断报出来。
-契约单独一组：`contract.present / contentWords / words / noticeWords / budget / overBudget / overWords / files[]`（`contentWords` 含 `## PERSONA.md` 标题），
-外加 `totalWords`（`countWords(payload.text)`）与 `overheadWords`（框 / 做梦提醒 / notice / 契约告警等开销）。
-契约**不参与** `memoryBudgetWords` 的截断，超了只告警；`overWords` 是所有展示的唯一超量口径，别拿 `words` 再做减法。
-`zk_dream` 的 `memory.contractWords` 是整段契约注入量；`headroom` 只扣记忆侧（`totalWords - contractWords`），契约不占记忆预算。
+人格单独一组：`persona.present / contentWords / words / noticeWords / budget / overBudget / overWords / files[]`（`contentWords` 含 `## PERSONA.md` 标题），
+外加 `totalWords`（`countWords(payload.text)`）与 `overheadWords`（框 / 做梦提醒 / notice / 人格告警等开销）。
+人格**不参与** `memoryBudgetWords` 的截断，超了只告警；`overWords` 是所有展示的唯一超量口径，别拿 `words` 再做减法。
+`zk_dream` 的 `memory.personaWords` 是整段人格注入量；`headroom` 只扣记忆侧（`totalWords - personaWords`），人格不占记忆预算。
 `memory.files[]` 与 `zk_context` 同形（`name / present / words / originalWords / retiredWords`）：`memoryUsage` 返回什么，schema 就得声明什么 ——
 少一个 key，宿主校验直接整次 invalid output。
 
@@ -223,9 +223,9 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 `citedBy` 是同一次 `zk graph` 得到的入链来源前 5 条。给 agent 的是可重放的上下文（谁引了它、摘要是什么），
 不是「这条该晋升」的结论。
 **记忆余量与退役材料（0.9 D4）。** 结果的 `memory` 与注入同一口径：`words` 是内容词（含「记忆已用」提示行），
-`contractWords` 是整段契约注入量，`totalWords` 含契约 / 框 / 做梦提醒 / notice，
-`headroom = budget - (totalWords - contractWords)` 可以为负 —— 只报内容词等于说
-「还有 15 词」，而框和提示早就把它吃完了；契约是独立层，不占记忆预算。`retireCandidates` 是机械规则给的「可考虑退役」：有日期且 > 90 天（`stale`）、
+`personaWords` 是整段人格注入量，`totalWords` 含人格 / 框 / 做梦提醒 / notice，
+`headroom = budget - (totalWords - personaWords)` 可以为负 —— 只报内容词等于说
+「还有 15 词」，而框和提示早就把它吃完了；人格是独立层，不占记忆预算。`retireCandidates` 是机械规则给的「可考虑退役」：有日期且 > 90 天（`stale`）、
 `[[来源]]` 指向归档 / 不存在（`source-superseded` / `source-missing`）；显式写 `archive/` 的链接是有意引用旧结论，
 不算来源断了（与 `memoryLinks` 同口径），无日期无链接的不算候选。
 `zk_dream` 只输出这两栏，不写任何文件。

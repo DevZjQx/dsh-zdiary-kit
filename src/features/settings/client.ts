@@ -41,7 +41,7 @@ interface ZkConfig {
   /** 是否把 .zk/config.toml 的 [alias] 注册成 zk_<名> 工具（默认 false） */
   aliasTools: boolean
   memoryBudgetWords: number
-  contractBudgetWords: number
+  personaBudgetWords: number
   /** 当前笔记本的结构（= notebooks[active].structure；派生视图，落在条目里） */
   structure: string
   archiveDir: string
@@ -67,7 +67,7 @@ interface Structure {
 interface Memory {
   words: number
   budget: number
-  /** 模型真正收到的记忆载荷（含框 / 提示 / 契约）；合计数要用它，不是 words */
+  /** 模型真正收到的记忆载荷（含框 / 提示 / 人格）；合计数要用它，不是 words */
   totalWords: number
   truncatedWords: number
   /** 截断目录占的词数（0 = 没有目录） */
@@ -154,7 +154,7 @@ interface Field {
       { group: '目录与 group', key: 'dailyGroup', label: '日记 group 名', hint: 'zk 配置里的 [group."…"]，默认 daily —— 初始化时会自动补上；所有笔记本共用' },
       { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；所有笔记本共用。旧归档目录非空时拒绝改动 —— 插件不会自动迁移文件' },
       { group: '记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 500（中文按 2 字 1 词）。超了先丢 MEMORY 里日期最旧的条目（一条日期都没有才退回从尾部丢），并回显截断了多少' },
-      { group: '记忆', key: 'contractBudgetWords', label: '契约预算（词）', hint: 'PERSONA.md 的上限，默认 240（50-800）。契约是硬规则，永远注入、不参与截断；超了只告警' },
+      { group: '记忆', key: 'personaBudgetWords', label: '人格上限（词）', hint: 'PERSONA.md 的上限，默认 240（50-800）。人格永远注入、不参与截断；超了只告警' },
       { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
       { group: '写入', key: 'maxReadChars', label: '单次读取上限（字符）', hint: '默认 20000；zk-kit read 与别名工具的输出超了会截断并明确告知模型' },
       { group: '工具', key: 'aliasTools', label: '把 [alias] 注册成工具', hint: '默认关闭。打开后，加载插件时把各笔记本 .zk/config.toml 的 [alias] 里未注释的别名注册成 zk_<名>，模型可以像调内置工具一样调它们。\n别名是 $SHELL -c 执行的任意命令 —— 打开等于把这些命令交给 agent，只在你信得过 config.toml 内容时开。\n交互式命令（edit / 带 --interactive）会卡到超时，不适合当工具。改完要重载插件（或重启 DSH）才会出现在工具列表里', type: 'bool' },
@@ -282,7 +282,7 @@ interface Field {
           }
           if (name === 'index') setOkMsg('✓ 索引已重建')
           if (name === 'agents') setOkMsg(d.result?.written === true ? '✓ 已写入 AGENTS.md 模板' : '✓ AGENTS.md 已存在，没有覆盖')
-          if (name === 'contract') {
+          if (name === 'persona') {
             const res = d.result as { personaWritten?: boolean } | undefined
             const r = res || {}
             setOkMsg('✓ ' + (r.personaWritten ? '写入 PERSONA.md' : 'PERSONA.md 已存在，没有覆盖') + (d.warn ? '\n⚠️ ' + d.warn : ''))
@@ -422,8 +422,8 @@ interface Field {
         : needsBuild
           ? `补建 ${savedActive} 的目录`
           : `初始化 / 补建 ${savedActive}`
-      // 契约按钮不按 notebook.exists 隐藏：契约不依赖 .zk，
-      // 这样自检里的「点「写入契约模板」」任何状态下都有对应的可点项。
+      // 人格按钮不按 notebook.exists 隐藏：人格文件不依赖 .zk，
+      // 这样自检里的「点「写入人格模板」」任何状态下都有对应的可点项。
       return h('div', { className: 'zdk' },
         h('h3', { className: 'zdk-title' }, '知识库（zk）'),
         h('p', { className: 'zdk-intro' },
@@ -507,7 +507,7 @@ interface Field {
           structure && snap?.notebook.exists && !structure.agents.present
             ? h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('agents', 'agents'), disabled: !!busy }, busy === 'agents' ? '写入中…' : '写入 AGENTS.md 模板')
             : null,
-          h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('contract', 'contract'), disabled: !!busy }, busy === 'contract' ? '写入中…' : '写入契约模板'),
+          h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('persona', 'persona'), disabled: !!busy }, busy === 'persona' ? '写入中…' : '写入人格模板'),
           h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('index', 'index'), disabled: !!busy }, busy === 'index' ? '索引进…' : '重建索引'),
           h('button', { className: 'zdk-btn zdk-btn2', onClick: () => action('install', 'install'), disabled: !!busy }, busy === 'install' ? '下载中…' : '安装内置 zk'),
           h('button', { className: 'zdk-btn zdk-btn2', onClick: selftest, disabled: !!busy }, busy === 'selftest' ? '自检中…' : '自检'),

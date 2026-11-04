@@ -23,8 +23,8 @@ export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agen
 /** ensureNotebook 的可选动作：flat 下是否顺手写 AGENTS.md（默认不写，守住 M0 的「不多一个文件」） */
 export interface EnsureOptions {
   withAgents?: boolean
-  /** 是否顺手写角色契约模板（PERSONA.md；opt-in，缺了才写，已存在绝不覆盖） */
-  withContract?: boolean
+  /** 是否顺手写角色人格模板（PERSONA.md；opt-in，缺了才写，已存在绝不覆盖） */
+  withPersona?: boolean
 }
 
 export interface EnsureResult {
@@ -44,7 +44,7 @@ export interface EnsureResult {
   agentsWritten: boolean
   /** 本次写了根目录的 WORKFLOW.md（同上，只在缺失时写） */
   workflowWritten: boolean
-  /** 本次写了根目录的 PERSONA.md（只在 withContract 且缺失时写） */
+  /** 本次写了根目录的 PERSONA.md（只在 withPersona 且缺失时写） */
   personaWritten: boolean
 }
 
@@ -460,13 +460,13 @@ export function writeAgentsTemplate(cfg: Config): boolean {
 }
 
 /**
- * 写根目录角色契约模板（PERSONA.md；缺了才写，已存在绝不覆盖 —— 契约允许人改）。
- * 只走显式 opt-in（zk-kit init --with-contract / 设置页按钮）：默认升级不多一个文件。
+ * 写根目录角色人格模板（PERSONA.md；缺了才写，已存在绝不覆盖 —— 人格允许人改）。
+ * 只走显式 opt-in（zk-kit init --with-persona / 设置页按钮）：默认升级不多一个文件。
  *
- * 先 mkdir 再写：设置页的按钮在笔记本还没初始化时也可点（「先定角色、再建库」是合法顺序）。
- * 这里只建目录与契约，不碰 .zk / 模板 / 笔记；之后 ensureNotebook 幂等接管同一目录。
+ * 先 mkdir 再写：设置页的按钮在笔记本还没初始化时也可点（「先定人格、再建库」是合法顺序）。
+ * 这里只建目录与人格文件，不碰 .zk / 模板 / 笔记；之后 ensureNotebook 幂等接管同一目录。
  */
-export function writeContractTemplates(cfg: Config): { personaWritten: boolean } {
+export function writePersonaTemplate(cfg: Config): { personaWritten: boolean } {
   const persona = path.join(cfg.notebook, 'PERSONA.md')
   const personaWritten = !fs.existsSync(persona)
   if (personaWritten) fs.mkdirSync(cfg.notebook, { recursive: true })
@@ -500,14 +500,14 @@ export async function ensureNotebook(
     })
     : ensureTemplates(cfg, { 'daily.md': DAILY_TEMPLATE })
 
-  // AGENTS.md 是工作契约（检索词归宿 / 中文打 tags / MEMORY 截断方向）。
+  // AGENTS.md 是工作约定（检索词归宿 / 中文打 tags / MEMORY 截断方向）。
   // layered 自动写；flat 只有显式 withAgents 才写 —— 0.1.0 的 vault 升级过来必须一个文件都不多（M0）。
   // 不写的话，默认安装既没有约定、也没有周节奏提醒（P1-6），所以要有一个 opt-in 入口。
   const agentsWritten = layered || opts.withAgents === true ? writeAgentsTemplate(cfg) : false
 
-  // 契约层（角色）只走显式 opt-in：两种结构都不自动多一个文件（D10）。
-  const contractWritten = opts.withContract === true
-    ? writeContractTemplates(cfg)
+  // 人格层（角色）只走显式 opt-in：两种结构都不自动多一个文件（D10）。
+  const personaWritten = opts.withPersona === true
+    ? writePersonaTemplate(cfg)
     : { personaWritten: false }
 
   // WORKFLOW.md 是「动已有笔记」时才读的细则：不注入（省预算），但不进检索（是 meta）
@@ -571,7 +571,7 @@ export async function ensureNotebook(
     groupWarnings,
     agentsWritten,
     workflowWritten,
-    personaWritten: contractWritten.personaWritten,
+    personaWritten: personaWritten.personaWritten,
   }
 }
 

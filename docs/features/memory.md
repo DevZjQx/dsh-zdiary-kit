@@ -4,8 +4,8 @@
 注入有硬预算，截断多少必须可观测 —— 否则模型看到的是残缺记忆却不知道残缺。
 
 **Owns.**
-- `lib/meta.ts`：meta 文件唯一清单 —— 注入 3 份 `MEMORY_META_FILES`；契约 1 份 `CONTRACT_META_FILES`（`PERSONA.md`）；
-  排除 7 份 `META_NAMES`（含契约 `PERSONA.md`）；memory、zk、readonly、settings 共用
+- `lib/meta.ts`：meta 文件唯一清单 —— 注入 3 份 `MEMORY_META_FILES`；人格 1 份 `PERSONA_META_FILES`（`PERSONA.md`）；
+  排除 7 份 `META_NAMES`（含人格 `PERSONA.md`）；memory、zk、readonly、settings 共用
 - `lib/memory.ts`：读 `<vault>/AGENTS.md` / `USER.md` / `MEMORY.md` → 词数 → 机械截断 → `<system-reminder>` 框；
   另读 `DREAMS.md` 的「上次做梦」一行（不进正文、不计预算）；
   `memoryUsage(cfg)` 是同一份载荷的投影（内容词 / 总词 / 预算 / 余量），给 dream 与后续页面用
@@ -14,7 +14,7 @@
 - `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）；`dreamNotebook` 用它算默认窗口
 - `lib/wikilink.ts`：`[[链接]]` 的解析口径（路径 → `.md` → `archive/` → 活笔记标题），lint 与 dream 共用一份
 - `lib/persona-template.ts`：`PERSONA_TEMPLATE` 与独立版本标记（`<!-- zdiary-persona: vN -->`，
-  不复用 `zdiary-template` —— AGENTS 改版不该让契约误报旧版）；只走 opt-in 写入，已存在不覆盖
+  不复用 `zdiary-template` —— AGENTS 改版不该让人格文件误报旧版）；只走 opt-in 写入，已存在不覆盖
 - `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 180 词），flat 用精简版
   （80 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
   layered 初始化自动写，flat 只有 `ensureNotebook(cfg, signal, { withAgents: true })` / `zk-kit init --with-agents` /
@@ -26,34 +26,34 @@
   别的会话切了默认值不会把已开的会话换库，裸装配才退回进程工作区 + 全局默认
 - `zk_context` 工具：同一份 payload（含 `ratio` 用量），给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用；
   另返回 `notebooks`（名字 / 路径 / 结构 / 当前），没有提示注入时模型也能发现已配置的库
-- 设置页「记忆」：注入预算、契约预算；「目录与 group」：归档目录。
-  快照里带 `memory.words/budget/truncatedWords/retiredWords/contract` 状态行；自检多一项「角色契约」
+- 设置页「记忆」：注入预算、人格上限；「目录与 group」：归档目录。
+  快照里带 `memory.words/budget/truncatedWords/retiredWords/persona` 状态行；自检多一项「角色人格」
 
 **Does not own.** MEMORY.md 写什么（agent 按 AGENTS.md 直接改文件，git diff 可审）；
 哪些记忆该晋升（语义判断是 agent 的活，插件只做机械截断）；`MEMORY.md` 的写入路径 ——
 它由人和 agent 直接编辑，`zk_append` / `zk_link` / `zk_supersede` 都会拒绝（追加会把记忆变成流水账，也丢掉「谁改的」这条审计线；后者还会把文件搬进 archive/）。
 
-**契约层（0.10 M1）。** `PERSONA.md` 与 `MEMORY.md` 同级：根目录 meta，人类所有，
+**人格层（0.10 M1）。** `PERSONA.md` 与 `MEMORY.md` 同级：根目录 meta，人类所有，
 `zk_append` / `zk_new` / `zk_link` / `zk_supersede` 一律拒绝写入或搬移。
 **缺文件 = 未启用，不报错**（payload 不多一个词，0.9 的库逐字一致）；`doctor` 给一条 `·`（不算装坏），
-`zk_lint` 的 `contract` 桶给 missing / old / placeholder 三项数据；渲染时缺文件（未启用）不占行，
+`zk_lint` 的 `persona` 桶给 missing / old / placeholder 三项数据；渲染时缺文件（未启用）不占行，
 旧版或占位符才提醒 —— 默认库不该每次 lint 都多一条永久 ⚠️。
-写入入口只有 opt-in：`zk-kit init --with-contract`、设置页「写入契约模板」、
-`ensureNotebook(cfg, signal, { withContract: true })` —— flat 与 layered 都不会自动多一个文件。
-**注入顺序**：契约段永远在记忆段之前、**不参与记忆预算的截断**（超了只告警，点名 `contractBudgetWords`）。
-新预算：`contractBudgetWords`（默认 240，范围 50–800）。
+写入入口只有 opt-in：`zk-kit init --with-persona`、设置页「写入人格模板」、
+`ensureNotebook(cfg, signal, { withPersona: true })` —— flat 与 layered 都不会自动多一个文件。
+**注入顺序**：人格段永远在记忆段之前、**不参与记忆预算的截断**（超了只告警，点名 `personaBudgetWords`）。
+新上限：`personaBudgetWords`（默认 240，范围 50–800）。
 记忆载荷的缓存键包含真正影响它的大小项。
 
 `truncatedWords` 在顶层、`retiredWords` 在 `files[]` 里分开报：`原 X` 从此只反映截断，退役单列一项。
-契约段再拆 `contentWords`（正文，含文件标题，预算只看它）/ `noticeWords`（告警行）/ `words`（整段注入量）/ `overWords`；
-`memoryUsage` 的 `headroom` 只按记忆侧算（`totalWords - contractWords`），dream 不再把契约误叫成「提示」。
-`PERSONA.md` 首行版本标记后**紧跟 frontmatter**；解析前先 `stripContractMarker()`，再复用现有解析器。
+人格段再拆 `contentWords`（正文，含文件标题，上限只看它）/ `noticeWords`（告警行）/ `words`（整段注入量）/ `overWords`；
+`memoryUsage` 的 `headroom` 只按记忆侧算（`totalWords - personaWords`），dream 不再把人格误叫成「提示」。
+`PERSONA.md` 首行版本标记后**紧跟 frontmatter**；解析前先 `stripPersonaMarker()`，再复用现有解析器。
 **多 agent 边界**：M1 只做「一本笔记本一份」；多个 agent 共库时它们会共用同一份 `PERSONA.md`，
 所以 M4 的 per-agent persona 落地前先别在多 agent 共库里启用 —— 否则 A 的人格会串到 B。
 为什么不分层不行：人设与事实混在 `MEMORY.md` 时，「我是谁」会跟「事实」一起被按日期丢、被预算截；
 而 `AGENTS.md` 已是硬规则且永不截断，再往里塞 persona 只会挤掉 MEMORY。
 
-`CONTRACT_META_FILES` 只含 `PERSONA.md`；契约预算、注入顺序、版本哨兵都只服务这一份。
+`PERSONA_META_FILES` 只含 `PERSONA.md`；人格上限、注入顺序、版本哨兵都只服务这一份。
 需要「别自动发布 / 别花钱」这类边界时，写进 `AGENTS.md`（工作约定）或 `PERSONA.md`（角色边界）。
 
 **记忆层与事实层的一致性。** `MEMORY.md` 每条结论后附 `[[来源路径]]`（写进 AGENTS 模板）；
@@ -66,14 +66,14 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 为什么要有：`zk_supersede` 只重写 `zk graph` 里的入链，meta 文件被 `excludedNames` 排除在图外 ——
 链接不会跟着搬，`--broken-links` 也看不见。语义重复仍留给 agent，插件不碰。
 
-**Depends on.** `config/store`（`memoryBudgetWords` / `contractBudgetWords`，每次现读 —— 设置页保存后下一次工具调用就生效）、
+**Depends on.** `config/store`（`memoryBudgetWords` / `personaBudgetWords`，每次现读 —— 设置页保存后下一次工具调用就生效）、
 `lib/meta`、`lib/persona-template`、`node:fs`；宿主的 `systemPrompt` 服务（可选，没有就只留 `zk_context`）。
 
 **Public surface.** `buildMemoryPayload(cfg)`、`memoryUsage(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、
-`CONTRACT_META_FILES`、`PERSONA_TEMPLATE`、`stripContractMarker`、
+`PERSONA_META_FILES`、`PERSONA_TEMPLATE`、`stripPersonaMarker`、
 `AGENTS_TEMPLATE` / `AGENTS_TEMPLATE_FLAT`、`TEMPLATE_VERSION` / `TEMPLATE_MARK`、`WORKFLOW_TEMPLATE`。
-笔记本侧：`writeAgentsTemplate(cfg)` / `writeContractTemplates(cfg)`（缺才写，返回是否写入）与
-`ensureNotebook(cfg, signal, { withAgents, withContract })`。
+笔记本侧：`writeAgentsTemplate(cfg)` / `writePersonaTemplate(cfg)`（缺才写，返回是否写入）与
+`ensureNotebook(cfg, signal, { withAgents, withPersona })`。
 `WORKFLOW.md` 不进 `META_FILES`（不注入），只在 `META_NAMES` 里（排除出检索、`zk_append` 拒写）。
 
 **Rejected.** 只在会话开始时注入一次 —— 拒绝：改完 MEMORY.md 要等下一次会话才生效，还得自己实现「这条已经注入过」的去重。
@@ -147,9 +147,9 @@ dream 的判重分两步（顺序不能反）：`[[链接]]` 匹配用**原文**
 标题包含匹配用 strip 之后的正文（退役行里的旧标题不该再算已晋升，否则归档后复用同一标题永远进不了候选）。
 
 **用量与退役材料（D4）。** `memoryUsage(cfg)` 只是 `buildMemoryPayload` 的投影：`words` 与 `payload.words` 同源
-（含「记忆已用」提示行），`totalWords = countWords(payload.text)`（契约 / 框 / 做梦提醒 / notice 都在里面），
-`contractWords` 是整段契约注入量，`headroom = budget - (totalWords - contractWords)` **可以为负**
-（契约未启用时退化为 0.9 的旧口径：契约是独立层，不占记忆预算）。`zk_dream` 的结果因此多两栏：`memory`（上面五个数）与
+（含「记忆已用」提示行），`totalWords = countWords(payload.text)`（人格 / 框 / 做梦提醒 / notice 都在里面），
+`personaWords` 是整段人格注入量，`headroom = budget - (totalWords - personaWords)` **可以为负**
+（人格未启用时退化为 0.9 的旧口径：人格是独立层，不占记忆预算）。`zk_dream` 的结果因此多两栏：`memory`（上面五个数）与
 `retireCandidates`（有日期且 > 90 天 → `stale`；`[[来源]]` 指向归档 / 不存在 → `source-superseded` / `source-missing`，
 显式写 `archive/` 的链接是有意引用、不算来源断了 —— 与 lint 同口径；无日期无链接的不算候选）。只给材料，不自动退役、不写 MEMORY。
 
@@ -159,7 +159,7 @@ dream 的判重分两步（顺序不能反）：`[[链接]]` 匹配用**原文**
 `doctor` 在「有 MEMORY.md 但没有 AGENTS.md」时给一条 ⚠️（不是错误、不翻退出码）。
 精简版只保留 flat 下成立的四条规则，路径里不出现 `raw/` / `inbox/` / `archive/` / `WORKFLOW.md`。
 
-**模板版本（P2-15）。** 模板是行为契约，每轮注入；老库的 `AGENTS.md` 停在旧版本时，agent 会一直按旧规则写。
+**模板版本（P2-15）。** 模板是行为约定，每轮注入；老库的 `AGENTS.md` 停在旧版本时，agent 会一直按旧规则写。
 但模板允许用户改，不能自动覆盖 —— 两份模板首行写死 `<!-- zdiary-template: vN -->`，`zk_lint` 读它：
 无标记按 v0 算；低于当前模板提示「旧版模板」，高于当前模板提示「模板版本比插件新」，都只报告、不改文件。
 提示里**直接带上当前结构对应的新版模板全文**（`template.currentText`），不再让 agent 去找 `docs/features/memory.md`：

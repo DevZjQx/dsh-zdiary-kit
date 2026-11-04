@@ -31,7 +31,7 @@ import { parseFrontmatter } from './frontmatter.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './memory-format.ts'
 import type { FrontmatterFields } from './frontmatter.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION } from './agents-template.ts'
-import { CONTRACT_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION } from './persona-template.ts'
+import { PERSONA_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION } from './persona-template.ts'
 import type { TimelineIssue, TimelineIssueKind } from './timeline.ts'
 import { timelineCounts, timelineIssues } from './timeline.ts'
 import { isDayString } from './dates.ts'
@@ -215,17 +215,17 @@ export interface LintTemplateBucket {
   currentText?: string
 }
 
-/** 契约体检（M1：missing / old / newer / mismatch / placeholder） */
-export interface LintContractIssue {
+/** 人格体检（M1：missing / old / newer / mismatch / placeholder） */
+export interface LintPersonaIssue {
   file: 'PERSONA.md'
   kind: 'missing' | 'old' | 'newer' | 'mismatch' | 'placeholder'
   /** 人读说明（old / newer 带当前 / 盘上版本；mismatch 带不符原因；placeholder 带占位符清单） */
   detail: string
 }
 
-export interface LintContractBucket {
+export interface LintPersonaBucket {
   total: number
-  items: LintContractIssue[]
+  items: LintPersonaIssue[]
 }
 
 /** 时间轴问题：只报告，不自动修（计划 §2 D2） */
@@ -294,8 +294,8 @@ export interface LintResult {
   tags: LintTagBucket
   /** 根目录 AGENTS.md 是不是当前版本的模板（只报告，不覆盖） */
   template: LintTemplateBucket
-  /** 契约层体检：PERSONA.md 缺失 / 旧版 / 未填占位符（只报告） */
-  contract: LintContractBucket
+  /** 人格层体检：PERSONA.md 缺失 / 旧版 / 未填占位符（只报告） */
+  persona: LintPersonaBucket
   /** 日记时间轴：最近 90 天的空块 / 倒序 / 格式 / 位置问题（只报告，页面警告不受此窗口限制） */
   timeline: LintTimelineBucket
   /**
@@ -578,44 +578,44 @@ export function formatTimeline(bucket: LintTimelineBucket): string {
  * `zk-kit lint` 与 `zk_lint` 各写一遍就会改到一半。返回空数组 = 这一库三项都没问题，不占行。
  */
 export function formatLintExtras(
-  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'contract' | 'similarTitles' | 'timeline' | 'indexHint'>,
+  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'persona' | 'similarTitles' | 'timeline' | 'indexHint'>,
 ): string[] {
   const lines: string[] = []
   const timeline = formatTimeline(r.timeline)
   if (timeline) lines.push(timeline)
-  // 缺文件 = 契约未启用（默认状态）：不报错、不占行。
+  // 缺文件 = 人格未启用（默认状态）：不报错、不占行。
   // 有旧版 / 占位符 / 标记不符时才提醒 —— 否则每个老库每次 lint 都多一条永久 ⚠️，反而训练人忽略告警。
-  const contract = r.contract.items
-  const allMissing = contract.length > 0 && contract.every((i) => i.kind === 'missing')
-  if (!allMissing && contract.length > 0) {
+  const persona = r.persona.items
+  const allMissing = persona.length > 0 && persona.every((i) => i.kind === 'missing')
+  if (!allMissing && persona.length > 0) {
     // 不同方向给不同指令：旧版要合并内容，比插件新要升级插件，标记与内容不符要查哨兵。
-    // 混成一句「旧版由人按需处理」会把「v4 > 当前 v3」也说成旧版，模型最省力的动作就是改数字。
-    const groups: Array<{ label: string; hint: string; items: LintContractIssue[] }> = [
+    // 混成一句「旧版由人按需处理」会把「比插件新」也说成旧版，模型最省力的动作就是改数字。
+    const groups: Array<{ label: string; hint: string; items: LintPersonaIssue[] }> = [
       {
         label: '旧版',
-        items: contract.filter((i) => i.kind === 'old'),
+        items: persona.filter((i) => i.kind === 'old'),
         hint: '合并新版内容后再改首行标记；只改数字不算升级',
       },
       {
         label: '版本比插件新',
-        items: contract.filter((i) => i.kind === 'newer'),
+        items: persona.filter((i) => i.kind === 'newer'),
         hint: '插件才是旧的那个，别改文件里的版本号；升级插件后再看',
       },
       {
         label: '标记与内容不符',
-        items: contract.filter((i) => i.kind === 'mismatch'),
+        items: persona.filter((i) => i.kind === 'mismatch'),
         hint: '疑似只改了版本号；按新版模板合并内容，别只改数字',
       },
       {
         label: '',
-        items: contract.filter((i) => i.kind === 'missing' || i.kind === 'placeholder'),
+        items: persona.filter((i) => i.kind === 'missing' || i.kind === 'placeholder'),
         hint: '只报告：缺文件 = 未启用，占位符由人填',
       },
     ]
     for (const group of groups) {
       if (group.items.length === 0) continue
       lines.push(
-        `⚠️ 契约${group.label}：${group.items.map((i) => `${i.file} ${i.detail}`).join('；')}｜${group.hint}`,
+        `⚠️ 人格${group.label}：${group.items.map((i) => `${i.file} ${i.detail}`).join('；')}｜${group.hint}`,
       )
     }
   }
@@ -830,21 +830,21 @@ function sentinelIssue(
 }
 
 /**
- * 契约体检（M1）：缺文件 = 未启用（不算错，但要让 zk_lint 可见）；
+ * 人格体检（M1）：缺文件 = 未启用（不算错，但要让 zk_lint 可见）；
  * 旧版 = 标记比当前模板旧；比插件新 = 插件才是旧的那个，别改文件去配；
  * 标记与内容不符 = 标记已是当前版本，正文还留着旧版内容（只改了首行数字）；
  * 占位符 = 模板里的 {{...}} 还没填（“未填”是机械可发现的“未启用一半”状态）。
- * 全部只报告，不覆盖 —— 契约允许人改。
+ * 全部只报告，不覆盖 —— 人格允许人改。
  */
-export function contractStatus(cfg: Config): LintContractBucket {
-  const items: LintContractIssue[] = []
+export function personaStatus(cfg: Config): LintPersonaBucket {
+  const items: LintPersonaIssue[] = []
   const files = [
     { name: 'PERSONA.md', mark: PERSONA_MARK_RE, current: PERSONA_TEMPLATE_VERSION },
   ] as const
   for (const f of files) {
     let body = ''
     try { body = fs.readFileSync(path.join(cfg.notebook, f.name), 'utf8') } catch {
-      items.push({ file: f.name, kind: 'missing', detail: '根目录没有这份文件（zk-kit init --with-contract 或设置页可写入模板）' })
+      items.push({ file: f.name, kind: 'missing', detail: '根目录没有这份文件（zk-kit init --with-persona 或设置页可写入模板）' })
       continue
     }
     const hit = f.mark.exec(body)
@@ -864,7 +864,7 @@ export function contractStatus(cfg: Config): LintContractBucket {
           : `是旧版 v${version}（当前 v${f.current}）`,
       })
     } else {
-      const mismatch = sentinelIssue(body, CONTRACT_TEMPLATE_SENTINELS[f.name]?.[version])
+      const mismatch = sentinelIssue(body, PERSONA_TEMPLATE_SENTINELS[f.name]?.[version])
       if (mismatch) {
         items.push({ file: f.name, kind: 'mismatch', detail: `标记是 v${version}，但正文${mismatch}` })
       }
@@ -878,7 +878,7 @@ export function contractStatus(cfg: Config): LintContractBucket {
 }
 
 /**
- * 模板版本（P2-15）：模板是行为契约，不是静态文档 —— 它每轮注入，写错一句就是每轮都在执行错规则。
+ * 模板版本（P2-15）：模板是行为约定，不是静态文档 —— 它每轮注入，写错一句就是每轮都在执行错规则。
  * 但模板允许用户改，不能自动覆盖；版本标记把「过期」变成可发现状态，只报告。
  *
  * 标记等于当前版本时再查正文哨兵：只把首行数字改成 vN、正文还是旧版，
@@ -1134,7 +1134,7 @@ export async function lintNotebook(
       : { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
     tags: tagHygiene(notes),
     template: templateStatus(cfg),
-    contract: contractStatus(cfg),
+    persona: personaStatus(cfg),
     timeline: timelineStatus(cfg, now),
     // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
     indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),

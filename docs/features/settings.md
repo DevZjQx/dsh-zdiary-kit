@@ -9,21 +9,21 @@
 - `GET /status`：zk 位置/版本/来源、笔记本是否存在、笔记/标签/断链/孤立计数
 - `POST /init`：`ensureNotebook`（幂等；layered 时一并写 `AGENTS.md`）
 - `POST /agents`：`writeAgentsTemplate` —— flat 库的 opt-in，已存在不覆盖；返回 `result.written` 与最新快照
-- `POST /contract`：`writeContractTemplates` —— `PERSONA.md` 的 opt-in，缺了才写，已存在不覆盖；
+- `POST /persona`：`writePersonaTemplate` —— `PERSONA.md` 的 opt-in，缺了才写，已存在不覆盖；
   返回 `result.personaWritten` 与最新快照。
-  契约不依赖 zk：笔记本还没初始化时也能写（只 `mkdir` 笔记本目录 + 文件，不碰 `.zk`），
+  人格文件不依赖 zk：笔记本还没初始化时也能写（只 `mkdir` 笔记本目录 + 文件，不碰 `.zk`），
   这时回包带 `warn` 提醒「点「初始化 / 补建」建库」；按钮因此不按 `notebook.exists` 隐藏。
 - `POST /index`：`zk index`
 - `POST /install`：内置 zk（下载 → 解包 → `--version` 验证）；`detail` 里回显下载源（自定义镜像会点名）
-- `GET /selftest`：八项真检查（zk、笔记本、模板、group、结构、长期记忆、角色契约、索引）
+- `GET /selftest`：八项真检查（zk、笔记本、模板、group、结构、长期记忆、角色人格、索引）
 
 快照（`GET /settings`、`GET /status`、写操作的回包）除了配置与计数，还带两块**诊断**：
 `structure`（配置的模式、缺哪些目录、`extra` 盘上多出来的分层目录、`AGENTS.md` 在不在，
 以及 `groups` / `groupsOk` / `groupWarnings` —— 每个期望 group 的 paths 与 `.zk/config.toml` 的对照，
 `expectedOverlaps` / `actualOverlaps` —— 两个 group 用同一条路径（父子目录不算））与
-`memory`（三份 meta 的保留词数 / 原词数 / 退役词数 / 目录词数 / 预算 / 截断量 / `contract`）。
-`contract` 不参与记忆预算：它单独报 `present` / `words` / `budget` / `overBudget` / `files[]`；
-缺文件 = 未启用（不算错），只有超预算才是 ✗。
+`memory`（三份 meta 的保留词数 / 原词数 / 退役词数 / 目录词数 / 预算 / 截断量 / `persona`）。
+`persona` 不参与记忆预算：它单独报 `present` / `words` / `budget` / `overBudget` / `files[]`；
+缺文件 = 未启用（不算错），只有超上限才是 ✗。
 保存后 `groupsOk === false` 时 `warn` 会点名不一致的 group 并建议 `zk-kit groups --fix`；页面顶部也常驻这条告警
 （只有路径撞车、没有坏组时改为原样显示 `groupWarnings` 的第一条，因为 `--fix` 修不了配置本身）。
 自检的「日记 group」项用同一份解析结果：期望 / 实际不一致即为 ✗；其它 group 不一致会在 detail 里提一句。
@@ -40,12 +40,12 @@
 结构是**每个笔记本自己的**，就摆在那一行上；`flat → layered` 保存前弹窗明确写「只建目录与模板，不搬已有笔记」。
 `flat` 且缺 `AGENTS.md` 时，操作区多一个「写入 AGENTS.md 模板」按钮（走 `POST /agents`）；记忆状态行同时提示
 「缺 AGENTS.md：约定与周提醒未启用」。已有文件不覆盖，按钮点了也不会动用户的定制。
-操作区常驻「写入契约模板」按钮（走 `POST /contract`）：缺 `PERSONA.md` 时写入，
-已存在就只回「已存在，没有覆盖」（契约允许人改，插件不做第二份真相）。
-这个按钮**不依赖 `notebook.exists`**：建库前也可以先定角色（服务端只建目录与契约，不碰 `.zk`），
+操作区常驻「写入人格模板」按钮（走 `POST /persona`）：缺 `PERSONA.md` 时写入，
+已存在就只回「已存在，没有覆盖」（人格允许人改，插件不做第二份真相）。
+这个按钮**不依赖 `notebook.exists`**：建库前也可以先定人格（服务端只建目录与人格文件，不碰 `.zk`），
 成功提示里会带一条「还不是 zk 笔记本，点「初始化 / 补建」」的 `warn` ——
-否则自检说「点「写入契约模板」」时，未初始化的库根本没有对应的可点项。
-「记忆」分组里有两项配置：注入预算（`memoryBudgetWords`，默认 500）与契约预算（`contractBudgetWords`，默认 240）。
+否则自检说「点「写入人格模板」」时，未初始化的库根本没有对应的可点项。
+「记忆」分组里有两项配置：注入预算（`memoryBudgetWords`，默认 500）与人格上限（`personaBudgetWords`，默认 240）。
 「工具」分组只有一个开关：`aliasTools`（默认关）—— 打开后插件加载时才把 `.zk/config.toml` 的 `[alias]`
 注册成 `zk_<名>`。注册发生在加载时，勾完保存还要重载插件（或重启 DSH）才会出现在工具列表里；hint 里写明了。
 分组标题直接标作用范围（「笔记本」是每本自己的，其余是全局）；删除笔记本先确认「只删配置，磁盘目录与笔记保留」。

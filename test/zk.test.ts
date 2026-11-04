@@ -2336,7 +2336,7 @@ describe('tools', () => {
       const ctxTool = defs.find((d) => d.name === 'zk_context')!
       const value = await ctxTool.execute({}, { signal: AbortSignal.timeout(10_000) }) as {
         notebook: string
-        contract: { present: boolean; contentWords: number; overWords: number }
+        persona: { present: boolean; contentWords: number; overWords: number }
         notebooks: Array<{ name: string; path: string; structure: string; active: boolean }>
       }
       expect(value.notebook).toBe('default')
@@ -2344,10 +2344,10 @@ describe('tools', () => {
         { name: 'default', path: notebook, structure: 'flat', active: true },
         { name: 'work', path: work, structure: 'layered', active: false },
       ])
-      // 契约字段必须真的出现在 zk_context 里（schema 与 render 各走一遍）
-      expect(value.contract.present).toBe(true)
-      expect(value.contract.contentWords).toBeGreaterThan(0)
-      expect(value.contract.overWords).toBe(0)
+      // 人格字段必须真的出现在 zk_context 里（schema 与 render 各走一遍）
+      expect(value.persona.present).toBe(true)
+      expect(value.persona.contentWords).toBeGreaterThan(0)
+      expect(value.persona.overWords).toBe(0)
       const blocks = ctxTool.output.render({}, value)
       expect(blocks[0].text).toContain(`笔记本「default」（flat）→ ${notebook}`)
       expect(blocks[0].text).toContain('另有：work（layered）')
@@ -3139,10 +3139,10 @@ describe('设置页', () => {
       expect(manual).toContain('手动编辑 .zk/config.toml')
       expect(manual).not.toContain('跑 zk-kit groups --fix')
       expect(render(['old'])).toContain('跑 zk-kit groups --fix')
-      // 自检在笔记本没初始化时也会说「点「写入契约模板」」：按钮必须始终在操作区，
+      // 自检在笔记本没初始化时也会说「点「写入人格模板」」：按钮必须始终在操作区，
       // 不能只在 notebook.exists 时出现，否则提示指向一个不存在的可点项。
-      expect(manual).toContain('写入契约模板')
-      expect(render(null, false)).toContain('写入契约模板')
+      expect(manual).toContain('写入人格模板')
+      expect(render(null, false)).toContain('写入人格模板')
 
       // bool 字段（aliasTools）必须是复选框，且状态里存的是真布尔：
       // 走文本控件会被拼成 "false" 字符串，保存时归一化当成没启用 —— 勾了却存不进。
@@ -3201,28 +3201,28 @@ describe('设置页', () => {
     }
   })
 
-  test('/contract：建库前也能点（按钮不依赖 notebook.exists），回包提示先初始化', async () => {
+  test('/persona：建库前也能点（按钮不依赖 notebook.exists），回包提示先初始化', async () => {
     const paths = await import('../src/config/paths.ts')
     const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
-    const nb = path.join(home, 'settings-contract-preinit')
+    const nb = path.join(home, 'settings-persona-preinit')
     const routes = new Map<string, (req: never, res: never) => unknown>()
     settingsFeature.registerSettings({ route: (p, h) => routes.set(p, h), isTrusted: () => true })
     try {
       store.writeConfig({ notebooks: { default: { path: nb, structure: 'flat' } }, active: 'default', zkPath: zkBin })
-      // 先看自检：契约缺失 + 库未初始化时，提示必须同时指出「写入契约模板」与「初始化 / 补建」
+      // 先看自检：人格缺失 + 库未初始化时，提示必须同时指出「写入人格模板」与「初始化 / 补建」
       const sres = makeRes()
       await routes.get('/dsh-zdiary-kit/api/selftest')!(
         makeReq('/dsh-zdiary-kit/api/selftest') as never, sres as never,
       )
       const selftest = JSON.parse(sres.body) as { items: Array<{ name: string; ok: boolean; detail: string }> }
-      const contractItem = selftest.items.find((item) => item.name === '角色契约')!
-      expect(contractItem.ok).toBe(true)
-      expect(contractItem.detail).toContain('写入契约模板')
-      expect(contractItem.detail).toContain('初始化 / 补建')
+      const personaItem = selftest.items.find((item) => item.name === '角色人格')!
+      expect(personaItem.ok).toBe(true)
+      expect(personaItem.detail).toContain('写入人格模板')
+      expect(personaItem.detail).toContain('初始化 / 补建')
 
       const res = makeRes()
-      await routes.get('/dsh-zdiary-kit/api/contract')!(
-        makeReq('/dsh-zdiary-kit/api/contract', { method: 'POST' }) as never, res as never,
+      await routes.get('/dsh-zdiary-kit/api/persona')!(
+        makeReq('/dsh-zdiary-kit/api/persona', { method: 'POST' }) as never, res as never,
       )
       const d = JSON.parse(res.body) as {
         ok: boolean
@@ -3232,15 +3232,15 @@ describe('设置页', () => {
       }
       expect(d.ok).toBe(true)
       expect(d.result).toEqual({ personaWritten: true })
-      // 契约写了不等于库建好了：必须把下一步说出来
+      // 人格文件写了不等于库建好了：必须把下一步说出来
       expect(d.notebook.exists).toBe(false)
       expect(d.warn).toContain('初始化')
       expect(fs.existsSync(path.join(nb, 'PERSONA.md'))).toBe(true)
 
       // 第二次点击：已存在（false），warn 不能再说「已写入」
       const again = makeRes()
-      await routes.get('/dsh-zdiary-kit/api/contract')!(
-        makeReq('/dsh-zdiary-kit/api/contract', { method: 'POST' }) as never, again as never,
+      await routes.get('/dsh-zdiary-kit/api/persona')!(
+        makeReq('/dsh-zdiary-kit/api/persona', { method: 'POST' }) as never, again as never,
       )
       const d2 = JSON.parse(again.body) as {
         result: { personaWritten: boolean }
@@ -3640,8 +3640,8 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
 
       const page = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=memory'))
       expect(page.statusCode).toBe(200)
-      // D9：记忆页分契约 / 用户 / 工作约定 / 记忆 / 周审 + 载荷预览，不再只有四份文件名
-      for (const name of ['契约', '用户', '工作约定', '记忆', '周审', '载荷预览']) expect(page.body).toContain(name)
+      // D9：记忆页分人格 / 用户 / 工作约定 / 记忆 / 周审 + 载荷预览，不再只有四份文件名
+      for (const name of ['人格', '用户', '工作约定', '记忆', '周审', '载荷预览']) expect(page.body).toContain(name)
       expect(page.body).toContain('PERSONA.md')
       expect(page.body).toContain('记忆双链目标</a>')
       expect(page.body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
@@ -3845,64 +3845,64 @@ describe('0.8.2：检索 / inbox / 标签提示 / 相似标题 / 分布 / 使用
   })
 })
 
-describe('0.10：角色契约（M1，契约壳与可观测）', () => {
+describe('0.10：角色人格（M1，人格壳与可观测）', () => {
   const fresh = (name: string, structure: 'flat' | 'layered' = 'flat') =>
     store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure })
 
-  test('契约读取：无文件 = 未启用、payload 与 0.9 一致；有文件时契约段在最前', () => {
-    const cfg = fresh('nb-m1-contract')
+  test('人格读取：无文件 = 未启用、payload 与 0.9 一致；有文件时人格段在最前', () => {
+    const cfg = fresh('nb-m1-persona')
     fs.mkdirSync(cfg.notebook, { recursive: true })
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '# 规则\n')
     fs.writeFileSync(path.join(cfg.notebook, 'MEMORY.md'), '# 记忆\n\n- 一条结论\n')
     const plain = memory.buildMemoryPayload(cfg)
-    expect(plain.contract.present).toBe(false)
-    expect(plain.contract.words).toBe(0)
-    expect(plain.contract.contentWords).toBe(0)
-    expect(plain.contract.overWords).toBe(0)
+    expect(plain.persona.present).toBe(false)
+    expect(plain.persona.words).toBe(0)
+    expect(plain.persona.contentWords).toBe(0)
+    expect(plain.persona.overWords).toBe(0)
     expect(plain.text).not.toContain('PERSONA.md')
     expect(plain.totalWords).toBe(memory.countWords(plain.text))
-    expect(plain.overheadWords).toBe(plain.totalWords - plain.words - plain.contract.contentWords)
+    expect(plain.overheadWords).toBe(plain.totalWords - plain.words - plain.persona.contentWords)
 
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), '<!-- zdiary-persona: v2 -->\n\n# 角色\n\n- name: 小z\n- role: 助手\n- updated: 2026-11-02\n')
-    const withContract = memory.buildMemoryPayload(cfg)
-    expect(withContract.contract.present).toBe(true)
-    expect(withContract.contract.files.filter((f) => f.present).length).toBe(1)
+    const withPersona = memory.buildMemoryPayload(cfg)
+    expect(withPersona.persona.present).toBe(true)
+    expect(withPersona.persona.files.filter((f) => f.present).length).toBe(1)
     // 预算只看正文（含文件标题），告警行单列；overWords 是所有展示的唯一来源
-    expect(withContract.contract.contentWords).toBeGreaterThan(0)
-    expect(withContract.contract.noticeWords).toBe(withContract.contract.words - withContract.contract.contentWords)
-    expect(withContract.contract.overWords).toBe(Math.max(0, withContract.contract.contentWords - withContract.contract.budget))
-    const personaAt = withContract.text.indexOf('## PERSONA.md')
-    const agentsAt = withContract.text.indexOf('## AGENTS.md')
+    expect(withPersona.persona.contentWords).toBeGreaterThan(0)
+    expect(withPersona.persona.noticeWords).toBe(withPersona.persona.words - withPersona.persona.contentWords)
+    expect(withPersona.persona.overWords).toBe(Math.max(0, withPersona.persona.contentWords - withPersona.persona.budget))
+    const personaAt = withPersona.text.indexOf('## PERSONA.md')
+    const agentsAt = withPersona.text.indexOf('## AGENTS.md')
     expect(personaAt).toBeGreaterThan(-1)
     expect(personaAt).toBeLessThan(agentsAt)
-    // 契约不参与记忆预算：记忆段的 words 与无契约时一致
-    expect(withContract.words).toBe(plain.words)
+    // 人格不参与记忆预算：记忆段的 words 与无人格时一致
+    expect(withPersona.words).toBe(plain.words)
   })
 
-  test('契约预算：超了只告警不截断', () => {
+  test('人格上限：超了只告警不截断', () => {
     const cfg = fresh('nb-m1-budget')
     fs.mkdirSync(cfg.notebook, { recursive: true })
-    const longPersona = '<!-- zdiary-persona: v2 -->\n\n# 角色契约\n\n- name: 小z\n\n' +
+    const longPersona = '<!-- zdiary-persona: v2 -->\n\n# 角色人格\n\n- name: 小z\n\n' +
       Array.from({ length: 40 }, (_, i) => `- 一条非常长的角色设定条目编号${i}\n`).join('')
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), longPersona)
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '# 规则\n')
-    const c = store.normalizeConfig({ notebook: cfg.notebook, zkPath: zkBin, contractBudgetWords: 50 })
+    const c = store.normalizeConfig({ notebook: cfg.notebook, zkPath: zkBin, personaBudgetWords: 50 })
     const p = memory.buildMemoryPayload(c)
-    expect(p.contract.present).toBe(true)
-    expect(p.contract.overBudget).toBe(true)
-    expect(p.contract.overWords).toBe(p.contract.contentWords - p.contract.budget)
-    expect(p.contract.overWords).toBeGreaterThan(0)
-    expect(p.text).toContain('契约不截断')
+    expect(p.persona.present).toBe(true)
+    expect(p.persona.overBudget).toBe(true)
+    expect(p.persona.overWords).toBe(p.persona.contentWords - p.persona.budget)
+    expect(p.persona.overWords).toBeGreaterThan(0)
+    expect(p.text).toContain('人格不截断')
     // 注入提示里的「已用 / 超出」必须和 overWords 同源，不能把告警行自己算进去
-    expect(p.text).toContain(`已用 ${p.contract.contentWords}，超出 ${p.contract.overWords} 词`)
-    // 文件没被截：契约词数还是全文（trim 后）
-    expect(p.contract.files[0]?.words).toBe(memory.countWords(longPersona.trim()))
+    expect(p.text).toContain(`已用 ${p.persona.contentWords}，超出 ${p.persona.overWords} 词`)
+    // 文件没被截：人格词数还是全文（trim 后）
+    expect(p.persona.files[0]?.words).toBe(memory.countWords(longPersona.trim()))
     expect(memory.countWords(p.text)).toBe(p.totalWords)
 
-    // dream 的余量只按记忆侧算：契约段整段（含它的告警）不该占记忆预算
+    // dream 的余量只按记忆侧算：人格段整段（含它的告警）不该占记忆预算
     const u = memory.memoryUsage(c)
-    expect(u.contractWords).toBe(p.contract.words)
-    expect(u.headroom).toBe(c.memoryBudgetWords - (p.totalWords - p.contract.words))
+    expect(u.personaWords).toBe(p.persona.words)
+    expect(u.headroom).toBe(c.memoryBudgetWords - (p.totalWords - p.persona.words))
   })
 
   test('退役/截断分解：formatFileShares 不再把退役写成「原 X」', () => {
@@ -3935,10 +3935,10 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
     expect(fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')).toBe('# 人写的角色\n')
   })
 
-  test('lint：contract 桶报 missing / placeholder；旧版标记报 old', () => {
+  test('lint：persona 桶报 missing / placeholder；旧版标记报 old', () => {
     const cfg = fresh('nb-m1-lint')
     fs.mkdirSync(cfg.notebook, { recursive: true })
-    const missing = lintLib.contractStatus(cfg)
+    const missing = lintLib.personaStatus(cfg)
     expect(missing.total).toBe(1)
     expect(missing.items.map((i) => i.kind)).toEqual(['missing'])
     // 缺 PERSONA.md = 未启用：lint 不再永久打一条 ⚠️；有旧版 / 占位符才提醒
@@ -3946,19 +3946,19 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
-      contract: missing,
+      persona: missing,
       similarTitles: { total: 0, truncated: false, items: [] },
       timeline: { scanned: 0, notes: 0, total: 0, items: [] },
       indexHint: false,
-    }).some((line) => line.includes('契约'))).toBe(false)
+    }).some((line) => line.includes('人格'))).toBe(false)
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), personaTpl.PERSONA_TEMPLATE)
-    const st = lintLib.contractStatus(cfg)
+    const st = lintLib.personaStatus(cfg)
     expect(st.items.map((i) => `${i.file}:${i.kind}`)).toEqual(['PERSONA.md:placeholder'])
     const empty = lintLib.formatLintExtras({
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
-      contract: { total: 0, items: [] },
+      persona: { total: 0, items: [] },
       similarTitles: { total: 0, truncated: false, items: [] },
       timeline: { scanned: 0, notes: 0, total: 0, items: [] },
       indexHint: false,
@@ -3968,32 +3968,32 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
-      contract: st,
+      persona: st,
       similarTitles: { total: 0, truncated: false, items: [] },
       timeline: { scanned: 0, notes: 0, total: 0, items: [] },
       indexHint: false,
-    }).some((line) => line.includes('契约'))).toBe(true)
+    }).some((line) => line.includes('人格'))).toBe(true)
   })
 
-  test('lint：契约版本按方向报告；只改首行数字会被正文哨兵发现', () => {
-    const cfg = fresh('nb-m1-contract-direction')
+  test('lint：人格版本按方向报告；只改首行数字会被正文哨兵发现', () => {
+    const cfg = fresh('nb-m1-persona-direction')
     fs.mkdirSync(cfg.notebook, { recursive: true })
     const write = (name: 'PERSONA.md', body: string) =>
       fs.writeFileSync(path.join(cfg.notebook, name), body)
-    const extras = (c: ReturnType<typeof lintLib.contractStatus>): string =>
+    const extras = (c: ReturnType<typeof lintLib.personaStatus>): string =>
       lintLib.formatLintExtras({
         incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
         tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
         template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
-        contract: c,
+        persona: c,
         similarTitles: { total: 0, truncated: false, items: [] },
         timeline: { scanned: 0, notes: 0, total: 0, items: [] },
         indexHint: false,
       }).join('\n')
 
     // 标记比插件新：是 newer，不是 old；文案不能让 agent 改文件去配插件
-    write('PERSONA.md', `<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION + 1} -->\n\n# 未来契约\n`)
-    const newer = lintLib.contractStatus(cfg)
+    write('PERSONA.md', `<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION + 1} -->\n\n# 未来人格\n`)
+    const newer = lintLib.personaStatus(cfg)
     expect(newer.items.map((i) => `${i.file}:${i.kind}`)).toEqual(['PERSONA.md:newer'])
     expect(newer.items[0]?.detail).toContain('比插件新')
     const newerText = extras(newer)
@@ -4001,8 +4001,8 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
     expect(newerText).not.toContain('是旧版')
 
     // 标记是当前版本、正文还留着 v3 删掉的「口头禅」：mismatch，不是 old
-    write('PERSONA.md', `<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->\n\n# 角色契约\n\n## 口头禅\n\n- 待填\n`)
-    const mismatch = lintLib.contractStatus(cfg)
+    write('PERSONA.md', `<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->\n\n# 角色人格\n\n## 口头禅\n\n- 待填\n`)
+    const mismatch = lintLib.personaStatus(cfg)
     expect(mismatch.items.map((i) => `${i.file}:${i.kind}`)).toEqual(['PERSONA.md:mismatch'])
     expect(mismatch.items[0]?.detail).toContain('仍含旧版已移除的内容')
     expect(extras(mismatch)).toContain('疑似只改了版本号')
@@ -4012,53 +4012,53 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
   test('模板：版本标记后紧跟 frontmatter，现有解析器可直接读', () => {
     // 升版本必须补正文哨兵，否则「只改首行数字」的检查会静默失效
     expect(agentsTpl.TEMPLATE_SENTINELS[agentsTpl.TEMPLATE_VERSION]).toBeDefined()
-    expect(personaTpl.CONTRACT_TEMPLATE_SENTINELS['PERSONA.md'][personaTpl.PERSONA_TEMPLATE_VERSION]).toBeDefined()
+    expect(personaTpl.PERSONA_TEMPLATE_SENTINELS['PERSONA.md'][personaTpl.PERSONA_TEMPLATE_VERSION]).toBeDefined()
     // 口头禅会让模型逐轮复读；v3 起只留「语气与边界」和负向的「禁用表达」
     expect(personaTpl.PERSONA_TEMPLATE).not.toContain('## 口头禅')
     expect(personaTpl.PERSONA_TEMPLATE).toContain('## 禁用表达')
-    const persona = fm.parseFrontmatter(personaTpl.stripContractMarker(personaTpl.PERSONA_TEMPLATE)).fields
+    const persona = fm.parseFrontmatter(personaTpl.stripPersonaMarker(personaTpl.PERSONA_TEMPLATE)).fields
     expect(persona).toMatchObject({ name: '{{name}}', role: '{{role}}', updated: '{{updated}}' })
   })
 
-  test('config：契约预算默认值与夹紧', () => {
+  test('config：人格上限默认值与夹紧', () => {
     const d = store.normalizeConfig({})
-    expect(d.contractBudgetWords).toBe(240)
-    const c = store.normalizeConfig({ contractBudgetWords: 99_999 })
-    expect(c.contractBudgetWords).toBe(800)
+    expect(d.personaBudgetWords).toBe(240)
+    const c = store.normalizeConfig({ personaBudgetWords: 99_999 })
+    expect(c.personaBudgetWords).toBe(800)
   })
 
-  it('ensureNotebook withContract：opt-in 写入一次，第二次不覆盖；flat 默认不写', async () => {
-    const cfg = fresh('nb-m1-with-contract')
+  it('ensureNotebook withPersona：opt-in 写入一次，第二次不覆盖；flat 默认不写', async () => {
+    const cfg = fresh('nb-m1-with-persona')
     const first = await notebookLib.ensureNotebook(cfg)
     expect(first.personaWritten).toBe(false)
     expect(fs.existsSync(path.join(cfg.notebook, 'PERSONA.md'))).toBe(false)
 
-    const withC = await notebookLib.ensureNotebook(cfg, undefined, { withContract: true })
+    const withC = await notebookLib.ensureNotebook(cfg, undefined, { withPersona: true })
     expect(withC.personaWritten).toBe(true)
     expect(fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')).toContain(`<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->`)
 
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), '# 我自己写的\n')
-    const again = await notebookLib.ensureNotebook(cfg, undefined, { withContract: true })
+    const again = await notebookLib.ensureNotebook(cfg, undefined, { withPersona: true })
     expect(again.personaWritten).toBe(false)
     expect(fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')).toBe('# 我自己写的\n')
   })
 
-  it('writeContractTemplates：建库前也能先写，随后 ensureNotebook 接管且不覆盖', async () => {
-    const cfg = fresh('nb-m1-contract-preinit')
+  it('writePersonaTemplate：建库前也能先写，随后 ensureNotebook 接管且不覆盖', async () => {
+    const cfg = fresh('nb-m1-persona-preinit')
     try {
       expect(fs.existsSync(cfg.notebook)).toBe(false)
-      const first = notebookLib.writeContractTemplates(cfg)
+      const first = notebookLib.writePersonaTemplate(cfg)
       expect(first).toEqual({ personaWritten: true })
-      // 只建目录 + 两份契约，不假装已经初始化
+      // 只建目录 + 人格文件，不假装已经初始化
       expect(fs.existsSync(path.join(cfg.notebook, '.zk'))).toBe(false)
       const persona = fs.readFileSync(path.join(cfg.notebook, 'PERSONA.md'), 'utf8')
       expect(persona).toContain(`<!-- zdiary-persona: v${personaTpl.PERSONA_TEMPLATE_VERSION} -->`)
 
-      const second = notebookLib.writeContractTemplates(cfg)
+      const second = notebookLib.writePersonaTemplate(cfg)
       expect(second).toEqual({ personaWritten: false })
 
-      // 关键链路：先定角色、再建库。zk init 要能在已有目录（且里面有契约文件）上幂等接管，
-      // 契约一个字都不能被覆盖。
+      // 关键链路：先定人格、再建库。zk init 要能在已有目录（且里面有人格文件）上幂等接管，
+      // 人格文件一个字都不能被覆盖。
       const ensured = await notebookLib.ensureNotebook(cfg)
       expect(ensured.initialized).toBe(true)
       expect(ensured.personaWritten).toBe(false)

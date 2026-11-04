@@ -10,16 +10,16 @@ import { NOTE_KINDS, ensureNotebook, fixGroupConfig, groupOverlapNotes, newNoteD
 import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
 import { installZk, sourceLabel } from './lib/install.js';
 import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
-import { formatLintExtras, formatMemoryLinks, lintNotebook, contractStatus, timelineStatus } from './lib/lint.js';
+import { formatLintExtras, formatMemoryLinks, lintNotebook, personaStatus, timelineStatus } from './lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from './lib/dream.js';
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
 
   zk-kit doctor                       自检：zk / 笔记本 / 模板 / group / 索引
   zk-kit install [版本]                安装内置 zk（默认取配置里的版本）
-  zk-kit init [--with-agents] [--with-contract]
-                                      建好（或补齐）笔记本；flat 下加 --with-agents 才写 AGENTS.md 模板；--with-contract 写 PERSONA.md 契约模板（缺了才写）
+  zk-kit init [--with-agents] [--with-persona]
+                                      建好（或补齐）笔记本；flat 下加 --with-agents 才写 AGENTS.md 模板；--with-persona 写 PERSONA.md 人格模板（缺了才写）
   zk-kit groups [--fix] [--dry-run]  对照配置与 .zk/config.toml 的 group（默认 dry-run；--fix 只改插件建的 paths，写前备份）
-  zk-kit contract                    契约状态：PERSONA.md 的用量 / 预算 / 体检（只读）
+  zk-kit persona                     人格状态：PERSONA.md 的用量 / 上限 / 体检（只读）
   zk-kit new --title T [--name 文件名] [--summary 摘要] [--body B] [--tags a,b] [--dir notes] [--type source|concept|entity|pattern]
   zk-kit search [词] [--tags a,b] [--since 日期] [--limit 5] [--json]
   zk-kit read <路径> | --query 词 [--max-chars n] [--json]
@@ -187,11 +187,11 @@ function dreamReport(r) {
         `做梦：近 ${r.windowDays} 天（自 ${r.since}）— 窗口 ${r.counts.window} 篇（日记 ${r.counts.daily}）· 候选 ${r.counts.candidates} · 拒绝 ${r.counts.rejected} · 未完成 ${r.counts.looseEnds} · 已晋升 ${r.counts.promoted} · 积压 ${r.counts.backlog}`,
     ];
     // 余量按记忆侧总词算：只报内容词等于说「还有 10 词」，而框与提示早就把它吃完了；
-    // 契约单独注入、不占记忆预算，所以先从 totalWords 里扣掉，别把它叫成「提示」。
-    const memoryTotal = r.memory.totalWords - r.memory.contractWords;
+    // 人格单独注入、不占记忆预算，所以先从 totalWords 里扣掉，别把它叫成「提示」。
+    const memoryTotal = r.memory.totalWords - r.memory.personaWords;
     const promptWords = Math.max(0, memoryTotal - r.memory.words);
     lines.push(`记忆：内容 ${r.memory.words}/${r.memory.budget} 词 + 提示 ${promptWords} = ${memoryTotal} 词（余 ${r.memory.headroom}）` +
-        (r.memory.contractWords > 0 ? ` · 契约 ${r.memory.contractWords} 词（单独注入，不计入记忆预算）` : ''));
+        (r.memory.personaWords > 0 ? ` · 人格 ${r.memory.personaWords} 词（单独注入，不计入记忆预算）` : ''));
     if (r.retireCandidates.length) {
         lines.push('可考虑退役：');
         for (const c of r.retireCandidates.slice(0, 10)) {
@@ -371,16 +371,16 @@ async function doctor() {
         : `${payload.words <= payload.budget ? '✓' : '✗'} 记忆：${payload.words}/${payload.budget} 词（${formatFileShares(payload.files, payload.tocWords)}）` +
             (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : '') +
             (payload.retiredWords > 0 ? `，退役省略 ${payload.retiredWords} 词` : ''));
-    const c = payload.contract;
+    const c = payload.persona;
     rows.push(c.present
-        ? `${c.overBudget ? '⚠️' : '✓'} 契约：正文（含标题）${c.contentWords}/${c.budget} 词（${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
-            (c.overBudget ? `，超 ${c.overWords} 词（契约不截断）` : '')
-        : '· 契约：未启用（根目录没有 PERSONA.md —— 跑 zk-kit init --with-contract）');
+        ? `${c.overBudget ? '⚠️' : '✓'} 人格：正文（含标题）${c.contentWords}/${c.budget} 词（${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
+            (c.overBudget ? `，超 ${c.overWords} 词（人格不截断）` : '')
+        : '· 人格：未启用（根目录没有 PERSONA.md —— 跑 zk-kit init --with-persona）');
     // 缺文件 = 未启用，不值得再用一条 ⚠️ 重复上面那行；旧版 / 占位符才体检
     if (c.present) {
-        const contractIssues = contractStatus(cfg).items;
-        if (contractIssues.length > 0) {
-            rows.push(`⚠️ 契约体检：${contractIssues.map((i) => `${i.file} ${i.detail}`).join('；')}`);
+        const personaIssues = personaStatus(cfg).items;
+        if (personaIssues.length > 0) {
+            rows.push(`⚠️ 人格体检：${personaIssues.map((i) => `${i.file} ${i.detail}`).join('；')}`);
         }
     }
     if (exists) {
@@ -412,7 +412,7 @@ async function doctor() {
     }
     console.log(rows.join('\n'));
     // ⚠️ 是内容问题（笔记写坏了），不是装坏了 —— 别让它把 doctor 的退出码翻掉；
-    // · 是「未启用 / 未配置」（如契约文件缺失）：同样不算装坏
+    // · 是「未启用 / 未配置」（如人格文件缺失）：同样不算装坏
     return rows.every((r) => r.startsWith('✓') || r.startsWith('⚠️') || r.startsWith('·'));
 }
 async function main() {
@@ -439,29 +439,29 @@ async function main() {
         }
         case 'init': {
             const withAgents = flags['with-agents'] === true || flags['with-agents'] === 'true';
-            const withContract = flags['with-contract'] === true || flags['with-contract'] === 'true';
-            const r = await ensureNotebook(cfg, undefined, { withAgents, withContract });
+            const withPersona = flags['with-persona'] === true || flags['with-persona'] === 'true';
+            const r = await ensureNotebook(cfg, undefined, { withAgents, withPersona });
             print(json ? r : `笔记本 ${r.notebook}（结构 ${cfg.structure}）\n` +
                 `初始化：${r.initialized ? '是' : '已是笔记本'} · 目录：${r.dirsCreated.length ? '新建 ' + r.dirsCreated.join('、') : '已齐全'}\n` +
-                `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' || withAgents ? '已存在' : '未写（flat 要 --with-agents）')} · WORKFLOW.md：${r.workflowWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')} · 契约：${withContract ? (r.personaWritten ? '已写 PERSONA.md' : 'PERSONA.md 已存在') : '未写（要 --with-contract）'}` +
+                `模板：${r.templatesWritten.length ? r.templatesWritten.join(' / ') : '已存在'} · group：${r.groupsAdded.length ? r.groupsAdded.join(' / ') : '已存在'} · AGENTS.md：${r.agentsWritten ? '已写入' : (cfg.structure === 'layered' || withAgents ? '已存在' : '未写（flat 要 --with-agents）')} · WORKFLOW.md：${r.workflowWritten ? '已写入' : (cfg.structure === 'layered' ? '已存在' : 'flat 不写')} · 人格：${withPersona ? (r.personaWritten ? '已写 PERSONA.md' : 'PERSONA.md 已存在') : '未写（要 --with-persona）'}` +
                 (r.groupWarnings.length ? `\n⚠️ ${r.groupWarnings.join('\n⚠️ ')}` : ''), json);
             return;
         }
-        case 'contract': {
+        case 'persona': {
             const payload = buildMemoryPayload(cfg);
-            const c = payload.contract;
-            const issues = contractStatus(cfg);
+            const c = payload.persona;
+            const issues = personaStatus(cfg);
             if (!json) {
                 if (!c.present) {
-                    print(`契约：未启用（根目录没有 PERSONA.md）\n写入模板：zk-kit init --with-contract；写入后缺文件 = 未启用、不算错，占位符 {{...}} 由人填。`, false);
+                    print(`人格：未启用（根目录没有 PERSONA.md）\n写入模板：zk-kit init --with-persona；写入后缺文件 = 未启用、不算错，占位符 {{...}} 由人填。`, false);
                 }
                 else {
                     const files = c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ');
                     const lines = [
-                        `契约：正文（含标题）${c.contentWords}/${c.budget} 词（${files}）` +
-                            (c.overBudget ? ` · 超 ${c.overWords} 词（契约不截断）` : ''),
+                        `人格：正文（含标题）${c.contentWords}/${c.budget} 词（${files}）` +
+                            (c.overBudget ? ` · 超 ${c.overWords} 词（人格不截断）` : ''),
                         `注入：${c.words} 词${c.noticeWords > 0 ? `（正文 ${c.contentWords} + 提示 ${c.noticeWords}）` : ''} · 记忆段之前、永远注入、不参与截断`,
-                        `总量：正文 契约 ${c.contentWords} + 记忆 ${payload.words} = ${c.contentWords + payload.words} 词；记忆载荷 ${payload.totalWords} 词`,
+                        `总量：正文 人格 ${c.contentWords} + 记忆 ${payload.words} = ${c.contentWords + payload.words} 词；记忆载荷 ${payload.totalWords} 词`,
                     ];
                     for (const i of issues.items)
                         lines.push(`⚠️ ${i.file} ${i.detail}`);
@@ -469,7 +469,7 @@ async function main() {
                 }
             }
             else {
-                print({ contract: c, issues }, true);
+                print({ persona: c, issues }, true);
             }
             return;
         }

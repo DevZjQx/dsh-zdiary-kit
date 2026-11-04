@@ -17,7 +17,7 @@
  * 首行 `<!-- zdiary-template: vN -->` 是版本标记：lint 据此报告「老库的 AGENTS.md 是旧版」，
  * 只报告不覆盖（模板允许用户改）。
  */
-/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧契约（v8：读取交给原生 read） */
+/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧模板（v8：读取交给原生 read） */
 export const TEMPLATE_VERSION = 8;
 /** 首行版本标记（实测 4 词）；不许带日期 —— 带日期的写法实测 6 词，白花 2 词 */
 export const TEMPLATE_MARK = `<!-- zdiary-template: v${TEMPLATE_VERSION} -->`;

@@ -43,7 +43,7 @@ export const DEFAULTS = {
     maxReadChars: 20_000,
     aliasTools: false,
     memoryBudgetWords: 500,
-    contractBudgetWords: 240,
+    personaBudgetWords: 240,
     archiveDir: 'archive',
     zkVersion: '0.15.7',
     zkPath: '',
@@ -142,7 +142,7 @@ export function normalizeConfig(raw, workspace = processWorkspace()) {
         // 免得拼错一个值就静默把别名注册成工具
         aliasTools: src.aliasTools === true || src.aliasTools === 'true',
         memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
-        contractBudgetWords: clamp(Number(src.contractBudgetWords), 50, 800, DEFAULTS.contractBudgetWords),
+        personaBudgetWords: clamp(Number(src.personaBudgetWords), 50, 800, DEFAULTS.personaBudgetWords),
         archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
         zkVersion: /^\d+\.\d+\.\d+$/.test(String(src.zkVersion ?? '').trim().replace(/^v/i, ''))
             ? String(src.zkVersion).trim().replace(/^v/i, '')

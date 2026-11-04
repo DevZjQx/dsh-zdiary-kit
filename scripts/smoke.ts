@@ -192,22 +192,22 @@ if (!fs.readFileSync(path.join(notebook, 'AGENTS.md'), 'utf8').includes('<!-- zd
 fs.writeFileSync(path.join(notebook, 'AGENTS.md'), fixtureAgents)
 console.log('[POST /agents] 已存在不覆盖 ✓ · 缺失才写模板 ✓')
 
-// 契约模板：同样是 opt-in + 缺了才写；写完再删掉，让后面的记忆注入仍按「无契约」夹具跑
-const contractWrite = await postJson('/contract')
-const cw = contractWrite.result as { personaWritten?: boolean } | undefined
+// 人格模板：同样是 opt-in + 缺了才写；写完再删掉，让后面的记忆注入仍按「无人格」夹具跑
+const personaWrite = await postJson('/persona')
+const cw = personaWrite.result as { personaWritten?: boolean } | undefined
 if (cw?.personaWritten !== true) {
-  throw new Error('POST /contract 缺失时应该写入 PERSONA 模板：' + JSON.stringify(contractWrite.result))
+  throw new Error('POST /persona 缺失时应该写入 PERSONA 模板：' + JSON.stringify(personaWrite.result))
 }
 if (!fs.readFileSync(path.join(notebook, 'PERSONA.md'), 'utf8').includes('<!-- zdiary-persona')) {
-  throw new Error('POST /contract 写的不是 PERSONA 模板')
+  throw new Error('POST /persona 写的不是 PERSONA 模板')
 }
-const contractKeep = await postJson('/contract')
-const ck = contractKeep.result as { personaWritten?: boolean } | undefined
+const personaKeep = await postJson('/persona')
+const ck = personaKeep.result as { personaWritten?: boolean } | undefined
 if (ck?.personaWritten !== false) {
-  throw new Error('POST /contract 对已存在的契约应该返回 false：' + JSON.stringify(contractKeep.result))
+  throw new Error('POST /persona 对已存在的人格文件应该返回 false：' + JSON.stringify(personaKeep.result))
 }
 fs.rmSync(path.join(notebook, 'PERSONA.md'))
-console.log('[POST /contract] 缺失才写模板 ✓ · 已存在不覆盖 ✓')
+console.log('[POST /persona] 缺失才写模板 ✓ · 已存在不覆盖 ✓')
 
 // ── 只读视图：GET 能看、写方法 405、JSON 不吐文件系统路径 ──
 const origin = `http://127.0.0.1:${port}`

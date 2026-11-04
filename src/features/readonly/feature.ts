@@ -23,7 +23,7 @@ import { isMetaPath } from '../../lib/meta.ts'
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
 import { RETIRED_ENTRY_RE } from '../../lib/memory-format.ts'
 import { parseFrontmatter } from '../../lib/frontmatter.ts'
-import { stripContractMarker } from '../../lib/persona-template.ts'
+import { stripPersonaMarker } from '../../lib/persona-template.ts'
 import { esc, layout, renderMarkdown } from './html.ts'
 import { timelineIssues, timelineSummary } from '../../lib/timeline.ts'
 import type { RouteHandler } from '../../lib/dsh.ts'
@@ -285,7 +285,7 @@ function renderMemoryBody(body: string, linkFor: (target: string) => string | nu
 }
 
 /**
- * 记忆页（P1-5 → D9）：人的周审入口 —— 契约 / 用户 / 工作约定 / 记忆 / 周审五段 + 载荷预览。
+ * 记忆页（P1-5 → D9）：人的周审入口 —— 人格 / 用户 / 工作约定 / 记忆 / 周审五段 + 载荷预览。
  * 不走 `loadNote`：根目录 meta 被 `loadAll` 排除、也被 `loadNote` 明确拒绝；
  * 这里按常量直接读盘，再复用渲染层的转义与双链白名单。
  * 载荷预览只转义展示（与 zk_context 同源），不提供编辑 —— 写仍然只走 zk_* / 编辑器。
@@ -312,16 +312,16 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
     (payload.truncatedWords > 0 ? ` · 已截断 ${payload.truncatedWords} 词` : '') +
     (payload.retiredWords > 0 ? ` · 退役省略 ${payload.retiredWords} 词` : '')
 
-  // 契约段：超预算只告警
-  const c = payload.contract
-  const contractSummary = c.present
+  // 人格段：超上限只告警
+  const c = payload.persona
+  const personaSummary = c.present
     ? c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ') +
       ` · 正文（含标题）${c.contentWords}/${c.budget} 词` +
-      (c.overBudget ? ` · ⚠️ 超 ${c.overWords} 词（契约不截断，请缩减或调 contractBudgetWords）` : '')
-    : '未启用：根目录没有 PERSONA.md —— 初始化带 --with-contract 或在设置页写入模板；缺文件不算错。'
-  const contractSections = (['PERSONA.md'] as const).map((name) => {
+      (c.overBudget ? ` · ⚠️ 超 ${c.overWords} 词（人格不截断，请缩减或调 personaBudgetWords）` : '')
+    : '未启用：根目录没有 PERSONA.md —— 初始化带 --with-persona 或在设置页写入模板；缺文件不算错。'
+  const personaSections = (['PERSONA.md'] as const).map((name) => {
     // 版本标记与 frontmatter 是机器元数据：页面像笔记页一样剥掉，改成一行可读的字段
-    const body = stripContractMarker(read(name))
+    const body = stripPersonaMarker(read(name))
     const fields = parseFrontmatter(body).fields
     const meta = Object.entries(fields).map(([key, value]) => `${key}: ${value}`).join(' · ')
     return [
@@ -341,16 +341,16 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
 
   const dreamBody = read('DREAMS.md')
   const counts =
-    `契约正文 ${c.contentWords} 词 · 记忆 ${payload.words} 词 · 记忆载荷 ${payload.totalWords} 词（含框与提示 ${payload.overheadWords}）`
+    `人格正文 ${c.contentWords} 词 · 记忆 ${payload.words} 词 · 记忆载荷 ${payload.totalWords} 词（含框与提示 ${payload.overheadWords}）`
 
   const body = [
     `<p class="crumb"><a href="${VIEW}">首页</a> / 记忆</p>`,
     '<h1>记忆</h1>',
     `<p class="meta">${esc(usage)}</p>`,
     '<p class="meta">根目录 meta 由人和 agent 直接编辑，不进检索；这里只读，不提供编辑。</p>',
-    `<h2>契约</h2>`,
-    `<p class="meta">${esc(contractSummary)}</p>`,
-    ...contractSections,
+    `<h2>人格</h2>`,
+    `<p class="meta">${esc(personaSummary)}</p>`,
+    ...personaSections,
     '<h2>用户</h2>',
     fileArticle('USER.md', '用户偏好；可以跨库共享。'),
     '<h2>工作约定</h2>',

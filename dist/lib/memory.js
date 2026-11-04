@@ -2,8 +2,8 @@
  * 记忆注入（M1）：读 vault 根目录的 AGENTS.md / USER.md / MEMORY.md，
  * 按 `memoryBudgetWords` 截断，渲染成一段可注入系统提示的文本。
  * 另读 DREAMS.md 的「上次做梦」一行（不进正文、不计预算），给周节奏一句机械提醒。
- * 契约层（PERSONA.md）单独一段注入、永远在记忆段之前、不参与截断，
- * 超预算只告警；缺文件 = 未启用，0.9 的老库逐字节不变。
+ * 人格层（PERSONA.md）单独一段注入、永远在记忆段之前、不参与截断，
+ * 超上限只告警；缺文件 = 未启用，0.9 的老库逐字节不变。
  *
  * 硬约定：
  *   · 预算按**总载荷**算，不是只卡 MEMORY.md；
@@ -26,7 +26,7 @@ import path from 'node:path';
 import { DREAM_INTERVAL_DAYS, daysSinceDream, lastDreamDate } from './dream.js';
 import { fileStamp } from './file-stamp.js';
 import { entryDate, splitMemoryEntries, stripRetiredEntries } from './memory-format.js';
-import { CONTRACT_META_FILES, MEMORY_META_FILES } from './meta.js';
+import { PERSONA_META_FILES, MEMORY_META_FILES } from './meta.js';
 /** vault 根目录下、按优先级排列的三份 meta 文件（定义在 lib/meta.ts，这里只挂个本地名） */
 export const META_FILES = MEMORY_META_FILES;
 const CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/g;
@@ -236,9 +236,9 @@ function readMeta(cfg) {
     }
     return out;
 }
-/** 读契约层（PERSONA.md）；缺文件 = 空 = 未启用，不报错 */
-function readContracts(cfg) {
-    return CONTRACT_META_FILES.map((name) => {
+/** 读人格层（PERSONA.md）；缺文件 = 空 = 未启用，不报错 */
+function readPersonas(cfg) {
+    return PERSONA_META_FILES.map((name) => {
         let body = '';
         try {
             body = fs.readFileSync(path.join(cfg.notebook, name), 'utf8').trim();
@@ -290,14 +290,14 @@ function dreamNote(cfg) {
 const PAYLOAD_CACHE_MAX = 8;
 const payloadCache = new Map();
 /** DREAMS.md 不进正文，但「上次做梦 N 天前」也算载荷的一部分 —— 它变了同样要重算 */
-const STAMPED_FILES = [...CONTRACT_META_FILES, ...META_FILES, 'DREAMS.md'];
+const STAMPED_FILES = [...PERSONA_META_FILES, ...META_FILES, 'DREAMS.md'];
 function payloadKeyOf(cfg) {
     const stamps = STAMPED_FILES.map((name) => `${name}=${fileStamp(path.join(cfg.notebook, name))}`).join('|');
     // 做梦提醒按本地日历天变化（「3 天前」→「4 天前」）：文件没动也得跟着日期失效
     const now = new Date();
     const day = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
     // 影响这个载荷的预算都要进键：改配置不重新写入任何文件，漏一个就会拿到旧预算的载荷。
-    return `${cfg.notebook}|${cfg.memoryBudgetWords}|${cfg.contractBudgetWords}|${day}|${stamps}`;
+    return `${cfg.notebook}|${cfg.memoryBudgetWords}|${cfg.personaBudgetWords}|${day}|${stamps}`;
 }
 /**
  * 生成注入载荷。纯读文件，不调 zk、不建目录：笔记本不存在时返回空载荷。
@@ -454,25 +454,25 @@ function computePayload(cfg) {
                 (dream ? `\n\n（${dream}）` : '') +
                 notice;
     }
-    // ── 契约段（角色）：永远注入、在记忆段之前、不参与截断 ────
+    // ── 人格段（角色）：永远注入、在记忆段之前、不参与截断 ────
     // 超预算只告警不静默丢。
-    // 没有契约文件 = 未启用：不多一个词。
-    const contractBudget = cfg.contractBudgetWords;
-    const contracts = readContracts(cfg);
-    const contractBodies = contracts.filter((f) => f.body.length > 0);
-    const contractBodyText = contractBodies.map((f) => `## ${f.name}\n\n${escapeFrame(f.body)}`).join('\n\n');
+    // 没有人格文件 = 未启用：不多一个词。
+    const personaBudget = cfg.personaBudgetWords;
+    const personas = readPersonas(cfg);
+    const personaBodies = personas.filter((f) => f.body.length > 0);
+    const personaBodyText = personaBodies.map((f) => `## ${f.name}\n\n${escapeFrame(f.body)}`).join('\n\n');
     // 预算只算正文（含文件标题），不能把告警行算进去 —— 否则「已用 / 超出」会随告警自己的长度变
-    const contractContentWords = countWords(contractBodyText);
-    const contractOver = contractBodies.length > 0 && contractContentWords > contractBudget;
-    const contractNotes = [];
-    if (contractOver) {
-        contractNotes.push(`契约预算 ${contractBudget} 词：已用 ${contractContentWords}，超出 ${contractContentWords - contractBudget} 词（契约不截断）`);
+    const personaContentWords = countWords(personaBodyText);
+    const personaOver = personaBodies.length > 0 && personaContentWords > personaBudget;
+    const personaNotes = [];
+    if (personaOver) {
+        personaNotes.push(`人格上限 ${personaBudget} 词：已用 ${personaContentWords}，超出 ${personaContentWords - personaBudget} 词（人格不截断）`);
     }
-    const contractText = contractBodyText + (contractNotes.length > 0 ? `\n\n（${contractNotes.join('；')}）` : '');
-    const contractWords = countWords(contractText);
+    const personaText = personaBodyText + (personaNotes.length > 0 ? `\n\n（${personaNotes.join('；')}）` : '');
+    const personaWords = countWords(personaText);
     let text = '';
-    if (memoryInner || contractText) {
-        text = frameText((contractText ? contractText + '\n\n' : '') + memoryInner);
+    if (memoryInner || personaText) {
+        text = frameText((personaText ? personaText + '\n\n' : '') + memoryInner);
     }
     // 模型真正收到的总量与开销：口径与 memoryUsage / D9 的载荷预览同源
     const totalWords = countWords(text);
@@ -492,18 +492,18 @@ function computePayload(cfg) {
             originalWords: diskWords.get(f.name) ?? 0,
             retiredWords: f.name === 'MEMORY.md' ? retiredWords : 0,
         })),
-        contract: {
-            present: contractBodies.length > 0,
-            contentWords: contractContentWords,
-            words: contractWords,
-            noticeWords: Math.max(0, contractWords - contractContentWords),
-            budget: contractBudget,
-            overBudget: contractOver,
-            overWords: Math.max(0, contractContentWords - contractBudget),
-            files: contracts.map((f) => ({ name: f.name, present: f.body.length > 0, words: countWords(f.body) })),
+        persona: {
+            present: personaBodies.length > 0,
+            contentWords: personaContentWords,
+            words: personaWords,
+            noticeWords: Math.max(0, personaWords - personaContentWords),
+            budget: personaBudget,
+            overBudget: personaOver,
+            overWords: Math.max(0, personaContentWords - personaBudget),
+            files: personas.map((f) => ({ name: f.name, present: f.body.length > 0, words: countWords(f.body) })),
         },
         totalWords,
-        overheadWords: Math.max(0, totalWords - contractContentWords - finalWords),
+        overheadWords: Math.max(0, totalWords - personaContentWords - finalWords),
     };
 }
 /**
@@ -514,11 +514,11 @@ export function memoryUsage(cfg) {
     const payload = buildMemoryPayload(cfg);
     return {
         words: payload.words,
-        contractWords: payload.contract.words,
+        personaWords: payload.persona.words,
         totalWords: payload.totalWords,
         budget: payload.budget,
-        // 契约是独立层：整段（含它的告警）都不该占记忆预算，否则 dream 会误报「余量」
-        headroom: payload.budget - (payload.totalWords - payload.contract.words),
+        // 人格是独立层：整段（含它的告警）都不该占记忆预算，否则 dream 会误报「余量」
+        headroom: payload.budget - (payload.totalWords - payload.persona.words),
         files: payload.files,
     };
 }

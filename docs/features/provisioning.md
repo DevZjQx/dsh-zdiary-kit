@@ -12,8 +12,8 @@
 
 | | 目录 | 模板 | group | 根目录文档 |
 |---|---|---|---|---|
-| `flat`（默认，与 0.1.0 逐字节一致） | `notes/` `journal/` | `daily.md` | 1 个（daily） | 无（可选 `--with-agents` 写精简版 `AGENTS.md`；可选 `--with-contract` 写契约） |
-| `layered` | 加 `raw/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） | `AGENTS.md` + `WORKFLOW.md`（契约同样只在 `--with-contract` 时写） |
+| `flat`（默认，与 0.1.0 逐字节一致） | `notes/` `journal/` | `daily.md` | 1 个（daily） | 无（可选 `--with-agents` 写精简版 `AGENTS.md`；可选 `--with-persona` 写人格文件） |
+| `layered` | 加 `raw/` `notes/{sources,concepts,entities,patterns}/` `archive/` | `daily.md`（多三节）`source.md` `entry.md` | 5 个（daily/source/concept/entity/pattern） | `AGENTS.md` + `WORKFLOW.md`（人格文件同样只在 `--with-persona` 时写） |
 
 切到 `layered` **只建目录与模板，不搬已有笔记**；已存在的模板、`AGENTS.md` 与 `WORKFLOW.md` 不覆盖（用户可能改过），只在缺失时写。
 `inbox/` 从 0.8.2 起不再创建（P2-8）：它在 layered 下不属于任何 group（写不进），flat 下能写进去却会被排除出索引（写进去就消失）。
@@ -33,16 +33,16 @@
 `entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入（Z10）；
 所有模板必须含 `{{content}}`，否则 stdin 的正文会被丢（Z9）。
 
-**契约模板（`PERSONA.md`）。** 只走显式 opt-in：`zk-kit init --with-contract`、
-设置页「写入契约模板」、或 `ensureNotebook(cfg, signal, { withContract: true })`。
-两种结构**都不自动写** —— 升级不多一个文件（D10），缺文件 = 契约未启用、不报错。
-写入口只在缺失时生效，已存在的文件一字不改（契约允许人改）。
-契约不依赖 zk：`writeContractTemplates` 会先 `mkdir` 笔记本目录，所以设置页按钮在建库前也能点
+**人格模板（`PERSONA.md`）。** 只走显式 opt-in：`zk-kit init --with-persona`、
+设置页「写入人格模板」、或 `ensureNotebook(cfg, signal, { withPersona: true })`。
+两种结构**都不自动写** —— 升级不多一个文件（D10），缺文件 = 人格未启用、不报错。
+写入口只在缺失时生效，已存在的文件一字不改（人格允许人改）。
+人格文件不依赖 zk：`writePersonaTemplate` 会先 `mkdir` 笔记本目录，所以设置页按钮在建库前也能点
 （只建目录与文件，不碰 `.zk`；之后 `ensureNotebook` 幂等接管同一目录）。
 首行是独立版本标记 `<!-- zdiary-persona: vN -->`（`PERSONA_TEMPLATE_VERSION`）：
-不复用 `TEMPLATE_VERSION` —— 改 `AGENTS.md` 只升旧的，不该让契约误报旧版。
+不复用 `TEMPLATE_VERSION` —— 改 `AGENTS.md` 只升旧的，不该让人格文件误报旧版。
 标记与当前版本不等时只报告：低于当前 = `old`；高于当前 = `newer`（插件才是旧的那个，别改文件去配）；
-相等但正文还留着旧版内容 = `mismatch`（只改了首行数字，`CONTRACT_TEMPLATE_SENTINELS` 机械可查）。
+相等但正文还留着旧版内容 = `mismatch`（只改了首行数字，`PERSONA_TEMPLATE_SENTINELS` 机械可查）。
 `PERSONA.md` 进 `META_NAMES`：不进检索、`zk_append` 等写入一律拒绝。
 **迁移说明**：根目录曾有同名普通笔记的库，升级后它们会从检索里消失 —— 需要改名或移入子目录。
 

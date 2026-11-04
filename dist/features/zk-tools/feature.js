@@ -178,8 +178,8 @@ const LINT_TEMPLATE = objSchema({
     mismatchDetail: { type: 'string' },
     currentText: { type: 'string' },
 }, ['present', 'version', 'current', 'stale']);
-/** 契约体检：缺失 / 旧版 / 比插件新 / 标记与内容不符 / 未填占位符（只报告，不覆盖） */
-const LINT_CONTRACT = objSchema({
+/** 人格体检：缺失 / 旧版 / 比插件新 / 标记与内容不符 / 未填占位符（只报告，不覆盖） */
+const LINT_PERSONA = objSchema({
     total: { type: 'number' },
     items: {
         type: 'array',
@@ -909,7 +909,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
         t({
             name: 'zk_context',
             description: '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回；' +
-                '角色契约（PERSONA.md）单独成段、在记忆段之前、不参与截断。' +
+                '角色人格（PERSONA.md）单独成段、在记忆段之前、不参与截断。' +
                 '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前）。' +
                 '宿主支持注入时这些内容每轮已自动进入系统提示；宿主不支持、或想核对「被截断了多少」时用它。',
             parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -924,7 +924,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     tocWords: { type: 'number' },
                     totalWords: { type: 'number' },
                     overheadWords: { type: 'number' },
-                    contract: objSchema({
+                    persona: objSchema({
                         present: { type: 'boolean' },
                         contentWords: { type: 'number' },
                         words: { type: 'number' },
@@ -963,7 +963,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             retiredWords: { type: 'number' },
                         }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
                     },
-                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
+                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'persona', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
             },
             async run(_args, env) {
                 // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
@@ -992,15 +992,15 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         (others.length ? `\n另有：${others.map((n) => `${n.name}（${n.structure}）`).join('、')} —— zk_use 切换本会话` : '')
                     : `笔记本「${v.notebook}」`;
                 if (!v.text) {
-                    return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md 契约。`);
+                    return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md 人格文件。`);
                 }
-                const contract = v.contract?.present
-                    ? `\n\n契约：正文（含标题）${v.contract.contentWords}/${v.contract.budget} 词` +
-                        `（${v.contract.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
-                        (v.contract.overBudget ? `，超 ${v.contract.overWords} 词（契约不截断）` : '')
-                    : '\n\n契约：未启用（根目录没有 PERSONA.md）';
+                const persona = v.persona?.present
+                    ? `\n\n人格：正文（含标题）${v.persona.contentWords}/${v.persona.budget} 词` +
+                        `（${v.persona.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
+                        (v.persona.overBudget ? `，超 ${v.persona.overWords} 词（人格不截断）` : '')
+                    : '\n\n人格：未启用（根目录没有 PERSONA.md）';
                 const totals = `\n\n用量：记忆载荷 ${v.totalWords} 词（预算 ${v.budget}）`;
-                return text(drift + head + contract + totals + (v.text ? '\n\n' + v.text : ''));
+                return text(drift + head + persona + totals + (v.text ? '\n\n' + v.text : ''));
             },
         }),
         t({
@@ -1050,10 +1050,10 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     incomplete: LINT_INCOMPLETE,
                     tags: LINT_TAGS,
                     template: LINT_TEMPLATE,
-                    contract: LINT_CONTRACT,
+                    persona: LINT_PERSONA,
                     timeline: LINT_TIMELINE,
                     indexHint: { type: 'boolean' },
-                }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'contract', 'timeline', 'indexHint']),
+                }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'indexHint']),
             },
             async run(args, env) {
                 const cfg = configFor(env.workspace, env.sessionId);
@@ -1143,7 +1143,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     truncated: { type: 'boolean' },
                     memory: objSchema({
                         words: { type: 'number' },
-                        contractWords: { type: 'number' },
+                        personaWords: { type: 'number' },
                         totalWords: { type: 'number' },
                         budget: { type: 'number' },
                         headroom: { type: 'number' },
@@ -1157,7 +1157,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                                 retiredWords: { type: 'number' },
                             }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
                         },
-                    }, ['words', 'contractWords', 'totalWords', 'budget', 'headroom', 'files']),
+                    }, ['words', 'personaWords', 'totalWords', 'budget', 'headroom', 'files']),
                     counts: objSchema({
                         window: { type: 'number' },
                         daily: { type: 'number' },
@@ -1217,12 +1217,12 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         ' · 未完成 ' + v.counts.looseEnds + ' · 已晋升 ' + v.counts.promoted + ' · 积压 ' + v.counts.backlog,
                 ];
                 // 余量按记忆侧总词算（框 + 提示 + notice 都算）：只报内容词等于说「还有 15 词」，而提示早把它吃完了。
-                // 契约单独注入，先从 totalWords 里扣掉 —— 它不占记忆预算，也不该被叫成「提示」。
-                const memoryTotal = v.memory.totalWords - v.memory.contractWords;
+                // 人格单独注入，先从 totalWords 里扣掉 —— 它不占记忆预算，也不该被叫成「提示」。
+                const memoryTotal = v.memory.totalWords - v.memory.personaWords;
                 const promptWords = Math.max(0, memoryTotal - v.memory.words);
                 lines.push('记忆：内容 ' + v.memory.words + '/' + v.memory.budget + ' 词 + 提示 ' + promptWords +
                     ' = ' + memoryTotal + ' 词（余 ' + v.memory.headroom + '）' +
-                    (v.memory.contractWords > 0 ? ' · 契约 ' + v.memory.contractWords + ' 词（单独注入，不计入记忆预算）' : ''));
+                    (v.memory.personaWords > 0 ? ' · 人格 ' + v.memory.personaWords + ' 词（单独注入，不计入记忆预算）' : ''));
                 if (v.retireCandidates.length) {
                     lines.push('可考虑退役：');
                     for (const c of v.retireCandidates.slice(0, 10)) {

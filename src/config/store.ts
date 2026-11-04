@@ -57,8 +57,8 @@ export interface Config {
   aliasTools: boolean
   /** 注入预算（词）：AGENTS.md + USER.md + MEMORY.md 的总载荷，中文按 2 字 1 词 */
   memoryBudgetWords: number
-  /** 契约预算（词）：PERSONA.md 上限；超了只告警，不截断 */
-  contractBudgetWords: number
+  /** 人格上限（词）：PERSONA.md 上限；超了只告警，不截断 */
+  personaBudgetWords: number
   /** 归档目录（supersede 后的笔记搬到这里，保留原相对路径） */
   archiveDir: string
   /** 内置 zk 的版本（安装/升级用，不带 v） */
@@ -94,7 +94,7 @@ export const DEFAULTS: Config = {
   maxReadChars: 20_000,
   aliasTools: false,
   memoryBudgetWords: 500,
-  contractBudgetWords: 240,
+  personaBudgetWords: 240,
   archiveDir: 'archive',
   zkVersion: '0.15.7',
   zkPath: '',
@@ -196,7 +196,7 @@ export function normalizeConfig(raw: unknown, workspace: string = processWorkspa
     // 免得拼错一个值就静默把别名注册成工具
     aliasTools: src.aliasTools === true || src.aliasTools === 'true',
     memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
-    contractBudgetWords: clamp(Number(src.contractBudgetWords), 50, 800, DEFAULTS.contractBudgetWords),
+    personaBudgetWords: clamp(Number(src.personaBudgetWords), 50, 800, DEFAULTS.personaBudgetWords),
     archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
     zkVersion: /^\d+\.\d+\.\d+$/.test(String(src.zkVersion ?? '').trim().replace(/^v/i, ''))
       ? String(src.zkVersion).trim().replace(/^v/i, '')
