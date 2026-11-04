@@ -17,7 +17,7 @@ import {
   allNotes, parseErrorWarnings,
 } from './lib/zk.ts'
 import type { NoteRecord } from './lib/zk.ts'
-import { formatLintExtras, formatMemoryLinks, lintNotebook, contractStatus } from './lib/lint.ts'
+import { formatLintExtras, formatMemoryLinks, lintNotebook, contractStatus, timelineStatus } from './lib/lint.ts'
 import type { LintResult } from './lib/lint.ts'
 import { dreamNotebook, STALE_DAYS } from './lib/dream.ts'
 import type { DreamResult } from './lib/dream.ts'
@@ -357,6 +357,15 @@ async function doctor(): Promise<boolean> {
     (st.agents.required ? (st.agents.present ? ' · AGENTS.md 就绪' : ' · 缺 AGENTS.md（跑 zk-kit init）') : '') +
     drift,
   )
+
+  if (exists) {
+    const timeline = timelineStatus(cfg)
+    rows.push(
+      timeline.total > 0
+        ? `· 时间轴：${timeline.total} 处（${timeline.notes} 篇；zk_lint 看详情）`
+        : '· 时间轴：0 处',
+    )
+  }
 
   const payload = buildMemoryPayload(cfg)
   const present = payload.files.filter((f) => f.present)

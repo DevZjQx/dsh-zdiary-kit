@@ -22,6 +22,7 @@ import { parseFrontmatter } from './frontmatter.ts'
 import { memoryUsage } from './memory.ts'
 import type { MemoryUsage } from './memory.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
+import { isDayString } from './timeline.ts'
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
 
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
@@ -207,6 +208,32 @@ function isUnder(rel: string, dir: string): boolean {
 }
 
 /**
+ * 笔记的日历日期（计划 §2 D7 / Q6）。
+ *
+ * 日记补写时 `zk_daily --date` 只改文件名，zk 的 `created` 仍是今天 —— 按 created 筛窗口
+ * 会把 10 月的日记算成本周新增。所以：日记看文件名，其他笔记看 frontmatter `date`，
+ * 都没有才退回 created（老笔记行为不变）。
+ */
+export function noteDate(cfg: Config, note: NoteRecord): string {
+  if (isUnder(note.path, cfg.dailyDir)) {
+    const stem = path.basename(note.path, path.extname(note.path))
+    if (isDayString(stem)) return stem
+  } else {
+    const raw = note.metadata?.date
+    const value = typeof raw === 'string' ? raw.trim() : ''
+    if (isDayString(value)) return value
+  }
+  return localDate(note.created)
+}
+
+/** 日期字符串 → 本地零点毫秒；非法日期返回 NaN */
+function dayMs(day: string): number {
+  if (!isDayString(day)) return Number.NaN
+  const [year, month, date] = day.split('-').map(Number)
+  return new Date(year as number, (month as number) - 1, date as number).getTime()
+}
+
+/**
  * 机械摘要：frontmatter 之后、第一个正文段落，压空白后最多 200 字。
  * 为什么不用 NoteRecord.lead：zk 的 lead 是笔记首行（通常是标题行），当摘要没有信息量。
  * 读失败就退回 lead（哪怕是标题行），不让 dream 因为一篇坏文件整批失败。
@@ -388,7 +415,7 @@ export async function dreamNotebook(
     type: note.type,
     authority: note.authority,
     tags: note.tags,
-    created: localDate(note.created),
+    created: noteDate(cfg, note),
     lead: excerptOf(cfg, note),
     cited: citedOf(note),
     citedBy: (inbound.get(note.path) ?? []).slice(0, 5),
@@ -401,10 +428,10 @@ export async function dreamNotebook(
 
   const windowNotes = notes
     .filter((n) => {
-      const at = Date.parse(n.created)
+      const at = dayMs(noteDate(cfg, n))
       return Number.isFinite(at) && at >= sinceMs
     })
-    .sort((a, b) => Date.parse(b.created) - Date.parse(a.created))
+    .sort((a, b) => noteDate(cfg, b).localeCompare(noteDate(cfg, a)))
 
   const newNotes: DreamCandidate[] = []
   const alreadyPromoted: DreamCandidate[] = []
@@ -430,7 +457,7 @@ export async function dreamNotebook(
   const backlogNotes = notes
     .filter((n) => {
       if (isUnder(n.path, cfg.dailyDir)) return false
-      const at = Date.parse(n.created)
+      const at = dayMs(noteDate(cfg, n))
       if (Number.isFinite(at) && at >= sinceMs) return false
       if (promoted.has(n.path)) return false
       return rejectionReason(n) === null
@@ -447,7 +474,7 @@ export async function dreamNotebook(
     if (!items.length) continue
     looseEndCount += items.length
     if (dailyLooseEnds.length < MAX_ITEMS) {
-      dailyLooseEnds.push({ path: note.path, date: localDate(note.created), items })
+      dailyLooseEnds.push({ path: note.path, date: noteDate(cfg, note), items })
     }
   }
 

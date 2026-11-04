@@ -45,6 +45,7 @@ const CSS = [
     'th{font-weight:bold;border-bottom:1px solid #bbb}',
     '.meta{color:#555;font-size:13px}.meta a{color:#0000cc}',
     '.notice{border:1px solid #d9a300;background:#fffbe6;padding:8px 10px;margin:12px 0;font-size:14px}',
+    '.notice details{margin-top:6px}.notice summary{cursor:pointer}',
     '.error{border:1px solid #c00;background:#fff2f2;padding:8px 10px;margin:12px 0;font-size:14px}',
     '.tags a{margin-right:10px;white-space:nowrap}.tags .count{color:#777;font-size:12px}',
     'form.search{margin:12px 0}form.search input{font:inherit;padding:3px 6px;width:min(100%,360px);border:1px solid #999}',

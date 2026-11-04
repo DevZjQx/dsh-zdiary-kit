@@ -19,6 +19,7 @@ import { parseFrontmatter } from './frontmatter.js';
 // 循环引用在 ESM 下安全 —— 不要在模块顶层调用 memoryUsage。
 import { memoryUsage } from './memory.js';
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.js';
+import { isDayString } from './timeline.js';
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
 export const MAX_ITEMS = 50;
@@ -103,6 +104,34 @@ export function rejectionReason(note) {
 function isUnder(rel, dir) {
     const d = dir.replace(/\/+$/, '');
     return rel === d || rel.startsWith(d + '/');
+}
+/**
+ * 笔记的日历日期（计划 §2 D7 / Q6）。
+ *
+ * 日记补写时 `zk_daily --date` 只改文件名，zk 的 `created` 仍是今天 —— 按 created 筛窗口
+ * 会把 10 月的日记算成本周新增。所以：日记看文件名，其他笔记看 frontmatter `date`，
+ * 都没有才退回 created（老笔记行为不变）。
+ */
+export function noteDate(cfg, note) {
+    if (isUnder(note.path, cfg.dailyDir)) {
+        const stem = path.basename(note.path, path.extname(note.path));
+        if (isDayString(stem))
+            return stem;
+    }
+    else {
+        const raw = note.metadata?.date;
+        const value = typeof raw === 'string' ? raw.trim() : '';
+        if (isDayString(value))
+            return value;
+    }
+    return localDate(note.created);
+}
+/** 日期字符串 → 本地零点毫秒；非法日期返回 NaN */
+function dayMs(day) {
+    if (!isDayString(day))
+        return Number.NaN;
+    const [year, month, date] = day.split('-').map(Number);
+    return new Date(year, month - 1, date).getTime();
 }
 /**
  * 机械摘要：frontmatter 之后、第一个正文段落，压空白后最多 200 字。
@@ -303,7 +332,7 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         type: note.type,
         authority: note.authority,
         tags: note.tags,
-        created: localDate(note.created),
+        created: noteDate(cfg, note),
         lead: excerptOf(cfg, note),
         cited: citedOf(note),
         citedBy: (inbound.get(note.path) ?? []).slice(0, 5),
@@ -314,10 +343,10 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
     const promoted = promotionsOf(cfg, notes);
     const windowNotes = notes
         .filter((n) => {
-        const at = Date.parse(n.created);
+        const at = dayMs(noteDate(cfg, n));
         return Number.isFinite(at) && at >= sinceMs;
     })
-        .sort((a, b) => Date.parse(b.created) - Date.parse(a.created));
+        .sort((a, b) => noteDate(cfg, b).localeCompare(noteDate(cfg, a)));
     const newNotes = [];
     const alreadyPromoted = [];
     const rejected = [];
@@ -343,7 +372,7 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         .filter((n) => {
         if (isUnder(n.path, cfg.dailyDir))
             return false;
-        const at = Date.parse(n.created);
+        const at = dayMs(noteDate(cfg, n));
         if (Number.isFinite(at) && at >= sinceMs)
             return false;
         if (promoted.has(n.path))
@@ -368,7 +397,7 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
             continue;
         looseEndCount += items.length;
         if (dailyLooseEnds.length < MAX_ITEMS) {
-            dailyLooseEnds.push({ path: note.path, date: localDate(note.created), items });
+            dailyLooseEnds.push({ path: note.path, date: noteDate(cfg, note), items });
         }
     }
     // 排序说明（P2-12）：先看「被日记提过几天」—— 跨天复现比同一天多次更强；同一天多篇日记

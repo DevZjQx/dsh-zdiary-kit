@@ -38,6 +38,7 @@ const fm = await import('../src/lib/frontmatter.ts')
 const installLib = await import('../src/lib/install.ts')
 const readonlyFeature = await import('../src/features/readonly/feature.ts')
 const readonlyHtml = await import('../src/features/readonly/html.ts')
+const timelineLib = await import('../src/lib/timeline.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
@@ -3947,6 +3948,7 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: missing,
       similarTitles: { total: 0, truncated: false, items: [] },
+      timeline: { scanned: 0, notes: 0, total: 0, items: [] },
       indexHint: false,
     }).some((line) => line.includes('契约'))).toBe(false)
     fs.writeFileSync(path.join(cfg.notebook, 'PERSONA.md'), personaTpl.PERSONA_TEMPLATE)
@@ -3958,6 +3960,7 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: { total: 0, items: [] },
       similarTitles: { total: 0, truncated: false, items: [] },
+      timeline: { scanned: 0, notes: 0, total: 0, items: [] },
       indexHint: false,
     })
     expect(empty).toEqual([])
@@ -3967,6 +3970,7 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
       template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
       contract: st,
       similarTitles: { total: 0, truncated: false, items: [] },
+      timeline: { scanned: 0, notes: 0, total: 0, items: [] },
       indexHint: false,
     }).some((line) => line.includes('契约'))).toBe(true)
   })
@@ -3983,6 +3987,7 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
         template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
         contract: c,
         similarTitles: { total: 0, truncated: false, items: [] },
+        timeline: { scanned: 0, notes: 0, total: 0, items: [] },
         indexHint: false,
       }).join('\n')
 
@@ -4103,6 +4108,198 @@ describe('0.10：角色契约（M1，契约壳与可观测）', () => {
 
       const persona = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=note&path=PERSONA.md'))
       expect(persona.statusCode).toBe(400)
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+      fs.rmSync(nb, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('v3.1: 时间轴 / archive / dream 日期', () => {
+  const fresh = (name: string, structure: 'flat' | 'layered' = 'layered') =>
+    store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure, notesDir: 'notes', dailyDir: 'journal' })
+
+  test('时间轴：layered 参考样本 12 处；flat / 围栏 / frontmatter / 同分钟各按口径', () => {
+    const body = [
+      '## Events',
+      '',
+      '### 11:46',
+      '### 12:49',
+      '### 12:45（写点什么）',
+      '正文',
+      '### 12:50',
+      '### 12:50（写点什么）',
+      '正文',
+      '### 13:00',
+      '### 12:57（写点什么）',
+      '正文',
+      '### 13:04',
+      '### 13:04（写点什么）',
+      '正文',
+      '### 13:13',
+      '正文',
+      '### 13:44',
+      '正文',
+      '',
+      '## 11:5x（bad）',
+      '## 12:30（x）',
+      '## 12:36（y）',
+      '## Observations',
+      '## Loose ends（z）',
+      '## 12:47（x）',
+      '## 13:39（y）',
+    ].join('\n')
+    const issues = timelineLib.timelineIssues(body, 'auto')
+    expect(timelineLib.timelineCounts(issues)).toEqual({ empty: 5, order: 2, format: 1, placement: 4 })
+    expect(timelineLib.timelineSummary(issues)).toBe('时间轴：12 处（空块 5 · 倒序 2 · 格式 1 · 位置 4）')
+
+    // flat：## HH:MM 合法；### 报位置；顺序跨全文
+    expect(timelineLib.timelineIssues('## 09:05\n正文\n## 10:00\n正文', 'flat')).toEqual([])
+    expect(timelineLib.timelineIssues('### 09:05\n正文', 'flat').map((i) => i.kind)).toEqual(['placement'])
+    expect(timelineLib.timelineIssues('## 10:00\n甲\n## Notes\n### 子标题\n乙\n## 09:00\n丙', 'flat').map((i) => i.kind)).toEqual(['order'])
+
+    // 围栏 / frontmatter 里的时间不参与；同分钟相邻且都有正文不报
+    expect(timelineLib.timelineIssues('## Events\n```md\n## 12:00\n### 13:00\n```\n### 09:00\n正文', 'auto')).toEqual([])
+    expect(timelineLib.timelineIssues('---\ntime: 12:00\n---\n## Events\n### 09:00\n正文', 'auto')).toEqual([])
+    expect(timelineLib.timelineIssues('## Events\n### 09:05\n甲\n### 09:05\n乙', 'layered')).toEqual([])
+
+    // 格式错不参与排序；24:00 / 12:60 / 9:5 / 无括号说明都算格式错
+    expect(timelineLib.timelineIssues('## 24:00\n甲\n## 12:60\n乙\n## 9:5\n丙\n## 12:45 标题\n丁', 'flat'))
+      .toHaveLength(4)
+    // 空 ## Events 不算错
+    expect(timelineLib.timelineIssues('## Events\n\n## Observations\n正文', 'auto')).toEqual([])
+  })
+
+  test('timelineStatus：按文件名日期只扫最近 90 天，递归子目录，坏文件跳过', () => {
+    const cfg = fresh('nb-v31-window', 'flat')
+    const dir = path.join(cfg.notebook, 'journal')
+    fs.mkdirSync(path.join(dir, 'sub'), { recursive: true })
+    fs.writeFileSync(path.join(dir, '2026-11-01.md'), '## 09:00\n')
+    fs.writeFileSync(path.join(dir, '2026-10-31.md'), '## 09:00\n正文')
+    fs.writeFileSync(path.join(dir, 'sub', '2026-11-02.md'), '## 10:00\n')
+    fs.writeFileSync(path.join(dir, '2026-01-01.md'), '## 09:00\n')
+    const bucket = lintLib.timelineStatus(cfg, new Date('2026-11-04T12:00:00'))
+    expect(bucket.scanned).toBe(3)
+    expect(bucket.notes).toBe(2)
+    expect(bucket.total).toBe(2)
+    expect(bucket.items.map((i) => i.path)).toEqual(['journal/2026-11-01.md', 'journal/sub/2026-11-02.md'])
+    expect(lintLib.formatTimeline(bucket)).toContain('时间轴：2 处（2 篇；扫描 3 篇）')
+    expect(lintLib.formatTimeline({ scanned: 1, notes: 0, total: 0, items: [] })).toBe('')
+  })
+
+  it('lint：timeline 桶进 LintResult，只报窗口内日记', async () => {
+    const cfg = fresh('nb-v31-lint')
+    await notebookLib.ensureNotebook(cfg)
+    const daily = await zk.ensureDailyNote(cfg)
+    fs.writeFileSync(daily.absPath, [
+      '# ' + path.basename(daily.path, '.md'),
+      '',
+      '## Events',
+      '',
+      '### 09:00',
+      '### 09:10',
+      '正文',
+      '',
+      '## Observations',
+      '正文',
+    ].join('\n'))
+    fs.writeFileSync(path.join(cfg.notebook, 'journal', '2026-01-02.md'), '## 09:00\n')
+    await zk.indexNotebook(cfg)
+    const lint = await lintLib.lintNotebook(cfg)
+    expect(lint.timeline.scanned).toBe(1)
+    expect(lint.timeline.notes).toBe(1)
+    expect(lint.timeline.total).toBe(1)
+    expect(lint.timeline.items[0]?.issues[0]?.kind).toBe('empty')
+    expect(lintLib.formatLintExtras(lint).join('\n')).toContain('✗ 时间轴：1 处')
+  })
+
+  it('archive：新建拒绝，supersede 仍能归档', async () => {
+    const cfg = fresh('nb-v31-archive', 'flat')
+    await notebookLib.ensureNotebook(cfg)
+    await expect(zk.createNote(cfg, { title: '归档违规', dir: 'archive' })).rejects.toThrow(/archive/)
+    await expect(zk.createNote(cfg, { title: '归档违规子目录', dir: 'archive/sub' })).rejects.toThrow(/archive/)
+    expect(() => notebookLib.newNoteDir(cfg, { dir: 'archive' })).toThrow(/archive/)
+
+    const old = await zk.createNote(cfg, { title: '将被废弃', content: '旧结论' })
+    const next = await zk.createNote(cfg, { title: '新结论', content: '新结论' })
+    const done = await zk.supersedeNote(cfg, { path: old.path, by: next.path, dryRun: false })
+    expect(done.performed).toBe(true)
+    expect(done.archivePath.startsWith('archive/')).toBe(true)
+    expect(fs.existsSync(path.join(cfg.notebook, done.archivePath))).toBe(true)
+  })
+
+  it('dream：补写旧日记按文件名日期进窗口 / Loose ends 日期', async () => {
+    const cfg = fresh('nb-v31-dream', 'flat')
+    await notebookLib.ensureNotebook(cfg)
+    const recent = await zk.ensureDailyNote(cfg, { date: '2026-10-30' })
+    fs.writeFileSync(recent.absPath, '# 2026-10-30\n\n## Loose ends\n\n- 补写的待办\n')
+    const old = await zk.ensureDailyNote(cfg, { date: '2026-09-01' })
+    fs.writeFileSync(old.absPath, '# 2026-09-01\n\n## Loose ends\n\n- 更旧的待办\n')
+
+    const dream = await dreamLib.dreamNotebook(cfg, { days: 7, now: new Date('2026-11-04T12:00:00') })
+    expect(dream.counts.window).toBe(1)
+    expect(dream.dailyLooseEnds.map((i) => i.date)).toEqual(['2026-10-30'])
+    expect(dream.dailyLooseEnds[0]?.items).toEqual(['补写的待办'])
+  })
+
+  test('noteDate：日记看文件名 / 其他看 metadata.date / 非法回 created', () => {
+    const cfg = fresh('nb-v31-notedate', 'flat')
+    const rec = (rel: string, created: string, metadata: Record<string, unknown> = {}) => ({
+      title: '', path: rel, absPath: '', link: '', tags: [], created, modified: '',
+      lead: '', words: 0, metadata, status: '', type: '', authority: '',
+    })
+    const created = '2026-11-04T10:00:00.000Z'
+    expect(dreamLib.noteDate(cfg, rec('journal/2026-10-01.md', created))).toBe('2026-10-01')
+    expect(dreamLib.noteDate(cfg, rec('notes/a.md', created, { date: '2026-09-15' }))).toBe('2026-09-15')
+    expect(dreamLib.noteDate(cfg, rec('notes/a.md', created, { date: '2026-02-30' })))
+      .toBe(zk.localDate(created))
+    expect(dreamLib.noteDate(cfg, rec('notes/a.md', created))).toBe(zk.localDate(created))
+  })
+
+  it('只读视图：日记页顶部有时间轴提示，正文与普通笔记不受影响', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const nb = path.join(home, 'readonly-v31')
+    const routes = new Map<string, (req: never, res: never) => unknown>()
+    readonlyFeature.registerReadOnly({ route: (p, h) => routes.set(p, h) })
+    const call = async (query: string): Promise<FakeRes> => {
+      const handler = routes.get('/dsh-zdiary-kit/view')
+      expect(handler).toBeTruthy()
+      const res = makeRes()
+      await handler!(makeReq('/dsh-zdiary-kit/view' + query) as never, res as never)
+      return res
+    }
+
+    try {
+      store.writeConfig({ notebooks: { default: { path: nb, structure: 'layered' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: [] })
+      await notebookLib.ensureNotebook(store.config())
+      fs.mkdirSync(path.join(nb, 'journal'), { recursive: true })
+      fs.writeFileSync(path.join(nb, 'journal', '2026-11-04.md'), [
+        '# 2026-11-04',
+        '',
+        '## Events',
+        '',
+        '### 09:00',
+        '### 09:10',
+        '正文',
+        '',
+        '## Observations',
+        '正文',
+      ].join('\n'))
+      fs.writeFileSync(path.join(nb, 'notes', 'plain.md'), '# 普通笔记\n\n正文\n')
+      await zk.indexNotebook(store.config())
+
+      const daily = await call('?p=note&path=' + encodeURIComponent('journal/2026-11-04.md'))
+      expect(daily.statusCode).toBe(200)
+      expect(daily.body).toContain('class="notice"')
+      expect(daily.body).toContain('时间轴：1 处（空块 1）')
+      expect(daily.body).toContain('<details><summary>明细</summary>')
+      expect(daily.body).toContain('<h3>09:00</h3>')
+
+      const plain = await call('?p=note&path=' + encodeURIComponent('notes/plain.md'))
+      expect(plain.statusCode).toBe(200)
+      expect(plain.body).not.toContain('时间轴：')
+      expect(plain.body).not.toContain('<details>')
     } finally {
       fs.writeFileSync(paths.CFG_FILE, before)
       fs.rmSync(nb, { recursive: true, force: true })

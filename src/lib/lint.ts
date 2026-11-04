@@ -32,6 +32,8 @@ import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './
 import type { FrontmatterFields } from './frontmatter.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION } from './agents-template.ts'
 import { CONTRACT_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION } from './persona-template.ts'
+import type { TimelineIssue } from './timeline.ts'
+import { isDayString, timelineCounts, timelineIssues } from './timeline.ts'
 
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50
@@ -225,6 +227,27 @@ export interface LintContractBucket {
   items: LintContractIssue[]
 }
 
+/** 时间轴问题：只报告，不自动修（计划 §2 D2） */
+export interface LintTimelineEntry {
+  /** 日记（笔记本相对路径） */
+  path: string
+  /** 这一篇的问题（每篇最多 50 条） */
+  issues: TimelineIssue[]
+}
+
+export interface LintTimelineBucket {
+  /** 窗口内实际读到并检查的日记篇数 */
+  scanned: number
+  /** 有问题的日记篇数 */
+  notes: number
+  /** 问题总数（不受 items 截断影响） */
+  total: number
+  items: LintTimelineEntry[]
+}
+
+/** 时间轴只扫最近多少天（计划 §2 D4）：一年日记会报几百条旧问题，把今天的问题挤出 50 条上限 */
+export const TIMELINE_WINDOW_DAYS = 90
+
 export interface LintOptions {
   /** 多少天没修改算陈旧（默认 90） */
   staleDays?: number
@@ -265,6 +288,8 @@ export interface LintResult {
   template: LintTemplateBucket
   /** 契约层体检：PERSONA.md 缺失 / 旧版 / 未填占位符（只报告） */
   contract: LintContractBucket
+  /** 日记时间轴：最近 90 天的空块 / 倒序 / 格式 / 位置问题（只报告，页面警告不受此窗口限制） */
+  timeline: LintTimelineBucket
   /**
    * 非日记笔记已到 150 篇、根目录却没有 INDEX.md（P2-11）：只是提示，不生成静态索引。
    * 实时分布看 zk_stats（byDir / byTag），静态索引会过期、还要决定谁负责更新。
@@ -518,14 +543,37 @@ export function formatMemoryLinks(bucket: LintMemoryBucket): string | null {
   return `${bucket.total === 0 && bucket.retiredBroken === 0 ? '✓' : '✗'} 记忆链接：${parts.join('｜')}`
 }
 
+const TIMELINE_KINDS: Array<[TimelineIssue['kind'], string]> = [
+  ['empty', '空块'],
+  ['order', '倒序'],
+  ['format', '格式'],
+  ['placement', '位置'],
+]
+
+/** 时间轴一行文案：zk_lint / zk-kit lint 共用；没有问题时返回空串，不占行 */
+export function formatTimeline(bucket: LintTimelineBucket): string {
+  if (bucket.total === 0) return ''
+  const counts = timelineCounts(bucket.items.flatMap((item) => item.issues))
+  const parts = TIMELINE_KINDS.filter(([kind]) => counts[kind] > 0)
+    .map(([kind, label]) => `${label} ${counts[kind]}`)
+  const sample = bucket.items.slice(0, 3).map((item) => {
+    const first = item.issues[0] as TimelineIssue
+    return `${item.path}（行 ${first.line}：${first.title} — ${first.detail}）`
+  })
+  return `✗ 时间轴：${bucket.total} 处（${bucket.notes} 篇；扫描 ${bucket.scanned} 篇）｜${parts.join(' · ')}` +
+    (sample.length > 0 ? ` — ${sample.join('；')}` : '')
+}
+
 /**
  * 三个后加的桶（缺字段 / 标签卫生 / 模板版本）的文案，同样只写一份：
  * `zk-kit lint` 与 `zk_lint` 各写一遍就会改到一半。返回空数组 = 这一库三项都没问题，不占行。
  */
 export function formatLintExtras(
-  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'contract' | 'similarTitles' | 'indexHint'>,
+  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'contract' | 'similarTitles' | 'timeline' | 'indexHint'>,
 ): string[] {
   const lines: string[] = []
+  const timeline = formatTimeline(r.timeline)
+  if (timeline) lines.push(timeline)
   // 缺文件 = 契约未启用（默认状态）：不报错、不占行。
   // 有旧版 / 占位符 / 标记不符时才提醒 —— 否则每个老库每次 lint 都多一条永久 ⚠️，反而训练人忽略告警。
   const contract = r.contract.items
@@ -846,6 +894,68 @@ export function templateStatus(cfg: Config): LintTemplateBucket {
   return version < TEMPLATE_VERSION ? { ...base, currentText } : base
 }
 
+/**
+ * 最近 `TIMELINE_WINDOW_DAYS` 天的日记时间轴（计划 §2 D4）。
+ *
+ * 自己走 dailyDir 而不是复用 `allNotes`：doctor 也会调它，而 doctor 在没有 zk 时
+ * 也要能给出这一行。按文件名 `YYYY-MM-DD` 判日期；不是这个形状（自定义模板）
+ * 才退回文件创建时间 —— 与 dream 的 noteDate 口径一致。
+ */
+export function timelineStatus(
+  cfg: Config,
+  now: Date = new Date(),
+  max = MAX_ITEMS,
+): LintTimelineBucket {
+  const root = path.resolve(cfg.notebook, cfg.dailyDir)
+  const files: string[] = []
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[] = []
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (!entry.name.startsWith('.')) walk(abs)
+        continue
+      }
+      if (entry.isFile() && /\.md$/i.test(entry.name)) files.push(abs)
+    }
+  }
+  walk(root)
+
+  const nowMs = now.getTime()
+  const cutoff = nowMs - TIMELINE_WINDOW_DAYS * 86_400_000
+  let scanned = 0
+  let total = 0
+  const items: LintTimelineEntry[] = []
+
+  for (const abs of files.sort()) {
+    const rel = path.relative(cfg.notebook, abs).split(path.sep).join('/')
+    const stem = path.basename(rel, path.extname(rel))
+    let day = ''
+    if (isDayString(stem)) {
+      day = stem
+    } else {
+      try { day = localDate(fs.statSync(abs).birthtime.toISOString()) } catch { continue }
+    }
+    if (!isDayString(day)) continue
+    const [year, month, date] = day.split('-').map(Number)
+    const at = new Date(year as number, (month as number) - 1, date as number).getTime()
+    if (!(at >= cutoff)) continue
+    let body = ''
+    try {
+      if (fs.statSync(abs).size > 2 * 1024 * 1024) continue
+      body = fs.readFileSync(abs, 'utf8')
+    } catch { continue }
+    scanned += 1
+    const issues = timelineIssues(body, 'auto', MAX_ITEMS)
+    if (issues.length === 0) continue
+    total += issues.length
+    items.push({ path: rel, issues })
+  }
+
+  return { scanned, notes: items.length, total, items: items.slice(0, max) }
+}
+
 export async function lintNotebook(
   cfg: Config,
   opts: LintOptions = {},
@@ -1010,6 +1120,7 @@ export async function lintNotebook(
     tags: tagHygiene(notes),
     template: templateStatus(cfg),
     contract: contractStatus(cfg),
+    timeline: timelineStatus(cfg, now),
     // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
     indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
   }

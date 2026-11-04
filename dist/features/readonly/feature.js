@@ -22,6 +22,7 @@ import { RETIRED_ENTRY_RE } from '../../lib/memory-format.js';
 import { parseFrontmatter } from '../../lib/frontmatter.js';
 import { stripContractMarker } from '../../lib/persona-template.js';
 import { esc, layout, renderMarkdown } from './html.js';
+import { timelineIssues, timelineSummary } from '../../lib/timeline.js';
 const BASE = ROUTE_BASE;
 const VIEW = `${BASE}/view`;
 const FEED = `${BASE}/feed.xml`;
@@ -464,10 +465,22 @@ async function handleNote(res, cfg, rel) {
         ? loaded.doc.content.slice(0, MAX_CONTENT)
         : loaded.doc.content;
     const truncated = content.length < loaded.doc.content.length;
+    // 时间轴警告（计划 §2 D3）：只在日记页出现，正文照原 markdown 渲染（空块保持空 h3）。
+    // 不受 zk_lint 的 90 天窗口限制：打开哪篇查哪篇。
+    const timeline = isUnderDir(loaded.rel, cfg.dailyDir)
+        ? timelineIssues(loaded.doc.content, 'auto')
+        : [];
+    const timelineNotice = timeline.length === 0 ? '' : [
+        `<div class="notice">${esc(timelineSummary(timeline))}`,
+        '<details><summary>明细</summary>',
+        `<ul>${timeline.map((i) => `<li>行 ${i.line}：${esc(i.title)} — ${esc(i.detail)}</li>`).join('')}</ul>`,
+        '</details></div>',
+    ].join('\n');
     const body = [
         `<p class="crumb"><a href="${VIEW}">首页</a> / ${esc(loaded.doc.type || '笔记')}</p>`,
         `<h1>${esc(loaded.doc.title || loaded.rel)}</h1>`,
         `<p class="meta">${esc(localDate(loaded.doc.created) || '—')} · ${loaded.doc.words} 词${loaded.doc.tags.length ? ' · ' + tagLinks(loaded.doc.tags) : ''}</p>`,
+        timelineNotice,
         truncated ? `<p class="notice">正文超过 ${MAX_CONTENT} 字符，这里只显示前 ${MAX_CONTENT} 字符。</p>` : '',
         `<article>${renderMarkdown(content, { linkFor, skipFirstH1: true })}</article>`,
         '<h2>反链</h2>',

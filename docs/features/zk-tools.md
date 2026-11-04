@@ -90,6 +90,9 @@ group 的子目录照旧放行（zk 按路径前缀归组）。理由：`notes/`
 往里写会直接报错 —— 两者都被排除出索引，写进去的笔记不会报错、只是永远搜不到，那比失败更难查。
 `inbox/` 从 0.8.2 起不再创建、也不再宣传（P2-8）：layered 下它不属于任何 group，flat 下能写进去但从索引里消失；
 盘上已有的 `inbox/` 不删，继续当隔离区（读得到、搜不到、写不进）。
+`archive/` 同理只放 `zk_supersede` 搬进去的旧结论：`zk_new` 建在 `archive/`（或它的子目录）下会直接报错，
+flat 在 `newNoteDir` 就拦、layered / 直接调用 `createNote` 在 `mkdir` 前拦；`zk_rename` 搬进归档仍允许并提示。
+这是 3.1 唯一有意的写入收紧 —— 新建进 archive 不报错、却会从检索与统计里消失。
 `zk_stats` 除笔记 / 标签 / 断链 / 孤立外，还给 `archived`（索引里 archive/ 下的笔记数）与
 `superseded`（全部笔记中 `status: superseded` 的数量，含已归档与手工标的）—— 一次 `allNotes(includeArchived)`
 从索引算，不扫磁盘、也不逐篇读全文。`byDir` / `byTag`（P2-11）是同一份 live 上算出的实时分布
@@ -145,6 +148,12 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 与 `duplicateTitles` 分开报：全等的直接进重名，不再进疑似；只在内存里比较，同目录超过 300 篇或扫描触顶时置 `truncated`。只报告，合并由人裁决。
 **日记与纯数字标题不参与**：日记标题就是日期（`2026-10-01` / `2026-10-02` 的二元组相似度是 0.86），
 不排除的话一年日记能吐出上千组误报、把真问题淹掉；按日期 / 编号命名的笔记同理（`isDaily` 在调用方过滤，纯数字 key 在函数内跳过）。
+`timeline`（3.1）查日记时间轴，只报告、不改文件：layered（有 `## Events`）要求 `### HH:MM` 落在 Events 与下一个 `##` 之间；
+flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间只认 `00:00–23:59` 的两位 `HH:MM`（可跟全角 / 半角括号说明）：
+`11:5x` / `9:5` / `24:00` / `12:45 标题` 报格式，layered 里的 `## HH:MM`、或落在 `## Observations` / `## Loose ends` 之后的时间块报位置；
+空块与倒序只报位置正确的条目，同分钟相邻允许。围栏代码与 frontmatter 里的标题不算。
+`zk_lint` 只扫最近 90 天（`TIMELINE_WINDOW_DAYS`；按文件名 `YYYY-MM-DD` 判日期，非日期形状退回创建时间），每篇最多 50 条；
+笔记页的时间轴警告不受这个窗口限制 —— 打开哪篇查哪篇。自动重排会改正文顺序、diff 不可审，所以不给自动修复开关。
 「单向链接」（`oneWayLinks`）在 JS 里按 `zk graph` 的边算：存在 S→X、X 没回链 S，且 **S、X 都不是日记**。
 不用 zk 的 `--missing-backlink`：它的原义是「至少有一条单向链接」，日记天然是一串出边，
 日记提过的每篇笔记都会常年挂在桶里 —— 那不是「没接上」，是正常的引用方向，桶就再也清零不了。
@@ -172,7 +181,7 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 同一份条目解析还数 `undated`（首行没有真校验过的 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）
 与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记），以及 `stale`（有日期且超过 `stale_days`，默认 90 天未复核）——
 都只报告；注入从 0.9 起省略退役条目（notice 说明省略数），文件本身不动。条目切分与日期解析统一走 `lib/memory-format`。
-文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
+文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / 时间轴 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
 `incomplete`（P2-13）：`type` / `status` / `authority` 缺任一的笔记（**只在 layered 下查**：flat 的笔记
 本来就不写这三个字段，整库标红不是「可发现的状态」而是噪音）。索引把缺失落成空串，
 于是「没写 authority」=「authority 正常」，dream 的 informal 门对它们静默失效。
@@ -191,6 +200,9 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 按时间记录真实工作的层，所以从同一次 `zk graph` 里再取「来源在 dailyDir 下的边」：候选与被引排行都带
 `dailyMentions`（被几篇日记提到）、`daysMentioned`（覆盖几个不同日期）、`lastMentioned`（最近日期）。
 日期优先取日记文件名（`YYYY-MM-DD`）—— 补写旧日记时 zk 的 `created` 会全是今天；文件名不是日期形状才退回 `created`。
+同一口径（3.1）也用在窗口 / `backlog` / 候选的 `created` / `dailyLooseEnds.date`：统一走 `noteDate()` ——
+日记看文件名，其他笔记看 frontmatter `date`（严格 `YYYY-MM-DD`），都没有才退回 `created`。
+补写 10 月的日记不会再被算成本周新增，Loose ends 的日期也不会显示成今天。
 `topCited` 排序改为 `daysMentioned → dailyMentions → cited → 标题`（跨天复现比同一天多篇更强）：日记里没写过就是 0，排序自动退回原来的
 「入链降序」，不引入任何新状态，也不需要 recall 日志。局限写在文档里：**空信号不等于没被用过**。
 **晋升是一道门，门要知道门里有什么。** `zk_dream` 会读 `MEMORY.md`，把「已经晋升过」的移出候选、单列 `alreadyPromoted`：

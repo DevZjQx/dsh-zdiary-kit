@@ -546,6 +546,21 @@ function assertWritablePath(cfg, abs) {
     }
 }
 /**
+ * archive/ 只放 `supersede` 搬进去的旧结论（计划 §2 D6）：新建写进去不会报错，
+ * 但 archive 在 excludedNames 里 —— 笔记会从检索、统计、反链里全部消失。
+ * supersede / rename 仍可进 archive；这里只拦「新建」。
+ */
+export function assertNotArchiveCreate(cfg, rel) {
+    const clean = (value) => String(value ?? '').replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/, '');
+    const target = clean(rel);
+    const archive = clean(cfg.archiveDir);
+    if (!archive)
+        return;
+    if (target === archive || target.startsWith(archive + '/')) {
+        throw new ZkError(`${archive}/ 只放 supersede 搬进去的废弃笔记，不能新建：${target || archive}`, `新笔记请写 ${cfg.notesDir}/ 或 ${cfg.dailyDir}/；要归档旧结论用 zk_supersede`);
+    }
+}
+/**
  * 根目录 meta 文件是人的工作面：新建 / 链接 / 废弃都会绕过 zk_append 的守卫，
  * 让「谁改的记忆」失去审计线，甚至能把 MEMORY.md 搬进 archive/。
  * 子目录里的同名文件仍是普通笔记，不受影响。
@@ -695,6 +710,7 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
     // zk 解析相对目录用的是 cwd，不是笔记本 → 一律给绝对路径；
     // 先过 absPathOf：别在 zk 拒绝之前就把 `../..` 目录 mkdir 出去。
     const dirAbs = absPathOf(cfg, dir);
+    assertNotArchiveCreate(cfg, relPathOf(cfg, dirAbs));
     assertWritablePath(cfg, dirAbs);
     // name 是确定的：先按默认扩展名预判，别等 zk 建出根目录 meta 文件
     if (wanted)

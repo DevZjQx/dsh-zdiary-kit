@@ -104,6 +104,27 @@ const LINT_MEMORY = objSchema({
         }, ['source', 'entry', 'link', 'reason', 'path']),
     },
 }, ['files', 'links', 'total', 'unlinked', 'undated', 'retired', 'retiredBroken', 'stale', 'items']);
+/** 日记时间轴：最近 90 天的空块 / 倒序 / 格式 / 位置（只报告） */
+const LINT_TIMELINE = objSchema({
+    scanned: { type: 'number' },
+    notes: { type: 'number' },
+    total: { type: 'number' },
+    items: {
+        type: 'array',
+        items: objSchema({
+            path: { type: 'string' },
+            issues: {
+                type: 'array',
+                items: objSchema({
+                    line: { type: 'number' },
+                    kind: { type: 'string', enum: ['empty', 'order', 'format', 'placement'] },
+                    title: { type: 'string' },
+                    detail: { type: 'string' },
+                }, ['line', 'kind', 'title', 'detail']),
+            },
+        }, ['path', 'issues']),
+    },
+}, ['scanned', 'notes', 'total', 'items']);
 /** frontmatter 缺字段（P2-13） */
 const LINT_INCOMPLETE = objSchema({
     total: { type: 'number' },
@@ -985,6 +1006,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 'incomplete 是 frontmatter 缺 type / status / authority 的笔记：缺失被索引落成空串，机械门会静默失效。' +
                 'tags 查标签卫生（大小写变体 / 单例，标签总数 ≥ 30 才报）；template 说根目录 AGENTS.md 是不是当前版本。' +
                 'similarTitles 是「改一两个字」的疑似重复（同目录、二元组相似度 ≥ 0.6）：与全等重名分开，只报告。' +
+                'timeline 是日记时间轴：最近 90 天的空块 / 倒序 / 格式（11:5x）/ 位置（layered 用 ##、或在 ## Events 外）问题，每篇最多 50 条，只报告不改文件。' +
                 'indexHint=true 表示笔记（不含日记）已到 150 篇而根目录还没有 INDEX.md（只是提示，不生成静态索引）。' +
                 '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
                 'oneWayLinks.items 是缺回链的目标 X（不是来源），from 是没被 X 回链的来源 S；' +
@@ -1021,8 +1043,9 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     tags: LINT_TAGS,
                     template: LINT_TEMPLATE,
                     contract: LINT_CONTRACT,
+                    timeline: LINT_TIMELINE,
                     indexHint: { type: 'boolean' },
-                }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'contract', 'indexHint']),
+                }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'contract', 'timeline', 'indexHint']),
             },
             async run(args, env) {
                 const cfg = configFor(env.workspace, env.sessionId);

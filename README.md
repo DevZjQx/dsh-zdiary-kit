@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 3.0.1
+# dsh-zdiary-kit 3.1.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -12,14 +12,14 @@
 |---|---|
 | `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、相对路径、绝对路径、标签、摘要；中文查询自动并用子串匹配（`matchStrategy` 说明用了 `fts` / `regex` / `mixed`，补上全文索引漏掉的笔记） |
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active） |
-| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/`、`inbox/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面）；中文笔记没有任何标签时在 `tagWarning` 里提示（只提示，不阻断） |
+| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/`、`inbox/`、`archive/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面；归档只放 `zk_supersede` 搬进去的旧结论）；中文笔记没有任何标签时在 `tagWarning` 里提示（只提示，不阻断） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题）；根目录 meta 文件拒写 |
 | `zk_daily` | 打开/创建某天的日记，并追加一条带时间的记录（layered 模板写进 `## Events` 的 `### HH:MM`，flat 追加到文件末尾的 `## HH:MM`） |
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题）；meta 文件不作为来源或目标 |
 | `zk_supersede` | 废弃过时结论：标 `superseded` + 写 `reason` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演；meta 文件不能废弃 |
 | `zk_rename` | 改名 / 换目录并修断链：入链（`[[…]]` 与 Markdown 链接，保留 `#锚点` 与 `\|别名`）按实际解析结果改到新路径，根目录 meta 里的 `[[来源]]` 一起改，被搬走那篇自己的相对 Markdown 链接按新位置重算；默认只预演 |
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）与角色契约 `PERSONA.md`（单独成段、不截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时这些内容每轮已自动带进系统提示 |
-| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本 / 契约（缺失·旧版·比插件新·标记与内容不符·未填占位符），每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；只报告不改写 |
+| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本 / 契约（缺失·旧版·比插件新·标记与内容不符·未填占位符）/ 日记时间轴（最近 90 天的空块·倒序·格式·位置），每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、已在 MEMORY 的、窗口外积压、daily 未完成项、被引最多（先按「被日记提到几天」排）；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded），以及顶层目录与前 10 个标签的实时分布 |
 | `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |

@@ -11,7 +11,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { ZkError, zk } from './zk.js';
+import { assertNotArchiveCreate, ZkError, zk } from './zk.js';
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.js';
 import { PERSONA_TEMPLATE } from './persona-template.js';
 import { effectivePaths, isPluginOwned, normGroupPath, parseGroupBlocks, sameGroupPath, samePaths } from './notebook-config.js';
@@ -123,8 +123,12 @@ function normDir(rel) {
  */
 export function newNoteDir(cfg, input = {}) {
     const given = input.dir ? normDir(input.dir) : '';
-    if (cfg.structure !== 'layered')
-        return given || normDir(cfg.notesDir);
+    if (cfg.structure !== 'layered') {
+        const dir = given || normDir(cfg.notesDir);
+        // 提前拦住 archive：createNote 也会拦，但这里能给出更早、更贴近 zk_new 的错误
+        assertNotArchiveCreate(cfg, dir);
+        return dir;
+    }
     const groups = expectedGroups(cfg).flatMap((group) => group.paths.map(normDir));
     const hint = `可选目录：${groups.join(' / ')}（group 下的子目录也行）；` +
         `落在 ${cfg.notesDir}/ 根不会套模板，没有 frontmatter，文件名是随机 id`;

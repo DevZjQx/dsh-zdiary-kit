@@ -10,7 +10,7 @@ import { NOTE_KINDS, ensureNotebook, fixGroupConfig, groupOverlapNotes, newNoteD
 import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
 import { installZk, sourceLabel } from './lib/install.js';
 import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
-import { formatLintExtras, formatMemoryLinks, lintNotebook, contractStatus } from './lib/lint.js';
+import { formatLintExtras, formatMemoryLinks, lintNotebook, contractStatus, timelineStatus } from './lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from './lib/dream.js';
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
 
@@ -356,6 +356,12 @@ async function doctor() {
         (st.ready ? `${st.dirs.length} 个目录齐全` : `缺 ${st.missing.join('、')}（跑 zk-kit init）`) +
         (st.agents.required ? (st.agents.present ? ' · AGENTS.md 就绪' : ' · 缺 AGENTS.md（跑 zk-kit init）') : '') +
         drift);
+    if (exists) {
+        const timeline = timelineStatus(cfg);
+        rows.push(timeline.total > 0
+            ? `· 时间轴：${timeline.total} 处（${timeline.notes} 篇；zk_lint 看详情）`
+            : '· 时间轴：0 处');
+    }
     const payload = buildMemoryPayload(cfg);
     const present = payload.files.filter((f) => f.present);
     rows.push(present.length === 0

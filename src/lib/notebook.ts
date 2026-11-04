@@ -12,7 +12,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
-import { ZkError, zk } from './zk.ts'
+import { assertNotArchiveCreate, ZkError, zk } from './zk.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
 import { PERSONA_TEMPLATE } from './persona-template.ts'
 import { effectivePaths, isPluginOwned, normGroupPath, parseGroupBlocks, sameGroupPath, samePaths } from './notebook-config.ts'
@@ -174,7 +174,12 @@ function normDir(rel: string): string {
  */
 export function newNoteDir(cfg: Config, input: { dir?: string; type?: string } = {}): string {
   const given = input.dir ? normDir(input.dir) : ''
-  if (cfg.structure !== 'layered') return given || normDir(cfg.notesDir)
+  if (cfg.structure !== 'layered') {
+    const dir = given || normDir(cfg.notesDir)
+    // 提前拦住 archive：createNote 也会拦，但这里能给出更早、更贴近 zk_new 的错误
+    assertNotArchiveCreate(cfg, dir)
+    return dir
+  }
   const groups = expectedGroups(cfg).flatMap((group) => group.paths.map(normDir))
   const hint =
     `可选目录：${groups.join(' / ')}（group 下的子目录也行）；` +

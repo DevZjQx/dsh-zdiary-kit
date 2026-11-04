@@ -29,8 +29,11 @@ import { parseFrontmatter } from './frontmatter.js';
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './memory-format.js';
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION } from './agents-template.js';
 import { CONTRACT_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION } from './persona-template.js';
+import { isDayString, timelineCounts, timelineIssues } from './timeline.js';
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50;
+/** 时间轴只扫最近多少天（计划 §2 D4）：一年日记会报几百条旧问题，把今天的问题挤出 50 条上限 */
+export const TIMELINE_WINDOW_DAYS = 90;
 /** 标题归一化与链接解析在 `lib/wikilink.ts`（dream 也用同一套）；这里保留导出，免得调用方跟着搬 */
 export { normalizeTitle };
 /** 同一标题出现在多篇里（slug 命名下不同目录可以同名，检索时容易挑错） */
@@ -276,12 +279,35 @@ export function formatMemoryLinks(bucket) {
         parts.push(`${bucket.stale.total} 条超过 ${bucket.stale.staleDays} 天未复核`);
     return `${bucket.total === 0 && bucket.retiredBroken === 0 ? '✓' : '✗'} 记忆链接：${parts.join('｜')}`;
 }
+const TIMELINE_KINDS = [
+    ['empty', '空块'],
+    ['order', '倒序'],
+    ['format', '格式'],
+    ['placement', '位置'],
+];
+/** 时间轴一行文案：zk_lint / zk-kit lint 共用；没有问题时返回空串，不占行 */
+export function formatTimeline(bucket) {
+    if (bucket.total === 0)
+        return '';
+    const counts = timelineCounts(bucket.items.flatMap((item) => item.issues));
+    const parts = TIMELINE_KINDS.filter(([kind]) => counts[kind] > 0)
+        .map(([kind, label]) => `${label} ${counts[kind]}`);
+    const sample = bucket.items.slice(0, 3).map((item) => {
+        const first = item.issues[0];
+        return `${item.path}（行 ${first.line}：${first.title} — ${first.detail}）`;
+    });
+    return `✗ 时间轴：${bucket.total} 处（${bucket.notes} 篇；扫描 ${bucket.scanned} 篇）｜${parts.join(' · ')}` +
+        (sample.length > 0 ? ` — ${sample.join('；')}` : '');
+}
 /**
  * 三个后加的桶（缺字段 / 标签卫生 / 模板版本）的文案，同样只写一份：
  * `zk-kit lint` 与 `zk_lint` 各写一遍就会改到一半。返回空数组 = 这一库三项都没问题，不占行。
  */
 export function formatLintExtras(r) {
     const lines = [];
+    const timeline = formatTimeline(r.timeline);
+    if (timeline)
+        lines.push(timeline);
     // 缺文件 = 契约未启用（默认状态）：不报错、不占行。
     // 有旧版 / 占位符 / 标记不符时才提醒 —— 否则每个老库每次 lint 都多一条永久 ⚠️，反而训练人忽略告警。
     const contract = r.contract.items;
@@ -578,6 +604,80 @@ export function templateStatus(cfg) {
         return { ...base, mismatch: true, mismatchDetail, currentText };
     return version < TEMPLATE_VERSION ? { ...base, currentText } : base;
 }
+/**
+ * 最近 `TIMELINE_WINDOW_DAYS` 天的日记时间轴（计划 §2 D4）。
+ *
+ * 自己走 dailyDir 而不是复用 `allNotes`：doctor 也会调它，而 doctor 在没有 zk 时
+ * 也要能给出这一行。按文件名 `YYYY-MM-DD` 判日期；不是这个形状（自定义模板）
+ * 才退回文件创建时间 —— 与 dream 的 noteDate 口径一致。
+ */
+export function timelineStatus(cfg, now = new Date(), max = MAX_ITEMS) {
+    const root = path.resolve(cfg.notebook, cfg.dailyDir);
+    const files = [];
+    const walk = (dir) => {
+        let entries = [];
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        }
+        catch {
+            return;
+        }
+        for (const entry of entries) {
+            const abs = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (!entry.name.startsWith('.'))
+                    walk(abs);
+                continue;
+            }
+            if (entry.isFile() && /\.md$/i.test(entry.name))
+                files.push(abs);
+        }
+    };
+    walk(root);
+    const nowMs = now.getTime();
+    const cutoff = nowMs - TIMELINE_WINDOW_DAYS * 86_400_000;
+    let scanned = 0;
+    let total = 0;
+    const items = [];
+    for (const abs of files.sort()) {
+        const rel = path.relative(cfg.notebook, abs).split(path.sep).join('/');
+        const stem = path.basename(rel, path.extname(rel));
+        let day = '';
+        if (isDayString(stem)) {
+            day = stem;
+        }
+        else {
+            try {
+                day = localDate(fs.statSync(abs).birthtime.toISOString());
+            }
+            catch {
+                continue;
+            }
+        }
+        if (!isDayString(day))
+            continue;
+        const [year, month, date] = day.split('-').map(Number);
+        const at = new Date(year, month - 1, date).getTime();
+        if (!(at >= cutoff))
+            continue;
+        let body = '';
+        try {
+            if (fs.statSync(abs).size > 2 * 1024 * 1024)
+                continue;
+            body = fs.readFileSync(abs, 'utf8');
+        }
+        catch {
+            continue;
+        }
+        scanned += 1;
+        const issues = timelineIssues(body, 'auto', MAX_ITEMS);
+        if (issues.length === 0)
+            continue;
+        total += issues.length;
+        items.push({ path: rel, issues });
+    }
+    return { scanned, notes: items.length, total, items: items.slice(0, max) };
+}
 export async function lintNotebook(cfg, opts = {}, signal) {
     const staleDays = Math.min(3650, Math.max(1, Math.trunc(opts.staleDays ?? 90)));
     const now = opts.now ?? new Date();
@@ -735,6 +835,7 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         tags: tagHygiene(notes),
         template: templateStatus(cfg),
         contract: contractStatus(cfg),
+        timeline: timelineStatus(cfg, now),
         // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
         indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
     };
