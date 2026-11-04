@@ -15,18 +15,18 @@
 - `lib/wikilink.ts`：`[[链接]]` 的解析口径（路径 → `.md` → `archive/` → 活笔记标题），lint 与 dream 共用一份
 - `lib/persona-template.ts`：`PERSONA_TEMPLATE` 与独立版本标记（`<!-- zdiary-persona: vN -->`，
   不复用 `zdiary-template` —— AGENTS 改版不该让契约误报旧版）；只走 opt-in 写入，已存在不覆盖
-- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 189 词），flat 用精简版
-  （89 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
+- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 180 词），flat 用精简版
+  （80 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
   layered 初始化自动写，flat 只有 `ensureNotebook(cfg, signal, { withAgents: true })` / `zk-kit init --with-agents` /
   设置页「写入 AGENTS.md 模板」才写；已存在一律不覆盖。
   `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
-- `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册三段：`zdiary:notebook`（order 5190，一行当前笔记本名字 / 结构 / 路径 + 其余已配置库名，每步跟随会话 pin；**不进记忆预算**）、`zdiary:memory`（order 5200，`interpolate: false` —— 记忆是文件原文，
-  `{{…}}` 一律原样保留：插值会让未注册变量在装配时抛错、`{{model}}` 这类被静默改写）与 `zdiary:state`（order 5210，从当前 `.state/rules` 的 AST 取事件名 / 参数名，参数写成 `key=<值>`；用默认规则时补上内置 `slept`，自定义规则只列规则读取的事件；整行上限 160 词 / 1200 字符；规则一改下一轮就换；日志里的自定义事件**不进**这段（否则 append 会让系统提示每轮变、打断前缀缓存，交给场景「记录」尾巴）；没有状态文件时为空串，也不占记忆预算），`text` 是函数，每个 step 重新求值（按文件指纹 + 预算 + 日期缓存，变了才重读重算）；
+- `app/plugin.ts`：`ctx.inject(['systemPrompt'])` → 注册两段：`zdiary:notebook`（order 5190，一行当前笔记本名字 / 结构 / 路径 + 其余已配置库名，每步跟随会话 pin；**不进记忆预算**）、`zdiary:memory`（order 5200，`interpolate: false` —— 记忆是文件原文，
+  `{{…}}` 一律原样保留：插值会让未注册变量在装配时抛错、`{{model}}` 这类被静默改写），`text` 是函数，每个 step 重新求值（按文件指纹 + 预算 + 日期缓存，变了才重读重算）；
   装配上下文带 `agent.id` 时按**会话工作区 + 该会话固定的笔记本**解析（`config/session`，和 `zk_*` 工具同口径）；
   别的会话切了默认值不会把已开的会话换库，裸装配才退回进程工作区 + 全局默认
 - `zk_context` 工具：同一份 payload（含 `ratio` 用量），给「宿主没有 `systemPrompt`」和「人想核对被截断了什么」用；
-  另返回 `notebooks`（名字 / 路径 / 结构 / 当前）、`scene` 与 `stateEvents` / `stateRulesVersion`（事件词汇行及其规则版本），没有提示注入时模型也能发现已配置的库与当前该怎么记事件
-- 设置页「记忆」：注入预算、契约预算、场景预算、状态窗口、场景新鲜度、合并预算；「目录与 group」：归档目录。
+  另返回 `notebooks`（名字 / 路径 / 结构 / 当前），没有提示注入时模型也能发现已配置的库
+- 设置页「记忆」：注入预算、契约预算；「目录与 group」：归档目录。
   快照里带 `memory.words/budget/truncatedWords/retiredWords/contract` 状态行；自检多一项「角色契约」
 
 **Does not own.** MEMORY.md 写什么（agent 按 AGENTS.md 直接改文件，git diff 可审）；
@@ -41,24 +41,9 @@
 写入入口只有 opt-in：`zk-kit init --with-contract`、设置页「写入契约模板」、
 `ensureNotebook(cfg, signal, { withContract: true })` —— flat 与 layered 都不会自动多一个文件。
 **注入顺序**：契约段永远在记忆段之前、**不参与记忆预算的截断**（超了只告警，点名 `contractBudgetWords`）。
-三个新预算：`contractBudgetWords`（默认 240，范围 50–800）、`sceneBudgetWords`（80，场景行独立预算，不进记忆截断）、
-`totalPromptBudgetWords`（900，记忆载荷 + 场景行的合并总账；只告警点名）。
-记忆载荷的缓存键包含真正影响它的大小项（`totalPromptBudgetWords` 不在键里：它不改变 payload）；
-场景有独立缓存（日志 / 规则指纹 + 分钟），互不串。
+新预算：`contractBudgetWords`（默认 240，范围 50–800）。
+记忆载荷的缓存键包含真正影响它的大小项。
 
-**场景层（M3）。** 场景**不在这个 payload 里**：`buildMemoryPayload` 只产出记忆段，
-场景由 `lib/scene.ts` 从 `<notebook>/.state/events.log` 独立投影，走 `systemPrompt.context()`
-（order 220，排在宿主内置运行时上下文之后）作为 user-role 快照注入，不进系统提示 section。
-`suppressRuntimeContext()` 会把它和其它可选运行时上下文一起关掉 —— 场景本来就是可选状态，
-`zk_state show` 仍是后备；宿主没有 `context()` 时安静降级，笔记本与记忆不受影响。
-没有日志 = 不注入、不多一个词；只有窗口外事件时仍注入长尾（`hoursSince` 读 last-seen / tombstone）。
-规则没消费、也不是内置的事件名（agent 自己起的 `coffee` / `focus`）以「记录」尾巴附在场景行末尾：
-只取窗口内、最多 3 个，只名字 + 时间、不读参数值；窗口外的 tombstone 不进尾巴，否则一个死名字会让场景永远 present。
-预算 `sceneBudgetWords` 只裁场景行：从尾部丢（自定义事件尾巴先丢，地点 / 目标次之，energy / mood 最后），一句都放不下就不注入。
-合并总量 `combinedWords = payload.totalWords + scene.words`，在 `zk_context` / `doctor` / 记忆页 / 设置页用同一个口径；
-超 `totalPromptBudgetWords` 只在这些**人看的界面**点名，不写进系统提示、不自动截断（D4）。
-规则求值期报错（除零 / `count` 越界 / null 进算术）也按 D7 整份回退内置默认，不是让场景整段消失。
-日志文件读不了（权限 / 是个目录）报 `emptyReason=error`，不再冒充「未启用」——「没有日志」和「日志坏了」不是一回事。
 `truncatedWords` 在顶层、`retiredWords` 在 `files[]` 里分开报：`原 X` 从此只反映截断，退役单列一项。
 契约段再拆 `contentWords`（正文，含文件标题，预算只看它）/ `noticeWords`（告警行）/ `words`（整段注入量）/ `overWords`；
 `memoryUsage` 的 `headroom` 只按记忆侧算（`totalWords - contractWords`），dream 不再把契约误叫成「提示」。
@@ -81,7 +66,7 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 为什么要有：`zk_supersede` 只重写 `zk graph` 里的入链，meta 文件被 `excludedNames` 排除在图外 ——
 链接不会跟着搬，`--broken-links` 也看不见。语义重复仍留给 agent，插件不碰。
 
-**Depends on.** `config/store`（`memoryBudgetWords` / `contractBudgetWords` / `sceneBudgetWords` / `totalPromptBudgetWords`，每次现读 —— 设置页保存后下一次工具调用就生效）、
+**Depends on.** `config/store`（`memoryBudgetWords` / `contractBudgetWords`，每次现读 —— 设置页保存后下一次工具调用就生效）、
 `lib/meta`、`lib/persona-template`、`node:fs`；宿主的 `systemPrompt` 服务（可选，没有就只留 `zk_context`）。
 
 **Public surface.** `buildMemoryPayload(cfg)`、`memoryUsage(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、
@@ -93,8 +78,7 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 
 **Rejected.** 只在会话开始时注入一次 —— 拒绝：改完 MEMORY.md 要等下一次会话才生效，还得自己实现「这条已经注入过」的去重。
 用 `systemPrompt.context()` 而不是 `section()` —— 拒绝：`context()` 会被 `suppressRuntimeContext` 连带关掉，
-多一个开关就多一种「记忆静默消失」。这条只针对记忆；场景层（M3）相反，走 `context()`：
-它每步都变，宿主用 `refreshContext()` 在准入前重读，放进 section 反而会改写系统提示、打断前缀缓存。
+多一个开关就多一种「记忆静默消失」。
 依赖 DSH 自动加载 vault 根目录的 `AGENTS.md` —— 拒绝：不成立，
 内置加载器只认「项目根 → cwd」链与用户级两份，vault 不在 cwd 祖先链上时完全读不到（见计划 §4 M1）。
 
@@ -104,7 +88,7 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 P1-3 的日期 / 退役格式 + P2-15 的版本标记后为 189 词；P2-8 去掉 `inbox/` 后实测 186 词；
 0.9 把「超预算从底部往前丢」改成「按日期丢最旧的一条」（截断语义变了，模板必须跟着改）后为 187 词，`TEMPLATE_VERSION` 升到 3；
 v4 去掉「宿主不会自动加载本文件」一句后为 175 词（单测锁 `≤190`；flat 精简版锁 `≤90`，v4 起实测 76）；
-v5 在 MEMORY 条目约定后补「先 zk_read 核对来源」后为 180 词（flat 80）。
+v5 在 MEMORY 条目约定后补「先 zk_read 核对来源」后为 180 词（flat 80）；v7 精简模板后仍为 180 词（flat 80）。
 `AGENTS.md` 是硬规则，单独超预算也不截断，只回显告警；文件内容里的 `</system-reminder>` 会被转义，
 截断目录里的段落标题同样转义 —— 不许提前闭合插件自己的框；任何一份文件读不到都当作不存在，笔记本没建好时返回空载荷而不是报错。
 
@@ -179,7 +163,7 @@ dream 的判重分两步（顺序不能反）：`[[链接]]` 匹配用**原文**
 插件装进 DSH 后文档躺在 profile 的 `node_modules` 里，工作区外的读取可能被策略拦掉，给路径等于让它多搜几次。
 反过来，标记**高于** `TEMPLATE_VERSION` 时（用户升过更新的插件又降级 / 手写了更大的号）照样报，但不给 `currentText`：
 那是插件该升级，递旧模板等于让 agent 把规则改回去。
-标记**等于** `TEMPLATE_VERSION` 时再查正文哨兵（`TEMPLATE_SENTINELS`，如 v4 删掉的「宿主不会自动加载」）：
+标记**等于** `TEMPLATE_VERSION` 时再查正文哨兵（`TEMPLATE_SENTINELS`，如「宿主不会自动加载」）：
 还留着旧句 = 只把首行数字改成了 vN，报「标记与内容不符」并把当前模板全文给出。哨兵只查当前版本；
 用户合法改模板被误报也只是提示，不覆盖。
 标记固定 4 词、不带日期（带日期实测 6 词，白花 2 词）；改模板时 `TEMPLATE_VERSION + 1`。

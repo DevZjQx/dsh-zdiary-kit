@@ -1,5 +1,5 @@
 /**
- * zk 工具（feature 的公共入口）：15 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
+ * zk 工具（feature 的公共入口）：14 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
  *
  * 设计要点：
  *   · 除 zk_context（只读 meta 文件，不依赖 zk）外，每个工具进来先 ensureNotebook —— 第一次调用就自动建好笔记本，用户不用先点设置页；
@@ -19,14 +19,9 @@ import { searchNotes, searchNotesDetailed, createNote, readNote, findNote, appen
 import { configuredAliases, readAliases } from '../../lib/alias.js';
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.js';
 import { META_NAMES } from '../../lib/meta.js';
-import { buildScene, combinedWords } from '../../lib/scene.js';
-import { buildStateContract } from '../../lib/state-contract.js';
-import { appendEvent, checkAppendInput, pruneStateLog, readStateLog, StateError } from '../../lib/state-log.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from '../../lib/dream.js';
 const text = (value) => [{ type: 'text', text: value }];
-/** 事件参数回显成一行 `key=value`；含空白 / 引号的值用 JSON 引号包一层 */
-const paramsText = (params) => Object.entries(params).map(([key, value]) => `${key}=${/[\s"]/.test(value) ? JSON.stringify(value) : value}`).join(' ');
 const objSchema = (properties, required) => ({
     type: 'object',
     properties,
@@ -193,8 +188,8 @@ const LINT_PARSE = objSchema({
     },
 }, ['total', 'items']);
 function fail(err) {
-    // StateError 与 ZkError 同为「人话 + 下一步」：hint 必须一起交给模型，否则它只知道写错了、不知道怎么写
-    if (err instanceof ZkError || err instanceof StateError) {
+    // ZkError 是「人话 + 下一步」：hint 必须一起交给模型，否则它只知道写错了、不知道怎么写
+    if (err instanceof ZkError) {
         throw new Error(err.hint ? `${err.message}（${err.hint}）` : err.message);
     }
     throw err instanceof Error ? err : new Error(String(err));
@@ -947,7 +942,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
             name: 'zk_context',
             description: '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回；' +
                 '角色契约（PERSONA.md）单独成段、在记忆段之前、不参与截断。' +
-                '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前），并回带场景投影与当前规则的事件词汇（stateEvents / stateRulesVersion）。' +
+                '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前）。' +
                 '宿主支持注入时这些内容每轮已自动进入系统提示；宿主不支持、或想核对「被截断了多少」时用它。',
             parameters: { type: 'object', properties: {}, additionalProperties: false },
             output: {
@@ -978,18 +973,6 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             }, ['name', 'present', 'words']),
                         },
                     }, ['present', 'contentWords', 'words', 'noticeWords', 'budget', 'overBudget', 'overWords', 'files']),
-                    scene: objSchema({
-                        present: { type: 'boolean' },
-                        presence: { type: 'string' },
-                        events: { type: 'number' },
-                        rulesVersion: { type: 'string' },
-                        words: { type: 'number' },
-                        emptyReason: { type: 'string' },
-                    }, ['present', 'presence', 'events', 'rulesVersion', 'words', 'emptyReason']),
-                    combinedWords: { type: 'number' },
-                    combinedBudget: { type: 'number' },
-                    stateEvents: { type: 'string' },
-                    stateRulesVersion: { type: 'string' },
                     notebook: { type: 'string' },
                     defaultNotebook: { type: 'string' },
                     pinned: { type: 'string' },
@@ -1012,32 +995,15 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             retiredWords: { type: 'number' },
                         }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
                     },
-                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'scene', 'combinedWords', 'combinedBudget', 'stateEvents', 'stateRulesVersion', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
+                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'contract', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
             },
             async run(_args, env) {
                 // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
                 const cfg = configFor(env.workspace, env.sessionId);
                 const state = sessionState(env.workspace, env.sessionId);
                 const payload = buildMemoryPayload(cfg);
-                const scene = buildScene(cfg);
-                const stateContract = buildStateContract(cfg);
                 return {
                     ...payload,
-                    // 场景单独投影、单独预算（D7）：不进 memory text，也不占记忆预算
-                    scene: {
-                        present: scene.present,
-                        presence: scene.presence,
-                        events: scene.events,
-                        rulesVersion: scene.rulesVersion,
-                        words: scene.words,
-                        emptyReason: scene.emptyReason,
-                    },
-                    combinedWords: combinedWords(payload.totalWords, scene),
-                    combinedBudget: cfg.totalPromptBudgetWords,
-                    // 宿主没有 systemPrompt 时的后备：把当前规则的事件词汇带在 context 里
-                    // （只含会参与投影的词汇：自定义事件在场景的「记录」尾巴里，不进系统提示段）
-                    stateEvents: stateContract?.text ?? '',
-                    stateRulesVersion: stateContract?.rulesVersion ?? '',
                     notebook: state.active,
                     defaultNotebook: state.defaultName,
                     pinned: state.diverged ? state.pinned : '',
@@ -1057,182 +1023,16 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     ? `笔记本「${current.name}」（${current.structure}）→ ${current.path}` +
                         (others.length ? `\n另有：${others.map((n) => `${n.name}（${n.structure}）`).join('、')} —— zk_use 切换本会话` : '')
                     : `笔记本「${v.notebook}」`;
-                // 宿主没有 systemPrompt、或想核对当前规则时，词汇跟 context 一起回
-                const stateLine = v.stateEvents
-                    ? `\n\n${v.stateEvents}${v.stateRulesVersion ? ` · 规则 ${v.stateRulesVersion}` : ''}`
-                    : '';
-                if (!v.text && !v.scene.present) {
-                    const why = v.scene.emptyReason === 'budget'
-                        ? '场景有事件，但一行都放不下（调大 sceneBudgetWords）'
-                        : v.scene.emptyReason === 'rules'
-                            ? '场景规则没算出可展示的值'
-                            : v.scene.emptyReason === 'error'
-                                ? '场景读取失败（看 doctor / 设置页）'
-                                : '没有状态事件';
-                    return text(drift + head + stateLine + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md 契约。\n${why}。`);
+                if (!v.text) {
+                    return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md 契约。`);
                 }
                 const contract = v.contract?.present
                     ? `\n\n契约：正文（含标题）${v.contract.contentWords}/${v.contract.budget} 词` +
                         `（${v.contract.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
                         (v.contract.overBudget ? `，超 ${v.contract.overWords} 词（契约不截断）` : '')
                     : '\n\n契约：未启用（根目录没有 PERSONA.md）';
-                const presence = v.scene.presence === 'present' ? '在场' : v.scene.presence === 'absent' ? '不在' : '未知';
-                const scene = v.scene.present
-                    ? `\n\n场景：${v.scene.words} 词（规则 ${v.scene.rulesVersion} · 窗口内 ${v.scene.events} 条事件 · 用户${presence}）`
-                    : v.scene.emptyReason === 'budget'
-                        ? '\n\n场景：有事件，但一句都放不下（调大 sceneBudgetWords）'
-                        : v.scene.emptyReason === 'rules'
-                            ? '\n\n场景：规则没算出可展示的值（energy / mood / satiety / 地点 / 目标 都是 null）'
-                            : v.scene.emptyReason === 'error'
-                                ? '\n\n场景：读取失败（看 doctor / 设置页）'
-                                : '\n\n场景：未启用（.state/events.log 不存在或没有事件）';
-                const over = v.combinedBudget > 0 && v.combinedWords > v.combinedBudget
-                    ? `，超 ${v.combinedWords - v.combinedBudget} 词（合并预算 ${v.combinedBudget}）`
-                    : `（合并预算 ${v.combinedBudget}）`;
-                const totals = `\n\n用量：记忆载荷 ${v.totalWords} 词（预算 ${v.budget}）+ 场景 ${v.scene.words} 词（预算单独算）= 合计 ${v.combinedWords} 词` + over;
-                return text(drift + head + contract + stateLine + scene + totals + (v.text ? '\n\n' + v.text : ''));
-            },
-        }),
-        t({
-            name: 'zk_state',
-            description: '运行时状态：一行一条事件，场景是日志的投影（不存快照、不跑定时器）。' +
-                'append：记一件已经发生的事（不写计划）。事件名可以自己起（小写字母开头，只含 [a-z0-9_]，≤32）；内置示例：slept（入睡）/ woke hours=7.5（醒来，时长为睡眠小时数）/ ate（吃过）/ at place=书房（所在位置）/ set_goal text="写完 D7"（当前目标）/ user_left（用户离开）/ user_returned（用户回来）；参数写成 key=value，值含空格要加引号。' +
-                '有 `.state/rules` 时，系统提示里的「状态事件」是当前规则认可的词汇，以它为准；不在规则里的事件只是记录：窗口内的会以「记录」尾巴出现在场景行（最多 3 个，只名字 + 时间，不读参数），不参与 energy / mood 等投影。事件是你自己的叙述，插件只校验格式与时间，不校验真假，也不校验事件名是否属于内置集；别把 token 余额之类宿主观测写进来。' +
-                'show：读当前投影（energy / mood / satiety / 地点 / 目标 / 在场 + 记录的自定义事件）+ 窗口内最近 20 条事件，不回全量日志。' +
-                'prune：压实日志（保留窗口内全部 + 每个事件名在窗口外的最后一条），返回 dropped / kept；不自动 commit。' +
-                '它不是日常操作：只有人明确要求、或 doctor 提示日志偏大时才用；它会删掉旧事件，默认别碰。' +
-                '默认不翻历史：只有用户明确问「之前 / 过去」时才查；平时不要主动读 .state。',
-            parameters: {
-                type: 'object',
-                properties: {
-                    action: S.enum('append 追加事件 / show 读投影 / prune 压实', ['append', 'show', 'prune']),
-                    event: S.str('append 用：事件名（自由命名：小写字母开头，只含 [a-z0-9_]，最长 32；内置示例 slept / woke / ate / at / set_goal / user_left / user_returned；不在规则里的事件只进场景「记录」尾巴（窗口内最多 3 个），不参与投影）'),
-                    params: S.arr('append 用：参数列表，形如 key=value（如 woke 的 hours=7.5；最多 8 个；字符串含空格要加引号）', S.str('key=value')),
-                    at: S.str('append 用：回填时间（ISO，必须带时区，如 2026-11-04T07:10:00+08:00）；缺省 = 现在'),
-                    days: S.num('prune 用：窗口外的截止天数（必须 ≥ 投影窗口）'),
-                    force: S.bool('prune 用：截止天数小于投影窗口时强行压实'),
-                },
-                required: ['action'],
-                additionalProperties: false,
-            },
-            output: {
-                schema: objSchema({
-                    action: { type: 'string' },
-                    present: { type: 'boolean' },
-                    presence: { type: 'string' },
-                    rulesVersion: { type: 'string' },
-                    words: { type: 'number' },
-                    text: { type: 'string' },
-                    emptyReason: { type: 'string' },
-                    total: { type: 'number' },
-                    windowEvents: { type: 'number' },
-                    badLines: { type: 'number' },
-                    events: {
-                        type: 'array',
-                        items: objSchema({
-                            at: { type: 'string' },
-                            event: { type: 'string' },
-                            params: { type: 'string' },
-                        }, ['at', 'event', 'params']),
-                    },
-                    dropped: { type: 'number' },
-                    kept: { type: 'number' },
-                    windowDays: { type: 'number' },
-                    at: { type: 'string' },
-                    name: { type: 'string' },
-                    line: { type: 'string' },
-                }, ['action', 'present', 'presence', 'rulesVersion', 'words', 'text', 'emptyReason', 'total', 'windowEvents', 'badLines', 'events', 'dropped', 'kept', 'windowDays', 'at', 'name', 'line']),
-            },
-            async run(args, env) {
-                const cfg = configFor(env.workspace, env.sessionId);
-                const action = String(args.action);
-                const empty = {
-                    action, present: false, presence: 'unknown', rulesVersion: '', words: 0, text: '', emptyReason: 'no-log',
-                    total: 0, windowEvents: 0, badLines: 0, events: [],
-                    dropped: 0, kept: 0, windowDays: cfg.sceneWindowDays, at: '', name: '', line: '',
-                };
-                if (action === 'append') {
-                    const name = String(args.event ?? '').trim();
-                    if (!name)
-                        throw new StateError('append 需要 event（事件名）');
-                    const params = {};
-                    for (const item of Array.isArray(args.params) ? args.params : []) {
-                        const raw = String(item ?? '');
-                        const eq = raw.indexOf('=');
-                        if (eq <= 0)
-                            throw new StateError(`参数写法不对：${raw}`, '形如 place=书房；值里有空格就写 place="书房 阳台"');
-                        const key = raw.slice(0, eq).trim();
-                        let value = raw.slice(eq + 1).trim();
-                        if (value.startsWith('"') && value.endsWith('"') && value.length >= 2)
-                            value = value.slice(1, -1);
-                        if (key in params)
-                            throw new StateError(`参数重复：${key}`);
-                        params[key] = value;
-                    }
-                    const input = { name, params, at: args.at ? String(args.at) : undefined };
-                    // 先校验再建库：写错的事件不该在磁盘上留下一个刚初始化好的笔记本
-                    checkAppendInput(input);
-                    // 与其它写工具一致：第一个事件顺手把笔记本建好（否则只多一个没有 .zk 的 .state/）
-                    await ensureNotebook(cfg, env.signal);
-                    const written = appendEvent(cfg, input);
-                    return {
-                        ...empty,
-                        at: written.at,
-                        name: written.name,
-                        line: written.line,
-                        events: [{ at: written.at, event: written.name, params: paramsText(written.params) }],
-                    };
-                }
-                if (action === 'show') {
-                    const log = readStateLog(cfg, { windowDays: cfg.sceneWindowDays });
-                    const scene = buildScene(cfg);
-                    return {
-                        ...empty,
-                        present: scene.present,
-                        presence: scene.presence,
-                        rulesVersion: scene.rulesVersion,
-                        words: scene.words,
-                        text: scene.text,
-                        emptyReason: log.readError ? 'error' : scene.emptyReason,
-                        total: log.total,
-                        windowEvents: log.events.length,
-                        badLines: log.badLines.length,
-                        events: log.events.slice(-20).reverse().map((e) => ({ at: e.at, event: e.name, params: paramsText(e.params) })),
-                    };
-                }
-                if (action === 'prune') {
-                    const days = Number(args.days ?? cfg.sceneWindowDays);
-                    const r = pruneStateLog(cfg, { days, force: args.force === true, windowDays: cfg.sceneWindowDays });
-                    return { ...empty, dropped: r.dropped, kept: r.kept, windowDays: r.windowDays };
-                }
-                throw new StateError(`不认识的 action：${action}`, '只能是 append / show / prune');
-            },
-            render(_args, value) {
-                const v = value;
-                if (v.action === 'append')
-                    return text(`已记录：${v.line}\n（.state/events.log；场景下一轮装配时重算）`);
-                if (v.action === 'prune') {
-                    return text(`已压实 .state/events.log：删除 ${v.dropped} 条，保留 ${v.kept} 条（窗口 ${v.windowDays} 天）。\n没有自动 commit —— 删除证据在 git diff 里，由人决定何时提交。`);
-                }
-                const presence = v.presence === 'present' ? '在场' : v.presence === 'absent' ? '不在' : '未知';
-                const emptyText = v.emptyReason === 'budget'
-                    ? '（有事件，但场景预算一句都放不下：调大 sceneBudgetWords）'
-                    : v.emptyReason === 'rules'
-                        ? '（规则没算出可展示的值：energy / mood / satiety / 地点 / 目标 都是 null）'
-                        : v.emptyReason === 'error'
-                            ? '（场景读取失败：看 doctor / 设置页）'
-                            : '（没有可投影的场景：日志为空或窗口内没有事件）';
-                const lines = [
-                    v.text || emptyText,
-                    `规则 ${v.rulesVersion || 'default'} · 窗口内 ${v.windowEvents} 条 · 历史共 ${v.total} 条` +
-                        (v.badLines > 0 ? ` · 坏行 ${v.badLines}` : '') + ` · 用户${presence}`,
-                ];
-                if (v.events.length) {
-                    lines.push('最近事件（新 → 旧，最多 20 条）：');
-                    for (const e of v.events)
-                        lines.push(`  ${e.at} ${e.event}${e.params ? ' ' + e.params : ''}`);
-                }
-                return text(lines.join('\n'));
+                const totals = `\n\n用量：记忆载荷 ${v.totalWords} 词（预算 ${v.budget}）`;
+                return text(drift + head + contract + totals + (v.text ? '\n\n' + v.text : ''));
             },
         }),
         t({

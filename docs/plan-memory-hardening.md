@@ -443,7 +443,7 @@ console.log(p.words, p.truncatedWords, p.tocWords);'
 
 - 夹具：一篇笔记正文含中文短语 A，标签含 B；查询 A+B 时 FTS 只命中 1 篇、`re` 命中 3 篇 → 返回 3 篇且 `matchStrategy = 'mixed'`。
 - ASCII 查询仍单进程（用测试桩数 `zk()` 调用次数）。
-- 0 命中场景与现有行为一致（仍返回 `regex`）。
+- 0 命中情况与现有行为一致（仍返回 `regex`）。
 
 #### 影响面
 

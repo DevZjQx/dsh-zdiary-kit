@@ -8,10 +8,6 @@ import { config, writeConfig, selectNotebook, isNotebookName, CONFIG_KEYS } from
 import { CFG_FILE } from './config/paths.js';
 import { NOTE_KINDS, ensureNotebook, fixGroupConfig, groupOverlapNotes, newNoteDir, structureStatus } from './lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
-import { buildScene, combinedBudgetNote, combinedWords, loadRules, projectScene } from './lib/scene.js';
-import { compileDefaultRules } from './lib/state-rules.js';
-import { eventsPathOf, pruneStateLog, readStateLog, StateError } from './lib/state-log.js';
-import { run } from './lib/exec.js';
 import { installZk, sourceLabel } from './lib/install.js';
 import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook, contractStatus } from './lib/lint.js';
@@ -24,10 +20,6 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
                                       建好（或补齐）笔记本；flat 下加 --with-agents 才写 AGENTS.md 模板；--with-contract 写 PERSONA.md 契约模板（缺了才写）
   zk-kit groups [--fix] [--dry-run]  对照配置与 .zk/config.toml 的 group（默认 dry-run；--fix 只改插件建的 paths，写前备份）
   zk-kit contract                    契约状态：PERSONA.md 的用量 / 预算 / 体检（只读）
-  zk-kit state show [--at ISO]       场景投影（人重放：换 --at 看过去某一刻）· 规则版本 · 事件数
-  zk-kit state log [--lines 50]      看 .state/events.log 原文（尾部 N 行）
-  zk-kit state prune --days N [--force] [--commit]
-                                     压实日志：保留窗口内全部 + 每个事件名的最后一条；--commit 才 git commit（只提交 .state/）
   zk-kit new --title T [--name 文件名] [--summary 摘要] [--body B] [--tags a,b] [--dir notes] [--type source|concept|entity|pattern]
   zk-kit search [词] [--tags a,b] [--since 日期] [--limit 5] [--json]
   zk-kit read <路径> | --query 词 [--max-chars n] [--json]
@@ -371,33 +363,6 @@ async function doctor() {
         : `${payload.words <= payload.budget ? '✓' : '✗'} 记忆：${payload.words}/${payload.budget} 词（${formatFileShares(payload.files, payload.tocWords)}）` +
             (payload.truncatedWords > 0 ? `，已截断 ${payload.truncatedWords} 词` : '') +
             (payload.retiredWords > 0 ? `，退役省略 ${payload.retiredWords} 词` : ''));
-    // 状态层：事件日志 + 投影（D7）。缺文件 = 未启用，不算错；坏行 / 规则回退 / 过大才值得 ⚠️。
-    const scene = buildScene(cfg);
-    const log = readStateLog(cfg, { windowDays: cfg.sceneWindowDays });
-    if (log.readError) {
-        rows.push(`⚠️ 状态：读不了 ${eventsPathOf(cfg)} —— ${log.readError}（这一轮不注入场景）`);
-    }
-    else if (!log.exists || log.total === 0) {
-        rows.push('· 状态：未启用（.state/events.log 不存在或没有事件；写事件用 zk_state append）');
-    }
-    else {
-        const overBudget = combinedWords(payload.totalWords, scene) > cfg.totalPromptBudgetWords;
-        const trouble = log.badLines.length > 0 || !!scene.rulesError || overBudget || log.lines > 5000 || log.bytes > 2 * 1024 * 1024;
-        rows.push(`${trouble ? '⚠️' : '✓'} 状态：${log.total} 条事件（窗口内 ${log.events.length}）· 规则 ${scene.rulesVersion} · ` +
-            `场景 ${scene.words}/${cfg.sceneBudgetWords} 词 · 合计 ${combinedWords(payload.totalWords, scene)} 词`);
-        if (overBudget) {
-            rows.push(`⚠️ ${combinedBudgetNote(payload.totalWords, scene, cfg.totalPromptBudgetWords)}（只告警，不自动截断）`);
-        }
-        if (log.badLines.length > 0) {
-            const first = log.badLines[0];
-            rows.push(`⚠️ 状态日志有 ${log.badLines.length} 条坏行：第 ${first?.line} 行 ${first?.reason}（跳过，不影响投影）`);
-        }
-        if (scene.rulesError)
-            rows.push(`⚠️ 状态规则回退默认：${scene.rulesError}`);
-        if (log.lines > 5000 || log.bytes > 2 * 1024 * 1024) {
-            rows.push(`⚠️ 状态日志偏大（${log.lines} 行 / ${Math.round(log.bytes / 1024)} KiB）：跑 zk-kit state prune --days ${cfg.sceneWindowDays}`);
-        }
-    }
     const c = payload.contract;
     rows.push(c.present
         ? `${c.overBudget ? '⚠️' : '✓'} 契约：正文（含标题）${c.contentWords}/${c.budget} 词（${c.files.filter((f) => f.present).map((f) => `${f.name} ${f.words} 词`).join(' · ')}）` +
@@ -476,7 +441,6 @@ async function main() {
         }
         case 'contract': {
             const payload = buildMemoryPayload(cfg);
-            const scene = buildScene(cfg);
             const c = payload.contract;
             const issues = contractStatus(cfg);
             if (!json) {
@@ -489,11 +453,7 @@ async function main() {
                         `契约：正文（含标题）${c.contentWords}/${c.budget} 词（${files}）` +
                             (c.overBudget ? ` · 超 ${c.overWords} 词（契约不截断）` : ''),
                         `注入：${c.words} 词${c.noticeWords > 0 ? `（正文 ${c.contentWords} + 提示 ${c.noticeWords}）` : ''} · 记忆段之前、永远注入、不参与截断`,
-                        `总量：正文 契约 ${c.contentWords} + 记忆 ${payload.words} = ${c.contentWords + payload.words} 词；记忆载荷 ${payload.totalWords} 词 + 场景 ${scene.words} 词 = 合计 ${combinedWords(payload.totalWords, scene)} 词` +
-                            `（场景不进记忆预算）` +
-                            (combinedBudgetNote(payload.totalWords, scene, cfg.totalPromptBudgetWords)
-                                ? `\n⚠️ ${combinedBudgetNote(payload.totalWords, scene, cfg.totalPromptBudgetWords)}（只告警，不自动截断）`
-                                : `\n合并预算 ${cfg.totalPromptBudgetWords} 词：未超`),
+                        `总量：正文 契约 ${c.contentWords} + 记忆 ${payload.words} = ${c.contentWords + payload.words} 词；记忆载荷 ${payload.totalWords} 词`,
                     ];
                     for (const i of issues.items)
                         lines.push(`⚠️ ${i.file} ${i.detail}`);
@@ -679,121 +639,6 @@ async function main() {
                 return;
             }
             throw new ZkError(USAGE_NOTEBOOKS);
-        }
-        case 'state': {
-            const action = pos[0] ?? 'show';
-            try {
-                if (action === 'show') {
-                    const atRaw = str(flags.at);
-                    const now = atRaw ? Date.parse(atRaw) : Date.now();
-                    if (!Number.isFinite(now))
-                        throw new StateError(`--at 解析不了：${atRaw}`, 'ISO 格式，例如 2026-11-01T09:00:00+08:00');
-                    const log = readStateLog(cfg, { windowDays: cfg.sceneWindowDays, now });
-                    const loaded = loadRules(cfg);
-                    const opts = { staleHours: cfg.staleHours, sceneWindowDays: cfg.sceneWindowDays, budgetWords: cfg.sceneBudgetWords };
-                    // 求值错与 buildScene 同口径：整份回退内置默认，把错误留给下面那行提示
-                    let scene;
-                    let label = loaded.label;
-                    let rulesError = loaded.error ?? '';
-                    try {
-                        scene = projectScene(log, loaded.rules, now, opts);
-                    }
-                    catch (err) {
-                        rulesError = err instanceof Error ? err.message : String(err);
-                        label = 'default(fallback)';
-                        scene = projectScene(log, compileDefaultRules(), now, opts);
-                    }
-                    if (json) {
-                        print({
-                            at: new Date(now).toISOString(),
-                            present: scene.present,
-                            presence: scene.presence,
-                            rulesVersion: label,
-                            rulesError: log.readError || rulesError,
-                            words: scene.words,
-                            text: scene.text,
-                            values: scene.values,
-                            events: log.events.length,
-                            total: log.total,
-                            badLines: log.badLines.length,
-                            dropped: scene.dropped,
-                            emptyReason: log.readError ? 'error' : scene.emptyReason,
-                        }, true);
-                    }
-                    else if (!scene.present) {
-                        const why = log.readError
-                            ? `场景：读不了 .state/events.log —— ${log.readError}`
-                            : scene.emptyReason === 'budget'
-                                ? '场景：有事件，但一句话都放不下 —— 调大 sceneBudgetWords'
-                                : scene.emptyReason === 'rules'
-                                    ? '场景：规则没算出可展示的值（energy / mood / satiety / 地点 / 目标 都是 null）'
-                                    : atRaw && log.total > 0
-                                        // 重放到第一条事件之前：文件里有事件，只是「那一刻还没发生」
-                                        ? `场景：那一刻之前没有事件（文件里共 ${log.total} 条，之后才发生）`
-                                        : '场景：未启用（没有 .state/events.log，或文件里没有有效事件）';
-                        // 读不了的时候不追「写事件」那句：写不进一个坏掉的文件，先把问题说清楚
-                        print(log.readError ? why : `${why}\n写事件：zk_state append（agent）或 zk-kit state log 查看原文`, false);
-                    }
-                    else {
-                        const presence = scene.presence === 'present' ? '在场' : scene.presence === 'absent' ? '不在' : '未知';
-                        const lines = [
-                            scene.text,
-                            `规则 ${label}${rulesError ? `（回退：${rulesError}）` : ''} · 窗口内 ${log.events.length} 条 / 历史 ${log.total} 条 · 用户${presence}` +
-                                (scene.dropped.length ? ` · 预算裁掉：${scene.dropped.join('、')}` : '') +
-                                (log.badLines.length ? ` · 坏行 ${log.badLines.length}` : ''),
-                        ];
-                        print(lines.join('\n'), false);
-                    }
-                    return;
-                }
-                if (action === 'log') {
-                    const limit = Math.min(5000, Math.max(1, Math.trunc(Number(str(flags.lines) || 50))));
-                    let text = '';
-                    try {
-                        text = fs.readFileSync(eventsPathOf(cfg), 'utf8');
-                    }
-                    catch {
-                        text = '';
-                    }
-                    if (!text.trim()) {
-                        print('没有 .state/events.log（未启用状态层；缺文件不算错）', false);
-                        return;
-                    }
-                    const lines = text.split('\n').filter((line) => line.trim() !== '');
-                    print(lines.slice(-limit).join('\n'), false);
-                    if (lines.length > limit)
-                        console.error(`（只显示最后 ${limit} 行，共 ${lines.length} 行）`);
-                    return;
-                }
-                if (action === 'prune') {
-                    const days = Math.trunc(Number(str(flags.days) || cfg.sceneWindowDays));
-                    const force = flags.force === true || flags.force === 'true';
-                    const commit = flags.commit === true || flags.commit === 'true';
-                    const r = pruneStateLog(cfg, { days, force, windowDays: cfg.sceneWindowDays });
-                    let commitNote = '';
-                    if (commit) {
-                        try {
-                            // 只提交被压实的这一个文件：.state/rules 是人的工作面，别卷进 prune 的提交
-                            await run('git', ['-C', cfg.notebook, 'add', '--', '.state/events.log']);
-                            await run('git', ['-C', cfg.notebook, 'commit', '-m', `chore(zdiary): prune .state (keep ${r.kept})`, '--', '.state/events.log']);
-                            commitNote = '已提交（只含 .state/events.log）';
-                        }
-                        catch (err) {
-                            const message = err instanceof Error ? err.message : String(err);
-                            commitNote = /nothing to commit|无文件要提交/i.test(message) ? '没有需要提交的改动' : `提交失败：${message}`;
-                        }
-                    }
-                    print(json ? { ...r, committed: commit } : `已压实 .state/events.log：删除 ${r.dropped} 条，保留 ${r.kept} 条（窗口 ${r.windowDays} 天）` +
-                        (commit ? `\n${commitNote}` : '\n未提交：diff 是删除证据，看一眼再 git commit'), json);
-                    return;
-                }
-                throw new StateError(`不认识的 state 子命令：${action}`, 'show / log / prune');
-            }
-            catch (err) {
-                if (err instanceof StateError)
-                    throw new ZkError(err.message, err.hint);
-                throw err;
-            }
         }
         case 'config': {
             const sub = pos[0] ?? 'get';

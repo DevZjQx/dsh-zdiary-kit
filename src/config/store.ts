@@ -59,15 +59,6 @@ export interface Config {
   memoryBudgetWords: number
   /** 契约预算（词）：PERSONA.md 上限；超了只告警，不截断 */
   contractBudgetWords: number
-  /** 场景预算（词）：投影后的场景行上限；不进 MEMORY 预算 */
-  sceneBudgetWords: number
-  /** 状态日志的投影窗口（天）：`count` 与「最近几条」用；`hoursSince` 仍读窗口外的 last-seen */
-  sceneWindowDays: number
-  /** 场景新鲜度（小时）：超过它就显示「未知」而不是拿旧值当现在 */
-  staleHours: number
-  /** 合并预算（词）：记忆载荷（契约 + 记忆 + 框与提示）+ 场景行。超了只在人看的界面点名，
-   *  不写进系统提示、也不自动截断 —— 模型不需要这个数字。 */
-  totalPromptBudgetWords: number
   /** 归档目录（supersede 后的笔记搬到这里，保留原相对路径） */
   archiveDir: string
   /** 内置 zk 的版本（安装/升级用，不带 v） */
@@ -104,10 +95,6 @@ export const DEFAULTS: Config = {
   aliasTools: false,
   memoryBudgetWords: 500,
   contractBudgetWords: 240,
-  sceneBudgetWords: 80,
-  sceneWindowDays: 30,
-  staleHours: 72,
-  totalPromptBudgetWords: 900,
   archiveDir: 'archive',
   zkVersion: '0.15.7',
   zkPath: '',
@@ -177,7 +164,7 @@ function notebookPath(raw: unknown, workspace: string): string {
 /**
  * 任意输入 → 合法 Config（永不 throw：设置页传垃圾也只落一个安全值）。
  *
- * workspace 决定「空路径 / 相对路径」落在哪：工具调用传会话 cwd，其余场景默认进程工作区。
+ * workspace 决定「空路径 / 相对路径」落在哪：工具调用传会话 cwd，其余情况默认进程工作区。
  * 显式写死的绝对路径不受它影响 —— 显式配置优先。
  */
 export function normalizeConfig(raw: unknown, workspace: string = processWorkspace()): Config {
@@ -210,10 +197,6 @@ export function normalizeConfig(raw: unknown, workspace: string = processWorkspa
     aliasTools: src.aliasTools === true || src.aliasTools === 'true',
     memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
     contractBudgetWords: clamp(Number(src.contractBudgetWords), 50, 800, DEFAULTS.contractBudgetWords),
-    sceneBudgetWords: clamp(Number(src.sceneBudgetWords), 20, 400, DEFAULTS.sceneBudgetWords),
-    sceneWindowDays: clamp(Number(src.sceneWindowDays), 1, 365, DEFAULTS.sceneWindowDays),
-    staleHours: clamp(Number(src.staleHours), 1, 8760, DEFAULTS.staleHours),
-    totalPromptBudgetWords: clamp(Number(src.totalPromptBudgetWords), 200, 5000, DEFAULTS.totalPromptBudgetWords),
     archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
     zkVersion: /^\d+\.\d+\.\d+$/.test(String(src.zkVersion ?? '').trim().replace(/^v/i, ''))
       ? String(src.zkVersion).trim().replace(/^v/i, '')
@@ -260,7 +243,7 @@ let configCache: { stamp: string; workspace: string; value: Config } | null = nu
 
 /**
  * 读配置（每次现读，除非文件没变：设置页保存后工具下一句就看到新值）。
- * workspace 只在解析「空 / 相对」笔记本路径时用到：工具传会话 cwd，其余场景用进程工作区。
+ * workspace 只在解析「空 / 相对」笔记本路径时用到：工具传会话 cwd，其余情况用进程工作区。
  */
 export function config(workspace: string = processWorkspace()): Config {
   const stamp = fileStamp(CFG_FILE)

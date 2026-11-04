@@ -13,7 +13,6 @@ import { BIN_DIR } from '../config/paths.js';
 import { ExecError, findOnPath, run } from './exec.js';
 import { parseFrontmatter, setFrontmatter } from './frontmatter.js';
 import { isMetaPath, META_NAMES } from './meta.js';
-import { STATE_DIR } from './state-log.js';
 export class ZkError extends Error {
     hint;
     /**
@@ -277,7 +276,7 @@ function parseList(stdout) {
  *     所以一律拼成绝对路径，否则换台机器/换个工作目录排除就静默失效。
  */
 export function excludedNames(cfg, opts = {}) {
-    const rels = ['raw', 'inbox', STATE_DIR];
+    const rels = ['raw', 'inbox'];
     if (!opts.includeArchived)
         rels.push(cfg.archiveDir);
     rels.push(...META_NAMES);
@@ -544,11 +543,6 @@ function assertWritablePath(cfg, abs) {
     }
     if (rel === 'inbox' || rel.startsWith('inbox/')) {
         throw new ZkError(`inbox/ 是已停用的待归类区，写进去会被排除出索引：${rel}`, '直接写到目标目录（layered 下是 notes/sources 等 group）；盘上已有的 inbox/ 只读保留');
-    }
-    // 状态目录是运行时数据，不是笔记：通用写工具进去会把事件日志变成能被追加 / 改名 / 归档的笔记，
-    // 也让「场景是谁改的」失去审计线。只有 zk_state 能写，规则文件由人直接改。
-    if (rel === STATE_DIR || rel.startsWith(STATE_DIR + '/')) {
-        throw new ZkError(`.state/ 是运行时状态目录，不能用笔记工具写：${rel}`, '写事件用 zk_state append；.state/rules 由人直接编辑');
     }
 }
 /**

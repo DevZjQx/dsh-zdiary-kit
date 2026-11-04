@@ -26,16 +26,12 @@
 `AGENTS.md` 在 `layered` 下自动写；`flat` 默认**不写**（从 0.1.0 升级来的 vault 不能因为升级多出一个文件，M0 的逐字节回归）。
 想要约定与周提醒就显式 opt-in：`zk-kit init --with-agents`、设置页「写入 AGENTS.md 模板」、
 或代码里 `ensureNotebook(cfg, signal, { withAgents: true })`；已存在的文件一律不覆盖。
-`flat` 用精简版 `AGENTS_TEMPLATE_FLAT`（实测 89 词，锁 ≤90）：不出现 `raw/` / `inbox/` / `archive/` / `WORKFLOW.md`。
-`layered` 用完整版 `AGENTS_TEMPLATE`（实测 189 词，锁 ≤190）—— 它属于注入预算且**永不截断**，
+`flat` 用精简版 `AGENTS_TEMPLATE_FLAT`（实测 80 词，锁 ≤90）：不出现 `raw/` / `inbox/` / `archive/` / `WORKFLOW.md`。
+`layered` 用完整版 `AGENTS_TEMPLATE`（实测 180 词，锁 ≤190）—— 它属于注入预算且**永不截断**，
 写长了 USER / MEMORY 就没位置。两份模板首行都有 `<!-- zdiary-template: vN -->`（`TEMPLATE_MARK`），
 `zk_lint` 据此报告老库的模板是否过期（只报告、不覆盖）。
 `entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入（Z10）；
 所有模板必须含 `{{content}}`，否则 stdin 的正文会被丢（Z9）。
-
-**状态目录（`.state/`）不在 init 产物里。** 第一条事件（`zk_state append`）才创建它：
-`<notebook>/.state/events.log` + 可选 `.state/rules`，跟着笔记本走、git 跟踪；
-升级不会多出这个目录，缺它 = 状态层未启用（不注入、不报错）。
 
 **契约模板（`PERSONA.md`）。** 只走显式 opt-in：`zk-kit init --with-contract`、
 设置页「写入契约模板」、或 `ensureNotebook(cfg, signal, { withContract: true })`。

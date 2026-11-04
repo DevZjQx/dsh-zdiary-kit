@@ -44,10 +44,6 @@ export const DEFAULTS = {
     aliasTools: false,
     memoryBudgetWords: 500,
     contractBudgetWords: 240,
-    sceneBudgetWords: 80,
-    sceneWindowDays: 30,
-    staleHours: 72,
-    totalPromptBudgetWords: 900,
     archiveDir: 'archive',
     zkVersion: '0.15.7',
     zkPath: '',
@@ -114,7 +110,7 @@ function notebookPath(raw, workspace) {
 /**
  * 任意输入 → 合法 Config（永不 throw：设置页传垃圾也只落一个安全值）。
  *
- * workspace 决定「空路径 / 相对路径」落在哪：工具调用传会话 cwd，其余场景默认进程工作区。
+ * workspace 决定「空路径 / 相对路径」落在哪：工具调用传会话 cwd，其余情况默认进程工作区。
  * 显式写死的绝对路径不受它影响 —— 显式配置优先。
  */
 export function normalizeConfig(raw, workspace = processWorkspace()) {
@@ -147,10 +143,6 @@ export function normalizeConfig(raw, workspace = processWorkspace()) {
         aliasTools: src.aliasTools === true || src.aliasTools === 'true',
         memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
         contractBudgetWords: clamp(Number(src.contractBudgetWords), 50, 800, DEFAULTS.contractBudgetWords),
-        sceneBudgetWords: clamp(Number(src.sceneBudgetWords), 20, 400, DEFAULTS.sceneBudgetWords),
-        sceneWindowDays: clamp(Number(src.sceneWindowDays), 1, 365, DEFAULTS.sceneWindowDays),
-        staleHours: clamp(Number(src.staleHours), 1, 8760, DEFAULTS.staleHours),
-        totalPromptBudgetWords: clamp(Number(src.totalPromptBudgetWords), 200, 5000, DEFAULTS.totalPromptBudgetWords),
         archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
         zkVersion: /^\d+\.\d+\.\d+$/.test(String(src.zkVersion ?? '').trim().replace(/^v/i, ''))
             ? String(src.zkVersion).trim().replace(/^v/i, '')
@@ -185,7 +177,7 @@ function toDisk(cfg) {
 let configCache = null;
 /**
  * 读配置（每次现读，除非文件没变：设置页保存后工具下一句就看到新值）。
- * workspace 只在解析「空 / 相对」笔记本路径时用到：工具传会话 cwd，其余场景用进程工作区。
+ * workspace 只在解析「空 / 相对」笔记本路径时用到：工具传会话 cwd，其余情况用进程工作区。
  */
 export function config(workspace = processWorkspace()) {
     const stamp = fileStamp(CFG_FILE);

@@ -21,8 +21,6 @@ import { absPathOf, allNotes, graphEdges, hasNotebook, isUnderDir, localDate, re
 import type { NoteDoc, NoteRecord } from '../../lib/zk.ts'
 import { isMetaPath } from '../../lib/meta.ts'
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
-import { buildScene, combinedBudgetNote, combinedWords, DEFAULT_RULES_TEXT, readRulesText } from '../../lib/scene.ts'
-import { readStateLog } from '../../lib/state-log.ts'
 import { RETIRED_ENTRY_RE } from '../../lib/memory-format.ts'
 import { parseFrontmatter } from '../../lib/frontmatter.ts'
 import { stripContractMarker } from '../../lib/persona-template.ts'
@@ -286,7 +284,7 @@ function renderMemoryBody(body: string, linkFor: (target: string) => string | nu
 }
 
 /**
- * 记忆页（P1-5 → D9）：人的周审入口 —— 契约 / 用户 / 记忆 / 周审 / 场景五段 + 载荷预览。
+ * 记忆页（P1-5 → D9）：人的周审入口 —— 契约 / 用户 / 记忆 / 周审四段 + 载荷预览。
  * 不走 `loadNote`：根目录 meta 被 `loadAll` 排除、也被 `loadNote` 明确拒绝；
  * 这里按常量直接读盘，再复用渲染层的转义与双链白名单。
  * 载荷预览只转义展示（与 zk_context 同源），不提供编辑 —— 写仍然只走 zk_* / 编辑器。
@@ -307,8 +305,6 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
   }
 
   const payload = buildMemoryPayload(cfg)
-  const scene = buildScene(cfg)
-  const log = readStateLog(cfg, { windowDays: cfg.sceneWindowDays })
   const shares = formatFileShares(payload.files, payload.tocWords)
   const usage =
     `记忆 ${payload.words}/${payload.budget} 词（${shares || '三份都空'}）` +
@@ -343,24 +339,8 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
     : '<p class="meta">还没写。</p>'
 
   const dreamBody = read('DREAMS.md')
-  const combinedNote = combinedBudgetNote(payload.totalWords, scene, cfg.totalPromptBudgetWords)
   const counts =
-    `契约正文 ${c.contentWords} 词 · 记忆 ${payload.words} 词 · 记忆载荷 ${payload.totalWords} 词（含框与提示 ${payload.overheadWords}）` +
-    ` · 场景 ${scene.words} 词 = 合计 ${combinedWords(payload.totalWords, scene)}/${cfg.totalPromptBudgetWords} 词` +
-    (combinedNote ? ' · ⚠️ 超合并预算' : '')
-  const presence = scene.presence === 'present' ? '在场' : scene.presence === 'absent' ? '不在' : '未知'
-  const sceneStatus = scene.present
-    ? `已注入 ${scene.words}/${cfg.sceneBudgetWords} 词 · 规则 ${scene.rulesVersion} · 窗口内 ${scene.events} 条事件 · 用户${presence}` +
-      (scene.rulesError ? ` · ⚠️ 规则回退默认：${scene.rulesError}` : '')
-    : scene.emptyReason === 'budget'
-      ? '有事件，但场景预算一句都放不下：调大 sceneBudgetWords。'
-      : scene.emptyReason === 'rules'
-        ? '规则没算出可展示的值（energy / mood / satiety / 地点 / 目标 都是 null）。'
-        : scene.emptyReason === 'error'
-          ? '读取失败：看 doctor 的「状态」一行。'
-          : '未启用：.state/events.log 不存在或没有事件；缺文件不算错，不注入也不报错。'
-  const recent = log.events.slice(-5).reverse()
-  const rulesSource = readRulesText(cfg)
+    `契约正文 ${c.contentWords} 词 · 记忆 ${payload.words} 词 · 记忆载荷 ${payload.totalWords} 词（含框与提示 ${payload.overheadWords}）`
 
   const body = [
     `<p class="crumb"><a href="${VIEW}">首页</a> / 记忆</p>`,
@@ -382,27 +362,12 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
     dreamBody.trim()
       ? `<article>${renderMarkdown(dreamBody, { linkFor, skipFirstH1: true })}</article>`
       : '<p class="meta">还没写。</p>',
-    '<h2>场景</h2>',
-    `<p class="meta">${esc(sceneStatus)}</p>`,
-    scene.present ? `<details><summary>展开投影</summary><pre>${esc(scene.text)}</pre></details>` : '',
-    recent.length
-      ? `<p class="meta">最近事件（新 → 旧）：${recent.map((e) => `${esc(e.at)} ${esc(e.name)}${Object.keys(e.params).length ? ' ' + esc(Object.entries(e.params).map(([k, v]) => `${k}=${v}`).join(' ')) : ''}`).join(' · ')}</p>`
-      : '',
-    log.badLines.length ? `<p class="meta">⚠️ ${log.badLines.length} 条坏行被跳过（doctor 给第一条原因）</p>` : '',
-    '<h2>状态规则</h2>',
-    `<p class="meta">${rulesSource.trim() ? `.state/rules（${esc(scene.rulesVersion)}）` : '没有 .state/rules：用内置默认规则（' + esc(scene.rulesVersion) + '）'} · 规则是人类工作面，只读；写事件用 zk_state append。</p>`,
-    `<details><summary>展开规则</summary><pre>${esc(rulesSource.trim() || DEFAULT_RULES_TEXT)}</pre></details>`,
     '<h2>载荷预览</h2>',
     `<p class="meta">这一轮模型实际收到的文本（转义展示、只读、与 zk_context 同源）：${esc(counts)}</p>`,
-    combinedNote ? `<p class="meta">⚠️ ${esc(combinedNote)}（只告警，不自动截断）</p>` : '',
     '<h3>记忆段</h3>',
     payload.text
       ? `<details><summary>展开</summary><pre>${esc(payload.text)}</pre></details>`
       : '<p class="meta">空：没有可注入的内容。</p>',
-    '<h3>场景段</h3>',
-    scene.text
-      ? `<details><summary>展开</summary><pre>${esc(scene.text)}</pre></details>`
-      : '<p class="meta">空：不注入场景段。</p>',
   ].join('\n')
   sendHtml(res, 200, shell(cfg, '记忆', body))
 }

@@ -42,10 +42,6 @@ interface ZkConfig {
   aliasTools: boolean
   memoryBudgetWords: number
   contractBudgetWords: number
-  sceneBudgetWords: number
-  sceneWindowDays: number
-  staleHours: number
-  totalPromptBudgetWords: number
   /** 当前笔记本的结构（= notebooks[active].structure；派生视图，落在条目里） */
   structure: string
   archiveDir: string
@@ -78,22 +74,11 @@ interface Memory {
   tocWords: number
   files: Array<{ name: string; present: boolean; words: number }>
 }
-interface SceneStatus {
-  present: boolean
-  presence: string
-  events: number
-  rulesVersion: string
-  words: number
-  budget: number
-  emptyReason?: string
-  rulesError?: string
-}
 interface Snapshot {
   ok?: boolean
   error?: string
   warn?: string | null
   config: ZkConfig
-  scene?: SceneStatus | null
   configPath?: string
   /** 配置文件的指纹：保存时带回，别处改过就 409（乐观并发） */
   stamp?: string
@@ -170,10 +155,6 @@ interface Field {
       { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；所有笔记本共用。旧归档目录非空时拒绝改动 —— 插件不会自动迁移文件' },
       { group: '记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 500（中文按 2 字 1 词）。超了先丢 MEMORY 里日期最旧的条目（一条日期都没有才退回从尾部丢），并回显截断了多少' },
       { group: '记忆', key: 'contractBudgetWords', label: '契约预算（词）', hint: 'PERSONA.md 的上限，默认 240（50-800）。契约是硬规则，永远注入、不参与截断；超了只告警' },
-      { group: '记忆', key: 'sceneBudgetWords', label: '场景预算（词）', hint: '投影后场景行的上限，默认 80；单独成段、不计入记忆预算。超了从尾部裁：自定义事件 → 地点 / 目标 → satiety → mood / energy' },
-      { group: '记忆', key: 'sceneWindowDays', label: '状态窗口（天）', hint: 'count 与「最近几条事件」用的窗口，默认 30；hoursSince 仍读窗口外的最后一条（prune 会留 tombstone），所以久不记录也能算「多久没见」' },
-      { group: '记忆', key: 'staleHours', label: '场景新鲜度（小时）', hint: '默认 72：地点 / 目标 / 在场超过这个时间就显示「未知（最后 X）」，不拿旧值当现在' },
-      { group: '记忆', key: 'totalPromptBudgetWords', label: '合并预算（词）', hint: '记忆载荷 + 场景行的合计上限，默认 900；超了只在本页 / 自检 / 只读视图 / zk_context 回复里点名，不写进系统提示，也不自动截断契约或记忆' },
       { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
       { group: '写入', key: 'maxReadChars', label: 'zk_read 单次上限（字符）', hint: '默认 20000；超了会截断并明确告知模型' },
       { group: '工具', key: 'aliasTools', label: '把 [alias] 注册成工具', hint: '默认关闭。打开后，加载插件时把各笔记本 .zk/config.toml 的 [alias] 里未注释的别名注册成 zk_<名>，模型可以像调内置工具一样调它们。\n别名是 $SHELL -c 执行的任意命令 —— 打开等于把这些命令交给 agent，只在你信得过 config.toml 内容时开。\n交互式命令（edit / 带 --interactive）会卡到超时，不适合当工具。改完要重载插件（或重启 DSH）才会出现在工具列表里', type: 'bool' },
@@ -401,7 +382,6 @@ interface Field {
       const counts = snap?.counts
       const structure = snap?.structure
       const memory = snap?.memory
-      const scene = snap?.scene
       const statusLine = !zk ? '' : !zk.found
         ? 'zk 还没装：' + (zk.hint || '')
         : `zk ${zk.version}（${SOURCE[zk.source || ''] || zk.source}）· 笔记本 ${snap?.notebook.exists ? '就绪' : '还没初始化'}` +
@@ -413,29 +393,6 @@ interface Field {
         : `记忆 ${memory.words}/${memory.budget} 词（${memory.files.filter((f) => f.present).map((f) => f.name).join(' + ') || '三份都空'}）` +
           (memory.truncatedWords > 0 ? ` · 已截断 ${memory.truncatedWords} 词` : '') +
           (structure && !structure.agents.present ? ' · ⚠️ 缺 AGENTS.md：约定与周提醒未启用' : '')
-      // 状态层只读：规则文件由人编辑，这里只回显「有没有 / 用的哪版 / 超没超预算」
-      const sceneLine = !scene
-        ? ''
-        : scene.present
-          ? `场景 ${scene.words}/${scene.budget} 词 · 规则 ${scene.rulesVersion} · 窗口内 ${scene.events} 条事件 · 用户${{ present: '在场', absent: '不在', unknown: '未知' }[scene.presence] ?? '未知'}` +
-            (scene.rulesError ? ` · ⚠️ 规则回退默认：${scene.rulesError}` : '')
-          : scene.emptyReason === 'budget'
-            ? '场景：有事件，但预算一句都放不下 —— 调大「场景预算」'
-            : scene.emptyReason === 'rules'
-              ? '场景：规则没算出可展示的值（energy / mood / satiety / 地点 / 目标 都是 null）'
-              : scene.emptyReason === 'error'
-                ? '场景：读取失败（看自检）'
-                : '场景未启用：还没有 .state/events.log（agent 用 zk_state append 记第一条）'
-      // 合并预算只在人看的界面提示：不进系统提示（D4）
-      const combinedLine = !memory || !scene
-        ? ''
-        : (() => {
-          const total = memory.totalWords + scene.words
-          const budget = snap?.config.totalPromptBudgetWords ?? 0
-          return budget > 0 && total > budget
-            ? `合计 ${total}/${budget} 词（记忆载荷 + 场景）· ⚠️ 超 ${total - budget} 词`
-            : `合计 ${total}/${budget} 词（记忆载荷 + 场景）`
-        })()
       // 结构以配置为准：磁盘不一致只告警，不自动建、不自动删
       const structureWarn = !structure || !snap?.notebook.exists ? '' : !structure.ready
         ? `结构是 ${structure.mode}，但缺目录：${structure.missing.join('、')}`
@@ -474,8 +431,6 @@ interface Field {
           '没装 zk 就让插件装一个 —— 第一次调用工具时会自动建好笔记本，不需要先来这里点任何按钮。'),
         statusLine ? h('div', { className: 'zdk-hint' }, '📚 ' + statusLine) : null,
         memoryLine ? h('div', { className: 'zdk-hint' }, '🧠 ' + memoryLine) : null,
-        sceneLine ? h('div', { className: 'zdk-hint' }, '⏱ ' + sceneLine) : null,
-        combinedLine ? h('div', { className: 'zdk-hint' }, '📐 ' + combinedLine) : null,
         configWarn
           ? h('div', { className: 'zdk-err' },
             '⚠️ ' + configWarn +

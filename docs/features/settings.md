@@ -15,9 +15,7 @@
   这时回包带 `warn` 提醒「点「初始化 / 补建」建库」；按钮因此不按 `notebook.exists` 隐藏。
 - `POST /index`：`zk index`
 - `POST /install`：内置 zk（下载 → 解包 → `--version` 验证）；`detail` 里回显下载源（自定义镜像会点名）
-- `GET /selftest`：九项真检查（zk、笔记本、模板、group、结构、状态、长期记忆、角色契约、索引）
-  状态那项读 `buildScene`：空日志/没有事件 = 未启用（ok），只有规则回退、日志读不了才是 ✗ ——
-  自检报的是「这一轮模型会看到什么」，不是「文件在不在」。
+- `GET /selftest`：八项真检查（zk、笔记本、模板、group、结构、长期记忆、角色契约、索引）
 
 快照（`GET /settings`、`GET /status`、写操作的回包）除了配置与计数，还带两块**诊断**：
 `structure`（配置的模式、缺哪些目录、`extra` 盘上多出来的分层目录、`AGENTS.md` 在不在，
@@ -47,9 +45,7 @@
 这个按钮**不依赖 `notebook.exists`**：建库前也可以先定角色（服务端只建目录与契约，不碰 `.zk`），
 成功提示里会带一条「还不是 zk 笔记本，点「初始化 / 补建」」的 `warn` ——
 否则自检说「点「写入契约模板」」时，未初始化的库根本没有对应的可点项。
-「记忆」分组里多五行配置：契约预算（`contractBudgetWords`，默认 240）、场景预算（`sceneBudgetWords`，80）、
-状态窗口（`sceneWindowDays`，30 天）、场景新鲜度（`staleHours`，72 小时）、
-合并预算（`totalPromptBudgetWords`，900，记忆载荷 + 场景行；超了只在本页 / 自检 / 只读视图 / `zk_context` 回复里点名，不写进系统提示）。
+「记忆」分组里有两项配置：注入预算（`memoryBudgetWords`，默认 500）与契约预算（`contractBudgetWords`，默认 240）。
 「工具」分组只有一个开关：`aliasTools`（默认关）—— 打开后插件加载时才把 `.zk/config.toml` 的 `[alias]`
 注册成 `zk_<名>`。注册发生在加载时，勾完保存还要重载插件（或重启 DSH）才会出现在工具列表里；hint 里写明了。
 分组标题直接标作用范围（「笔记本」是每本自己的，其余是全局）；删除笔记本先确认「只删配置，磁盘目录与笔记保留」。

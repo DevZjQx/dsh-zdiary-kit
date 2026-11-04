@@ -297,7 +297,6 @@ function payloadKeyOf(cfg) {
     const now = new Date();
     const day = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
     // 影响这个载荷的预算都要进键：改配置不重新写入任何文件，漏一个就会拿到旧预算的载荷。
-    // totalPromptBudgetWords 不进：它是 memory + scene 的合并总账，改它不改变 payload。
     return `${cfg.notebook}|${cfg.memoryBudgetWords}|${cfg.contractBudgetWords}|${day}|${stamps}`;
 }
 /**
@@ -456,9 +455,8 @@ function computePayload(cfg) {
                 notice;
     }
     // ── 契约段（角色）：永远注入、在记忆段之前、不参与截断 ────
-    // 超预算只告警不静默丢。合并预算（记忆载荷 + 场景）不在这里量：
-    // memory 看不到场景，硬算会得到一个少了一截的「总 prompt」—— 那是错的。
-    // 没有契约文件 = 未启用：不多一个词，0.9 的老库逐字节一致。
+    // 超预算只告警不静默丢。
+    // 没有契约文件 = 未启用：不多一个词。
     const contractBudget = cfg.contractBudgetWords;
     const contracts = readContracts(cfg);
     const contractBodies = contracts.filter((f) => f.body.length > 0);

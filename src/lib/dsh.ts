@@ -64,24 +64,10 @@ export interface SystemPromptSectionLike {
 }
 
 /**
- * 动态运行时上下文（dsh-system-prompt 的 PromptContext 最小子集）。
- * 与 section 不同：它作为 user-role 快照进模型历史，宿主每次准入前重读；
- * `required: true` 的条目在 `suppressRuntimeContext()` 时仍保留。
+ * 系统提示注册表（dsh-system-prompt 提供；headless 宿主可能没有）
  */
-export interface SystemPromptContextLike {
-  name: string
-  order: number
-  /** 静态文本，或每次装配 / 准入刷新时用当时的上下文求值的函数 */
-  text: string | ((ctx?: AssemblyContextLike) => string)
-  interpolate?: boolean
-  required?: boolean
-}
-
-/** 系统提示注册表（dsh-system-prompt 提供；headless 宿主可能没有） */
 export interface SystemPromptLike {
   section(spec: SystemPromptSectionLike): () => void
-  /** 0.2.1-rc.5 起提供；老宿主没有时场景段降级为不注入 */
-  context?(spec: SystemPromptContextLike): () => void
 }
 
 export interface PluginContext {

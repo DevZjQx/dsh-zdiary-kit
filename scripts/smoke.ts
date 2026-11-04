@@ -4,7 +4,7 @@
  *
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
- *   · 15 个内置工具能注册、能执行、能渲染（zk_context / zk_state 也执行一次；`[alias]` 别名工具按配置另行追加）；
+ *   · 14 个内置工具能注册、能执行、能渲染（zk_context 也执行一次；`[alias]` 别名工具按配置另行追加）；
  *   · 8 条设置路由 + 4 条只读路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
@@ -39,7 +39,6 @@ type Tool = {
 const tools: Tool[] = []
 const routes = new Map<string, (req: http.IncomingMessage, res: http.ServerResponse) => unknown>()
 const promptSections: Array<{ name: string; order: number; text: string | (() => string) }> = []
-const promptContexts: Array<{ name: string; order: number; text: string | (() => string) }> = []
 /** 模拟 DSH 的浏览器会话栅栏：打开时没有 cookie 的请求一律 401 */
 let requireCookie = false
 
@@ -49,7 +48,6 @@ const ctx = {
     if (name === 'systemPrompt') {
       return {
         section: (s: typeof promptSections[number]) => { promptSections.push(s); return () => {} },
-        context: (c: typeof promptContexts[number]) => { promptContexts.push(c); return () => {} },
       }
     }
     if (name === 'webServer') {
@@ -75,12 +73,6 @@ const injected = typeof memorySection.text === 'function' ? memorySection.text()
 if (!injected.includes('先查重再写')) throw new Error('注入内容没有读到 AGENTS.md')
 console.log(`记忆注入：${memorySection.name} · order ${memorySection.order} · ${injected.length} 字符`)
 
-// 场景走动态运行时上下文（user-role 快照），不应再注册成系统提示 section
-const sceneContext = promptContexts.find((c) => c.name === 'zdiary:scene')
-if (!sceneContext) throw new Error('zdiary:scene 没有注册到 systemPrompt.context()')
-if (promptSections.some((s) => s.name === 'zdiary:scene')) throw new Error('zdiary:scene 不应再注册到 systemPrompt.section()')
-console.log(`场景注入：${sceneContext.name} · order ${sceneContext.order} · runtime context`)
-
 // ── 输出 schema 必须落在 DSH 支持的子集里（超集会在 register 时直接 TypeError）──
 const ALLOWED = new Set(['type', 'oneOf', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'const', 'description', 'title', 'default', 'examples'])
 function checkSchema(node: unknown, at: string): void {
@@ -102,7 +94,7 @@ for (const tool of tools) checkSchema(tool.output.schema, `${tool.name}.output.s
 
 console.log('工具：' + tools.map((t) => t.name).join(', '))
 console.log('路由：' + [...routes.keys()].join(', '))
-if (tools.length !== 15) throw new Error('工具数量不对：' + tools.length)
+if (tools.length !== 14) throw new Error('工具数量不对：' + tools.length)
 // 8 条设置页路由 + 4 条只读路由（view / feed.xml / api/notes / api/note）
 if (routes.size !== 12) throw new Error('路由数量不对：' + routes.size)
 
@@ -135,12 +127,6 @@ const dreamed = await call('zk_dream', { days: 7 })
 if (!Array.isArray(dreamed.newNotes)) throw new Error('zk_dream 输出不对')
 await call('zk_stats', {})
 await call('zk_context', {})
-// 状态层：写一条事件 → 读出投影 → 压实（空日志 / 缺规则都要能跑）
-await call('zk_state', { action: 'append', event: 'ate', params: ['amount=1'] })
-const shown = await call('zk_state', { action: 'show' })
-if (typeof shown.text !== 'string') throw new Error('zk_state show 输出不对')
-const pruned = await call('zk_state', { action: 'prune', days: 30 })
-if (typeof pruned.kept !== 'number') throw new Error('zk_state prune 输出不对')
 await call('zk_use', {})
 
 // ── 真发 HTTP：设置页 8 条 + 只读视图 4 条 ─────────────────────────────────

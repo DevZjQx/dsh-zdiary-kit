@@ -2,8 +2,8 @@
 
 **Purpose.** 让模型用 zk 思维工作：先查重、再写原子笔记、用双链连起来、每天记一段。
 
-**Owns.** 15 个内置工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
-`zk_supersede` / `zk_rename` / `zk_context` / `zk_state` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
+**Owns.** 14 个内置工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
+`zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
 `.zk/config.toml` 的 `[alias]` 派生的 `zk_<别名>` 工具：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
 `zk_context` 例外：它只读根目录三份 meta 文件与角色契约（`PERSONA.md`），并列出已配置笔记本（另读 `DREAMS.md` 的「上次做梦」一行用于周节奏提醒），**不** `ensureNotebook`（读记忆不该依赖 zk）。
@@ -23,7 +23,7 @@
 **Public surface.** `buildTools()`（按默认工作区的笔记本配置构建，测试用）与 `registerZkTools(tools)`（返回撤销函数）。
 
 **Alias tools（`zk_<别名>`）.** 默认**不注册**：`aliasTools` 为 false 时 `buildTools` 连 `.zk/config.toml` 都不读，
-内置工具固定 15 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
+内置工具固定 14 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
 （设置页「工具」组的复选框，或 `zk-kit config set aliasTools=true`，只认 `true`；拼错的值归一化成 false 并在 `config set` 时回显）。
 打开后，插件加载时读所有已配置笔记本的 `.zk/config.toml`，把 `[alias]` 表里未注释的键注册成工具；
 同名只取第一本。工具名用下划线而不是点号：DSH 的 function-name 契约是 `[A-Za-z0-9_-]`（`zk.lucky` 会被 provider 拒绝）。
@@ -119,36 +119,8 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `originalWords` 含退役条目；展示层的「原 X」会先减掉 `retiredWords`，所以退役不会再被当成截断报出来。
 契约单独一组：`contract.present / contentWords / words / noticeWords / budget / overBudget / overWords / files[]`（`contentWords` 含 `## PERSONA.md` 标题），
 外加 `totalWords`（`countWords(payload.text)`）与 `overheadWords`（框 / 做梦提醒 / notice / 契约告警等开销）。
-场景是**独立运行时上下文**（`systemPrompt.context()`，不进系统提示 section）：`scene: { present, presence, events, rulesVersion, words, emptyReason }`，不进 memory text、不占记忆预算；
-`stateEvents` 是当前规则的事件词汇行（规则事件 + 在场事件；默认规则还含 `slept`）、`stateRulesVersion` 是它的规则版本（`v3` / `default` / `default(fallback)`；与 `zdiary:state` 同源；没有状态文件时为空串），宿主没有 `systemPrompt` 时的后备与核对用，
-`combinedWords` = `totalWords + scene.words` 才是合并总账（别叫「总 prompt」——宿主自己的系统提示不在里面），
-`combinedBudget` 是它的上限（`totalPromptBudgetWords`），两者一起返回，人才能自己比。
-`presence` 是三态：`present` / `absent` / `unknown`（布尔分不清「不在」和「没记录」）；
-`emptyReason` 说明「为什么没注入」：`no-log` / `budget`（有事件但一句放不下）/ `rules`（规则算出来全是 null，且窗口内没有可展示的自定义事件）/ `error`（日志读不了：权限 / 是个目录，不再冒充「未启用」）。
-场景行末尾可能带一段「记录」：窗口内、规则没消费、也不是内置事件（`slept` / 在场事件）的名字，最多 3 个，按最后发生时间倒序，只给名字 + 时间（`记录 coffee（2 小时前）`），不读参数值；它只是让 agent 自己起的事件下一轮还能看见，不参与 energy / mood 等投影。没有自定义事件时这句不出现；预算紧时它最先被裁。
 契约**不参与** `memoryBudgetWords` 的截断，超了只告警；`overWords` 是所有展示的唯一超量口径，别拿 `words` 再做减法。
-合并总量超 `totalPromptBudgetWords` 时**只在人看的界面点名**（`zk_context` 回复 / `doctor` / 记忆页 / 设置页），
-不写进系统提示、也不自动截断 —— 那句话每轮都要花词，而模型不需要这个数字。
 `zk_dream` 的 `memory.contractWords` 是整段契约注入量；`headroom` 只扣记忆侧（`totalWords - contractWords`），契约不占记忆预算。
-
-**`zk_state`（事件流）。** `append` / `show` / `prune` 三个动作，全部落 `<notebook>/.state/`：
-`append` 一行一条事件（时间戳必须带时区、参数最多 8 个、单行 ≤ 512 字节；**含换行 / 控制字符的值直接拒绝**，
-否则一条事件会被拆成两行坏行），校验通过后的第一次 append 才 `ensureNotebook`（写错的调用不建库、不留 `.state/`），
-插件只校验格式与时间，
-不判断真假；**事件词汇**默认 `slept` / `woke hours=` / `ate` / `at place=` / `set_goal text=` / `user_left` / `user_returned`，写在 `zk_state` 工具说明里作为示例；
-有 `.state/rules` / `.state/events.log` 时，`lib/state-contract.ts` 从当前规则 AST 提取事件名 / 参数名，作为 `zdiary:state` 系统提示段注入：
-规则来自文件时只列规则读取的事件，用默认规则（含只有 `events.log`）时补上内置 `slept`；参数写成 `place=<值>`（占位，别照抄空值）；
-整行上限 160 词 / 1200 字符，超了从尾部截断并注明「另有 N 个未列出」，在场事件永远保留。
-**日志里的事件名不进词表**：这一行是系统提示段，append 不该让它每轮变（会打断提示前缀缓存）；
-agent 自己起的事件名由场景行的「记录」尾巴负责露出（见上），不参与投影，要参与就得人写进 `.state/rules`。
-（没有状态文件时不注入；规则一改下一轮就换，不需要手工同步 AGENTS.md）；插件不校验事件名是否属于内置集；
-`show` 只回投影 + 窗口内最近 20 条，不回全量日志、不回窗口外事件；
-`prune` 压实成「窗口内全部 + 每个事件名在窗口外的最后一条」（tombstone，`hoursSince` 靠它算长尾），
-人写的注释行跟着它后面那条事件走（事件被压实掉就顺延到下一条保留的事件或文件末尾），一行不丢；
-只有插件自己写的表头 `# zdiary-state v<N>` 会被重写成规范的一行。
-**不自动 commit** —— 删除证据在 git diff 里，提交由人决定。
-它不是日常操作：只在人明确要求、或 `doctor` 提示日志偏大时才用（工具描述里写明了）。
-`.state/` 不是笔记：`zk_append` / `zk_new` / `zk_rename` 的路径守卫拒绝它，`excludedNames` 也把它排除出检索。
 
 `zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关（D7）。
 `zk_lint` = 1 次 `zk list` + 三个 zk 原生过滤器（`--orphan` / `--broken-links` / `--tagless`）+ 1 次 `zk graph`，
