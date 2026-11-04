@@ -1176,7 +1176,17 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         totalWords: { type: 'number' },
                         budget: { type: 'number' },
                         headroom: { type: 'number' },
-                    }, ['words', 'contractWords', 'totalWords', 'budget', 'headroom']),
+                        files: {
+                            type: 'array',
+                            items: objSchema({
+                                name: { type: 'string' },
+                                present: { type: 'boolean' },
+                                words: { type: 'number' },
+                                originalWords: { type: 'number' },
+                                retiredWords: { type: 'number' },
+                            }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
+                        },
+                    }, ['words', 'contractWords', 'totalWords', 'budget', 'headroom', 'files']),
                     counts: objSchema({
                         window: { type: 'number' },
                         daily: { type: 'number' },

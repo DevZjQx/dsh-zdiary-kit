@@ -2401,9 +2401,9 @@ describe('tools', () => {
     expect(Number(stats.notes)).toBeGreaterThan(3)
   })
 
-  it('输出 key 不超出 output schema：zk_lint / zk_context', async () => {
+  it('输出 key 不超出 output schema：zk_lint / zk_context / zk_dream', async () => {
     const defs = toolsFeature.buildTools()
-    for (const name of ['zk_lint', 'zk_context']) {
+    for (const name of ['zk_lint', 'zk_context', 'zk_dream']) {
       const tool = defs.find((d) => d.name === name)!
       const value = await tool.execute({}, { signal: AbortSignal.timeout(30_000) })
       expect(undeclaredKeys(value, tool.output.schema)).toEqual([])
