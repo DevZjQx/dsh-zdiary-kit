@@ -284,7 +284,7 @@ function renderMemoryBody(body: string, linkFor: (target: string) => string | nu
 }
 
 /**
- * 记忆页（P1-5 → D9）：人的周审入口 —— 契约 / 用户 / 记忆 / 周审四段 + 载荷预览。
+ * 记忆页（P1-5 → D9）：人的周审入口 —— 契约 / 用户 / 工作约定 / 记忆 / 周审五段 + 载荷预览。
  * 不走 `loadNote`：根目录 meta 被 `loadAll` 排除、也被 `loadNote` 明确拒绝；
  * 这里按常量直接读盘，再复用渲染层的转义与双链白名单。
  * 载荷预览只转义展示（与 zk_context 同源），不提供编辑 —— 写仍然只走 zk_* / 编辑器。
