@@ -2,7 +2,7 @@
 
 **Purpose.** 让模型用 zk 思维工作：先查重、再写原子笔记、用双链连起来、每天记一段。
 
-**Owns.** 14 个内置工具定义（`zk_search` / `zk_query` / `zk_read` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
+**Owns.** 13 个内置工具定义（`zk_search` / `zk_query` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
 `zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
 `.zk/config.toml` 的 `[alias]` 派生的 `zk_<别名>` 工具：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
@@ -12,7 +12,7 @@
 会话第一次调用时把当时的 `active`（默认值）快照成自己的 pin，之后设置页 / CLI / 别的会话切库都不带动它；
 本会话换库只能显式 `zk_use`。pin 一会话一个文件（`~/.dsh/zdiary/sessions/`），进程重启与会话 resume 都接得上；
 指向的笔记本被删掉时静默回到默认值。`zk_context` / `zk_stats` 会在 pin 与默认值不一致时把这件事写出来，
-不让模型自己从「笔记不存在」里猜。`zk_read` / `zk_append` 找不到路径时还会查其他笔记本里有没有同名，
+不让模型自己从「笔记不存在」里猜。`zk_append` 找不到路径时还会查其他笔记本里有没有同名，
 命中就把「这篇在 X 库里」放进错误提示。
 
 **Does not own.** zk 命令行怎么拼（`lib/zk.ts`）；`[alias]` 怎么解析（`lib/alias.ts`）；笔记本怎么建（`lib/notebook.ts`）；配置读写（`config/store`）；
@@ -23,7 +23,7 @@
 **Public surface.** `buildTools()`（按默认工作区的笔记本配置构建，测试用）与 `registerZkTools(tools)`（返回撤销函数）。
 
 **Alias tools（`zk_<别名>`）.** 默认**不注册**：`aliasTools` 为 false 时 `buildTools` 连 `.zk/config.toml` 都不读，
-内置工具固定 14 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
+内置工具固定 13 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
 （设置页「工具」组的复选框，或 `zk-kit config set aliasTools=true`，只认 `true`；拼错的值归一化成 false 并在 `config set` 时回显）。
 打开后，插件加载时读所有已配置笔记本的 `.zk/config.toml`，把 `[alias]` 表里未注释的键注册成工具；
 同名只取第一本。工具名用下划线而不是点号：DSH 的 function-name 契约是 `[A-Za-z0-9_-]`（`zk.lucky` 会被 provider 拒绝）。
@@ -46,6 +46,8 @@ stdout 原样返回（不做 JSON 解析），超过 `maxReadChars` 截断；exi
 且每个动作的 schema 不同（搜索有 tags/since/sort，写入有 path/text），分开才能让参数自解释。
 用 shell 拼字符串调 zk —— 拒绝：一律 `execFile` 数组参数，笔记标题里的引号/空格不会变成注入。
 在 `zk_query` 里加语义判断（"哪条更相关"）—— 拒绝：那是 agent 的活，插件只按字段过滤。
+保留 `zk_read` 做「按搜索词读最相关的一篇」—— 拒绝：`zk_search` + 原生 `read` 两步就够，
+而多一层包装会让模型在两条读取路径之间选，路径解析也多一套。
 
 **Exceptions.** 输入校验自己写：DSH 只对 `defineTool` 注册的工具做输入校验，
 裸 JSON Schema 注册的工具要自己兜（`lib/tool.ts`），换来运行时零依赖。
@@ -112,8 +114,16 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 允许复用标题，但先读旧结论。「是不是同一个错误」仍然由 agent 判断，插件只负责把材料摆出来。
 代价是每次 `zk_new` 多一次全库 `zk list --include-archived`（扫描上限 1 万篇，按比例放大）——
 用一次读换一条「不会静默复用的错误结论」；zk 跑不起来时 layered 照建（归档提醒降级），flat 直接报错（标题查重是写入前的硬门槛，fail-closed）。
-`zk_read` 的"没找到"走 throw（isError），不返回 `found:false` —— 模型看到错误比看到空字段更容易改对。
-`zk_read` 也能读根目录 meta 文件（`MEMORY.md` / `USER.md`）：注入截断时留下的目录就是让 agent 用这个取回原文。
+**读取交给宿主。** 不提供 `zk_read`：DSH 原生 `read` 已经处理行号、分页、沙箱与 read-before-write。
+`zk_search` / `zk_query` 的每条笔记、`zk_new` / `zk_daily` 的返回都带 `absPath`（相对笔记本的 `path` 仍在，
+双链与 `zk_*` 参数用得上），模型直接把 `absPath` 传给 `read`；根目录 meta 文件（`MEMORY.md` / `USER.md`）
+同理，注入截断时留下的目录就是让 agent 用 `read` 取回原文。前提是宿主挂载了 `dsh-tool-fs`
+（默认 web profile 有）；精简 / headless 宿主没挂 `read` 时，读取路径不存在 —— 这是有意的取舍，
+不为了兼容它再维护第二套读文件工具。
+
+**为什么删 `zk_read`、却留着 `zk_append`.** 读文件是宿主的事；追加不是：原生 `edit` 没有 append，而且要求
+先整篇 `read`、`old_string` 唯一匹配 —— 追加一行会变成「读全篇 + 找锚点」。`zk_append` 保留一次调用完成
+「补空行 / 二级标题 / 写入指定小节」的语义，守卫（meta / `raw/` / `inbox/`）也仍然在。
 `zk_context` 的 `files[].originalWords`（截断前词数）、`files[].retiredWords`（退役条目占的词数，只算在 `MEMORY.md` 上）、
 `tocWords`（目录占的词数）与 `ratio`（用量 = `words / budget`，两位小数，> 1 表示超预算）只用于解释预算，不改变注入内容。
 `originalWords` 含退役条目；展示层的「原 X」会先减掉 `retiredWords`，所以退役不会再被当成截断报出来。

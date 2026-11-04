@@ -47,7 +47,7 @@ export interface Config {
   dailyGroup: string
   /** 新笔记默认追加的标签（可空） */
   defaultTags: string[]
-  /** zk_read 单次最多返回多少字符 */
+  /** 单次读取上限（字符）：zk-kit read 与 [alias] 工具的输出截断 */
   maxReadChars: number
   /**
    * 是否把笔记本 `.zk/config.toml` 的 `[alias]` 注册成 `zk_<名>` 工具。

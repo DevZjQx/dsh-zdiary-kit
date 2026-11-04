@@ -156,7 +156,7 @@ interface Field {
       { group: '记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 500（中文按 2 字 1 词）。超了先丢 MEMORY 里日期最旧的条目（一条日期都没有才退回从尾部丢），并回显截断了多少' },
       { group: '记忆', key: 'contractBudgetWords', label: '契约预算（词）', hint: 'PERSONA.md 的上限，默认 240（50-800）。契约是硬规则，永远注入、不参与截断；超了只告警' },
       { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
-      { group: '写入', key: 'maxReadChars', label: 'zk_read 单次上限（字符）', hint: '默认 20000；超了会截断并明确告知模型' },
+      { group: '写入', key: 'maxReadChars', label: '单次读取上限（字符）', hint: '默认 20000；zk-kit read 与别名工具的输出超了会截断并明确告知模型' },
       { group: '工具', key: 'aliasTools', label: '把 [alias] 注册成工具', hint: '默认关闭。打开后，加载插件时把各笔记本 .zk/config.toml 的 [alias] 里未注释的别名注册成 zk_<名>，模型可以像调内置工具一样调它们。\n别名是 $SHELL -c 执行的任意命令 —— 打开等于把这些命令交给 agent，只在你信得过 config.toml 内容时开。\n交互式命令（edit / 带 --interactive）会卡到超时，不适合当工具。改完要重载插件（或重启 DSH）才会出现在工具列表里', type: 'bool' },
       { group: 'zk', key: 'zkPath', label: 'zk 路径（可空）', hint: '空 = 自动找：配置 → $ZK_BIN → PATH → 插件内置（~/.dsh/zdiary/bin）' },
       { group: 'zk', key: 'zkVersion', label: '内置 zk 版本', hint: '「安装内置 zk」下载的版本，默认 0.15.7；改完点安装即升级' },
@@ -521,7 +521,7 @@ interface Field {
         snap?.countsError ? h('div', { className: 'zdk-err' }, '计数失败：' + snap.countsError) : null,
         h('div', { className: 'zdk-hint' },
           `配置：${snap?.configPath || '~/.dsh/zdiary/zdiary.config.json'}\n` +
-          '工具的用法：zk_search 查 → zk_read 读 → zk_new 新建 → zk_daily 写日记 → zk_link 连双链；zk_stats 看规模。'))
+          '工具的用法：zk_search 查 → 原生 read 读 → zk_new 新建 → zk_daily 写日记 → zk_link 连双链；zk_stats 看规模。'))
     }
 
     function apply(ctx: { effect: (fn: () => unknown, label?: string) => void; slots: { inject: (name: string, fn: () => unknown, label?: string) => unknown; register: (spec: Record<string, unknown>, component: unknown) => unknown } }): void {

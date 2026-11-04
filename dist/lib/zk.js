@@ -534,7 +534,7 @@ export function relPathOf(cfg, abs) {
  * raw/ 是只读的原始材料，inbox/ 是被放弃的「待归类区」（P2-8）。
  * 两者都在 excludedNames 里，写进去不会报错、但会被排除出索引 —— 结果是
  * 「写了、没报错、但搜不到」，比直接失败更难查。所以在写入口就拦住。
- * 读不受影响：raw 里的材料照常 zk_read / Read；盘上已有的 inbox/ 原样保留。
+ * 读不受影响：raw 里的材料照常 read；盘上已有的 inbox/ 原样保留。
  */
 function assertWritablePath(cfg, abs) {
     const rel = relPathOf(cfg, abs);
@@ -674,7 +674,7 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
                 const key = normalizeTitle(title);
                 const existing = snapshot.find((n) => !inArchive(cfg, n.path) && normalizeTitle(n.title) === key);
                 if (existing) {
-                    throw new ZkError(`同名笔记已存在：${existing.path}`, '换一个标题，或直接用 zk_read / zk_append 改那一篇；归档里的旧结论不参与查重，可以复用标题');
+                    throw new ZkError(`同名笔记已存在：${existing.path}`, '换一个标题，或直接用 read / edit 改那一篇；归档里的旧结论不参与查重，可以复用标题');
                 }
             }
             else if (wanted) {
@@ -686,7 +686,7 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
                     && path.posix.dirname(n.path) === dirKey
                     && normalizeTitle(n.title) === key);
                 if (existing) {
-                    throw new ZkError(`同目录下已有同名笔记：${existing.path}`, '换一个标题，或直接用 zk_read / zk_append 改那一篇');
+                    throw new ZkError(`同目录下已有同名笔记：${existing.path}`, '换一个标题，或直接用 read / edit 改那一篇');
                 }
             }
             archived = archivedHits(cfg, snapshot, title);
@@ -704,7 +704,7 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
     // name 是确定的，撞名在建之前就能查出来：zk 撞名是 exit 0 + 丢正文，不能等它
     const clash = wanted && [...before].find((f) => path.basename(f, path.extname(f)) === wanted);
     if (clash) {
-        throw new ZkError(`同名笔记已存在：${dir === '.' ? '' : dir + '/'}${clash}`, '换一个 name，或直接用 zk_read / zk_append 改那一篇');
+        throw new ZkError(`同名笔记已存在：${dir === '.' ? '' : dir + '/'}${clash}`, '换一个 name，或直接用 read / edit 改那一篇');
     }
     const args = ['new', dirAbs, '-t', title, '-i', '-p'];
     if (input.group)
@@ -733,7 +733,7 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
         throw new ZkError(`${createdRel} 是 meta 文件，不能新建`, `${META_NAMES.join(' / ')} 由人和 agent 直接编辑；子目录里的同名文件是普通笔记`);
     }
     if (before.has(path.basename(abs))) {
-        throw new ZkError(`同名笔记已存在：${relPathOf(cfg, abs)}`, '同名时 zk 不覆盖（这次传入的正文被丢弃了，原文件一个字都没动）。换个标题，或直接用 zk_read / zk_append 改那一篇');
+        throw new ZkError(`同名笔记已存在：${relPathOf(cfg, abs)}`, '同名时 zk 不覆盖（这次传入的正文被丢弃了，原文件一个字都没动）。换个标题，或直接用 read / edit 改那一篇');
     }
     // name 只换 basename、不换目录：正文里的相对链接和 [[stem]] 都不受影响，所以这里是纯搬文件。
     // 跨目录改名要重写入链，那是 zk_rename / renameNote 的活，不走这条路。

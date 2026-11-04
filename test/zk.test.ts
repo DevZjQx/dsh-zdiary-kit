@@ -411,7 +411,7 @@ describe('memory', () => {
     expect(p.words).toBeLessThanOrEqual(50)
   })
 
-  test('截断留目录：丢掉哪几段、用 zk_read 取回', () => {
+  test('截断留目录：丢掉哪几段、用 read 取回', () => {
     const section = (title: string) => `## ${title}\n` + 'word '.repeat(30)
     const body = ['# 记忆', section('一'), section('二'), section('三'), section('四')].join('\n')
     const p = build({ 'AGENTS.md': 'rule '.repeat(5), 'MEMORY.md': body }, 100)
@@ -422,7 +422,7 @@ describe('memory', () => {
     expect(p.text).toContain('§四')
     expect(p.text).toContain('§三')
     expect(p.text).not.toContain('## 三')
-    expect(p.text).toContain('zk_read 取回')
+    expect(p.text).toContain('read 取回')
 
     const mem = p.files.find((f) => f.name === 'MEMORY.md')
     expect(mem?.originalWords).toBeGreaterThan(mem?.words ?? 0)
@@ -461,8 +461,8 @@ describe('memory', () => {
     expect(p.words).toBeLessThanOrEqual(120)
     expect(p.truncatedWords).toBeGreaterThan(0)
     expect(p.text).not.toContain('第 30 条结论')
-    // 丢掉的是尾部，且必须留下可发现性：目录，或至少一句 zk_read 指路
-    expect(p.text).toMatch(/未注入的段落|用 zk_read 读/)
+    // 丢掉的是尾部，且必须留下可发现性：目录，或至少一句 read 指路
+    expect(p.text).toMatch(/未注入的段落|用 read 读/)
     // 截断时不再叠加用量提示（两者互斥）
     expect(p.text).not.toContain('记忆已用')
   })
@@ -2222,10 +2222,10 @@ describe('daily', () => {
 })
 
 describe('tools', () => {
-  it('14 个工具，参数校验拒绝坏输入', () => {
+  it('13 个工具，参数校验拒绝坏输入', () => {
     const defs = toolsFeature.buildTools()
     expect(defs.map((d) => d.name)).toEqual([
-      'zk_search', 'zk_query', 'zk_read', 'zk_new', 'zk_daily', 'zk_append', 'zk_link',       'zk_supersede',
+      'zk_search', 'zk_query', 'zk_new', 'zk_daily', 'zk_append', 'zk_link', 'zk_supersede',
       'zk_rename',
       'zk_context', 'zk_lint', 'zk_dream', 'zk_stats', 'zk_use',
     ])
@@ -2357,7 +2357,7 @@ describe('tools', () => {
     }
   })
 
-  it('注册后能真的执行（zk_new → zk_search → zk_read → zk_stats）', async () => {
+  it('注册后能真的执行（zk_new → zk_search → zk_stats）', async () => {
     const defs = toolsFeature.buildTools()
     const registry = new Map(defs.map((d) => [d.name, d]))
     const call = async (name: string, args: unknown) => {
@@ -2373,19 +2373,22 @@ describe('tools', () => {
     const created = await call('zk_new', { title: '工具层笔记', body: '通过工具注册创建的。', tags: ['tool'] })
     expect(String(created.path)).toContain('notes/')
     expect((created.tags as string[])).toContain('default')
+    expect(String(created.absPath)).toBe(path.join(String(created.notebook), String(created.path)))
+    expect(fs.existsSync(String(created.absPath))).toBe(true)
 
     const found = await call('zk_search', { query: '工具层', tags: ['tool'] })
     expect(found.count).toBe(1)
-
-    const read = await call('zk_read', { path: created.path })
-    expect(read.truncated).toBe(false)
-    expect(String(read.content)).toContain('通过工具注册创建的')
+    const hit = (found.notes as Array<{ absPath: string }>)[0]
+    expect(hit.absPath).toBe(String(created.absPath))
+    expect(fs.existsSync(hit.absPath)).toBe(true)
 
     await call('zk_append', { path: created.path, text: '又来一条', heading: '后续' })
-    await call('zk_daily', { entry: '工具层日记' })
+    const daily = await call('zk_daily', { entry: '工具层日记' })
+    expect(fs.existsSync(String(daily.absPath))).toBe(true)
     await call('zk_link', { from: created.path, to: '目标 B' })
     const queried = await call('zk_query', { tags: ['tool'], status: 'active' })
     expect(Number(queried.count)).toBe(1)
+    expect(fs.existsSync((queried.notes as Array<{ absPath: string }>)[0].absPath)).toBe(true)
     const preview = await call('zk_supersede', { path: String(created.path) })
     expect(preview.dryRun).toBe(true)
     expect(preview.performed).toBe(false)
@@ -2429,14 +2432,6 @@ describe('tools', () => {
     expect(paths).toContain(String(next.path))
   })
 
-  it('zk_read 截断会明确告诉模型', async () => {
-    const defs = toolsFeature.buildTools()
-    const read = defs.find((d) => d.name === 'zk_read')!
-    const long = await read.execute({ query: '卡片盒', maxChars: 1000 }, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
-    expect(typeof long.content).toBe('string')
-    expect(read.output.render({}, long)[0].text).toContain('笔记')
-  })
-
   it('zk_new：summary 落进 ## Summary；正文自己写了就告警不覆盖', async () => {
     const newTool = toolsFeature.buildTools().find((d) => d.name === 'zk_new')!
     const made = await newTool.execute(
@@ -2475,13 +2470,6 @@ describe('tools', () => {
     expect(archived).toHaveLength(1)
     expect(archived[0].reason).toBe('旧口径作废')
     expect(registry.get('zk_new')!.output.render({}, again)[0].text).toContain('归档里有同名旧结论')
-  })
-  it('zk_read 能读根目录 MEMORY.md（注入目录的回读路径真的可用）', async () => {
-    fs.writeFileSync(path.join(notebook, 'MEMORY.md'), '# 记忆\n\nMEMORY-READ-TOKEN\n')
-    const defs = toolsFeature.buildTools()
-    const read = defs.find((d) => d.name === 'zk_read')!
-    const value = await read.execute({ path: 'MEMORY.md' }, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
-    expect(String(value.content)).toContain('MEMORY-READ-TOKEN')
   })
 })
 
@@ -2598,7 +2586,7 @@ describe('alias tools', () => {
     }
   })
 
-  it('开关默认关：[alias] 里有条目也不注册成工具，内置工具仍是 14 个', async () => {
+  it('开关默认关：[alias] 里有条目也不注册成工具，内置工具仍是 13 个', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-alias-off-'))
     try {
       store.writeConfig({
@@ -2623,7 +2611,7 @@ describe('alias tools', () => {
 
       const defs = toolsFeature.buildTools(() => dir)
       expect(defs.map((d) => d.name)).not.toContain('zk_lucky')
-      expect(defs).toHaveLength(14)
+      expect(defs).toHaveLength(13)
     } finally {
       store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'], aliasTools: false })
       fs.rmSync(dir, { recursive: true, force: true })
@@ -3470,7 +3458,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
       expect(body).toContain('YYYY-MM-DD')
       expect(body).toContain('[superseded')
       // v5：写了来源链接，还得说清「要真的去读它」，否则模型只把它当脚注
-      expect(body).toContain('先 zk_read 核对来源')
+      expect(body).toContain('先 read 核对来源')
     }
     expect(notebookLib.WORKFLOW_TEMPLATE.startsWith('<!-- zdiary-template: v')).toBe(true)
   })
@@ -3616,7 +3604,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
       'MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]；退役写 - [superseded]。\n')
     const missing = lintLib.templateStatus(cfg)
     expect(missing.mismatch).toBe(true)
-    expect(missing.mismatchDetail).toContain('先 zk_read 核对来源')
+    expect(missing.mismatchDetail).toContain('先 read 核对来源')
 
     // flat 库拿 flat 模板：不能把 raw/ archive/ WORKFLOW.md 这些它没有的路径塞回去
     const flat = fresh('nb-p215-flat')

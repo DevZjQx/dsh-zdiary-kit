@@ -2,7 +2,7 @@
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
-> 然后给 agent 一组 `zk_*` 工具 —— 查、读、写、记日记、连双链，全部走 zk 自己的索引。
+> 然后给 agent 一组 `zk_*` 工具 —— 查、写、记日记、连双链，全部走 zk 自己的索引。
 >
 > 装好 zk 后不用先配环境：agent 第一次调用工具时就把笔记本建好；设置页里再调路径、重建索引、跑自检。
 
@@ -10,9 +10,8 @@
 
 | 工具 | 干什么 |
 |---|---|
-| `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要；中文查询自动并用子串匹配（`matchStrategy` 说明用了 `fts` / `regex` / `mixed`，补上全文索引漏掉的笔记） |
+| `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、相对路径、绝对路径、标签、摘要；中文查询自动并用子串匹配（`matchStrategy` 说明用了 `fts` / `regex` / `mixed`，补上全文索引漏掉的笔记） |
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active） |
-| `zk_read` | 读一篇全文（按路径，或先按词找最相关的一篇）；超长会截断并标注 |
 | `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/`、`inbox/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面）；中文笔记没有任何标签时在 `tagWarning` 里提示（只提示，不阻断） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题）；根目录 meta 文件拒写 |
 | `zk_daily` | 打开/创建某天的日记，并追加一条带时间的记录（layered 模板写进 `## Events` 的 `### HH:MM`，flat 追加到文件末尾的 `## HH:MM`） |
@@ -34,6 +33,8 @@
 **默认不注册**（`aliasTools` 默认 false，关着时不读 config.toml）：在设置页「工具」组勾选，或 `zk-kit config set aliasTools=true`，再重载插件；
 值只认 `true`（拼错的值会被归一化成 false 并在 `config set` 时回显）。
 
+读全文不再包一层工具：`zk_search` / `zk_query` 的每条笔记、`zk_new` / `zk_daily` 的返回都带 `absPath`，直接传给 DSH 原生 `read` 即可；相对笔记本的 `path` 仍然保留，给双链和 `zk_*` 参数用。前提是宿主挂载了 DSH 的 fs 工具（默认 web profile 有）；精简 / headless 宿主没挂 `read` 时，读笔记要另配文件工具。
+
 写笔记前 agent 会先 `zk_search` 查重；flat 笔记本的 `zk_new` 还会按标题再查一次，重复直接报错。
 layered 笔记本的文件名是标题的 slug：英文标题自然得到英文文件名，短不短看标题本身；中文标题会变成很长的拼音名，要短名就在 `zk_new` 时传 `name`；老笔记不自动改名，**手工 `mv` 会断入链**，要改名用 `zk_rename`（默认预演，会重写引用）。
 layered 下每篇笔记都要落在 group 里：`zk_new` 不给 `dir` 就按 `type` 选目录（source → notes/sources），没给 `type` 会直接报错；显式给的 `dir` 也要在某个 group 下（`notes/sources` 及其子目录，写 `notes/concept` 这种错字一样拦）—— `notes/` 根不属于任何 group，建在那里的笔记不套模板（没有 frontmatter，文件名是随机 id），所以这条路径一律不放过。
@@ -44,13 +45,13 @@ layered 下每篇笔记都要落在 group 里：`zk_new` 不给 `dir` 就按 `ty
 记忆注入也跟着这个会话固定的那本走。要跟着换，就在**那个会话里**说「切到 X 库」（agent 调 `zk_use`）。
 每轮系统提示里还会带一行当前笔记本（名字 / 路径 / 结构）和其余已配置库 —— 模型不用先调工具就知道自己在哪本、还能切到哪本。
 设置页保存时带文件指纹，别处刚改过配置会 409 并要求确认，不会拿旧表单把别人的 `active` 覆盖回去。
-路径找不到时，`zk_read` / `zk_append` 还会顺手查别的笔记本里有没有同名笔记，并告诉你它在哪一本。
+路径找不到时，`zk_append` 还会顺手查别的笔记本里有没有同名笔记，并告诉你它在哪一本。
 
 **长期记忆**：笔记本根目录放 `AGENTS.md`（工作约定）、`USER.md`（偏好）、`MEMORY.md`（精炼记忆），
 插件会在每个 step 把它们注入系统提示（预算默认 500 词，设置页「记忆 → 注入预算」可改；
 超了先丢 MEMORY 里**日期最旧**的一条（都没写日期才退回从尾部往前丢），
 按 `##` 小节 → 顶层列表项 → 空行段落 三级降级切分（`# 记忆` + 要点列表这种最常见的写法也算数），
-丢掉的条目 / 段落留一份目录（标题）—— 需要时用 `zk_read MEMORY.md` 取回；
+丢掉的条目 / 段落留一份目录（标题）—— 需要时用原生 `read` 读 `<笔记本>/MEMORY.md` 取回；
 同日期按文件里靠后的先丢，所以带日期的条目不会因为写在底部就先被删；
 同时明确告诉你截了多少、谁已经没法再丢）。用到预算 80% 以上时还会回显一行「记忆已用 246/300 词（82%）」
 （数字已含这行提示本身）—— 先合并或退役旧条目，别等第一次截断。
@@ -139,7 +140,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 | 目录与 group | 归档目录 | `supersede` 后搬到这里（保留原相对路径），默认 `archive` |
 | 记忆 | 注入预算（词） | AGENTS + USER + MEMORY 的合计上限，默认 500（中文按 2 字 1 词） |
 | 记忆 | 契约预算 | 契约 240（不截断、超了告警） |
-| 写入 | 默认标签 / zk_read 上限 | 新笔记自动带标签；单次读取字符上限 |
+| 写入 | 默认标签 / 单次读取上限 | 新笔记自动带标签；`zk-kit read` 与别名工具的输出上限 |
 | 工具 | 把 `[alias]` 注册成工具 | 复选框，默认关。打开后 `.zk/config.toml` 的 `[alias]` 变成 `zk_<名>` 工具；**加载时才注册**，勾完保存要重载插件 |
 | zk | zk 路径 / 内置版本 | 路径空 = 自动找；版本默认 0.15.7 |
 
@@ -399,11 +400,11 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 体检报「frontmatter 缺字段」（layered） | 缺 `type` / `status` / `authority`：索引把缺失落成空串，`authority=informal` 这类机械门对它们静默失效。按模板补上即可；flat 不查这一项 |
 | `doctor` 提示「记忆在跑，但缺 AGENTS.md」 | `flat` 默认不写工作约定：跑 `zk-kit init --with-agents`，或设置页点「写入 AGENTS.md 模板」（已存在不覆盖） |
 | 提示「盘上有分层目录，但配置是 flat」 | 以前是 layered、后来改成 flat（或手工搬过目录）：新建笔记会落在 `notes/` 根、不套模板。要么把配置改回 layered，要么把这些目录移走；插件只提示，不动文件 |
-| `Read` / `Edit` 笔记本报 `file access denied under workspace-write mode` | 笔记本被指到了工作区外。改用 `zk_*` 工具（不经这层策略），或把目录加进 `additionalWritableRoots`，或开会话到 `danger-full-access` |
+| `read` / `edit` 笔记本报 `file access denied under workspace-write mode` | 笔记本被指到了工作区外。读也只能走原生 `read`（`zk_read` 已移除）：把笔记本放回工作区（默认 `<工作区>/zdiary` 就是为此选的），或把目录加进 `additionalWritableRoots`，或开会话到 `danger-full-access` |
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「补建 *名* 的目录」，别手改配置去将就磁盘 |
 | 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |
-| 新建时提示「归档里有同名旧结论」 | 允许复用标题，但先 `zk_read` 归档那篇，确认不是同一个错误；插件只警告、不拦 |
-| 往 `raw/` 或 `inbox/` 写笔记报「只读」 | 两者都被排除出索引，写进去的笔记不会报错、只是永远搜不到；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 直接拒绝 | 结论写到 `notes/`；原文留在原位，用 `zk_read raw/xxx.md` 或直接读文件对照。`inbox/` 是停用入口，老目录只读保留 |
+| 新建时提示「归档里有同名旧结论」 | 允许复用标题，但先 `read` 归档那篇，确认不是同一个错误；插件只警告、不拦 |
+| 往 `raw/` 或 `inbox/` 写笔记报「只读」 | 两者都被排除出索引，写进去的笔记不会报错、只是永远搜不到；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 直接拒绝 | 结论写到 `notes/`；原文留在原位，用原生 `read` 读 `raw/xxx.md` 或直接读文件对照。`inbox/` 是停用入口，老目录只读保留 |
 | `config set notebook=…` 报「派生值」 | `notebook` 是 `notebooks[active]` 解析后的派生值、不落盘也不可写：改路径用 `zk-kit notebooks add 名 路径`，切换用 `use` |
 
 ## 开发
@@ -412,7 +413,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉，并检查没有顶层声明
   （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：14 个内置工具各跑一遍 + 7 条设置路由都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
+  `bun run smoke`（加载 dist：13 个内置工具各跑一遍 + 7 条设置路由都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
   `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
@@ -441,7 +442,7 @@ src/
 │   ├── dsh.ts                    # 宿主契约（纯类型，编译后为空）
 │   └── exec.ts / http.ts / json-file.ts
 ├── features/
-│   ├── zk-tools/feature.ts       # 14 个内置工具 + [alias] 别名工具
+│   ├── zk-tools/feature.ts       # 13 个内置工具 + [alias] 别名工具
 │   ├── settings/                 # 宿主 API + 浏览器 section
 │   └── readonly/                 # 只读视图：GET-only 路由 + Web 1.0 渲染（无 JS）
 └── cli.ts                        # zk-kit 命令行

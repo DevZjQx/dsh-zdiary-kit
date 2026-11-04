@@ -1,5 +1,5 @@
 /**
- * zk 工具（feature 的公共入口）：14 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
+ * zk 工具（feature 的公共入口）：13 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
  *
  * 设计要点：
  *   · 除 zk_context（只读 meta 文件，不依赖 zk）外，每个工具进来先 ensureNotebook —— 第一次调用就自动建好笔记本，用户不用先点设置页；
@@ -19,11 +19,11 @@ import { S, validateArgs } from '../../lib/tool.ts'
 import type { SchemaNode } from '../../lib/tool.ts'
 import { ensureNotebook, newNoteDir } from '../../lib/notebook.ts'
 import {
-  searchNotes, searchNotesDetailed, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily,
+  searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily,
   linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir,
   localDate as dateOnly, runAlias, ZkError,
 } from '../../lib/zk.ts'
-import type { NoteRecord, NoteDoc, SupersedeResult, RenameResult } from '../../lib/zk.ts'
+import type { NoteRecord, SupersedeResult, RenameResult } from '../../lib/zk.ts'
 import { configuredAliases, readAliases } from '../../lib/alias.ts'
 import type { AliasDefinition } from '../../lib/alias.ts'
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.ts'
@@ -285,7 +285,7 @@ function tagSuffix(record: { tags: string[] }): string {
 
 function noteLine(n: NoteRecord, index: number): string {
   const head = `${index + 1}. ${n.title || n.path}`
-  const meta = [n.path, dateOnly(n.created)].filter(Boolean).join(' · ')
+  const meta = [n.absPath || n.path, dateOnly(n.created)].filter(Boolean).join(' · ')
   const lead = n.lead ? `\n   ${n.lead}` : ''
   return `${head}\n   ${meta}${tagSuffix(n)}${lead}`
 }
@@ -407,8 +407,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_search',
       description:
-        '在 zk 知识库里搜索笔记（全文 / 标签 / 日期 / 断链 / 孤立笔记），返回标题、相对路径、标签、创建日与摘要。' +
-        '找到后用 zk_read 读全文。写笔记前先用它查重。' +
+        '在 zk 知识库里搜索笔记（全文 / 标签 / 日期 / 断链 / 孤立笔记），返回标题、相对路径、绝对路径、标签、创建日与摘要。' +
+        '找到后用原生 read 读全文：notes[].absPath 可以直接传给 read。写笔记前先用它查重。' +
         '中文查询会自动并用子串匹配（FTS 不切中文）：matchStrategy 说明这次用了 fts / regex / mixed，mixed 表示补到了全文索引漏掉的笔记。',
       parameters: {
         type: 'object',
@@ -434,10 +434,11 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             items: objSchema({
               title: { type: 'string' },
               path: { type: 'string' },
+              absPath: { type: 'string' },
               tags: { type: 'array', items: { type: 'string' } },
               created: { type: 'string' },
               lead: { type: 'string' },
-            }, ['title', 'path', 'tags', 'created', 'lead']),
+            }, ['title', 'path', 'absPath', 'tags', 'created', 'lead']),
           },
         }, ['notebook', 'count', 'matchStrategy', 'notes']),
       },
@@ -458,7 +459,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           notebook: cfg.notebook,
           count: result.notes.length,
           matchStrategy: result.matchStrategy,
-          notes: result.notes.map((n) => ({ title: n.title, path: n.path, tags: n.tags, created: dateOnly(n.created), lead: n.lead })),
+          notes: result.notes.map((n) => ({ title: n.title, path: n.path, absPath: n.absPath, tags: n.tags, created: dateOnly(n.created), lead: n.lead })),
         }
       },
       render(_args, value) {
@@ -504,6 +505,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             items: objSchema({
               title: { type: 'string' },
               path: { type: 'string' },
+              absPath: { type: 'string' },
               type: { type: 'string' },
               status: { type: 'string' },
               authority: { type: 'string' },
@@ -511,7 +513,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               created: { type: 'string' },
               lead: { type: 'string' },
               archived: { type: 'boolean' },
-            }, ['title', 'path', 'type', 'status', 'authority', 'tags', 'created', 'lead', 'archived']),
+            }, ['title', 'path', 'absPath', 'type', 'status', 'authority', 'tags', 'created', 'lead', 'archived']),
           },
         }, ['notebook', 'count', 'notes']),
       },
@@ -540,6 +542,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           notes: notes.map((n) => ({
             title: n.title,
             path: n.path,
+            absPath: n.absPath,
             // daily 模板没有 frontmatter：按 dailyDir 回显，和 type=daily 的过滤口径一致
             type: n.type || (isUnderDir(n.path, cfg.dailyDir) ? 'daily' : ''),
             status: n.status || 'active',
@@ -556,73 +559,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         if (!v.count) return text(`没有匹配的笔记（笔记本 ${v.notebook}）`)
         const lines = v.notes.map((n, i) => {
           const badges = [String(n.type || '—'), String(n.status || 'no-status'), n.archived ? '已归档' : ''].filter(Boolean)
-          return `${i + 1}. ${String(n.title)}  [${badges.join(' · ')}]\n   ${String(n.path)} · ${String(n.created)}${String(n.lead) ? '\n   ' + String(n.lead) : ''}`
+          return `${i + 1}. ${String(n.title)}  [${badges.join(' · ')}]\n   ${String(n.absPath || n.path)} · ${String(n.created)}${String(n.lead) ? '\n   ' + String(n.lead) : ''}`
         })
         return text(`${v.count} 条（笔记本 ${v.notebook}）\n` + lines.join('\n'))
-      },
-    }),
-
-    t({
-      name: 'zk_read',
-      description:
-        '读一篇笔记的全文（或先按搜索词找到最相关的一篇再读）。路径是相对笔记本根目录的路径，如 notes/ab12.md。' +
-        '也可以读根目录的 meta 文件（MEMORY.md / USER.md），注入时被截掉的段落用这个取回。' +
-        '长笔记会被截断并明确标注。',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: S.str('笔记的相对路径；与 query 二选一'),
-          query: S.str('搜索词：取最相关的一篇读；与 path 二选一'),
-          maxChars: S.num('最多返回多少字符（默认取设置里的值）'),
-        },
-        additionalProperties: false,
-      },
-      output: {
-        schema: objSchema({
-          notebook: { type: 'string' },
-          path: { type: 'string' },
-          title: { type: 'string' },
-          tags: { type: 'array', items: { type: 'string' } },
-          created: { type: 'string' },
-          modified: { type: 'string' },
-          chars: { type: 'number' },
-          truncated: { type: 'boolean' },
-          content: { type: 'string' },
-        }, ['notebook', 'path', 'title', 'tags', 'created', 'modified', 'chars', 'truncated', 'content']),
-      },
-      async run(args, env) {
-        const p = args.path ? String(args.path) : ''
-        const q = args.query ? String(args.query) : ''
-        if (!p && !q) throw new ZkError('path 和 query 至少给一个')
-        const cfg = configFor(env.workspace, env.sessionId)
-        await ensureNotebook(cfg)
-        let doc: NoteDoc | null
-        try {
-          doc = p ? await readNote(cfg, p, env.signal) : await findNote(cfg, q, env.signal)
-        } catch (err) {
-          throw withElsewhere(err, cfg, env.workspace, p)
-        }
-        if (!doc) throw new ZkError(`没找到匹配的笔记：${q}`, '换一个搜索词，或用 zk_search 先看看有哪些笔记')
-        const limit = Math.min(200_000, Math.max(1000, Math.trunc(Number(args.maxChars ?? cfg.maxReadChars))))
-        const truncated = doc.content.length > limit
-        return {
-          notebook: cfg.notebook,
-          path: doc.path,
-          title: doc.title,
-          tags: doc.tags,
-          created: dateOnly(doc.created),
-          modified: dateOnly(doc.modified),
-          chars: doc.content.length,
-          truncated,
-          content: truncated ? doc.content.slice(0, limit) : doc.content,
-        }
-      },
-      render(_args, value) {
-        const v = value as { path: string; title: string; created: string; tags: string[]; chars: number; truncated: boolean; content: string }
-        // 正文本身就带一级标题（zk 模板），别再重复一次；这一行只放元信息
-        const head = [v.path, v.created].filter(Boolean).join(' · ')
-        const cut = v.truncated ? `\n\n…（已截断：共 ${v.chars} 字，传 maxChars 可读更多）` : ''
-        return text(`${head}${tagSuffix(v)}\n\n${v.content}${cut}`)
       },
     }),
 
@@ -660,6 +599,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         schema: objSchema({
           notebook: { type: 'string' },
           path: { type: 'string' },
+          absPath: { type: 'string' },
           title: { type: 'string' },
           tags: { type: 'array', items: { type: 'string' } },
           links: { type: 'array', items: { type: 'string' } },
@@ -675,7 +615,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             }, ['path', 'title', 'reason']),
           },
           warnings: { type: 'array', items: { type: 'string' } },
-        }, ['notebook', 'path', 'title', 'tags', 'links', 'summaryApplied', 'archived', 'warnings']),
+        }, ['notebook', 'path', 'absPath', 'title', 'tags', 'links', 'summaryApplied', 'archived', 'warnings']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -714,7 +654,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         // 没有告警就不要写 summaryWarning: undefined —— 宿主按无损 JSON 快照校验输出，
         // 值为 undefined 的字段会让整次调用报 INVALID_TOOL_OUTPUT（文件其实已经建好）。
         return {
-          notebook: cfg.notebook, path: created.path, title: created.title, tags, links,
+          notebook: cfg.notebook, path: created.path, absPath: created.absPath, title: created.title, tags, links,
           summaryApplied: created.summaryApplied, archived, warnings,
           ...(created.summaryWarning ? { summaryWarning: created.summaryWarning } : {}),
           ...(tagWarning ? { tagWarning } : {}),
@@ -722,11 +662,11 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       },
       render(_args, value) {
         const v = value as {
-          notebook: string; path: string; title: string; tags: string[]; links: string[]
+          notebook: string; path: string; absPath: string; title: string; tags: string[]; links: string[]
           summaryApplied: boolean; summaryWarning?: string; tagWarning?: string
           archived: Array<{ path: string; title: string; reason: string }>; warnings: string[]
         }
-        const lines = [`已记下「${v.title}」→ ${v.path}`]
+        const lines = [`已记下「${v.title}」→ ${v.absPath || v.path}`]
         if (v.tags.length) lines.push('标签：' + v.tags.map((t) => '#' + t).join(' '))
         if (v.links.length) lines.push('双链：' + v.links.join(' '))
         if (v.summaryWarning) lines.push('⚠️ ' + v.summaryWarning)
@@ -759,9 +699,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         schema: objSchema({
           notebook: { type: 'string' },
           path: { type: 'string' },
+          absPath: { type: 'string' },
           created: { type: 'boolean' },
           appended: { type: 'boolean' },
-        }, ['notebook', 'path', 'created', 'appended']),
+        }, ['notebook', 'path', 'absPath', 'created', 'appended']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -769,12 +710,12 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const daily = await ensureDailyNote(cfg, { date: args.date ? String(args.date) : undefined }, env.signal)
         const appended = Boolean(args.entry && String(args.entry).trim())
         if (appended) appendDaily(cfg, daily.path, String(args.entry), new Date())
-        return { notebook: cfg.notebook, path: daily.path, created: daily.created, appended }
+        return { notebook: cfg.notebook, path: daily.path, absPath: daily.absPath, created: daily.created, appended }
       },
       render(_args, value) {
-        const v = value as { notebook: string; path: string; created: boolean; appended: boolean }
+        const v = value as { notebook: string; path: string; absPath: string; created: boolean; appended: boolean }
         const state = v.created ? '新建' : '已有'
-        return text(`日记 ${state} → ${v.path}${v.appended ? '（已追加一段）' : ''}\n笔记本：${v.notebook}`)
+        return text(`日记 ${state} → ${v.absPath || v.path}${v.appended ? '（已追加一段）' : ''}\n笔记本：${v.notebook}`)
       },
     }),
 
@@ -782,7 +723,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       name: 'zk_append',
       description:
         '往一篇已有笔记末尾追加内容（自动补空行，可选先起一个二级标题）。适合补充证据、跟进结论、在会议记录里续写；' +
-        `整篇重写请用编辑器，别用这个工具。根目录的 ${META_NAMES.join(' / ')} 是 meta 文件，会被拒绝。`,
+        `整篇重写请用原生 write / edit，别用这个工具。根目录的 ${META_NAMES.join(' / ')} 是 meta 文件，会被拒绝。`,
       parameters: {
         type: 'object',
         properties: {

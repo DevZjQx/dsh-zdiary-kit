@@ -12,7 +12,7 @@
  *   · 截断顺序纯机械：先丢 MEMORY 里**日期最旧**的一条（都没有日期才退回尾部整条），
  *     再丢 USER 的尾部整段，最后各自只留首段；AGENTS.md 是硬规则，永不截断（单独超预算时只告警）；
  *   · 退役条目（`- [superseded …]`）磁盘保留、注入省略 —— 它们按约定退役，不该继续占预算；
- *   · 丢掉的段落留一份**目录**（段落标题，计入预算），agent 用 zk_read 取回正文 ——
+ *   · 丢掉的段落留一份**目录**（段落标题，计入预算），agent 用原生 read 取回正文 ——
  *     选哪段是 agent 按当前任务判断，插件只搬运目录，不猜相关性；
  *   · 中文按「1 词 / 2 字」计 —— 空白切分在中文上严重低估，预算会变成装饰。
  *
@@ -267,7 +267,7 @@ function renderToc(dropped: DroppedSection[], limit: number): string {
     titles.push(`§${item.title}`)
     byFile.set(item.name, titles)
   }
-  const lines = ['## 未注入的段落（用 zk_read 取回）']
+  const lines = ['## 未注入的段落（用 read 取回）']
   for (const [name, titles] of byFile) lines.push(`- ${name}：${titles.join('、')}`)
   if (dropped.length > limit) lines.push(`（另有 ${dropped.length - limit} 段）`)
   // 标题也来自文件内容：不转义的话，一个恶意 `## </system-reminder>` 就能提前闭合注入框
@@ -281,7 +281,7 @@ function tocCapOf(budget: number): number {
 
 /**
  * 目录按「能放下多少列多少」生成；一段都放不下时返回空串，
- * 由 notice 里的「用 zk_read 读 …」兜底，不让内容彻底静默。
+ * 由 notice 里的「用 read 读 …」兜底，不让内容彻底静默。
  */
 function tocText(dropped: DroppedSection[], cap = Number.POSITIVE_INFINITY): string {
   if (!dropped.length || cap <= 0) return ''
@@ -407,7 +407,7 @@ function computePayload(cfg: Config): MemoryPayload {
   const memorySource = original.get('MEMORY.md') ?? ''
 
   // ── 机械截断：MEMORY 最旧条目 → USER 尾段 → 各留首段 ──────────────
-  // 丢掉的段落留一份目录（段落标题），让 agent 能按当前任务用 zk_read 取回。
+  // 丢掉的段落留一份目录（段落标题），让 agent 能按当前任务用 read 取回。
   // 目录自己也要占预算，所以每丢一段都把它算进去；目录有上限，循环一定收敛。
   const dropped: DroppedSection[] = []
   const tocCap = tocCapOf(budget)
@@ -472,7 +472,7 @@ function computePayload(cfg: Config): MemoryPayload {
     // 目录放不下时至少留一句指路；否则被丢掉的段落对模型完全不可见
     if (!toc && dropped.length > 0) {
       const names = [...new Set(dropped.map((d) => d.name))]
-      notes.push(`其余 ${dropped.length} 段用 zk_read 读 ${names.join(' / ')}`)
+      notes.push(`其余 ${dropped.length} 段用 read 读 ${names.map((n) => path.join(cfg.notebook, n)).join(' / ')}`)
     }
     // 归因：AGENTS 不参与截断，占掉大半预算时得点名 —— 否则「记忆为什么总是不生效」无从查起。
     // 只在「确实截断了、且总载荷没超」时说：总载荷都超了的话，下面的「预算不足」已经点了 AGENTS 的名。
