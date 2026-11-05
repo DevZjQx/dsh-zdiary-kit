@@ -21,7 +21,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { execStats } from '../src/lib/exec.ts'
-import { allNotes, graphEdges, notebookStats, queryNotes, searchNotesDetailed, zk, resolveZk } from '../src/lib/zk.ts'
+import { allNotes, backlinksOf, graphEdges, notebookStats, searchNotesDetailed, zk, resolveZk } from '../src/lib/zk.ts'
 import { buildMemoryPayload } from '../src/lib/memory.ts'
 import { lintNotebook } from '../src/lib/lint.ts'
 import { dreamNotebook } from '../src/lib/dream.ts'
@@ -219,11 +219,13 @@ const CASES: Case[] = [
   {
     id: 'backlinks',
     tool: 'bidi',
-    what: '按篇反查（--linked-by，50 条）',
+    what: '按篇反查（backlinksOf / --link-to，默认 200 条）',
     timeoutMs: 60_000,
     run: async ({ cfg, sample }) => {
-      const notes = await queryNotes(cfg, ['--linked-by', sample, '--limit', '50'])
-      return { count: notes.length, truncated: notes.length >= 50 }
+      // 必须走生产入口：手写 --link-to + 相对路径时，路径按 **bench 的 cwd** 解析；
+      // 不存在就会丢掉过滤条件返回全库（plan §0.5.1 的坑），测出来的不是反查。
+      const r = await backlinksOf(cfg, sample)
+      return { count: r.notes.length, truncated: r.truncated }
     },
   },
   {
