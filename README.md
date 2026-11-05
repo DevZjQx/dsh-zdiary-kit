@@ -414,7 +414,12 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
   `bun run smoke`（加载 dist：13 个内置工具各跑一遍 + 12 条路由（设置 8 + 只读 4）都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
-  `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）
+  `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）·
+  `bun run fixture`（生成 1k / 10k 规模夹具，比例与边界样本见 `docs/plan.md` §0.5；
+  `--links-per-note` 决定链接密度 —— 建索引成本主要花在链接上，产出目录自带 `.zk/config.toml`，进去 `zk index` 即可）·
+  `bun run bench`（成本表：逐用例真起 zk，记子进程数 / 回传字节 / 峰值 RSS / p50 / p95；默认 1k、3 轮）
+- **耗时差两个数量级**：`bun run test` 约 50 s（199 个用例，真起 zk）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
+  10k 上光一条 `graph.full` 就是 30 s、冷建索引几分钟。所以 `bench` **不在** `check` / CI 里，跟测试完全分开，不会因为你跑测试而变慢。
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
 - `dist/` 随仓库提交：`dsh plugin add github:…` 不会触发安装时构建（pnpm 默认禁止 git 依赖跑构建脚本）。

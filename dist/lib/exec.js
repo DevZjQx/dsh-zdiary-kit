@@ -2,6 +2,11 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+/**
+ * 成本表用的进程内计数（scripts/bench.ts）：起了几次子进程、子进程回了多少字节。
+ * 生产路径只多两次整数加法，没有其它影响；bench 在每次用例前清零。
+ */
+export const execStats = { calls: 0, bytes: 0 };
 export class ExecError extends Error {
     code;
     stderr;
@@ -26,6 +31,8 @@ export function run(exe, args, opts = {}) {
         }, (err, stdout, stderr) => {
             const out = String(stdout ?? '');
             const errText = String(stderr ?? '');
+            execStats.calls += 1;
+            execStats.bytes += Buffer.byteLength(out) + Buffer.byteLength(errText);
             if (err) {
                 const code = typeof err.code === 'number' ? err.code : null;
                 const hint = code === null ? String(err.message ?? err) : '';

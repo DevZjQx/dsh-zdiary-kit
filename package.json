@@ -43,6 +43,8 @@
     "check:dist": "bun scripts/dist-check.ts",
     "cli": "bun src/cli.ts",
     "smoke": "bun scripts/smoke.ts && bun scripts/docs.ts",
+    "fixture": "bun scripts/fixture.ts",
+    "bench": "bun scripts/bench.ts",
     "docs": "bun scripts/docs.ts",
     "version": "bun scripts/sync-version.ts",
     "prepublishOnly": "bun run check"
