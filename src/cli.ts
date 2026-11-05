@@ -14,7 +14,7 @@ import { installZk, sourceLabel } from './lib/install.ts'
 import {
   resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
   appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError,
-  allNotes, parseErrorWarnings,
+  allNotes, parseErrorWarnings, GRAPH_BUDGET_NOTES,
 } from './lib/zk.ts'
 import type { NoteRecord } from './lib/zk.ts'
 import { formatLintExtras, formatMemoryLinks, lintNotebook, personaStatus, timelineStatus } from './lib/lint.ts'
@@ -251,6 +251,9 @@ function dreamReport(r: DreamResult): string {
   }
   if (!r.newNotes.length && !r.dailyLooseEnds.length && !r.topCited.length) lines.push('这个窗口里没有新材料。')
   if (r.truncated) lines.push('⚠️ 笔记数触到扫描上限：窗口与排名都不完整')
+  if (r.graphSkipped) {
+    lines.push(`⚠️ 库太大（>${GRAPH_BUDGET_NOTES} 篇），这次没统计入链：被引数与 topCited 是空的，不代表没人引用`)
+  }
   lines.push('（只报告：MEMORY.md / DREAMS.md 由你按 AGENTS.md 写）')
   return lines.join('\n')
 }

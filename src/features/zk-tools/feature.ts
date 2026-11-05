@@ -21,7 +21,7 @@ import { ensureNotebook, newNoteDir } from '../../lib/notebook.ts'
 import {
   searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily,
   linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir,
-  localDate as dateOnly, runAlias, ZkError,
+  localDate as dateOnly, runAlias, GRAPH_BUDGET_NOTES, ZkError,
 } from '../../lib/zk.ts'
 import type { NoteRecord, SupersedeResult, RenameResult } from '../../lib/zk.ts'
 import { configuredAliases, readAliases } from '../../lib/alias.ts'
@@ -1133,8 +1133,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'edges 是全部单向边数（items 截到 50 条时仍计全量），bodyOnly 是正文引用（不在 ## Links / ## 链接 小节）的单向边数。' +
         'links_only=true 时只列 Links 小节的单向链接，正文引用只进 bodyOnly，适合把桶当可修清单。' +
         'S 或 X 是日记的边不算 —— 日记天然是出边，回链它没有意义。' +
-        '笔记数触到扫描上限只会漏报；但 oneWayLinks.edgesTruncated=true 表示建图笔记载入触顶、边集可能不完整 —— ' +
-        '缺掉的回链边会把双向误判成单向，这是唯一可能误报的截断，看到它先归档旧笔记再重跑。' +
+        '笔记数触到扫描上限只会漏报；但 oneWayLinks.edgesTruncated=true 表示边集可能不完整（小库建图触顶，' +
+        '或大库按篇反查触到 50 目标 / 60 子进程的上限）—— 缺掉的回链边会把双向误判成单向，' +
+        '这是唯一可能误报的截断，看到它先缩小排查范围再重跑。' +
         '只读：不改任何笔记。拿到清单后自己判断先修哪个，再用 zk_link / zk_append / zk_supersede 动手。',
       parameters: {
         type: 'object',
@@ -1242,6 +1243,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         '会读 MEMORY.md：已经晋升过的（`[[链接]]` 命中或条目里写了标题）移出候选、进 alreadyPromoted —— 不会每周原样重复。' +
         '退役行里的旧标题不再算已晋升，但 `→ [[新结论]]` 仍算。' +
         'backlog 是窗口外仍未晋升的笔记（按被引数），漏做一次不会永久掉队。' +
+        '库超过 2000 篇时不再建全图统计入链：graphSkipped=true，cited / citedBy / topCited 为空 —— 那是「没算」，不是「没人引」。' +
         'memory 给记忆余量（内容词 + 提示 = 总词，余量按总词算，可以为负）；retireCandidates 给「可考虑退役」的条目' +
         '（来源归档 / 不存在、超过 ' + STALE_DAYS + ' 天未复核；显式写 archive/ 的有意引用不算）。' +
         'days 省略时窗口 = 距 DREAMS.md「上次做梦」的天数（没有则 7 天）。' +
@@ -1259,6 +1261,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           windowDays: { type: 'number' },
           since: { type: 'string' },
           truncated: { type: 'boolean' },
+          graphSkipped: { type: 'boolean' },
           memory: objSchema({
             words: { type: 'number' },
             personaWords: { type: 'number' },
@@ -1320,7 +1323,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               reason: { type: 'string', enum: ['stale', 'source-missing', 'source-superseded'] },
             }, ['entry', 'date', 'age', 'reason']),
           },
-        }, ['notebook', 'windowDays', 'since', 'truncated', 'memory', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds', 'retireCandidates']),
+        }, ['notebook', 'windowDays', 'since', 'truncated', 'graphSkipped', 'memory', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds', 'retireCandidates']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -1394,6 +1397,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }
         if (!v.newNotes.length && !v.dailyLooseEnds.length && !v.topCited.length) lines.push('这个窗口里没有新材料。')
         if (v.truncated) lines.push('⚠️ 笔记数触到扫描上限：窗口与排名都不完整')
+        if (v.graphSkipped) {
+          lines.push('⚠️ 库太大（>' + GRAPH_BUDGET_NOTES + ' 篇），这次没统计入链：被引数与 topCited 是空的，不代表没人引用')
+        }
         lines.push('（只报告：MEMORY.md / DREAMS.md 由你按 AGENTS.md 写）')
         return text(lines.join('\n'))
       },

@@ -1,8 +1,9 @@
 /**
  * 巡检（M3）：只报告，不改任何笔记（计划 §3 D5）。
  *
- * 一次 `zk list` 拿全量，再用 zk 原生的两个过滤器（孤儿 / 断链）各跑一次进程，外加一次 `zk graph` 拿全库的边；
- * 「陈旧」「重名」「单向链接」在 JS 里算。200 条笔记上 5 次进程就够 —— 不允许按笔记逐条跑 zk。
+ * 一次 `zk list` 拿全量，再用 zk 原生的几个过滤器（孤儿 / 断链 / 无标签 / 缺回链）各跑一次进程；
+ * 「陈旧」「重名」在 JS 里算，单向链接小库用一次 `zk graph` 的边、大库按篇反查（见 `oneWayByQueries`）。
+ * 200 条笔记上 5 次进程就够 —— 大库那条路也按「问题数」而不是「篇数」计费。
  *
  * 「陈旧」为什么自己算：zk 的 `stale` 不是内置过滤器，`zk list stale` 只在你自己的
  * `[filter]` 里定义过才存在（Z3 只说了位置参数语法，没说它是内置的）。所以阈值由插件定。
@@ -12,7 +13,7 @@
  *
  * 「单向链接」为什么自己算：zk 的 `--missing-backlink` 是「至少有一条单向链接」（S 链 X、X 不回链），
  * 而日记天然是一串出边 —— 日记提过的每篇笔记都会常年挂在桶里。那不是「笔记没接上」，是正常的引用方向。
- * 所以改成在 `zk graph` 的边上算，只报**非日记来源**的单向链接。
+ * 所以在边上自己算，只报**非日记来源**的单向链接。
  *
  * 解析失败单列一桶：frontmatter 写坏（典型是 `tags: [#你好世界]`，`#` 不是 tag 前缀）时
  * zk 只在 stderr 吭一声就跳过那篇，它于是从索引里消失 —— 搜不到，也不进上面任何一个桶。
@@ -25,7 +26,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import type { GraphEdge, NoteRecord } from './zk.ts'
-import { allNotes, graphEdges, localDate, MAX_SCAN, notesWithFlag, parseErrorWarnings } from './zk.ts'
+import {
+  allNotes, backlinksOf, GRAPH_BUDGET_NOTES, graphEdges, localDate, MAX_SCAN, notesWithFlag,
+  outlinksOf, parseErrorWarnings,
+} from './zk.ts'
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
 import { parseFrontmatter } from './frontmatter.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries } from './memory-format.ts'
@@ -39,6 +43,19 @@ import { similarKeyOf, similarScore } from './similar.ts'
 
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50
+
+/**
+ * 大库按篇反查的上限（plan §9.3）：目标数 50、子进程 60，取先到者（每个目标要 2 个进程，
+ * 实际约 30 个目标；10k 库上每个约 0.45 s）。超了就报 `edgesTruncated`，不静默少报。
+ */
+const MAX_ONE_WAY_TARGETS = 50
+const MAX_ONE_WAY_QUERIES = 60
+
+/** 单向链接的一行：目标 + 没回链的来源，`where` 是这条链接写在正文还是 Links 小节 */
+interface OneWayRow {
+  target: string
+  from: Array<{ path: string; where: 'links' | 'body' }>
+}
 
 export interface LintEntry {
   title: string
@@ -110,8 +127,9 @@ export interface LintOneWayBucket {
   /** true = 只列 Links 小节的单向边（正文引用只进 bodyOnly） */
   linksOnly: boolean
   /**
-   * true = `zk graph` 的笔记载入触到上限（`--limit` 数的是笔记），边集可能不完整。
-   * 与 `truncated`（笔记扫描）不同：那边少一篇只会漏报，这边**缺一条回链边就会把双向误判成单向**。
+   * true = 单向链接的边集不完整：小库是 `zk graph` 触到 `--limit`，大库是按篇反查触到
+   * 目标数 / 子进程预算。与 `truncated`（笔记扫描）不同：那边少一篇只会漏报，
+   * 这边**缺一条回链边就会把双向误判成单向** —— 触顶必须显式报出来。
    */
   edgesTruncated: boolean
   items: LintOneWayEntry[]
@@ -262,6 +280,11 @@ export interface LintOptions {
   staleDays?: number
   /** 只报 Links 小节的单向链接；正文引用只计数（默认 false = 全报） */
   linksOnly?: boolean
+  /**
+   * 多大的库还愿意建全图（默认 `GRAPH_BUDGET_NOTES`）。超过就改成按篇反查。
+   * 只给测试用：把它压到 0 就能在小库上跑大库的那条路径。
+   */
+  graphBudget?: number
   /** 测试用；默认 now */
   now?: Date
 }
@@ -959,11 +982,6 @@ export async function lintNotebook(
   const orphanAbs = await notesWithFlag(cfg, '--orphan', signal)
   const brokenAbs = await notesWithFlag(cfg, '--broken-links', signal)
   const taglessAbs = await notesWithFlag(cfg, '--tagless', signal)
-  const graph = await graphEdges(cfg, signal)
-  const edges = graph.edges
-  // 图里的路径是笔记本相对：先拼回绝对路径再判断是不是日记（isDaily 收的是绝对路径）
-  const oneWay = oneWayLinks(edges, notes, (p) => isDaily(path.resolve(cfg.notebook, p)))
-
   // 别用 `path.resolve(n.absPath || n.path)`：absPath 缺失时相对路径会按进程 cwd 解析，键就错了。
   const byAbs = new Map(
     notes.map((n) => [n.absPath ? path.resolve(n.absPath) : path.resolve(cfg.notebook, n.path), n]),
@@ -1012,11 +1030,107 @@ export async function lintNotebook(
     return starts.some((s) => s >= section.start && s < section.end) ? 'links' : 'body'
   }
 
+  // ── 单向链接：小库一次全图；大库按篇反查（plan §0.5.1 结论 3）─────────────
+  // 全图在 10k / 1 链要 26–31 s / 17 MB，2–5 链会直接超过 60 s 超时；
+  // 单篇反链已经走 `backlinksOf`，巡检在超过预算时也走同一条路。
+  const sourceTextCache = new Map<string, string>()
+  const sourceText = (rel: string): string => {
+    const cached = sourceTextCache.get(rel)
+    if (cached !== undefined) return cached
+    let text = ''
+    try { text = fs.readFileSync(path.resolve(cfg.notebook, rel), 'utf8') } catch { text = '' }
+    sourceTextCache.set(rel, text)
+    return text
+  }
+
+  /** 按篇反查没有 snippetStart：自己扫源文件，判断链接写在 Links 小节还是正文 */
+  const linkWhereOf = (sourceRel: string, targetRel: string): 'links' | 'body' => {
+    const text = sourceText(sourceRel)
+    if (!text) return 'body'
+    const keys = new Set(
+      [targetRel, targetRel.replace(/\.md$/i, ''), path.basename(targetRel, path.extname(targetRel)), byPath.get(targetRel)?.title ?? '']
+        .map((k) => normalizeTitle(k))
+        .filter(Boolean),
+    )
+    const head = /^##[ \t]+(?:Links|链接)[ \t]*\r?$/m.exec(text)
+    let start = -1
+    let end = -1
+    if (head) {
+      start = head.index + head[0].length
+      const next = /^#{1,2}[ \t]+\S/m.exec(text.slice(start))
+      end = next ? start + next.index : text.length
+    }
+    for (const m of text.matchAll(WIKI_LINK)) {
+      if (!keys.has(normalizeTitle(String(m[1] ?? '')))) continue
+      const at = m.index ?? 0
+      if (start >= 0 && at >= start && at < end) return 'links'
+    }
+    return 'body'
+  }
+
+  /**
+   * 大库的单向链接：zk 先给「缺回链的目标」（一次 `--missing-backlink`），
+   * 再对每个目标 `--link-to` 取来源、对每个来源 `--linked-by` 判回链（缓存）。
+   * 成本随问题数增长，而不是随库大小增长；触到上限就报 partial，不静默少报。
+   */
+  const oneWayByQueries = async (): Promise<{ rows: OneWayRow[]; truncated: boolean }> => {
+    let left = MAX_ONE_WAY_QUERIES
+    const spend = (): boolean => (left > 0 ? ((left -= 1), true) : false)
+
+    const missingAbs = await notesWithFlag(cfg, '--missing-backlink', signal)
+    const targets = missingAbs
+      .map((abs) => path.relative(cfg.notebook, abs).split(path.sep).join('/'))
+      .filter((rel) => byPath.has(rel) && !isDaily(path.resolve(cfg.notebook, rel)))
+      .sort((a, b) => a.localeCompare(b))
+    const capped = targets.slice(0, MAX_ONE_WAY_TARGETS)
+    let truncated = targets.length > capped.length
+
+    const rows: OneWayRow[] = []
+    for (const target of capped) {
+      if (!spend()) { truncated = true; break }
+      const back = await backlinksOf(cfg, target, { limit: MAX_SCAN }, signal)
+      if (back.truncated) truncated = true
+      if (!back.notes.length) continue
+      if (!spend()) { truncated = true; break }
+      // 回链方向是 T → S：取目标自己的出链，看它有没有连回来源
+      const linked = await outlinksOf(cfg, target, { limit: MAX_SCAN }, signal)
+      if (linked.truncated) truncated = true
+      const outs = new Set(linked.notes.map((n) => n.path))
+      const from: OneWayRow['from'] = []
+      for (const note of back.notes) {
+        if (note.path === target || isDaily(path.resolve(cfg.notebook, note.path))) continue
+        if (outs.has(note.path)) continue
+        from.push({ path: note.path, where: linkWhereOf(note.path, target) })
+      }
+      if (from.length) rows.push({ target, from: from.sort((a, b) => a.path.localeCompare(b.path)) })
+    }
+    return { rows, truncated }
+  }
+
+  const graphBudget = Math.max(0, Math.trunc(opts.graphBudget ?? GRAPH_BUDGET_NOTES))
+  const oneWayRows: OneWayRow[] = []
+  let oneWayTruncated = false
+  if (notes.length <= graphBudget) {
+    const graph = await graphEdges(cfg, signal)
+    oneWayTruncated = graph.truncated
+    // 图里的路径是笔记本相对：先拼回绝对路径再判断是不是日记（isDaily 收的是绝对路径）
+    for (const row of oneWayLinks(graph.edges, notes, (p) => isDaily(path.resolve(cfg.notebook, p)))) {
+      oneWayRows.push({
+        target: row.target,
+        from: row.from.map((s) => ({ path: s.path, where: whereOf(s.path, s.snippetStarts) })),
+      })
+    }
+  } else {
+    const scanned = await oneWayByQueries()
+    oneWayRows.push(...scanned.rows)
+    oneWayTruncated = scanned.truncated
+  }
+
   const linksOnly = opts.linksOnly === true
   const oneWayItems: LintOneWayEntry[] = []
   let oneWayEdges = 0
   let bodyOnly = 0
-  for (const row of oneWay) {
+  for (const row of oneWayRows) {
     // 目标也不报日记：普通笔记链到日记（"今天做了 X"）同样是正常引用方向，
     // 要求日记回链每篇被提到的笔记，跟要求笔记回链日记是同一个问题。
     if (isDaily(path.resolve(cfg.notebook, row.target))) continue
@@ -1027,7 +1141,7 @@ export async function lintNotebook(
     const body: string[] = []
     for (const source of row.from) {
       all.push(source.path)
-      if (whereOf(source.path, source.snippetStarts) === 'links') links.push(source.path)
+      if (source.where === 'links') links.push(source.path)
       else body.push(source.path)
     }
     // bodyOnly 始终统计全部正文边：linksOnly 时它们被隐藏，但要让调用方知道有多少
@@ -1057,7 +1171,7 @@ export async function lintNotebook(
     edges: oneWayEdges,
     bodyOnly,
     linksOnly,
-    edgesTruncated: graph.truncated,
+    edgesTruncated: oneWayTruncated,
     items: oneWayItems.slice(0, MAX_ITEMS),
   }
 

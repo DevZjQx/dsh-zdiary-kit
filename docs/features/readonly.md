@@ -6,7 +6,7 @@
 **Owns.** 四条 `GET` 路由，全部与 DSH 同端口（不自己 `listen`）：
 
 - `GET /dsh-zdiary-kit/view`：首页（最近更新 / 日记 / 标签）、搜索、标签页、笔记页
-  - `?p=note&path=…`：笔记正文 + 反链
+  - `?p=note&path=…`：笔记正文 + 反链（按篇反查 `--link-to`，不建全图；超过 200 条只列前 100 条并注明）
   - `?p=memory`：记忆页 —— 人格 / 用户 / 工作约定 / 记忆 / 周审五段 + 载荷预览（人周审的入口）
   - `?p=tags` / `?p=tag&tag=…`：标签列表 / 单个标签
   - `?q=…`：搜索（GET 表单，无 JS）
@@ -28,7 +28,7 @@
 
 1. **方法门**：只放行 `GET` / `HEAD`，其余 `405` + `Allow: GET, HEAD`。默认拒绝，
    不是「没写 POST handler 就算只读」。
-2. **副作用门**：只调 `hasNotebook` / `allNotes` / `searchNotes` / `readNote` / `graphEdges`；
+2. **副作用门**：只调 `hasNotebook` / `allNotes` / `searchNotes` / `readNote` / `backlinksOf`；
    **不调** `ensureNotebook` / `init` / `index` / `install`。没初始化就显示提示，不顺手建库。
 3. **面门**：不复用设置页的 `snapshot`，不返回 `zkPath`、配置文件路径、`absPath`；
    `.zk/` 与根目录 meta（`AGENTS.md` / `MEMORY.md` 等）按路径直接打不开。

@@ -621,6 +621,47 @@ export async function graphEdges(cfg, signal, opts = {}) {
     return { edges: out, truncated: loaded >= limit || nodes.size >= limit };
 }
 /**
+ * 还愿意建全图的规模上限（篇数）。
+ *
+ * 实测（§0.5.1）：1k / 0 链 0.45 s，10k / 1 链 26–31 s / 17 MB；成本随链接数线性涨
+ * （6.6 s + 26 ms × 链接数），真实库 2–5 链/篇时 10k 会超过 60 s 超时。
+ * 超过这个数就不要再调 `graphEdges`：改按篇反查（`backlinksOf` / `outlinksOf`），
+ * 读不到就显式报 partial，别拿「返回了结果」冒充完整。
+ */
+export const GRAPH_BUDGET_NOTES = 2_000;
+/** 按篇反查的默认上限：够显示用；改写链接的调用方自己传更大的限制 */
+export const MAX_LINK_NOTES = 200;
+/**
+ * 按篇反查双链：一次 `zk list --link-to` / `--linked-by`，不建全图（plan §0.5.1 结论 3）。
+ *
+ * ⚠️ 只认**绝对路径**。zk 0.15.7 实测：给相对路径、标题或不存在的路径时，过滤条件会被
+ * 当成没写，返回**全库** —— 宁可先挡掉，也不要把「全库」当入链。
+ */
+async function linkedNotes(cfg, flag, rel, opts = {}, signal) {
+    const root = path.resolve(cfg.notebook);
+    const abs = path.resolve(cfg.notebook, rel);
+    if (abs !== root && !abs.startsWith(root + path.sep))
+        return { notes: [], truncated: false };
+    if (!fs.existsSync(abs))
+        return { notes: [], truncated: false };
+    const limit = Math.min(MAX_SCAN, Math.max(1, Math.trunc(opts.limit ?? MAX_LINK_NOTES)));
+    const args = ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', String(limit + 1), flag, abs];
+    for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived }))
+        args.push('-x', name);
+    const notes = parseList(await zk(cfg, args, { signal })).map((raw) => toRecord(raw, cfg));
+    return { notes: notes.slice(0, limit), truncated: notes.length > limit };
+}
+/** 谁链到这篇（入链 / 反链）。路径是笔记本相对的；目标不存在时返回空，不返回全库 */
+export async function backlinksOf(cfg, rel, opts = {}, signal) {
+    const found = await linkedNotes(cfg, '--link-to', rel, opts, signal);
+    return { ...found, notes: found.notes.filter((n) => n.path !== rel) };
+}
+/** 这篇链到了谁（出链）。同上：目标不存在时返回空 */
+export async function outlinksOf(cfg, rel, opts = {}, signal) {
+    const found = await linkedNotes(cfg, '--linked-by', rel, opts, signal);
+    return { ...found, notes: found.notes.filter((n) => n.path !== rel) };
+}
+/**
  * `zk-kit query` 会被**丢掉**的参数：它们要么绕开「统一排除」，要么弄坏 JSON 解析。
  * 长名与短名都列出来（`--exclude` / `-x` 是同一个东西的两个写法）。
  */
@@ -1272,16 +1313,16 @@ async function refreshIndexQuietly(cfg, signal) {
     }
     catch { /* 下一个读者会自己重扫，最坏只是那一次读到旧路径 */ }
 }
-/** 指向某篇笔记的所有来源笔记（相对路径）—— 一次 `zk graph`，不按笔记逐个跑 */
+/**
+ * 指向某篇笔记的所有来源笔记（相对路径）—— 按篇反查（`--link-to`），不建全图。
+ *
+ * 只关心一篇笔记的入链时，全图要 26–31 s（10k），反查 0.4 s；rename / supersede
+ * 是写路径，更不该为了一次改名付全库的代价。
+ * 上限按 `MAX_SCAN`：入链超过 1 万条的笔记不存在，真触顶说明索引坏了。
+ */
 async function inboundSources(cfg, rel, signal, opts = {}) {
-    const out = [];
-    for (const edge of (await graphEdges(cfg, signal, opts)).edges) {
-        if (edge.targetPath !== rel)
-            continue;
-        if (edge.sourcePath !== rel && !out.includes(edge.sourcePath))
-            out.push(edge.sourcePath);
-    }
-    return out;
+    const found = await backlinksOf(cfg, rel, { includeArchived: opts.includeArchived, limit: MAX_SCAN }, signal);
+    return found.notes.map((n) => n.path);
 }
 /**
  * 废弃一篇笔记：标 status → 重写入链 → 搬进 archive/（保留原相对路径）。

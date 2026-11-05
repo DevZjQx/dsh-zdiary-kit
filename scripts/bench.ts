@@ -23,6 +23,8 @@ import { fileURLToPath } from 'node:url'
 import { execStats } from '../src/lib/exec.ts'
 import { allNotes, graphEdges, notebookStats, queryNotes, searchNotesDetailed, zk, resolveZk } from '../src/lib/zk.ts'
 import { buildMemoryPayload } from '../src/lib/memory.ts'
+import { lintNotebook } from '../src/lib/lint.ts'
+import { dreamNotebook } from '../src/lib/dream.ts'
 import type { Config } from '../src/config/store.ts'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -192,6 +194,26 @@ const CASES: Case[] = [
     run: async ({ cfg }) => {
       const g = await graphEdges(cfg, undefined, { limit: 10_000 })
       return { count: g.edges.length, truncated: g.truncated }
+    },
+  },
+  {
+    id: 'lint',
+    tool: 'zk_lint',
+    what: '整次巡检（含单向链接的边：小库全图 / 大库按篇反查）',
+    timeoutMs: 180_000,
+    run: async ({ cfg }) => {
+      const r = await lintNotebook(cfg)
+      return { count: r.notes, truncated: r.truncated || r.oneWayLinks.edgesTruncated }
+    },
+  },
+  {
+    id: 'dream',
+    tool: 'zk_dream',
+    what: '晋升材料（超过 2 000 篇时跳过全图：graphSkipped）',
+    timeoutMs: 180_000,
+    run: async ({ cfg }) => {
+      const r = await dreamNotebook(cfg)
+      return { count: r.counts.window, truncated: r.truncated || r.graphSkipped }
     },
   },
   {

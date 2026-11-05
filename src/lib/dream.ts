@@ -15,7 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import type { NoteRecord } from './zk.ts'
-import { allNotes, graphEdges, localDate, MAX_SCAN } from './zk.ts'
+import { allNotes, GRAPH_BUDGET_NOTES, graphEdges, localDate, MAX_SCAN } from './zk.ts'
 import { parseFrontmatter } from './frontmatter.ts'
 // memory.ts 也 import 本模块（DREAM_INTERVAL_DAYS / daysSinceDream）：这里是运行期才取用，
 // 循环引用在 ESM 下安全 —— 不要在模块顶层调用 memoryUsage。
@@ -73,6 +73,8 @@ export interface DreamOptions {
   days?: number
   /** 测试用；默认 now */
   now?: Date
+  /** 多大的库还愿意建全图（默认 `GRAPH_BUDGET_NOTES`）；只给测试用，压到 0 就能跑大库那条路 */
+  graphBudget?: number
 }
 
 export interface DreamCandidate {
@@ -144,6 +146,13 @@ export interface DreamResult {
   since: string
   /** true = 触到扫描上限，窗口与排名都不完整 */
   truncated: boolean
+  /**
+   * true = 库太大（> `GRAPH_BUDGET_NOTES`），这次没有建全图统计入链。
+   * `cited` / `citedBy` 全是 0、`topCited` 为空 —— 那是「没算」，不是「没人引」。
+   * 全图 10k 要 26–31 s / 17 MB（plan §0.5.1），而 dream 给的是材料，不值得为一次汇总
+   * 把工具拖过 60 s 超时；增量口径见 plan §7 G2。
+   */
+  graphSkipped: boolean
   /** 记忆用量（与注入 / 设置页同一口径）：晋升前先知道还剩多少预算 */
   memory: MemoryUsage
   counts: {
@@ -371,7 +380,9 @@ export async function dreamNotebook(
 
   // 顺序跑：两个 zk 进程同时补索引会撞 SQLite 写锁（lint 里同样处理）
   const notes = await allNotes(cfg, {}, signal)
-  const edges = (await graphEdges(cfg, signal)).edges
+  // 全图在 10k 上 26–31 s / 17 MB（plan §0.5.1）：超过预算就不建，并显式告诉调用方
+  const graphReady = notes.length <= Math.max(0, Math.trunc(opts.graphBudget ?? GRAPH_BUDGET_NOTES))
+  const edges = graphReady ? (await graphEdges(cfg, signal)).edges : []
 
   // 入链来源按目标分组：既算「被引几次」，也给 dream 一份上下文（谁在引它）
   const inbound = new Map<string, string[]>()
@@ -497,6 +508,7 @@ export async function dreamNotebook(
     windowDays,
     since: localDate(new Date(sinceMs).toISOString()),
     truncated: notes.length >= MAX_SCAN,
+    graphSkipped: !graphReady,
     counts: {
       window: windowNotes.length,
       daily: windowNotes.filter((n) => isUnder(n.path, cfg.dailyDir)).length,

@@ -4657,3 +4657,89 @@ describe('M5.0a: 索引状态与冷启动', () => {
     }
   })
 })
+
+describe('M5.0b: 按篇反查（不建全图）', () => {
+  it('backlinksOf / outlinksOf：目标不存在时回空而不是全库；limit 触顶报 truncated', async () => {
+    const dir = path.join(home, 'nb-links')
+    const c = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(c)
+    const a = await zk.createNote(c, { title: '甲', dir: 'notes/concepts', content: '甲正文' })
+    const b = await zk.createNote(c, { title: '乙', dir: 'notes/concepts', content: '乙正文' })
+    const d = await zk.createNote(c, { title: '丙', dir: 'notes/concepts', content: '丙正文' })
+    await zk.linkNotes(c, a.path, b.path)
+    await zk.linkNotes(c, d.path, b.path)
+    await zk.linkNotes(c, b.path, a.path)
+    await zk.indexNotebook(c)
+
+    const back = await zk.backlinksOf(c, b.path)
+    expect(back.notes.map((n) => n.path).sort()).toEqual([a.path, d.path].sort())
+    expect(back.truncated).toBe(false)
+
+    const out = await zk.outlinksOf(c, a.path)
+    expect(out.notes.map((n) => n.path)).toEqual([b.path])
+
+    // zk 0.15.7：不存在的目标会把过滤条件当没写，返回全库 —— 必须由我们挡住
+    const missing = await zk.backlinksOf(c, 'notes/concepts/没有这篇.md')
+    expect(missing.notes).toEqual([])
+    expect(missing.truncated).toBe(false)
+
+    const limited = await zk.backlinksOf(c, b.path, { limit: 1 })
+    expect(limited.notes).toHaveLength(1)
+    expect(limited.truncated).toBe(true)
+  })
+
+  it('lint 大库路径（graphBudget=0）：from / where / total 与小库全图逐条一致', async () => {
+    const dir = path.join(home, 'nb-oneway-q')
+    const c = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(c)
+    const note = (title: string, dirName: string, body: string) =>
+      zk.createNote(c, { title, dir: dirName, content: body })
+    const stem = (p: string): string => path.basename(p, '.md')
+
+    const bodyTarget = await note('正文目标', 'notes/concepts', '被正文引用。')
+    const linksTarget = await note('链接目标', 'notes/concepts', '被 Links 引用。')
+    const afterTarget = await note('小节后的目标', 'notes/concepts', '被小节后的正文引用。')
+    const mutual = await note('互通目标', 'notes/concepts', '互链。')
+    const mutualSource = await note('互通来源', 'notes/sources', '互链。')
+    const bodySource = await note('正文来源', 'notes/sources',
+      `第一段中文，先垫一点字节。\n\n见 [[${stem(bodyTarget.path)}]]。`)
+    const linksSource = await note('链接来源', 'notes/sources',
+      `## 链接\n\n- [[${stem(linksTarget.path)}]]\n\n## 其他\n\n再看 [[${stem(afterTarget.path)}]]。`)
+    await zk.linkNotes(c, mutualSource.path, mutual.path)
+    await zk.linkNotes(c, mutual.path, mutualSource.path)
+    await zk.indexNotebook(c)
+
+    const graph = await lintLib.lintNotebook(c)
+    const queried = await lintLib.lintNotebook(c, { graphBudget: 0 })
+    const shape = (r: typeof graph) => r.oneWayLinks.items.map((i) => ({ path: i.path, from: i.from, where: i.where }))
+    expect(shape(queried)).toEqual(shape(graph))
+    expect(queried.oneWayLinks.total).toBe(graph.oneWayLinks.total)
+    expect(queried.oneWayLinks.edges).toBe(graph.oneWayLinks.edges)
+    expect(queried.oneWayLinks.bodyOnly).toBe(graph.oneWayLinks.bodyOnly)
+    expect(queried.oneWayLinks.edgesTruncated).toBe(false)
+    // 互链不算单向：目标与来源都不该出现
+    expect(queried.oneWayLinks.items.map((i) => i.path)).not.toContain(mutual.path)
+    expect(queried.oneWayLinks.total).toBe(3)
+  })
+
+  it('dream 大库路径（graphBudget=0）：显式报 graphSkipped，材料照常给', async () => {
+    const dir = path.join(home, 'nb-dream-big')
+    const c = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(c)
+    const a = await zk.createNote(c, { title: '被引笔记', dir: 'notes/concepts', content: '#cited' })
+    const b = await zk.createNote(c, { title: '引用笔记', dir: 'notes/sources', content: '#src' })
+    await zk.linkNotes(c, b.path, a.path)
+    await zk.indexNotebook(c)
+
+    const full = await dreamLib.dreamNotebook(c, { graphBudget: 100 })
+    expect(full.graphSkipped).toBe(false)
+
+    const skipped = await dreamLib.dreamNotebook(c, { graphBudget: 0 })
+    expect(skipped.graphSkipped).toBe(true)
+    // 入链统计没了：cited 归零、topCited 为空；窗口与候选不受影响
+    expect(skipped.topCited).toEqual([])
+    expect(skipped.newNotes.every((n) => n.cited === 0)).toBe(true)
+    expect(skipped.counts.window).toBe(full.counts.window)
+  })
+})
+

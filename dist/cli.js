@@ -9,7 +9,7 @@ import { CFG_FILE } from './config/paths.js';
 import { NOTE_KINDS, ensureNotebook, fixGroupConfig, groupOverlapNotes, newNoteDir, structureStatus } from './lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
 import { installZk, sourceLabel } from './lib/install.js';
-import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
+import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, GRAPH_BUDGET_NOTES, } from './lib/zk.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook, personaStatus, timelineStatus } from './lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from './lib/dream.js';
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
@@ -252,6 +252,9 @@ function dreamReport(r) {
         lines.push('这个窗口里没有新材料。');
     if (r.truncated)
         lines.push('⚠️ 笔记数触到扫描上限：窗口与排名都不完整');
+    if (r.graphSkipped) {
+        lines.push(`⚠️ 库太大（>${GRAPH_BUDGET_NOTES} 篇），这次没统计入链：被引数与 topCited 是空的，不代表没人引用`);
+    }
     lines.push('（只报告：MEMORY.md / DREAMS.md 由你按 AGENTS.md 写）');
     return lines.join('\n');
 }

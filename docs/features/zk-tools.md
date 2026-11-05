@@ -145,9 +145,20 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `memory.files[]` 与 `zk_context` 同形（`name / present / words / originalWords / retiredWords`）：`memoryUsage` 返回什么，schema 就得声明什么 ——
 少一个 key，宿主校验直接整次 invalid output。
 
+**dream 的入链统计有预算**（M5.0b）：`zk_dream` 的 `cited` / `citedBy` / `topCited` 来自一次全量建图，
+而全图在 10k 上要 26–31 s / 17 MB。超过 2000 篇时不再建图，结果带 `graphSkipped: true`，
+render 明说「被引数与 topCited 是空的，不代表没人引用」—— 那是「没算」，不是「没人引」。
+其余材料（窗口候选、拒绝原因、Loose ends、退役候选、记忆余量）不受影响。
+全局被引的增量口径留给 plan §7 G2，别在这一步用全图硬撑。
+
 `zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关（D7）。
-`zk_lint` = 1 次 `zk list` + 三个 zk 原生过滤器（`--orphan` / `--broken-links` / `--tagless`）+ 1 次 `zk graph`，
+`zk_lint` = 1 次 `zk list` + 三个 zk 原生过滤器（`--orphan` / `--broken-links` / `--tagless`）+ 单向链接的边，
 **顺序执行**：zk 每次都会顺手补索引，并发进程会撞 SQLite 写锁；200 条笔记约 0.9 秒（验收线 3 秒）。
+
+**单向链接的边从哪来**（M5.0b）：≤ 2000 篇时一次 `zk graph`（1k 实测 0.45 s，还能拿到 `snippetStart`）。
+超过 2000 篇改按篇反查：`--missing-backlink` 给候选目标，每个目标 `--link-to` 取来源、`--linked-by` 判回链；
+上限 50 个目标 / 60 个子进程（取先到者，实际约 30 个目标），触顶置 `edgesTruncated`。10k / 1 链夹具实测整次巡检 6.6 s
+（改动前只全图就 26–31 s / 17 MB）。反查路径没有偏移量，`where` 改成扫源文件判断，相对路径写法可能落到 `body`。
 
 **冷启动与半库**（M5.0a）：第一次读一个还没有索引的大库时，zk 会自己全量重建（10k / 1 链实测 202 s），
 原来的 60 s 超时把它杀在写事务里，留下 `notebook.db-journal` 的半库，下一次读又从零重来。
@@ -173,7 +184,7 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 `total` / `counts` 按全量算、`items` 里每篇最多 50 条明细（整个桶最多 50 篇），所以四项分类相加始终等于 `total`；
 超过 2 MiB 或读不到的文件不会静默略过：计入 `skipped`，输出里点名「跳过 N 篇」。
 笔记页的时间轴警告不受这个窗口限制 —— 打开哪篇查哪篇。自动重排会改正文顺序、diff 不可审，所以不给自动修复开关。
-「单向链接」（`oneWayLinks`）在 JS 里按 `zk graph` 的边算：存在 S→X、X 没回链 S，且 **S、X 都不是日记**。
+「单向链接」（`oneWayLinks`）按边算：存在 S→X、X 没回链 S，且 **S、X 都不是日记**。
 不用 zk 的 `--missing-backlink`：它的原义是「至少有一条单向链接」，日记天然是一串出边，
 日记提过的每篇笔记都会常年挂在桶里 —— 那不是「没接上」，是正常的引用方向，桶就再也清零不了。
 普通笔记链到日记（"今天做了 X"）同理，不要求日记回链。
@@ -187,8 +198,9 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 按 `excludedNames` 同一套口径过滤（归档 / raw / inbox / meta 的坏文件本来就不参与检索，报了只会淹掉真问题），
 `zk_lint` 与 `zk-kit doctor` 各回一行；`doctor` 用 ⚠️ 标，不影响它的退出码。
 一次最多扫 10000 篇，到顶时两个工具都返回 `truncated: true` 并在文本里告警：笔记扫描少一篇只会漏报。
-边是另一条上限：`zk graph --limit 10000`（数的是笔记载入数）到顶时 `oneWayLinks.edgesTruncated` 为 true —— 缺掉的回链边会把双向误判成单向，
-这是巡检里唯一可能**误报**的截断，看到告警先归档旧笔记或调大上限再重跑。
+边是另一条上限：小库的 `zk graph --limit 10000`（数的是笔记载入数）到顶、或大库的按篇反查触到
+50 个目标 / 60 个子进程时，`oneWayLinks.edgesTruncated` 为 true —— 缺掉的回链边会把双向误判成单向，
+这是巡检里唯一可能**误报**的截断，看到告警先归档旧笔记或缩小排查范围再重跑。
 `memoryLinks` 单独查**记忆层**：`MEMORY.md` / `USER.md` 里的 `[[来源]]` 是否还指向活笔记。
 解析顺序固定：原路径 → 加 `.md` → `archive/` 下同名 → 活笔记标题 / 文件名；旧路径在 `archive/` 下找到同名，
 或活文件带 `status: superseded`，报 `superseded`；都找不到报 `missing`。**显式写 `archive/` 路径的链接是有意引用**

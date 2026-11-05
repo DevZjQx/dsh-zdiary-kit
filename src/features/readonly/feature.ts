@@ -4,7 +4,7 @@
  * 设计边界（和设置页的写 API 完全分开）：
  *   · 只挂 4 条 GET 路由，全部在 /dsh-zdiary-kit 下，和 DSH 同端口，不自己 listen；
  *   · 方法门：GET / HEAD 以外一律 405，默认拒绝 —— 不是「没写 POST 就算只读」；
- *   · 副作用门：只调 hasNotebook / allNotes / searchNotes / readNote / graphEdges，
+ *   · 副作用门：只调 hasNotebook / allNotes / searchNotes / readNote / backlinksOf，
  *     **不调 ensureNotebook**（那会建库）、不跑 init / index / install；
  *   · 面门：不读 /api/settings 的 snapshot，不返回 zkPath / 配置文件路径 / absPath；
  *   · 地址门：只认回环（Host + 对端地址），DSH 绑到 0.0.0.0 时视图也不会跟着上网。
@@ -17,7 +17,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isLoopback, json, ROUTE_BASE } from '../../lib/http.ts'
 import { config } from '../../config/store.ts'
 import type { Config } from '../../config/store.ts'
-import { absPathOf, allNotes, graphEdges, hasNotebook, isUnderDir, localDate, readNote, searchNotes, ZkError } from '../../lib/zk.ts'
+import { absPathOf, allNotes, backlinksOf, hasNotebook, isUnderDir, localDate, readNote, searchNotes, ZkError } from '../../lib/zk.ts'
 import type { NoteDoc, NoteRecord } from '../../lib/zk.ts'
 import { isMetaPath } from '../../lib/meta.ts'
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
@@ -479,33 +479,13 @@ async function handleNote(res: ServerResponse, cfg: Config, rel: string): Promis
   const linkFor = linkResolver(all)
 
   let backlinks: NoteRecord[] = []
+  let backlinksTruncated = false
   try {
-    const relPath = loaded.rel
-    const byPath = new Map(all.map((note) => [note.path, note]))
-    const seen = new Set<string>()
-    for (const edge of (await graphEdges(cfg)).edges) {
-      if (edge.targetPath !== relPath || edge.sourcePath === relPath) continue
-      if (seen.has(edge.sourcePath)) continue
-      seen.add(edge.sourcePath)
-      const hit = byPath.get(edge.sourcePath)
-      backlinks.push(hit ?? {
-        title: path.basename(edge.sourcePath).replace(NOTE_EXT, ''),
-        path: edge.sourcePath,
-        absPath: '',
-        link: '',
-        tags: [],
-        created: '',
-        modified: '',
-        lead: '',
-        words: 0,
-        metadata: {},
-        status: '',
-        type: '',
-        authority: '',
-      })
-    }
-    backlinks = backlinks.sort((a, b) => a.title.localeCompare(b.title))
-  } catch { /* 图读不出来就不显示反链 */ }
+    // 按篇反查（plan §0.5.1 结论 3）：打开一篇笔记不该为全库建图（10k 要 26–31 s）
+    const found = await backlinksOf(cfg, loaded.rel)
+    backlinks = found.notes.sort((a, b) => a.title.localeCompare(b.title))
+    backlinksTruncated = found.truncated
+  } catch { /* 反链读不出来就不显示 */ }
 
   const content = loaded.doc.content.length > MAX_CONTENT
     ? loaded.doc.content.slice(0, MAX_CONTENT)
@@ -533,7 +513,10 @@ async function handleNote(res: ServerResponse, cfg: Config, rel: string): Promis
     `<article>${renderMarkdown(content, { linkFor, skipFirstH1: true })}</article>`,
     '<h2>反链</h2>',
     backlinks.length
-      ? `<ul>${backlinks.slice(0, 100).map((note) => `<li><a href="${esc(noteHref(note.path))}">${esc(note.title || note.path)}</a></li>`).join('')}</ul>`
+      ? `<ul>${backlinks.slice(0, 100).map((note) => `<li><a href="${esc(noteHref(note.path))}">${esc(note.title || note.path)}</a></li>`).join('')}</ul>` +
+        (backlinksTruncated || backlinks.length > 100
+          ? `<p class="meta">${backlinksTruncated ? '反链超过 200 条' : `共 ${backlinks.length} 条`}，这里只列前 100 条。</p>`
+          : '')
       : '<p class="meta">没有其它笔记链到这里。</p>',
   ].join('\n')
 

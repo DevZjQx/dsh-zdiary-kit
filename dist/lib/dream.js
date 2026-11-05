@@ -13,7 +13,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { allNotes, graphEdges, localDate, MAX_SCAN } from './zk.js';
+import { allNotes, GRAPH_BUDGET_NOTES, graphEdges, localDate, MAX_SCAN } from './zk.js';
 import { parseFrontmatter } from './frontmatter.js';
 // memory.ts 也 import 本模块（DREAM_INTERVAL_DAYS / daysSinceDream）：这里是运行期才取用，
 // 循环引用在 ESM 下安全 —— 不要在模块顶层调用 memoryUsage。
@@ -287,7 +287,9 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
     const sinceMs = now.getTime() - windowDays * 86_400_000;
     // 顺序跑：两个 zk 进程同时补索引会撞 SQLite 写锁（lint 里同样处理）
     const notes = await allNotes(cfg, {}, signal);
-    const edges = (await graphEdges(cfg, signal)).edges;
+    // 全图在 10k 上 26–31 s / 17 MB（plan §0.5.1）：超过预算就不建，并显式告诉调用方
+    const graphReady = notes.length <= Math.max(0, Math.trunc(opts.graphBudget ?? GRAPH_BUDGET_NOTES));
+    const edges = graphReady ? (await graphEdges(cfg, signal)).edges : [];
     // 入链来源按目标分组：既算「被引几次」，也给 dream 一份上下文（谁在引它）
     const inbound = new Map();
     for (const edge of edges) {
@@ -416,6 +418,7 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         windowDays,
         since: localDate(new Date(sinceMs).toISOString()),
         truncated: notes.length >= MAX_SCAN,
+        graphSkipped: !graphReady,
         counts: {
             window: windowNotes.length,
             daily: windowNotes.filter((n) => isUnder(n.path, cfg.dailyDir)).length,
