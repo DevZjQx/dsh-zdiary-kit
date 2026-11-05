@@ -10,11 +10,14 @@ export const execStats = { calls: 0, bytes: 0 };
 export class ExecError extends Error {
     code;
     stderr;
-    constructor(message, code, stderr) {
+    /** 被我们自己的超时 / abort 杀掉（不是子进程自己退出）—— 建索引超时要靠它区分 */
+    killed;
+    constructor(message, code, stderr, killed = false) {
         super(message);
         this.name = 'ExecError';
         this.code = code;
         this.stderr = stderr;
+        this.killed = killed;
     }
 }
 /** 跑一个可执行文件，返回 { code, stdout, stderr }；ENOENT / 超时会 throw */
@@ -36,7 +39,8 @@ export function run(exe, args, opts = {}) {
             if (err) {
                 const code = typeof err.code === 'number' ? err.code : null;
                 const hint = code === null ? String(err.message ?? err) : '';
-                reject(new ExecError(hint || (errText.trim() || `exit ${code}`), code, errText));
+                const killed = err.killed === true;
+                reject(new ExecError(hint || (errText.trim() || `exit ${code}`), code, errText, killed));
                 return;
             }
             resolve({ code: 0, stdout: out, stderr: errText });

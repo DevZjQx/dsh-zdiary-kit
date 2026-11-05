@@ -40,6 +40,7 @@ const readonlyFeature = await import('../src/features/readonly/feature.ts')
 const readonlyHtml = await import('../src/features/readonly/html.ts')
 const timelineLib = await import('../src/lib/timeline.ts')
 const similarLib = await import('../src/lib/similar.ts')
+const execLib = await import('../src/lib/exec.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
@@ -4508,3 +4509,151 @@ describe('v3.3 M2：写路径相似提醒', () => {
   })
 })
 
+
+describe('M5.0a: 索引状态与冷启动', () => {
+  const journalOf = (nb: string): string => path.join(nb, '.zk', 'notebook.db-journal')
+
+  const fresh = async (name: string, notes: number) => {
+    const cfg = store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure: 'flat' })
+    await notebookLib.ensureNotebook(cfg)
+    for (let i = 0; i < notes; i += 1) {
+      fs.writeFileSync(path.join(cfg.notebook, cfg.notesDir, 'note-' + i + '.md'), '# note ' + i + '\n\nbody ' + i + '\n')
+    }
+    return cfg
+  }
+
+  /** 假 zk：只回 --version、记 argv、按需慢建库；其它命令一律成功且什么都不做 */
+  const stubZk = (dir: string, opts: { sleepSec?: number; fail?: string } = {}) => {
+    const nb = path.join(dir, 'nb')
+    fs.mkdirSync(path.join(nb, '.zk'), { recursive: true })
+    fs.writeFileSync(path.join(nb, '.zk', 'config.toml'), '')
+    fs.mkdirSync(path.join(nb, 'notes'), { recursive: true })
+    fs.writeFileSync(path.join(nb, 'notes', 'seed.md'), '# seed\n')
+    const log = path.join(dir, 'stub.log')
+    const bin = path.join(dir, 'zk-stub.sh')
+    const lines = [
+      '#!/bin/sh',
+      'nb=""',
+      'prev=""',
+      'for a in "$@"; do',
+      '  if [ "$a" = "--version" ]; then echo "zk 0.15.7"; exit 0; fi',
+      '  if [ "$prev" = "--notebook-dir" ]; then nb="$a"; fi',
+      '  prev="$a"',
+      'done',
+      'echo "$*" >> ' + JSON.stringify(log),
+      'case "$*" in',
+      '  *" index "*)',
+      opts.sleepSec ? '    sleep ' + opts.sleepSec : '    :',
+      ...(opts.fail
+        ? ['    echo ' + JSON.stringify(opts.fail) + ' >&2', '    exit 1']
+        : ['    if [ -n "$nb" ]; then : > "$nb/.zk/notebook.db"; fi', '    exit 0']),
+      '    ;;',
+      'esac',
+      'exit 0',
+      '',
+    ]
+    fs.writeFileSync(bin, lines.join('\n'))
+    fs.chmodSync(bin, 0o755)
+    const cfg = store.normalizeConfig({ notebook: nb, zkPath: bin, structure: 'flat' })
+    return { cfg, log, nb }
+  }
+
+  const calls = (log: string): string[] => {
+    try { return fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) } catch { return [] }
+  }
+
+  const withPolicy = async (patch: { waitMs?: number; autoBuildMaxNotes?: number }, fn: () => Promise<void>): Promise<void> => {
+    const before = { waitMs: zk.indexPolicy.waitMs, autoBuildMaxNotes: zk.indexPolicy.autoBuildMaxNotes }
+    Object.assign(zk.indexPolicy, patch)
+    try { await fn() } finally { Object.assign(zk.indexPolicy, before) }
+  }
+
+  it('indexStateOf：没有 db 是 missing，事务日志还在是 interrupted', async () => {
+    const cfg = await fresh('nb-m50-state', 2)
+    const db = path.join(cfg.notebook, '.zk', 'notebook.db')
+    try {
+      // init 会把空库建出来（顺带索引已有笔记），所以 ready 是正常的
+      expect(zk.indexStateOf(cfg)).toBe('ready')
+      fs.rmSync(db)
+      expect(zk.indexStateOf(cfg)).toBe('missing')
+      await zk.indexNotebook(cfg)
+      expect(zk.indexStateOf(cfg)).toBe('ready')
+      fs.writeFileSync(journalOf(cfg.notebook), '')
+      expect(zk.indexStateOf(cfg)).toBe('interrupted')
+    } finally {
+      fs.rmSync(cfg.notebook, { recursive: true, force: true })
+    }
+  })
+
+  it('小库：半库时下一次读自己补完，不多起一个 index 进程', async () => {
+    const cfg = await fresh('nb-m50-small', 3)
+    try {
+      await zk.indexNotebook(cfg)
+      fs.writeFileSync(journalOf(cfg.notebook), 'x')
+      await zk.resolveZk(cfg) // 预热 zk 定位，别把 --version 算进子进程数
+      execLib.execStats.calls = 0
+      execLib.execStats.bytes = 0
+
+      const notes = await zk.allNotes(cfg)
+      expect(notes).toHaveLength(3)
+      expect(fs.existsSync(journalOf(cfg.notebook))).toBe(false)
+      expect(execLib.execStats.calls).toBe(1)
+    } finally {
+      fs.rmSync(cfg.notebook, { recursive: true, force: true })
+    }
+  })
+
+  it('大库：等不到就报「索引在建」，不再起一条会被杀的读命令', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-m50-big-'))
+    try {
+      const { cfg, log } = stubZk(dir, { sleepSec: 0.6 })
+      await withPolicy({ autoBuildMaxNotes: 0, waitMs: 100 }, async () => {
+        const err = await zk.allNotes(cfg).catch((e: unknown) => e)
+        expect(err).toBeInstanceOf(zk.ZkError)
+        expect((err as { code?: string }).code).toBe('index-building')
+        expect(String((err as Error).message)).toContain('索引还没建好')
+      })
+      const log1 = calls(log)
+      expect(log1).toHaveLength(1) // 只有那次 index；没有任何 list 被起起来
+      expect(log1[0]).toContain('index')
+
+      // 后台建完之后，下一次调用能正常返回（后台任务没有被取消）
+      await new Promise((r) => setTimeout(r, 900))
+      expect(zk.indexStateOf(cfg)).toBe('ready')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('建索引失败：报出原因，冷却期内不重启进程', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-m50-fail-'))
+    try {
+      const { cfg, log } = stubZk(dir, { fail: 'boom: index failed' })
+      await withPolicy({ autoBuildMaxNotes: 0, waitMs: 500 }, async () => {
+        const first = await zk.allNotes(cfg).catch((e: unknown) => e)
+        expect((first as { code?: string }).code).toBe('index-failed')
+        expect(String((first as Error).message)).toContain('boom: index failed')
+
+        const second = await zk.allNotes(cfg).catch((e: unknown) => e)
+        expect((second as { code?: string }).code).toBe('index-failed')
+      })
+      expect(calls(log)).toHaveLength(1)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('显式重建与后台建库 single-flight：不并发第二个 zk index', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-m50-sf-'))
+    try {
+      const { cfg, log } = stubZk(dir, { sleepSec: 0.5 })
+      await withPolicy({ autoBuildMaxNotes: 0, waitMs: 50 }, async () => {
+        await zk.allNotes(cfg).catch(() => null) // 触发后台建库，等不到
+        await zk.indexNotebook(cfg) // 应该等同一个进程，而不是再起一个
+      })
+      expect(calls(log).filter((line) => line.includes('index'))).toHaveLength(1)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

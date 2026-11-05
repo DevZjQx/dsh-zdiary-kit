@@ -18,11 +18,14 @@ export interface ExecResult {
 export class ExecError extends Error {
   readonly code: number | null
   readonly stderr: string
-  constructor(message: string, code: number | null, stderr: string) {
+  /** 被我们自己的超时 / abort 杀掉（不是子进程自己退出）—— 建索引超时要靠它区分 */
+  readonly killed: boolean
+  constructor(message: string, code: number | null, stderr: string, killed = false) {
     super(message)
     this.name = 'ExecError'
     this.code = code
     this.stderr = stderr
+    this.killed = killed
   }
 }
 
@@ -58,7 +61,8 @@ export function run(exe: string, args: string[], opts: ExecOptions = {}): Promis
         if (err) {
           const code = typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : null
           const hint = code === null ? String((err as Error).message ?? err) : ''
-          reject(new ExecError(hint || (errText.trim() || `exit ${code}`), code, errText))
+          const killed = (err as { killed?: boolean }).killed === true
+          reject(new ExecError(hint || (errText.trim() || `exit ${code}`), code, errText, killed))
           return
         }
         resolve({ code: 0, stdout: out, stderr: errText })

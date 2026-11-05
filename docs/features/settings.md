@@ -13,7 +13,7 @@
   返回 `result.personaWritten` 与最新快照。
   人格文件不依赖 zk：笔记本还没初始化时也能写（只 `mkdir` 笔记本目录 + 文件，不碰 `.zk`），
   这时回包带 `warn` 提醒「点「初始化 / 补建」建库」；按钮因此不按 `notebook.exists` 隐藏。
-- `POST /index`：`zk index`
+- `POST /index`：`zk index`（走 30 min 建库预算；已有后台建库在跑时等它，不并发第二个进程）
 - `POST /install`：内置 zk（下载 → 解包 → `--version` 验证）；`detail` 里回显下载源（自定义镜像会点名）
 - `GET /selftest`：八项真检查（zk、笔记本、模板、group、结构、长期记忆、角色人格、索引）
 

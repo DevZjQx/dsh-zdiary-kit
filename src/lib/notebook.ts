@@ -12,7 +12,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
-import { assertNotArchiveCreate, ZkError, zk } from './zk.ts'
+import { assertNotArchiveCreate, indexPolicy, ZkError, zk } from './zk.ts'
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
 import { PERSONA_TEMPLATE } from './persona-template.ts'
 import { effectivePaths, isPluginOwned, normGroupPath, parseGroupBlocks, sameGroupPath, samePaths } from './notebook-config.ts'
@@ -488,7 +488,9 @@ export async function ensureNotebook(
   const configFile = path.join(cfg.notebook, '.zk', 'config.toml')
   let initialized = false
   if (!fs.existsSync(configFile)) {
-    await zk(cfg, ['init', cfg.notebook], { signal, timeoutMs: 120_000 })
+    // init 会把目录里已有的笔记一起索引进空库 —— 10k / 1 链实测 202 s，
+    // 原来的 120 s 会把进程杀在写事务里，留下半库。这里直接给建库预算（M5.0a）。
+    await zk(cfg, ['init', cfg.notebook], { signal, timeoutMs: indexPolicy.buildTimeoutMs })
     initialized = true
   }
 

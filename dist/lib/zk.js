@@ -120,18 +120,185 @@ function baseArgs(cfg) {
 /** stderr 里的一行 warning（`zk: warning: ...`），exit 0 时也会出现 */
 const WARNING_LINE = /^zk: warning: /;
 /**
+ * 索引策略。测试会改 `waitMs` / `autoBuildMaxNotes` 把等待压到毫秒级；
+ * 生产路径一律用默认值（不要从配置里读 —— 这几个数是按 §0.5.1 的实测定的）。
+ */
+export const indexPolicy = {
+    /** 建索引预算：10k / 3 链约 13 min（6.6 s + 26 ms × 链接数），留一倍余量 */
+    buildTimeoutMs: 30 * 60_000,
+    /** 冷建时最多阻塞工具调用多久；等不到就让调用先失败，后台继续建 */
+    waitMs: 15_000,
+    /** 这个规模以内让命令自己建：200 篇约 1 s，塞进长超时也不会卡住调用 */
+    autoBuildMaxNotes: 200,
+    /** 建索引连续失败时，这段时间内直接报错、不重启进程（避免 fork 风暴） */
+    failureCooldownMs: 60_000,
+};
+const builds = new Map();
+const buildFailures = new Map();
+function indexPaths(cfg) {
+    const db = path.join(cfg.notebook, '.zk', 'notebook.db');
+    return { db, journal: db + '-journal', wal: db + '-wal' };
+}
+/** 只看磁盘、不打子进程：ready / missing / interrupted（半库） */
+export function indexStateOf(cfg) {
+    const { db, journal, wal } = indexPaths(cfg);
+    if (!fs.existsSync(db))
+        return 'missing';
+    if (fs.existsSync(journal) || fs.existsSync(wal))
+        return 'interrupted';
+    return 'ready';
+}
+/** 估算篇数：只为了报「首次要扫 N 篇」，不追求精确，封顶 2 万（大库不必数完） */
+function approxNoteCount(cfg, cap = 20_000) {
+    let count = 0;
+    const walk = (dir) => {
+        let entries;
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        }
+        catch {
+            return;
+        }
+        for (const entry of entries) {
+            if (count >= cap)
+                return;
+            if (entry.name.startsWith('.'))
+                continue;
+            const abs = path.join(dir, entry.name);
+            if (entry.isDirectory())
+                walk(abs);
+            else if (entry.isFile() && entry.name.endsWith('.md'))
+                count += 1;
+        }
+    };
+    walk(cfg.notebook);
+    return count;
+}
+function sleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new Error('aborted'));
+            return;
+        }
+        const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
+        const onAbort = () => { cleanup(); reject(new Error('aborted')); };
+        const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); };
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
+}
+function indexFailureText(err) {
+    if (err instanceof ExecError) {
+        if (err.killed)
+            return `超时（${Math.round(indexPolicy.buildTimeoutMs / 60_000)} 分钟内没建完）`;
+        const lines = err.stderr.trim().split('\n').filter(Boolean).slice(-2).join(' / ');
+        return (lines || err.message).slice(0, 300);
+    }
+    return String(err).slice(0, 300);
+}
+const INDEX_HINT = '到设置页点「重建索引」，或在这个笔记本里跑 zk index 看完整输出';
+/** 启动一次索引；同一个笔记本同时只允许一个（进程内 single-flight，跨进程的锁留给 R6） */
+function startIndexBuild(cfg, loc, signal) {
+    const key = cfg.notebook;
+    const startedAt = Date.now();
+    const promise = run(loc.bin, [...baseArgs(cfg), 'index', '--quiet'], {
+        signal,
+        timeoutMs: indexPolicy.buildTimeoutMs,
+    }).then(() => { buildFailures.delete(key); }, (err) => {
+        const message = indexFailureText(err);
+        buildFailures.set(key, { at: Date.now(), message });
+        throw new ZkError(`建索引失败：${message}`, INDEX_HINT, 'index-failed');
+    }).finally(() => { builds.delete(key); });
+    const build = { promise, startedAt };
+    builds.set(key, build);
+    // 后台任务常常没有 await 的人：别让 rejection 变成 unhandledRejection
+    promise.catch(() => { });
+    return build;
+}
+/** 有 journal 但 db 还在长 → 是别的 zk 进程在写，不要去抢 */
+async function indexBeingWritten(cfg) {
+    const { db } = indexPaths(cfg);
+    const stamp = () => {
+        try {
+            const s = fs.statSync(db);
+            return s.size + ':' + s.mtimeMs;
+        }
+        catch {
+            return '';
+        }
+    };
+    const before = stamp();
+    await sleep(250);
+    return before !== stamp();
+}
+function indexBuildingError(cfg, state, elapsedMs) {
+    const waited = Math.max(1, Math.round(elapsedMs / 1000));
+    const head = state === 'missing'
+        ? `索引还没建好（首次要扫 ${approxNoteCount(cfg)} 篇，已等 ${waited} 秒）`
+        : `索引不完整（上次建索引被中断），正在后台重建（已等 ${waited} 秒）`;
+    return new ZkError(head, '后台正在建立，过一会儿再调用一次；大库首次可能要几分钟 —— 不要同时再跑 zk index', 'index-building');
+}
+async function waitForIndex(cfg, build, state, signal) {
+    const deadline = Date.now() + indexPolicy.waitMs;
+    let settled = null;
+    let failure = null;
+    void build.promise.then(() => { settled = 'ok'; }, (err) => { settled = 'error'; failure = err; });
+    while (settled === null && Date.now() < deadline)
+        await sleep(150, signal);
+    if (settled === 'error')
+        throw failure;
+    if (settled === 'ok' && indexStateOf(cfg) === 'ready')
+        return;
+    throw indexBuildingError(cfg, state, Date.now() - build.startedAt);
+}
+/**
+ * 跑命令前确认索引可用；返回这条命令该用的超时。
+ * 读命令绝不在「索引还没建完」时被 60 s 杀掉 —— 那正是半库循环的起点。
+ */
+async function ensureIndexReady(cfg, loc, signal) {
+    if (!hasNotebook(cfg))
+        return 60_000;
+    const state = indexStateOf(cfg);
+    if (state === 'ready')
+        return 60_000;
+    const running = builds.get(cfg.notebook);
+    if (running) {
+        await waitForIndex(cfg, running, state, signal);
+        return 60_000;
+    }
+    const failed = buildFailures.get(cfg.notebook);
+    if (failed && Date.now() - failed.at < indexPolicy.failureCooldownMs) {
+        throw new ZkError(`建索引失败：${failed.message}`, INDEX_HINT, 'index-failed');
+    }
+    if (state === 'interrupted' && await indexBeingWritten(cfg)) {
+        throw new ZkError('索引正在被另一个 zk 进程建立（.zk/notebook.db-journal 还在变）', '等它完成再调用；不要并发跑 zk index', 'index-building');
+    }
+    if (approxNoteCount(cfg) <= indexPolicy.autoBuildMaxNotes) {
+        // 小库让这条命令自己建：多起一个 zk index 反而更慢
+        return indexPolicy.buildTimeoutMs;
+    }
+    await waitForIndex(cfg, startIndexBuild(cfg, loc), state, signal);
+    return 60_000;
+}
+/**
  * 跑一条 zk 命令，返回 stdout；非零退出 → ZkError（带 zk 自己最后几行 stderr）。
  *
  * `opts.warnings` 收 exit 0 时的 stderr warning：zk 解析不了 frontmatter 只在这里吭一声，
  * 不收的话那篇笔记就从索引里静默消失（能搜不到、也不进任何一个巡检桶）。
+ *
+ * `init` / `index` 不走索引守卫：前者还没有笔记本，后者本来就是显式重建（调用方自带超时）。
+ * 别名（runAlias）也不走 —— 那是用户自己的命令，不知道它会不会碰索引。
  */
 export async function zk(cfg, args, opts = {}) {
     const loc = await requireZk(cfg);
+    const explicitBuild = args[0] === 'init' || args[0] === 'index';
+    const timeoutMs = explicitBuild
+        ? (opts.timeoutMs ?? 60_000)
+        : (opts.timeoutMs ?? await ensureIndexReady(cfg, loc, opts.signal));
     try {
         const r = await run(loc.bin, [...baseArgs(cfg), ...args], {
             input: opts.input,
             signal: opts.signal,
-            timeoutMs: opts.timeoutMs ?? 60_000,
+            timeoutMs,
         });
         if (opts.warnings) {
             for (const line of r.stderr.split('\n')) {
@@ -143,8 +310,12 @@ export async function zk(cfg, args, opts = {}) {
         return r.stdout;
     }
     catch (err) {
-        if (err instanceof ExecError)
+        if (err instanceof ExecError) {
+            if (err.killed && timeoutMs > 60_000) {
+                throw new ZkError('建索引超时（这条命令在等索引建完时被中断）', '索引可能还没建完；稍后再试，或到设置页点「重建索引」', 'index-failed');
+            }
             throw new ZkError(err.message, undefined, 'zk-failed');
+        }
         throw err;
     }
 }
@@ -1075,8 +1246,18 @@ function distributionOf(live) {
         .slice(0, 10);
     return { byDir, byTag };
 }
+/**
+ * 显式重建（设置页「重建索引」/ `zk-kit index`）：走建库预算（30 min），不再 120 s 杀掉。
+ * 已经有后台建库在跑时直接等它 —— 并发第二个 zk 进程只会撞 SQLite 写锁。
+ */
 export async function indexNotebook(cfg, signal) {
-    await zk(cfg, ['index', '--quiet'], { signal, timeoutMs: 120_000 });
+    const running = builds.get(cfg.notebook);
+    if (running) {
+        await running.promise;
+        return;
+    }
+    const loc = await requireZk(cfg);
+    await startIndexBuild(cfg, loc, signal).promise;
 }
 /**
  * 我们自己动过文件（改名 / 搬归档）之后补一次增量索引。
