@@ -15,7 +15,7 @@ import { configFor, pinSession, sessionNotebook, sessionState } from '../../conf
 import { defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from '../../config/paths.js';
 import { S, validateArgs } from '../../lib/tool.js';
 import { ensureNotebook, newNoteDir } from '../../lib/notebook.js';
-import { searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, runAlias, GRAPH_BUDGET_NOTES, ZkError, } from '../../lib/zk.js';
+import { searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, runAlias, ZkError, } from '../../lib/zk.js';
 import { configuredAliases, readAliases } from '../../lib/alias.js';
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.js';
 import { META_NAMES } from '../../lib/meta.js';
@@ -1146,7 +1146,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 '会读 MEMORY.md：已经晋升过的（`[[链接]]` 命中或条目里写了标题）移出候选、进 alreadyPromoted —— 不会每周原样重复。' +
                 '退役行里的旧标题不再算已晋升，但 `→ [[新结论]]` 仍算。' +
                 'backlog 是窗口外仍未晋升的笔记（按被引数），漏做一次不会永久掉队。' +
-                '库超过 2000 篇时不再建全图统计入链：graphSkipped=true，cited / citedBy / topCited 为空 —— 那是「没算」，不是「没人引」。' +
+                '库超过全图统计上限时不再建全图统计入链（默认 2000 篇，设置页可调；graphBudget 给出生效值）：' +
+                'graphSkipped=true，cited / citedBy / topCited 为空 —— 那是「没算」，不是「没人引」。' +
                 'memory 给记忆余量（内容词 + 提示 = 总词，余量按总词算，可以为负）；retireCandidates 给「可考虑退役」的条目' +
                 '（来源归档 / 不存在、超过 ' + STALE_DAYS + ' 天未复核；显式写 archive/ 的有意引用不算）。' +
                 'days 省略时窗口 = 距 DREAMS.md「上次做梦」的天数（没有则 7 天）。' +
@@ -1165,6 +1166,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     since: { type: 'string' },
                     truncated: { type: 'boolean' },
                     graphSkipped: { type: 'boolean' },
+                    graphBudget: { type: 'number' },
                     memory: objSchema({
                         words: { type: 'number' },
                         personaWords: { type: 'number' },
@@ -1226,7 +1228,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             reason: { type: 'string', enum: ['stale', 'source-missing', 'source-superseded'] },
                         }, ['entry', 'date', 'age', 'reason']),
                     },
-                }, ['notebook', 'windowDays', 'since', 'truncated', 'graphSkipped', 'memory', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds', 'retireCandidates']),
+                }, ['notebook', 'windowDays', 'since', 'truncated', 'graphSkipped', 'graphBudget', 'memory', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds', 'retireCandidates']),
             },
             async run(args, env) {
                 const cfg = configFor(env.workspace, env.sessionId);
@@ -1310,7 +1312,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 if (v.truncated)
                     lines.push('⚠️ 笔记数触到扫描上限：窗口与排名都不完整');
                 if (v.graphSkipped) {
-                    lines.push('⚠️ 库太大（>' + GRAPH_BUDGET_NOTES + ' 篇），这次没统计入链：被引数与 topCited 是空的，不代表没人引用');
+                    lines.push('⚠️ 库超过全图统计上限（' + v.graphBudget + ' 篇），这次没统计入链：被引数与 topCited 是空的，不代表没人引用；可在设置页调整「全图统计上限（篇）」（graphBudgetNotes）');
                 }
                 lines.push('（只报告：MEMORY.md / DREAMS.md 由你按 AGENTS.md 写）');
                 return text(lines.join('\n'));

@@ -59,6 +59,11 @@ export interface Config {
   memoryBudgetWords: number
   /** 人格上限（词）：PERSONA.md 上限；超了只告警，不截断 */
   personaBudgetWords: number
+  /**
+   * 全图统计上限（篇）：库超过这个数时不再建全图 —— zk_dream 跳过入链统计，
+   * zk_lint 的单向链接改按篇反查。默认 2000，0 = 永不建全图。
+   */
+  graphBudgetNotes: number
   /** 归档目录（supersede 后的笔记搬到这里，保留原相对路径） */
   archiveDir: string
   /** 内置 zk 的版本（安装/升级用，不带 v） */
@@ -95,6 +100,7 @@ export const DEFAULTS: Config = {
   aliasTools: false,
   memoryBudgetWords: 500,
   personaBudgetWords: 240,
+  graphBudgetNotes: 2_000,
   archiveDir: 'archive',
   zkVersion: '0.15.7',
   zkPath: '',
@@ -182,6 +188,12 @@ export function normalizeConfig(raw: unknown, workspace: string = processWorkspa
     ? activeRaw
     : DEFAULT_NOTEBOOK_NAME in notebooks ? DEFAULT_NOTEBOOK_NAME : (Object.keys(notebooks)[0] ?? DEFAULT_NOTEBOOK_NAME)
   const entry = notebooks[active] ?? { path: '', structure: 'flat' as Structure }
+  // 空 / null / 非数字退回默认值；0 是合法值（= 永不建全图），别把「没填」当成 0
+  // 上限卡在 MAX_SCAN（10 000）：篇数最多也就数到这么多，再高的预算等于「永远建全图」
+  const graphBudgetRaw = src.graphBudgetNotes
+  const graphBudgetNotes = graphBudgetRaw === null || graphBudgetRaw === undefined || String(graphBudgetRaw).trim() === ''
+    ? DEFAULTS.graphBudgetNotes
+    : clamp(Number(graphBudgetRaw), 0, 10_000, DEFAULTS.graphBudgetNotes)
   return {
     notebook: notebookPath(entry.path, workspace),
     notebooks,
@@ -197,6 +209,7 @@ export function normalizeConfig(raw: unknown, workspace: string = processWorkspa
     aliasTools: src.aliasTools === true || src.aliasTools === 'true',
     memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
     personaBudgetWords: clamp(Number(src.personaBudgetWords), 50, 800, DEFAULTS.personaBudgetWords),
+    graphBudgetNotes,
     archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
     zkVersion: /^\d+\.\d+\.\d+$/.test(String(src.zkVersion ?? '').trim().replace(/^v/i, ''))
       ? String(src.zkVersion).trim().replace(/^v/i, '')

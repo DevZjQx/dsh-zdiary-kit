@@ -815,7 +815,8 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         }
         return { rows, truncated };
     };
-    const graphBudget = Math.max(0, Math.trunc(opts.graphBudget ?? GRAPH_BUDGET_NOTES));
+    // 预算来自配置（设置页可调）；opts.graphBudget 只给测试覆盖
+    const graphBudget = Math.max(0, Math.trunc(opts.graphBudget ?? cfg.graphBudgetNotes ?? GRAPH_BUDGET_NOTES));
     const oneWayRows = [];
     let oneWayTruncated = false;
     if (notes.length <= graphBudget) {

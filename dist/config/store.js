@@ -44,6 +44,7 @@ export const DEFAULTS = {
     aliasTools: false,
     memoryBudgetWords: 500,
     personaBudgetWords: 240,
+    graphBudgetNotes: 2_000,
     archiveDir: 'archive',
     zkVersion: '0.15.7',
     zkPath: '',
@@ -128,6 +129,12 @@ export function normalizeConfig(raw, workspace = processWorkspace()) {
         ? activeRaw
         : DEFAULT_NOTEBOOK_NAME in notebooks ? DEFAULT_NOTEBOOK_NAME : (Object.keys(notebooks)[0] ?? DEFAULT_NOTEBOOK_NAME);
     const entry = notebooks[active] ?? { path: '', structure: 'flat' };
+    // 空 / null / 非数字退回默认值；0 是合法值（= 永不建全图），别把「没填」当成 0
+    // 上限卡在 MAX_SCAN（10 000）：篇数最多也就数到这么多，再高的预算等于「永远建全图」
+    const graphBudgetRaw = src.graphBudgetNotes;
+    const graphBudgetNotes = graphBudgetRaw === null || graphBudgetRaw === undefined || String(graphBudgetRaw).trim() === ''
+        ? DEFAULTS.graphBudgetNotes
+        : clamp(Number(graphBudgetRaw), 0, 10_000, DEFAULTS.graphBudgetNotes);
     return {
         notebook: notebookPath(entry.path, workspace),
         notebooks,
@@ -143,6 +150,7 @@ export function normalizeConfig(raw, workspace = processWorkspace()) {
         aliasTools: src.aliasTools === true || src.aliasTools === 'true',
         memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
         personaBudgetWords: clamp(Number(src.personaBudgetWords), 50, 800, DEFAULTS.personaBudgetWords),
+        graphBudgetNotes,
         archiveDir: relativeDir(src.archiveDir, DEFAULTS.archiveDir),
         zkVersion: /^\d+\.\d+\.\d+$/.test(String(src.zkVersion ?? '').trim().replace(/^v/i, ''))
             ? String(src.zkVersion).trim().replace(/^v/i, '')

@@ -114,6 +114,20 @@ describe('config', () => {
     expect(c.notebook).toBe(path.join(os.homedir(), 'notes'))
   })
 
+  test('全图统计上限：默认 2000、可调、0 合法、空与非法值回默认', () => {
+    expect(store.normalizeConfig({}).graphBudgetNotes).toBe(2_000)
+    expect(store.normalizeConfig({ graphBudgetNotes: 5_000 }).graphBudgetNotes).toBe(5_000)
+    expect(store.normalizeConfig({ graphBudgetNotes: '500' }).graphBudgetNotes).toBe(500)
+    expect(store.normalizeConfig({ graphBudgetNotes: 0 }).graphBudgetNotes).toBe(0)
+    expect(store.normalizeConfig({ graphBudgetNotes: -1 }).graphBudgetNotes).toBe(0)
+    // 上限 = MAX_SCAN：篇数只能数到 10 000，更高的预算等于「永远建全图」
+    expect(store.normalizeConfig({ graphBudgetNotes: 10_001 }).graphBudgetNotes).toBe(10_000)
+    expect(store.normalizeConfig({ graphBudgetNotes: 99_999_999 }).graphBudgetNotes).toBe(10_000)
+    expect(store.normalizeConfig({ graphBudgetNotes: '' }).graphBudgetNotes).toBe(2_000)
+    expect(store.normalizeConfig({ graphBudgetNotes: null }).graphBudgetNotes).toBe(2_000)
+    expect(store.normalizeConfig({ graphBudgetNotes: 'abc' }).graphBudgetNotes).toBe(2_000)
+  })
+
   test('笔记本默认落在工作区里；相对路径按工作区解析', () => {
     expect(store.normalizeConfig({}).notebook).toBe(path.join(home, 'zdiary'))
     expect(store.normalizeConfig({ notebook: 'zdiary' }).notebook).toBe(path.join(home, 'zdiary'))
@@ -4711,8 +4725,11 @@ describe('M5.0b: 按篇反查（不建全图）', () => {
 
     const graph = await lintLib.lintNotebook(c)
     const queried = await lintLib.lintNotebook(c, { graphBudget: 0 })
+    const byConfig = await lintLib.lintNotebook({ ...c, graphBudgetNotes: 0 })
     const shape = (r: typeof graph) => r.oneWayLinks.items.map((i) => ({ path: i.path, from: i.from, where: i.where }))
     expect(shape(queried)).toEqual(shape(graph))
+    // 配置里的上限也生效（opts.graphBudget 只是测试覆盖）
+    expect(shape(byConfig)).toEqual(shape(graph))
     expect(queried.oneWayLinks.total).toBe(graph.oneWayLinks.total)
     expect(queried.oneWayLinks.edges).toBe(graph.oneWayLinks.edges)
     expect(queried.oneWayLinks.bodyOnly).toBe(graph.oneWayLinks.bodyOnly)
@@ -4733,9 +4750,19 @@ describe('M5.0b: 按篇反查（不建全图）', () => {
 
     const full = await dreamLib.dreamNotebook(c, { graphBudget: 100 })
     expect(full.graphSkipped).toBe(false)
+    expect(full.graphBudget).toBe(100)
 
     const skipped = await dreamLib.dreamNotebook(c, { graphBudget: 0 })
     expect(skipped.graphSkipped).toBe(true)
+    expect(skipped.graphBudget).toBe(0)
+
+    // 配置里的上限也生效；显式 opts 仍可覆盖（测试用）
+    const byConfig = await dreamLib.dreamNotebook({ ...c, graphBudgetNotes: 0 })
+    expect(byConfig.graphSkipped).toBe(true)
+    expect(byConfig.graphBudget).toBe(0)
+    const overridden = await dreamLib.dreamNotebook({ ...c, graphBudgetNotes: 0 }, { graphBudget: 100 })
+    expect(overridden.graphSkipped).toBe(false)
+    expect(overridden.graphBudget).toBe(100)
     // 入链统计没了：cited 归零、topCited 为空；窗口与候选不受影响
     expect(skipped.topCited).toEqual([])
     expect(skipped.newNotes.every((n) => n.cited === 0)).toBe(true)

@@ -42,6 +42,8 @@ interface ZkConfig {
   aliasTools: boolean
   memoryBudgetWords: number
   personaBudgetWords: number
+  /** 全图统计上限（篇）：0 = 永不建全图 */
+  graphBudgetNotes: number
   /** 当前笔记本的结构（= notebooks[active].structure；派生视图，落在条目里） */
   structure: string
   archiveDir: string
@@ -157,6 +159,7 @@ interface Field {
       { group: '记忆', key: 'personaBudgetWords', label: '人格上限（词）', hint: 'PERSONA.md 的上限，默认 240（50-800）。人格永远注入、不参与截断；超了只告警' },
       { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
       { group: '写入', key: 'maxReadChars', label: '单次读取上限（字符）', hint: '默认 20000；zk-kit read 与别名工具的输出超了会截断并明确告知模型' },
+      { group: '工具', key: 'graphBudgetNotes', label: '全图统计上限（篇）', hint: '库超过这个篇数时不再建全图统计入链：zk_dream 跳过入链统计（graphSkipped），zk_lint 的单向链接改按篇反查。默认 2000（0-10000，0 = 永不建全图）；上限 = 单次扫描上限，再高等于总是建全图。全图在 10k 上要 26–31 秒，调高前先确认等得起' },
       { group: '工具', key: 'aliasTools', label: '把 [alias] 注册成工具', hint: '默认关闭。打开后，加载插件时把各笔记本 .zk/config.toml 的 [alias] 里未注释的别名注册成 zk_<名>，模型可以像调内置工具一样调它们。\n别名是 $SHELL -c 执行的任意命令 —— 打开等于把这些命令交给 agent，只在你信得过 config.toml 内容时开。\n交互式命令（edit / 带 --interactive）会卡到超时，不适合当工具。改完要重载插件（或重启 DSH）才会出现在工具列表里', type: 'bool' },
       { group: 'zk', key: 'zkPath', label: 'zk 路径（可空）', hint: '空 = 自动找：配置 → $ZK_BIN → PATH → 插件内置（~/.dsh/zdiary/bin）' },
       { group: 'zk', key: 'zkVersion', label: '内置 zk 版本', hint: '「安装内置 zk」下载的版本，默认 0.15.7；改完点安装即升级' },

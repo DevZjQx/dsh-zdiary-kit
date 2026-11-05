@@ -146,7 +146,8 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 少一个 key，宿主校验直接整次 invalid output。
 
 **dream 的入链统计有预算**（M5.0b）：`zk_dream` 的 `cited` / `citedBy` / `topCited` 来自一次全量建图，
-而全图在 10k 上要 26–31 s / 17 MB。超过 2000 篇时不再建图，结果带 `graphSkipped: true`，
+而全图在 10k 上要 26–31 s / 17 MB。超过全图统计上限（`graphBudgetNotes`，默认 2000，设置页可调；
+0 = 永不建全图）时不再建图，结果带 `graphSkipped: true` 与生效的 `graphBudget`，
 render 明说「被引数与 topCited 是空的，不代表没人引用」—— 那是「没算」，不是「没人引」。
 其余材料（窗口候选、拒绝原因、Loose ends、退役候选、记忆余量）不受影响。
 全局被引的增量口径留给 plan §7 G2，别在这一步用全图硬撑。
@@ -155,8 +156,8 @@ render 明说「被引数与 topCited 是空的，不代表没人引用」——
 `zk_lint` = 1 次 `zk list` + 三个 zk 原生过滤器（`--orphan` / `--broken-links` / `--tagless`）+ 单向链接的边，
 **顺序执行**：zk 每次都会顺手补索引，并发进程会撞 SQLite 写锁；200 条笔记约 0.9 秒（验收线 3 秒）。
 
-**单向链接的边从哪来**（M5.0b）：≤ 2000 篇时一次 `zk graph`（1k 实测 0.45 s，还能拿到 `snippetStart`）。
-超过 2000 篇改按篇反查：`--missing-backlink` 给候选目标，每个目标 `--link-to` 取来源、`--linked-by` 判回链；
+**单向链接的边从哪来**（M5.0b）：≤ 全图统计上限（`graphBudgetNotes`，默认 2000）时一次 `zk graph`
+（1k 实测 0.45 s，还能拿到 `snippetStart`）。超过上限改按篇反查：`--missing-backlink` 给候选目标，每个目标 `--link-to` 取来源、`--linked-by` 判回链；
 上限 50 个目标 / 60 个子进程（取先到者，实际约 30 个目标），触顶置 `edgesTruncated`。10k / 1 链夹具实测整次巡检 6.6 s
 （改动前只全图就 26–31 s / 17 MB）。反查路径没有偏移量，`where` 改成扫源文件判断，相对路径写法可能落到 `body`。
 

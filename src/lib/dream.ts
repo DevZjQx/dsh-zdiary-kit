@@ -73,7 +73,7 @@ export interface DreamOptions {
   days?: number
   /** 测试用；默认 now */
   now?: Date
-  /** 多大的库还愿意建全图（默认 `GRAPH_BUDGET_NOTES`）；只给测试用，压到 0 就能跑大库那条路 */
+  /** 覆盖配置里的 `graphBudgetNotes`（默认 2000）；只给测试用，压到 0 就能跑大库那条路 */
   graphBudget?: number
 }
 
@@ -147,12 +147,14 @@ export interface DreamResult {
   /** true = 触到扫描上限，窗口与排名都不完整 */
   truncated: boolean
   /**
-   * true = 库太大（> `GRAPH_BUDGET_NOTES`），这次没有建全图统计入链。
+   * true = 库太大（> 生效的 `graphBudget`，默认 `graphBudgetNotes = 2000`），这次没有建全图统计入链。
    * `cited` / `citedBy` 全是 0、`topCited` 为空 —— 那是「没算」，不是「没人引」。
    * 全图 10k 要 26–31 s / 17 MB（plan §0.5.1），而 dream 给的是材料，不值得为一次汇总
    * 把工具拖过 60 s 超时；增量口径见 plan §7 G2。
    */
   graphSkipped: boolean
+  /** 生效的全图统计上限（`graphBudgetNotes`，或调用方覆盖的值）：graphSkipped 是与它比出来的 */
+  graphBudget: number
   /** 记忆用量（与注入 / 设置页同一口径）：晋升前先知道还剩多少预算 */
   memory: MemoryUsage
   counts: {
@@ -380,8 +382,10 @@ export async function dreamNotebook(
 
   // 顺序跑：两个 zk 进程同时补索引会撞 SQLite 写锁（lint 里同样处理）
   const notes = await allNotes(cfg, {}, signal)
-  // 全图在 10k 上 26–31 s / 17 MB（plan §0.5.1）：超过预算就不建，并显式告诉调用方
-  const graphReady = notes.length <= Math.max(0, Math.trunc(opts.graphBudget ?? GRAPH_BUDGET_NOTES))
+  // 全图在 10k 上 26–31 s / 17 MB（plan §0.5.1）：超过预算就不建，并显式告诉调用方。
+  // 预算来自配置（设置页可调）；opts.graphBudget 只给测试覆盖。
+  const graphBudget = Math.max(0, Math.trunc(opts.graphBudget ?? cfg.graphBudgetNotes ?? GRAPH_BUDGET_NOTES))
+  const graphReady = notes.length <= graphBudget
   const edges = graphReady ? (await graphEdges(cfg, signal)).edges : []
 
   // 入链来源按目标分组：既算「被引几次」，也给 dream 一份上下文（谁在引它）
@@ -509,6 +513,7 @@ export async function dreamNotebook(
     since: localDate(new Date(sinceMs).toISOString()),
     truncated: notes.length >= MAX_SCAN,
     graphSkipped: !graphReady,
+    graphBudget,
     counts: {
       window: windowNotes.length,
       daily: windowNotes.filter((n) => isUnder(n.path, cfg.dailyDir)).length,

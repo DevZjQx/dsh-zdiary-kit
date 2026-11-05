@@ -287,8 +287,10 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
     const sinceMs = now.getTime() - windowDays * 86_400_000;
     // 顺序跑：两个 zk 进程同时补索引会撞 SQLite 写锁（lint 里同样处理）
     const notes = await allNotes(cfg, {}, signal);
-    // 全图在 10k 上 26–31 s / 17 MB（plan §0.5.1）：超过预算就不建，并显式告诉调用方
-    const graphReady = notes.length <= Math.max(0, Math.trunc(opts.graphBudget ?? GRAPH_BUDGET_NOTES));
+    // 全图在 10k 上 26–31 s / 17 MB（plan §0.5.1）：超过预算就不建，并显式告诉调用方。
+    // 预算来自配置（设置页可调）；opts.graphBudget 只给测试覆盖。
+    const graphBudget = Math.max(0, Math.trunc(opts.graphBudget ?? cfg.graphBudgetNotes ?? GRAPH_BUDGET_NOTES));
+    const graphReady = notes.length <= graphBudget;
     const edges = graphReady ? (await graphEdges(cfg, signal)).edges : [];
     // 入链来源按目标分组：既算「被引几次」，也给 dream 一份上下文（谁在引它）
     const inbound = new Map();
@@ -419,6 +421,7 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         since: localDate(new Date(sinceMs).toISOString()),
         truncated: notes.length >= MAX_SCAN,
         graphSkipped: !graphReady,
+        graphBudget,
         counts: {
             window: windowNotes.length,
             daily: windowNotes.filter((n) => isUnder(n.path, cfg.dailyDir)).length,

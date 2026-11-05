@@ -102,6 +102,7 @@ function makeConfig(dir: string): Config {
     aliasTools: false,
     memoryBudgetWords: 500,
     personaBudgetWords: 240,
+    graphBudgetNotes: 2_000,
     archiveDir: 'archive',
     zkVersion: '0.15.7',
     zkPath: process.env.ZK_BIN ?? '',
@@ -209,7 +210,7 @@ const CASES: Case[] = [
   {
     id: 'dream',
     tool: 'zk_dream',
-    what: '晋升材料（超过 2 000 篇时跳过全图：graphSkipped）',
+    what: '晋升材料（超过全图统计上限时跳过全图：graphSkipped）',
     timeoutMs: 180_000,
     run: async ({ cfg }) => {
       const r = await dreamNotebook(cfg)

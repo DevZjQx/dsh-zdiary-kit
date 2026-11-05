@@ -281,7 +281,7 @@ export interface LintOptions {
   /** 只报 Links 小节的单向链接；正文引用只计数（默认 false = 全报） */
   linksOnly?: boolean
   /**
-   * 多大的库还愿意建全图（默认 `GRAPH_BUDGET_NOTES`）。超过就改成按篇反查。
+   * 覆盖配置里的 `graphBudgetNotes`（默认 2000）。超过就改成按篇反查。
    * 只给测试用：把它压到 0 就能在小库上跑大库的那条路径。
    */
   graphBudget?: number
@@ -1107,7 +1107,8 @@ export async function lintNotebook(
     return { rows, truncated }
   }
 
-  const graphBudget = Math.max(0, Math.trunc(opts.graphBudget ?? GRAPH_BUDGET_NOTES))
+  // 预算来自配置（设置页可调）；opts.graphBudget 只给测试覆盖
+  const graphBudget = Math.max(0, Math.trunc(opts.graphBudget ?? cfg.graphBudgetNotes ?? GRAPH_BUDGET_NOTES))
   const oneWayRows: OneWayRow[] = []
   let oneWayTruncated = false
   if (notes.length <= graphBudget) {

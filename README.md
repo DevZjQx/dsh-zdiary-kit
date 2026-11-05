@@ -89,7 +89,8 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 日记是这个插件里唯一按时间记录真实工作的层，空信号只说明日记里没写过，不等于没被用过。
 `zk_dream` 还会回一行**记忆余量**（内容词 + 提示 = 总量，余量按总量算，可以为负）和「可考虑退役」的条目
 （来源已归档 / 不存在、或超过 90 天没复核）—— 只给材料，不写任何文件。
-库超过 2000 篇时不再建全图统计入链（10k 全图 26–31 s）：结果带 `graphSkipped: true`，
+库超过全图统计上限时不再建全图统计入链（默认 2000 篇，设置页「工具 → 全图统计上限」可调；
+0 = 永不建全图）：结果带 `graphSkipped: true` 与生效的 `graphBudget`，
 被引数与 `topCited` 为空 —— 那是「没算」，不是「没人引」。
 `zk_lint` 会核对 `MEMORY.md` / `USER.md` 里的 `[[来源路径]]` 是否还指向活笔记 ——
 `zk_supersede` 只重写笔记之间的入链，meta 文件不在图里，链接不会跟着搬，`--broken-links` 也看不见。
@@ -143,6 +144,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 | 记忆 | 注入预算（词） | AGENTS + USER + MEMORY 的合计上限，默认 500（中文按 2 字 1 词） |
 | 记忆 | 人格上限 | PERSONA.md 240（不截断、超了告警） |
 | 写入 | 默认标签 / 单次读取上限 | 新笔记自动带标签；`zk-kit read` 与别名工具的输出上限 |
+| 工具 | 全图统计上限（篇） | 库超过这个篇数时不再建全图：`zk_dream` 跳过入链统计，`zk_lint` 的单向链接改按篇反查；默认 2000（0–10000，上限 = 扫描上限），0 = 永不建全图 |
 | 工具 | 把 `[alias]` 注册成工具 | 复选框，默认关。打开后 `.zk/config.toml` 的 `[alias]` 变成 `zk_<名>` 工具；**加载时才注册**，勾完保存要重载插件 |
 | zk | zk 路径 / 内置版本 | 路径空 = 自动找；版本默认 0.15.7 |
 
@@ -194,7 +196,7 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
   （`~/.dsh/zdiary/sessions/`），之后改这里不会带动已开的会话；本会话换库在会话里说一声（`zk_use`）。名字不存在、非法时退回 `default`。
 - 顶层 `notebook` 与 `structure` 是**派生的**（`notebooks[active]` 解析后的绝对路径 / 该条目的结构），只在内存里、不落盘也不可写；可写的是条目里的 `notebooks[名].structure`（`zk-kit config set structure=…` 改的就是当前笔记本那一条）—— 磁盘上笔记本只有一个真相，就是 `notebooks` + `active`。
   老配置里那个单独的 `notebook` 字段（和全局 `structure`）读进来会**一次性**迁进 `notebooks.default`，之后不再互相覆盖。
-- **共享的是全局项**：笔记 / 日记子目录、`daily` group、归档目录、注入预算 —— 这些不按笔记本分开。
+- **共享的是全局项**：笔记 / 日记子目录、`daily` group、归档目录、注入预算、全图统计上限 —— 这些不按笔记本分开。
   改子目录 / group 名后要跑 `zk-kit groups --fix` 让 `.zk/config.toml` 跟上；归档目录非空时不允许改（不自动迁移文件）。
 
 ```bash
@@ -421,7 +423,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   `bun run fixture`（生成 1k / 10k 规模夹具，比例与边界样本见 `docs/plan.md` §0.5；
   `--links-per-note` 决定链接密度 —— 建索引成本主要花在链接上，产出目录自带 `.zk/config.toml`，进去 `zk index` 即可）·
   `bun run bench`（成本表：逐用例真起 zk，记子进程数 / 回传字节 / 峰值 RSS / p50 / p95；默认 1k、3 轮）
-- **耗时差两个数量级**：`bun run test` 约 50 s（207 个用例，真起 zk）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
+- **耗时差两个数量级**：`bun run test` 约 50 s（208 个用例，真起 zk）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
   10k 上光一条 `graph.full` 就是 30 s、冷建索引几分钟。所以 `bench` **不在** `check` / CI 里，跟测试完全分开，不会因为你跑测试而变慢。
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
