@@ -39,6 +39,7 @@ const installLib = await import('../src/lib/install.ts')
 const readonlyFeature = await import('../src/features/readonly/feature.ts')
 const readonlyHtml = await import('../src/features/readonly/html.ts')
 const timelineLib = await import('../src/lib/timeline.ts')
+const similarLib = await import('../src/lib/similar.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
@@ -510,6 +511,111 @@ describe('memory', () => {
     expect(p.text).toContain('预算不足')
     expect(p.text).toContain('MEMORY.md')
     expect(p.text).toMatch(/已无更多可丢的(条目|段落|小节)/)
+  })
+
+  test('P0-2：只有一个 ## 小节时按条目继续丢，且先丢日期最旧的一条', () => {
+    const entries = Array.from({ length: 12 }, (_, i) => {
+      const day = String(i + 1).padStart(2, '0')
+      return '- 2026-01-' + day + ' 第 ' + (i + 1) + ' 条结论：这是一条用于验证单节降级的记忆条目。'
+    })
+    const body = ['# MEMORY', '', '> 策展核心。', '', '## 结论', '', ...entries].join('\n')
+    const p = build({ 'AGENTS.md': 'rule '.repeat(5), 'MEMORY.md': body }, 120)
+    expect(p.words).toBeLessThanOrEqual(120)
+    // `words` 是业务预算口径（不含框与 notice）；真实注入是 totalWords，可以超预算 —— 既有设计，
+    // 不要把上面那句读成「真实载荷 ≤ 预算」（`headroom` 为负是合法的）
+    expect(p.totalWords).toBe(memory.countWords(p.text))
+    expect(p.totalWords).toBeGreaterThan(p.words)
+    expect(p.truncatedWords).toBeGreaterThan(0)
+    // 小节标题冻结在 head 里，不参与丢弃
+    expect(p.text).toContain('## 结论')
+    expect(p.text).toContain('2026-01-12')
+    // 丢的是日期最旧那几条，不是尾部
+    expect(p.text).not.toContain('2026-01-01')
+  })
+
+  test('P0-2：单节且条目没日期时按位置丢尾部，并说明只能按位置丢', () => {
+    const items = Array.from({ length: 12 }, (_, i) =>
+      '- 第 ' + (i + 1) + ' 条结论：没有日期的记忆条目，内容不长但足够占预算。')
+    const body = ['# MEMORY', '## 结论', '', ...items].join('\n')
+    const p = build({ 'MEMORY.md': body }, 110)
+    expect(p.words).toBeLessThanOrEqual(110)
+    expect(p.truncatedWords).toBeGreaterThan(0)
+    expect(p.text).toContain('第 1 条结论')
+    expect(p.text).not.toContain('第 12 条结论')
+    expect(p.text).toContain('没日期')
+    expect(p.text).toContain('只能按位置丢')
+  })
+
+  test('P0-2：两节丢到只剩一节后，继续按条目丢', () => {
+    const items = Array.from({ length: 8 }, (_, i) =>
+      '- 记 ' + (i + 1) + '：这一条用于验证两节降到一节之后的继续丢。')
+    const body = ['# MEMORY', '## 一', ...items, '## 二', 'tail '.repeat(40)].join('\n')
+    const p = build({ 'MEMORY.md': body }, 70)
+    expect(p.words).toBeLessThanOrEqual(70)
+    expect(p.truncatedWords).toBeGreaterThan(0)
+    expect(p.text).not.toContain('## 二')
+    expect(p.text).toContain('## 一')
+    expect(p.text).toContain('记 1：')
+    expect(p.text).not.toContain('记 8：')
+  })
+
+  test('P1-2：接近上限时用量行带上格式债，且仍不超预算', () => {
+    const body = ['# MEMORY', '', '## 结论', '',
+      ...Array.from({ length: 4 }, (_, i) => '- 第 ' + (i + 1) + ' 条结论：这是一条没有日期也没有来源的记忆条目，用来验证格式债提示。')].join('\n')
+    const p = build({ 'MEMORY.md': body }, 100)
+    expect(p.truncatedWords).toBe(0)
+    expect(p.words).toBeLessThanOrEqual(100)
+    expect(p.text).toContain('记忆已用')
+    expect(p.text).toContain('MEMORY 4 条没日期 · 4 条没来源')
+  })
+
+  test('P1-2：格式债放不下就整条不加，不能说一半', () => {
+    const body = ['# MEMORY', '', '## 结论', '',
+      ...Array.from({ length: 4 }, (_, i) => '- 第 ' + (i + 1) + ' 条结论：这是一条没有日期也没有来源的记忆条目，用来验证格式债提示。')].join('\n')
+    // 只差几词：用量行照常报，格式债一句都不出现（不许剩「MEMORY 4 条没日期」）
+    const p = build({ 'MEMORY.md': body }, 95)
+    expect(p.text).toContain('记忆已用')
+    expect(p.text).not.toContain('没日期')
+    expect(p.text).not.toContain('没来源')
+  })
+
+  test('P1-2：截断时也报格式债，且不和「只能按位置丢」重复报没日期', () => {
+    const body = ['# MEMORY', '', '## 结论', '',
+      ...Array.from({ length: 9 }, (_, i) => '- 第 ' + (i + 1) + ' 条结论：这是一条没有日期也没有来源的记忆条目，用来验证格式债提示。')].join('\n')
+    const p = build({ 'MEMORY.md': body }, 135)
+    expect(p.truncatedWords).toBeGreaterThan(0)
+    expect(p.text).toContain('已截断')
+    expect(p.text).toContain('MEMORY 9 条没来源')
+    expect(p.text.match(/9 条没日期/g)?.length).toBe(1)
+  })
+
+  test('P0-2：预算内的单节文件一个字都不动', () => {
+    const items = Array.from({ length: 4 }, (_, i) => '- 条目 ' + (i + 1) + '：内容。')
+    const body = ['# MEMORY', '', '## 结论', '', ...items].join('\n')
+    const p = build({ 'MEMORY.md': body }, 500)
+    expect(p.truncatedWords).toBe(0)
+    expect(p.text).toContain('条目 1')
+    expect(p.text).toContain('条目 4')
+    expect(p.text).not.toContain('未注入')
+  })
+
+  test('目录按文件位置排：多节丢到单节、再按条目丢之后，条目仍排在小节之前', () => {
+    // 两节：一（三条长条目）+ 乙。乙 先被当整节丢掉，一 再降级成条目丢尾部。
+    // 两套坐标（小节序号 / 条目序号）混在一起时，这里会把「乙」排到「条目三」前面。
+    const long = 'word '.repeat(78).trim()
+    const body = [
+      '# 用户', '', '## 一',
+      `- 条目一：${long}`, `- 条目二：${long}`, `- 条目三：${long}`,
+      '## 乙', 'tail tail tail tail tail tail tail tail tail tail',
+    ].join('\n')
+    const p = build({ 'USER.md': body }, 200)
+    expect(p.truncatedWords).toBeGreaterThan(0)
+    expect(p.text).toContain('未注入的段落')
+    const toc = p.text.slice(p.text.indexOf('未注入的段落'))
+    expect(toc.indexOf('§条目三')).toBeGreaterThan(-1)
+    expect(toc.indexOf('§乙')).toBeGreaterThan(-1)
+    // 文件里「条目三」在「乙」之前 → 目录也得是这个顺序
+    expect(toc.indexOf('§条目三')).toBeLessThan(toc.indexOf('§乙'))
   })
 
   test('P1-4：接近上限回显用量，且这一行算进预算', () => {
@@ -3653,6 +3759,38 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
       // 载荷预览里会原样出现（转义后）；页面正文不能把它当正文渲染成裸标记
       expect(page.body).not.toContain('<!-- zdiary-template')
 
+      // P1-2：格式债摆在用量下面 —— 没日期要说，没来源的 0 也列出来（好和别的库对比）
+      expect(page.body).toContain('格式：1/1 条没日期 · 0 条没来源')
+
+      // 全干净就不写这一行（不能出现空的「格式：」）
+      fs.writeFileSync(path.join(nb, 'MEMORY.md'), '# 记忆\n\n- 2026-11-05 双链 [[记忆双链目标]]\n')
+      const clean = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=memory'))
+      expect(clean.body).not.toContain('格式：')
+
+      // 模板版本只读首行标记（不跑 lint）：旧版要报出来
+      fs.writeFileSync(path.join(nb, 'AGENTS.md'), '<!-- zdiary-template: v5 -->\n\n# 旧约定\n')
+      const old = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=memory'))
+      expect(old.body).toContain('格式：AGENTS 模板 v5（当前 v' + agentsTpl.TEMPLATE_VERSION + '）')
+
+      // v3.3 修订：格式债只有一个口径 —— 退役条目不算，`[[   ]]` 不算来源。
+      // 同一份 MEMORY 在记忆页 / 注入载荷 / zk_lint 三处必须给出同一对数字。
+      fs.writeFileSync(path.join(nb, 'MEMORY.md'), [
+        '# 记忆', '',
+        '- 活条目：没日期也没来源',
+        '- [superseded 2026-01-01] 退役条目 → [[记忆双链目标]]',
+        '- 空目标也不算来源：[[   ]]（2026-11-05）',
+        '',
+      ].join('\n'))
+      fs.writeFileSync(path.join(nb, 'AGENTS.md'), notebookLib.AGENTS_TEMPLATE)
+      const debtPage = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=memory'))
+      // 活条目 2 条：1 条没日期；两条都没有有效来源（退役那条不计；`[[   ]]` 空目标也不算来源）
+      expect(debtPage.body).toContain('格式：1/2 条没日期 · 2 条没来源')
+      const payload = memory.buildMemoryPayload(store.config())
+      expect(payload.formatDebt).toEqual({ total: 2, undated: 1, unlinked: 2 })
+      const bucket = lintLib.memoryLinkIssues(store.config(), [])
+      expect(bucket.undated).toBe(payload.formatDebt.undated)
+      expect(bucket.unlinked).toBe(payload.formatDebt.unlinked)
+
       const meta = await call('/dsh-zdiary-kit/api/note', makeReq('/dsh-zdiary-kit/api/note?path=MEMORY.md'))
       expect(meta.statusCode).toBe(400)
       const metaPage = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=note&path=MEMORY.md'))
@@ -4320,3 +4458,53 @@ describe('v3.1: 时间轴 / archive / dream 日期', () => {
     }
   })
 })
+describe('v3.3 M2：写路径相似提醒', () => {
+  const fresh = (name: string) =>
+    store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure: 'layered' })
+
+  it('同目录相似标题只提示不阻断；精确同名仍报错；不同目录不比；分数与 lint 一致', async () => {
+    const cfg = fresh('nb-m2-similar')
+    await notebookLib.ensureNotebook(cfg)
+    try {
+      const base = await zk.createNote(cfg, { title: '记忆系统的召回质量', dir: 'notes/concepts', content: '正文 #x' })
+      const near = await zk.createNote(cfg, { title: '记忆系统的召回质量评估', dir: 'notes/concepts', content: '正文 #x' })
+
+      // 笔记照常建成，只是多一条提示
+      expect(fs.existsSync(near.absPath)).toBe(true)
+      expect(near.similar.map((s) => s.path)).toContain(base.path)
+      expect(near.similar[0].score).toBeGreaterThanOrEqual(0.6)
+
+      // 不同目录不比较（不同目录同名本来就允许）
+      const other = await zk.createNote(cfg, { title: '记忆系统的召回质量评估', dir: 'notes/sources', content: '正文 #x' })
+      expect(other.similar).toHaveLength(0)
+
+      // 精确同名仍然是写入前的硬错误，不因为有了 similar 就放行
+      await expect(zk.createNote(cfg, { title: '记忆系统的召回质量', dir: 'notes/concepts', content: '又一遍' }))
+        .rejects.toThrow(/同名笔记已存在/)
+
+      // 同一份实现：写路径的分数与周审 lint 的分组分数逐条一致
+      await zk.indexNotebook(cfg)
+      const lint = await lintLib.lintNotebook(cfg)
+      const group = lint.similarTitles.items.find((g) => g.paths.includes(base.path) && g.paths.includes(near.path))
+      expect(group?.score).toBe(near.similar[0].score)
+    } finally {
+      fs.rmSync(cfg.notebook, { recursive: true, force: true })
+    }
+  })
+
+  it('候选集与 similarTitles 同口径：没有 frontmatter 标题的旧笔记用文件名参与比较', () => {
+    const notes = [
+      { title: '', path: 'notes/concepts/记忆系统的召回质量.md' },
+      { title: '', path: 'notes/concepts/无关的笔记.md' },
+      { title: '记忆系统的召回质量评估', path: 'notes/concepts/别的文件.md' },
+    ]
+    const hits = similarLib.similarCandidates(notes, '记忆系统的召回质量评估', 'notes/concepts')
+    // 文件名当标题：与被比较的标题只差前缀，应该命中；完全相同的那条不重复报
+    expect(hits.map((h) => h.path)).toEqual(['notes/concepts/记忆系统的召回质量.md'])
+    expect(hits[0].title).toBe('记忆系统的召回质量')
+    expect(hits[0].score).toBeGreaterThanOrEqual(0.6)
+    // 目录不同不比
+    expect(similarLib.similarCandidates(notes, '记忆系统的召回质量评估', 'notes/sources')).toHaveLength(0)
+  })
+})
+

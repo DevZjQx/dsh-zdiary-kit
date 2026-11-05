@@ -64,6 +64,40 @@ export function entryDate(entry: string): string | null {
 }
 
 /**
+ * 条目里的双链来源；只看写没写，链接是否真存在是 lint 的事。
+ * 目标是「非空白」：`[[   ]]` 不算来源（lint 的 `WIKI_LINK` 也把空目标当没链接），
+ * `[[目标|别名]]` / `[[目标#小节]]` 算。
+ */
+const LINK = /\[\[[^\]\n]*\S[^\]\n]*\]\]/
+
+/**
+ * 记忆的格式债（P1）：活条目总数、没日期的条数、没来源链接的条数。
+ * 这是**唯一**口径：注入提示、记忆页、`zk_lint` 的 `memoryLinks` 都从这里取数，
+ * 免得同一份 MEMORY 在三个地方给出三个「N 条没来源」。
+ */
+export interface MemoryFormatDebt {
+  total: number
+  undated: number
+  unlinked: number
+}
+
+/**
+ * 数一遍格式债：只机械计数，不猜日期、不补来源 —— 两者仍由人和 agent 写。
+ * 注入与记忆页只负责把缺口摆出来，否则「按日期淘汰」对没日期的老库永远空转。
+ * 退役条目不算：它们按约定退役，不该因为格式被继续提醒。
+ */
+export function memoryFormatDebt(body: string): MemoryFormatDebt {
+  const entries = splitMemoryEntries(body).filter((entry) => !isRetiredEntry(entry))
+  let undated = 0
+  let unlinked = 0
+  for (const entry of entries) {
+    if (!entryDate(entry)) undated += 1
+    if (!LINK.test(entry)) unlinked += 1
+  }
+  return { total: entries.length, undated, unlinked }
+}
+
+/**
  * 去掉退役条目（整条，不留半行），返回正文与删掉的条数。
  * 磁盘上的文件不动 —— 省略只发生在注入路径上；记忆页 / git 仍看得到它们。
  */

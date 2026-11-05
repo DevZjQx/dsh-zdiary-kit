@@ -118,6 +118,11 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 允许复用标题，但先读旧结论。「是不是同一个错误」仍然由 agent 判断，插件只负责把材料摆出来。
 代价是每次 `zk_new` 多一次全库 `zk list --include-archived`（扫描上限 1 万篇，按比例放大）——
 用一次读换一条「不会静默复用的错误结论」；zk 跑不起来时 layered 照建（归档提醒降级），flat 直接报错（标题查重是写入前的硬门槛，fail-closed）。
+`similar`（v3.3）：同一次全库扫描顺带算「同目录、改一两个字」的相似标题 —— 归一化后按字符二元组算 Jaccard ≥ 0.6，
+或短串（≥ 6 字）被长串包含；最多 3 条、分数降序，放进输出的 `similar` 并渲染
+`⚠️ 疑似已有：标题（path，0.72）`。阈值与 `zk_lint` 的 `similarTitles` 是同一份实现（`lib/similar.ts`），
+两边分数逐条一致；**只提示、不阻断、不自动 `zk_link`、不改标题** —— 误报会挡住正常写作，合并与否仍由 agent 判断。
+精确同名仍走上面的硬查重（`similar` 里不会重复报），不同目录不比，归档不参与。
 **读取交给宿主。** 不提供 `zk_read`：DSH 原生 `read` 已经处理行号、分页、沙箱与 read-before-write。
 `zk_search` / `zk_query` 的每条笔记、`zk_new` / `zk_daily` 的返回都带 `absPath`（相对笔记本的 `path` 仍在，
 双链与 `zk_*` 参数用得上），模型直接把 `absPath` 传给 `read`；根目录 meta 文件（`MEMORY.md` / `USER.md`）
@@ -130,6 +135,8 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 「补空行 / 二级标题 / 写入指定小节」的语义，守卫（meta / `raw/` / `inbox/`）也仍然在。
 `zk_context` 的 `files[].originalWords`（截断前词数）、`files[].retiredWords`（退役条目占的词数，只算在 `MEMORY.md` 上）、
 `tocWords`（目录占的词数）与 `ratio`（用量 = `words / budget`，两位小数，> 1 表示超预算）只用于解释预算，不改变注入内容。
+`formatDebt`（`total / undated / unlinked`，与记忆页、`zk_lint.memoryLinks` 同一个 `memoryFormatDebt`）
+与 `templateVersion`（AGENTS.md 首行标记；0 = 没标记或没文件，用 `files[].present` 区分）是同一批只读元数据。
 `originalWords` 含退役条目；展示层的「原 X」会先减掉 `retiredWords`，所以退役不会再被当成截断报出来。
 人格单独一组：`persona.present / contentWords / words / noticeWords / budget / overBudget / overWords / files[]`（`contentWords` 含 `## PERSONA.md` 标题），
 外加 `totalWords`（`countWords(payload.text)`）与 `overheadWords`（框 / 做梦提醒 / notice / 人格告警等开销）。
@@ -180,8 +187,9 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 （supersede 重写入链就是这个形状），不算漂移。归档标题不反查（归档默认不进检索，反查就成了第二套索引），
 「语义重复」不查。为什么必须有：`zk_supersede` 只重写 `zk graph` 里的入链，meta 文件被 `excludedNames`
 排除在图外 —— 链接不会跟着搬，`--broken-links` 也统计不到；记忆说 X、库里 X 已废弃，这是两层脱节的入口。
-`unlinked` 只数 **MEMORY.md** 的列表条目里没有 `[[链接]]` 的（USER.md 是偏好清单，本来大多没有来源，
-不计；散文段落也不算，避免把自由文本变成告警噪音）。
+`unlinked` 只数 **MEMORY.md** 的活条目里没有有效 `[[链接]]` 的（USER.md 是偏好清单，本来大多没有来源，
+不计；散文段落也不算，避免把自由文本变成告警噪音；退役行不计，`[[   ]]` 空目标不算来源）。
+它与 `undated` 取自 `memoryFormatDebt()`，和注入提示、记忆页是同一个数。
 同一份条目解析还数 `undated`（首行没有真校验过的 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）
 与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记），以及 `stale`（有日期且超过 `stale_days`，默认 90 天未复核）——
 都只报告；注入从 0.9 起省略退役条目（notice 说明省略数），文件本身不动。条目切分与日期解析统一走 `lib/memory-format`。

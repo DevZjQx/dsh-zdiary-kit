@@ -26,11 +26,12 @@ import path from 'node:path';
 import { allNotes, graphEdges, localDate, MAX_SCAN, notesWithFlag, parseErrorWarnings } from './zk.js';
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 import { parseFrontmatter } from './frontmatter.js';
-import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries } from './memory-format.js';
-import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION } from './agents-template.js';
+import { daysSinceDate, entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries } from './memory-format.js';
+import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION, templateVersionOf } from './agents-template.js';
 import { PERSONA_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION } from './persona-template.js';
 import { timelineCounts, timelineIssues } from './timeline.js';
 import { isDayString } from './dates.js';
+import { similarKeyOf, similarScore } from './similar.js';
 /** 每类最多回多少条（计划 §4 M3）；总数另给 */
 export const MAX_ITEMS = 50;
 /** 时间轴只扫最近多少天（计划 §2 D4）：一年日记会报几百条旧问题，把今天的问题挤出 50 条上限 */
@@ -56,33 +57,8 @@ export function duplicateTitles(notes, max = MAX_ITEMS) {
     dup.sort((a, b) => b.paths.length - a.paths.length || a.title.localeCompare(b.title));
     return { total: dup.length, items: dup.slice(0, max) };
 }
-/** 相似标题的判定：字符二元组 Jaccard 下限；短串被长串包含时另算（短串至少 6 字） */
-const SIMILAR_RATIO = 0.6;
-const SIMILAR_SHORT = 6;
 /** 同目录最多两两比较多少篇：超过就截断并置 truncated，别让 1 万篇变成 O(n²) */
 const SIMILAR_GROUP_MAX = 300;
-/** 比较用的标题：NFKC → 小写 → 去标点 / 空白。中文不改字，只抹掉排版差异 */
-function similarKey(title) {
-    return String(title ?? '').normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
-}
-function bigrams(key) {
-    const chars = [...key];
-    const out = new Set();
-    for (let i = 0; i < chars.length - 1; i++)
-        out.add(chars[i] + chars[i + 1]);
-    if (out.size === 0 && chars.length > 0)
-        out.add(chars[0]);
-    return out;
-}
-function jaccard(a, b) {
-    if (a.size === 0 || b.size === 0)
-        return 0;
-    let shared = 0;
-    for (const gram of a)
-        if (b.has(gram))
-            shared += 1;
-    return shared / (a.size + b.size - shared);
-}
 /**
  * 疑似重复标题（P2-10）：精确查重只能挡住手滑 —— 中文改两个字就绕过去了。
  *
@@ -98,15 +74,13 @@ export function similarTitles(notes, scanTruncated, max = MAX_ITEMS) {
     const groups = new Map();
     for (const note of notes) {
         const title = note.title || path.basename(note.path, path.extname(note.path));
-        const key = similarKey(title);
-        if (!key)
-            continue;
-        // 纯数字：日期 / 编号类标题，相似度只反映「数字挨着」，不反映重复结论
-        if (/^\d+$/.test(key))
+        // 空标题、纯数字（日期 / 编号）都在这里被挡掉，口径与 zk_new 的写路径提示同一份
+        const target = similarKeyOf(title);
+        if (!target)
             continue;
         const dir = path.posix.dirname(note.path);
         const list = groups.get(dir) ?? [];
-        list.push({ title, path: note.path, key, exact: normalizeTitle(title), grams: bigrams(key), size: [...key].length });
+        list.push({ title, path: note.path, exact: normalizeTitle(title), ...target });
         groups.set(dir, list);
     }
     let truncated = scanTruncated;
@@ -124,24 +98,14 @@ export function similarTitles(notes, scanTruncated, max = MAX_ITEMS) {
                 // 归一化后完全一样：那是 duplicateTitles 的活（这里报会让同一件事出现两遍）
                 if (a.exact === b.exact)
                     continue;
-                // 短标题的二元组太少（RAG / RAG 2 会算出 0.67），噪声大于信号
-                if (a.size < 4 || b.size < 4)
-                    continue;
-                let score = jaccard(a.grams, b.grams);
-                let hit = score >= SIMILAR_RATIO;
-                if (!hit) {
-                    const [short, long, shortSize] = a.size <= b.size ? [a.key, b.key, a.size] : [b.key, a.key, b.size];
-                    if (shortSize >= SIMILAR_SHORT && long.includes(short)) {
-                        hit = true;
-                        score = SIMILAR_RATIO;
-                    }
-                }
-                if (!hit)
+                // 相似判定只有 similar.ts 一份：短标题（< 4 码点）也由它挡掉
+                const score = similarScore(a, b);
+                if (score === null)
                     continue;
                 found.push({
                     titles: [a.title, b.title],
                     paths: [a.path, b.path],
-                    score: Math.round(score * 100) / 100,
+                    score,
                 });
             }
         }
@@ -211,10 +175,13 @@ export function memoryLinkIssues(cfg, notes, opts = {}) {
         }
         // 只对 MEMORY.md 数「没附来源 / 没日期 / 退役 / 陈旧」：USER.md 是偏好清单，大多数条目本来就没有来源
         if (name === 'MEMORY.md') {
+            // 日期 / 来源缺口取唯一口径 memoryFormatDebt（退役条目不算、`[[   ]]` 不算来源），
+            // 注入提示与记忆页用的也是它 —— 同一个「N 条没来源」不许在三处给出三个数。
+            const debt = memoryFormatDebt(body);
+            undated = debt.undated;
+            unlinked = debt.unlinked;
             for (const entry of splitMemoryEntries(body)) {
                 const first = entry.split('\n', 1)[0] ?? '';
-                if (!entry.includes('[['))
-                    unlinked += 1;
                 // 退役行：磁盘保留、注入从 0.9 起省略（D3），只核对它指向的新结论是否还活着
                 if (isRetiredEntry(entry)) {
                     retired += 1;
@@ -226,10 +193,8 @@ export function memoryLinkIssues(cfg, notes, opts = {}) {
                 }
                 // 日期要真校验：`2026-99-99` 既不算「有日期」，也不该在陈旧里报一次
                 const date = entryDate(entry);
-                if (!date) {
-                    undated += 1;
+                if (!date)
                     continue;
-                }
                 const age = daysSinceDate(date, now);
                 if (age !== null && age > staleDays) {
                     staleTotal += 1;
@@ -501,7 +466,6 @@ export function tagHygiene(notes, max = 20) {
         singletons: { total: singletons.length, items: singletons.slice(0, 10) },
     };
 }
-const TEMPLATE_MARK_RE = /<!--\s*zdiary-template:\s*v(\d+)\s*-->/;
 const PERSONA_MARK_RE = /<!--\s*zdiary-persona:\s*v(\d+)\s*-->/;
 const PLACEHOLDER_RE = /\{\{\s*[^}]+\s*\}\}/g;
 /**
@@ -594,8 +558,7 @@ export function templateStatus(cfg) {
     catch {
         return { present: false, version: 0, current: TEMPLATE_VERSION, stale: false };
     }
-    const hit = TEMPLATE_MARK_RE.exec(body);
-    const version = hit ? Number(hit[1]) : 0;
+    const version = templateVersionOf(body);
     const mismatchDetail = version === TEMPLATE_VERSION
         ? sentinelIssue(body, TEMPLATE_SENTINELS[TEMPLATE_VERSION])
         : null;

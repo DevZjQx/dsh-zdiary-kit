@@ -24,6 +24,18 @@ export const TEMPLATE_VERSION = 8
 /** 首行版本标记（实测 4 词）；不许带日期 —— 带日期的写法实测 6 词，白花 2 词 */
 export const TEMPLATE_MARK = `<!-- zdiary-template: v${TEMPLATE_VERSION} -->`
 
+/** 版本标记的正则（本文件内用；外部只通过 `templateVersionOf` 取数，免得又一个口径） */
+const TEMPLATE_MARK_RE = /<!--\s*zdiary-template:\s*v(\d+)\s*-->/
+
+/**
+ * AGENTS.md 里的模板版本；没有标记返回 0。
+ * 只读标记、不校验正文哨兵 —— 哨兵是 lint 的事，记忆页只要一眼可读的版本号。
+ */
+export function templateVersionOf(body: string): number {
+  const hit = TEMPLATE_MARK_RE.exec(String(body ?? ''))
+  return hit ? Number(hit[1]) : 0
+}
+
 /** 正文哨兵：标记写着当前版本时，正文必须满足的文本条件 */
 export interface TemplateSentinels {
   /** 当前版本新增 / 保留的文本；缺一条 = 标记与内容不符 */

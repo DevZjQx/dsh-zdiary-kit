@@ -22,6 +22,7 @@ import type { NoteDoc, NoteRecord } from '../../lib/zk.ts'
 import { isMetaPath } from '../../lib/meta.ts'
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
 import { RETIRED_ENTRY_RE } from '../../lib/memory-format.ts'
+import { TEMPLATE_VERSION } from '../../lib/agents-template.ts'
 import { parseFrontmatter } from '../../lib/frontmatter.ts'
 import { stripPersonaMarker } from '../../lib/persona-template.ts'
 import { esc, layout, renderMarkdown } from './html.ts'
@@ -312,6 +313,22 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
     (payload.truncatedWords > 0 ? ` · 已截断 ${payload.truncatedWords} 词` : '') +
     (payload.retiredWords > 0 ? ` · 退役省略 ${payload.retiredWords} 词` : '')
 
+  // 格式债（P1）：用量下面单列一行 —— 周审入口要能一眼看到日期 / 来源 / 模板版本三处缺口。
+  // 数字取载荷里的 formatDebt / templateVersion（与注入同一份，不重读文件、不跑 lint）；
+  // 不补日期、不猜来源；全干净就不写这一行。
+  const debt = payload.formatDebt
+  const templateVersion = payload.templateVersion
+  // 没有 AGENTS.md 时 templateVersion 也是 0：靠 files[].present 区分「没模板」与「旧模板」
+  const agentsPresent = payload.files.some((f) => f.name === 'AGENTS.md' && f.present)
+  const formatParts: string[] = []
+  if (debt.undated > 0 || debt.unlinked > 0) {
+    formatParts.push(`${debt.undated}/${debt.total} 条没日期`, `${debt.unlinked} 条没来源`)
+  }
+  if (agentsPresent && templateVersion !== TEMPLATE_VERSION) {
+    formatParts.push(`AGENTS 模板 ${templateVersion === 0 ? '无版本标记' : `v${templateVersion}`}（当前 v${TEMPLATE_VERSION}）`)
+  }
+  const formatLine = formatParts.length > 0 ? `格式：${formatParts.join(' · ')}` : ''
+
   // 人格段：超上限只告警
   const c = payload.persona
   const personaSummary = c.present
@@ -347,6 +364,7 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
     `<p class="crumb"><a href="${VIEW}">首页</a> / 记忆</p>`,
     '<h1>记忆</h1>',
     `<p class="meta">${esc(usage)}</p>`,
+    formatLine ? `<p class="meta">${esc(formatLine)}</p>` : '',
     '<p class="meta">根目录 meta 由人和 agent 直接编辑，不进检索；这里只读，不提供编辑。</p>',
     `<h2>人格</h2>`,
     `<p class="meta">${esc(personaSummary)}</p>`,

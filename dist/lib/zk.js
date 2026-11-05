@@ -13,6 +13,8 @@ import { BIN_DIR } from '../config/paths.js';
 import { ExecError, findOnPath, run } from './exec.js';
 import { parseFrontmatter, setFrontmatter } from './frontmatter.js';
 import { isMetaPath, META_NAMES } from './meta.js';
+import { similarCandidates } from './similar.js';
+import { normalizeTitle } from './wikilink.js';
 export class ZkError extends Error {
     hint;
     /**
@@ -41,10 +43,6 @@ export function localDate(iso) {
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     const dd = String(d.getDate()).padStart(2, '0');
     return `${d.getFullYear()}-${mm}-${dd}`;
-}
-/** 标题查重用的归一化：压空白 + 小写（与 lint 的重名口径一致） */
-function normalizeTitle(title) {
-    return String(title ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 /** 废弃原因最多这么长：frontmatter 是给人看的审计线，不是自由文本容器 */
 const MAX_SUPERSEDE_REASON = 200;
@@ -671,8 +669,9 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
     // 以前是各跑一次 `zk list`：同一个库扫两遍，还多起一个进程。
     const dupCheck = cfg.structure !== 'layered';
     let archived = [];
+    let similar = [];
+    let snapshot = null;
     if (hasNotebook(cfg)) {
-        let snapshot = null;
         try {
             snapshot = await scan(cfg, signal);
         }
@@ -740,6 +739,11 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
         throw new ZkError(`zk 说建好了但文件不存在：${abs}`);
     // 扩展名被用户改成 .markdown 等时，预判可能漏掉；这里再兜一次（只删本次新建的文件）
     const createdRel = relPathOf(cfg, abs);
+    // 相似标题（P2）：按**实际落下的目录**比同目录标题（layered 不给 dir 时由 type / group 决定）。
+    // 只提示、不阻断 —— 精确同名在上面已经报错；口径与 zk_lint 的 similarTitles 同一份实现。
+    if (snapshot) {
+        similar = similarCandidates(snapshot.filter((n) => !inArchive(cfg, n.path)), title, path.posix.dirname(createdRel));
+    }
     if (isMetaPath(createdRel)) {
         if (!before.has(path.basename(abs))) {
             try {
@@ -786,7 +790,7 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
             summaryWarning = `summary 没写进去：${err instanceof Error ? err.message : String(err)}（文件已建好，可以直接编辑那一节）`;
         }
     }
-    return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived, summaryApplied, summaryWarning };
+    return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived, similar, summaryApplied, summaryWarning };
 }
 /** 笔记本相对路径是否在归档目录下（supersede 会把文件搬进去，路径保持不变） */
 function inArchive(cfg, rel) {

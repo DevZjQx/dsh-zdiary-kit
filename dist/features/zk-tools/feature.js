@@ -526,6 +526,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 '归档里有同名旧结论不会拦，但会放进 archived（带 supersede-reason）：先读它，别把同一个错误结论重新提出来。' +
                 'type / authority 只有 layered 模板会写进 frontmatter。tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。' +
                 '中文笔记如果没有任何标签（入参 / 默认值 / 正文 hashtag 都没有），会在 tagWarning 里提示 —— 只提示，不阻断。' +
+                '同目录里有「改一两个字」的相似标题时会放进 similar（带分数）：只提示，不阻断，也不自动建链接。' +
                 '根目录 meta 文件（AGENTS / USER / MEMORY 等）与 raw/ 、inbox/ 不能写：前者会被当成人写的工作面，后两者会被排除出索引。',
             parameters: {
                 type: 'object',
@@ -562,6 +563,14 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             title: { type: 'string' },
                             reason: { type: 'string' },
                         }, ['path', 'title', 'reason']),
+                    },
+                    similar: {
+                        type: 'array',
+                        items: objSchema({
+                            title: { type: 'string' },
+                            path: { type: 'string' },
+                            score: { type: 'number' },
+                        }, ['title', 'path', 'score']),
                     },
                     warnings: { type: 'array', items: { type: 'string' } },
                 }, ['notebook', 'path', 'absPath', 'title', 'tags', 'links', 'summaryApplied', 'archived', 'warnings']),
@@ -606,6 +615,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 return {
                     notebook: cfg.notebook, path: created.path, absPath: created.absPath, title: created.title, tags, links,
                     summaryApplied: created.summaryApplied, archived, warnings,
+                    ...(created.similar.length ? { similar: created.similar } : {}),
                     ...(created.summaryWarning ? { summaryWarning: created.summaryWarning } : {}),
                     ...(tagWarning ? { tagWarning } : {}),
                 };
@@ -621,6 +631,10 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     lines.push('⚠️ ' + v.summaryWarning);
                 if (v.tagWarning)
                     lines.push('⚠️ ' + v.tagWarning);
+                if (v.similar?.length) {
+                    lines.push('⚠️ 疑似已有：' + v.similar.map((s) => `${s.title}（${s.path}，${s.score.toFixed(2)}）`).join('、') +
+                        ' —— 先 read 确认是不是同一条；要合并就 zk_supersede，不要直接再写一遍');
+                }
                 if (v.archived.length) {
                     lines.push('⚠️ 归档里有同名旧结论：' + v.archived.map((h) => h.path + (h.reason ? `（废弃原因：${h.reason}）` : '（没有记录废弃原因）')).join('；') +
                         ' —— 先读它，确认不是同一个结论再复用标题');
@@ -924,6 +938,13 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     tocWords: { type: 'number' },
                     totalWords: { type: 'number' },
                     overheadWords: { type: 'number' },
+                    // 格式债 / 模板版本：只读元数据，比 memoryUsage 的投影早一步就能拿到
+                    formatDebt: objSchema({
+                        total: { type: 'number' },
+                        undated: { type: 'number' },
+                        unlinked: { type: 'number' },
+                    }, ['total', 'undated', 'unlinked']),
+                    templateVersion: { type: 'number' },
                     persona: objSchema({
                         present: { type: 'boolean' },
                         contentWords: { type: 'number' },
@@ -963,7 +984,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             retiredWords: { type: 'number' },
                         }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
                     },
-                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'persona', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
+                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'formatDebt', 'templateVersion', 'persona', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
             },
             async run(_args, env) {
                 // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷

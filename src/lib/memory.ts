@@ -26,7 +26,9 @@ import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import { DREAM_INTERVAL_DAYS, daysSinceDream, lastDreamDate } from './dream.ts'
 import { fileStamp } from './file-stamp.ts'
-import { entryDate, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
+import { entryDate, memoryFormatDebt, stripRetiredEntries } from './memory-format.ts'
+import type { MemoryFormatDebt } from './memory-format.ts'
+import { templateVersionOf } from './agents-template.ts'
 import { PERSONA_META_FILES, MEMORY_META_FILES } from './meta.ts'
 import type { MetaName } from './meta.ts'
 
@@ -81,6 +83,10 @@ export interface MemoryPayload {
   retiredWords: number
   /** 截断目录占用的词数（0 = 没有目录） */
   tocWords: number
+  /** 记忆的格式债（与注入提示、`zk_lint` 同一个 `memoryFormatDebt`）：退役条目不算 */
+  formatDebt: MemoryFormatDebt
+  /** AGENTS.md 的模板版本；0 = 没有标记，或根本没有 AGENTS.md（记忆页用 `files[].present` 区分）。只读首行标记，不跑 lint */
+  templateVersion: number
   files: MemoryFileInfo[]
   persona: PersonaSegment
   /** 模型真正收到的总量（countWords(text)，含框 / 做梦提醒 / notice / 人格告警） */
@@ -118,7 +124,7 @@ export function countWords(text: string): number {
 interface DroppedSection {
   name: MetaName
   title: string
-  /** 原文件里的位置：按日期丢条目后要按原顺序重建目录 */
+  /** 原文件里的字符偏移（`pristine.indexOf(...)`）：按日期丢条目后要按原顺序重建目录 */
   order?: number
 }
 
@@ -152,6 +158,41 @@ function finishSplit(head: string[], sections: string[][], mode: SplitMode): Spl
   }
 }
 
+/** 顶层列表项切分：缩进续行归上一条，围栏里的 `- ` 不算（与 1b / 单节降级共用） */
+function splitItems(lines: string[]): { head: string[]; items: string[][] } {
+  const head: string[] = []
+  const items: string[][] = []
+  let current: string[] | null = null
+  let fenced = false
+  for (const line of lines) {
+    if (FENCED.test(line)) fenced = !fenced
+    if (!fenced && LIST_ITEM.test(line)) {
+      if (current) items.push(current)
+      current = [line]
+    } else if (current) {
+      current.push(line)
+    } else {
+      head.push(line)
+    }
+  }
+  if (current) items.push(current)
+  return { head, items }
+}
+
+/**
+ * 单节再切一层（P0-2）：小节标题并进 head（永不丢），正文按顶层列表项切；
+ * 不足两条就保持原样 —— 只有一条时没有可丢的粒度，交给「预算不足」照旧点名。
+ * 初次切分与「丢到只剩一节」都走这一个函数，保证两条路径同形。
+ */
+function degradeSingleSection(split: Split): Split | null {
+  if (split.mode !== 'sections' || split.sections.length !== 1) return null
+  const [title, ...rest] = split.sections[0].split('\n')
+  const inner = splitItems(rest)
+  if (inner.items.length < 2) return null
+  const head = [split.head, title, inner.head.join('\n').trim()].filter(Boolean).join('\n\n')
+  return finishSplit([head], inner.items, 'items')
+}
+
 /**
  * 三级降级切分（P0-1）：`##` 小节 → 顶层列表项 → 空行段落。
  * 只按 `##` 切时，「`# 记忆` + 要点列表」这种形状切不出任何小节，丢弃循环一次都不进，
@@ -173,27 +214,17 @@ function splitSections(body: string): Split {
     else if (sections.length > 0) sections[sections.length - 1].push(line)
     else head.push(line)
   }
-  if (sections.length > 0) return finishSplit(head, sections, 'sections')
+  if (sections.length > 0) {
+    const split = finishSplit(head, sections, 'sections')
+    // 只有一节时再降一层（P0-2）：`## 结论` + 一串 `- 结论` 是最常见的形状，
+    // 不降级的话丢弃循环一次都不进，整篇绕过预算。
+    return split.sections.length === 1 ? degradeSingleSection(split) ?? split : split
+  }
 
   // 1b) 顶层列表项：`# 标题` + 若干 `- 结论` 是 MEMORY.md 最常见的形状。
   // 至少两条才走这一级：只有一条时它更像散文里的一个符号，交给段落切分更不容易整篇卡死。
-  const itemHead: string[] = []
-  const items: string[][] = []
-  let current: string[] | null = null
-  fenced = false
-  for (const line of lines) {
-    if (FENCED.test(line)) fenced = !fenced
-    if (!fenced && LIST_ITEM.test(line)) {
-      if (current) items.push(current)
-      current = [line]
-    } else if (current) {
-      current.push(line)
-    } else {
-      itemHead.push(line)
-    }
-  }
-  if (current) items.push(current)
-  if (items.length >= 2) return finishSplit(itemHead, items, 'items')
+  const flat = splitItems(lines)
+  if (flat.items.length >= 2) return finishSplit(flat.head, flat.items, 'items')
 
   // 1c) 空行段落：整篇散文也能按段丢。首段作为 head（通常是标题 / 开场），永远保留。
   const paragraphs: string[][] = []
@@ -218,7 +249,9 @@ function joinSections(split: Split): string {
   return [split.head, ...split.sections].filter(Boolean).join('\n\n')
 }
 
-/** 只留首段（preamble + 第一个切出来的段） */
+/** 只留首段（preamble + 第一个切出来的段）。
+ *  单节形状下 splitSections 已经降级成条目，「首段」就是标题 + 第一条 ——
+ *  否则这个兜底对单节文件仍等于整篇，等于没裁。 */
 function firstSection(body: string): string {
   const split = splitSections(body)
   return joinSections({ head: split.head, sections: split.sections.slice(0, 1), mode: split.mode })
@@ -403,8 +436,21 @@ function computePayload(cfg: Config): MemoryPayload {
   // 截断会改写这份计数；contentWords 保留原值，给 truncatedWords 与 files 用
   const words = new Map(contentWords)
   const total = (): number => [...words.values()].reduce((a, b) => a + b, 0)
-  // 截断前的 MEMORY 正文：报告「有多少条没日期」要在丢之前数
+  // 截断前的 MEMORY 正文（退役条目已剔除）：格式债要在丢之前数
   const memorySource = original.get('MEMORY.md') ?? ''
+  // 格式债（P1）：日期 / 来源缺口的条数。只报告、不补 —— 但得摆到注入里，
+  // 否则「按日期淘汰」对没日期的老库永远空转，而 lint 一周才跑一次。
+  const debt = memoryFormatDebt(memorySource)
+  // 模板版本与记忆页共用这一份（只读首行 marker，不跑 lint）：0 = 没有标记或没有 AGENTS.md
+  const agentsBody = original.get('AGENTS.md') ?? ''
+  const templateVersion = agentsBody.trim() ? templateVersionOf(agentsBody) : 0
+  /** 格式债的一句；没有缺口返回空串。skipUndated 用于避开「只能按位置丢」已经报过的同一个数 */
+  const debtNote = (skipUndated: boolean): string => {
+    const parts: string[] = []
+    if (!skipUndated && debt.undated > 0) parts.push(`${debt.undated} 条没日期`)
+    if (debt.unlinked > 0) parts.push(`${debt.unlinked} 条没来源`)
+    return parts.length > 0 ? `MEMORY ${parts.join(' · ')}` : ''
+  }
 
   // ── 机械截断：MEMORY 最旧条目 → USER 尾段 → 各留首段 ──────────────
   // 丢掉的段落留一份目录（段落标题），让 agent 能按当前任务用 read 取回。
@@ -414,10 +460,22 @@ function computePayload(cfg: Config): MemoryPayload {
   let fellBack = false
   for (const name of ['MEMORY.md', 'USER.md'] as const) {
     if (total() + countWords(tocText(dropped, tocCap)) <= budget) break
-    const split = splitSections(original.get(name) ?? '')
+    // 丢弃前的原文：目录要用「在原文件里排第几」排序，而丢弃顺序会随最旧日期乱跳；
+    // 更要命的是「多节 → 降成条目」会把两套坐标系（小节序号 / 条目序号）混进同一个 order，
+    // 目录顺序于是乱掉。直接用它在原文里的字符偏移，小节和条目共用一套坐标。
+    const pristine = original.get(name) ?? ''
+    let split = splitSections(pristine)
     const mine: DroppedSection[] = []
     const over = (): boolean => total() + countWords(tocText([...dropped, ...mine], tocCap)) > budget
-    while (over() && split.sections.length > 1) {
+    // 每轮重判形态：多节先丢整节；只剩一节且还能降级时冻结标题、按条目继续丢。
+    // 否则「多节丢到只剩一节」也会停在那里，剩下那一节自己超预算时同样丢不动。
+    while (over()) {
+      if (split.sections.length <= 1) {
+        const deeper = degradeSingleSection(split)
+        if (!deeper) break
+        split = deeper
+        continue
+      }
       // MEMORY 按「最旧日期」丢；解析不出日期（或这是 USER）就退回尾部，行为与 0.8.3 一致
       let index = split.sections.length - 1
       if (name === 'MEMORY.md') {
@@ -426,7 +484,9 @@ function computePayload(cfg: Config): MemoryPayload {
         else index = oldest
       }
       const section = split.sections.splice(index, 1)[0] as string
-      mine.push({ name, title: sectionTitle(section, split.mode), order: index })
+      // 相同文本（两条一模一样的条目）会拿到同一个偏移：并列时保持丢弃顺序，足够好
+      const at = pristine.indexOf(section)
+      mine.push({ name, title: sectionTitle(section, split.mode), order: at < 0 ? Number.MAX_SAFE_INTEGER : at })
       const body = joinSections(split)
       original.set(name, body)
       words.set(name, countWords(body))
@@ -462,12 +522,18 @@ function computePayload(cfg: Config): MemoryPayload {
   let memoryInner = ''
   if (bodies.length > 0) {
     const notes: string[] = []
-    if (truncatedWords > 0) notes.push(`已截断 ${truncatedWords} 词`)
+    // 截断时也带上格式债（P1）：先量词数，放不下就整条不加 —— 提示自己也要吃饭。
+    // 已经要说「只能按位置丢」时跳过没日期那半句，避免同一个数报两遍。
+    if (truncatedWords > 0) {
+      const suffix = debtNote(fellBack && debt.undated > 0)
+      const append = suffix && finalWords + countWords(` · ${suffix}`) <= budget ? ` · ${suffix}` : ''
+      notes.push(`已截断 ${truncatedWords} 词${append}`)
+    }
     if (omittedNote) notes.push(omittedNote)
     // 一条日期都没有只能按位置丢：说出来，别让人以为是按日期挑的（D2.5）
+    // 数字取内存里那份格式债，不在这里另数一遍（退役条目算不算会两边不一致）
     if (fellBack && truncatedWords > 0) {
-      const undated = splitMemoryEntries(memorySource).filter((entry) => !entryDate(entry)).length
-      if (undated > 0) notes.push(`MEMORY 有 ${undated} 条没日期，只能按位置丢`)
+      if (debt.undated > 0) notes.push(`MEMORY 有 ${debt.undated} 条没日期，只能按位置丢`)
     }
     // 目录放不下时至少留一句指路；否则被丢掉的段落对模型完全不可见
     if (!toc && dropped.length > 0) {
@@ -501,7 +567,16 @@ function computePayload(cfg: Config): MemoryPayload {
       const cost = countWords(`记忆已用 ${finalWords}/${budget} 词（100%）`)
       if (finalWords + cost <= budget) {
         finalWords += cost
-        notes.push(`记忆已用 ${finalWords}/${budget} 词（${Math.round((finalWords / budget) * 100)}%）`)
+        // 格式债跟在用量后面（P1）：整条量过再说，放不下就一句都不加，
+        // 不能出现「MEMORY 9 条没日期」却丢了「3 条没来源」这种半句。
+        const suffix = debtNote(false)
+        const debtCost = suffix ? countWords(` · ${suffix}`) : 0
+        if (suffix && finalWords + debtCost <= budget) {
+          finalWords += debtCost
+          notes.push(`记忆已用 ${finalWords}/${budget} 词（${Math.round((finalWords / budget) * 100)}%） · ${suffix}`)
+        } else {
+          notes.push(`记忆已用 ${finalWords}/${budget} 词（${Math.round((finalWords / budget) * 100)}%）`)
+        }
       }
     }
     const notice = notes.length > 0 ? `\n\n（注入预算 ${budget} 词：${notes.join('；')}）` : ''
@@ -547,6 +622,8 @@ function computePayload(cfg: Config): MemoryPayload {
     truncatedWords,
     retiredWords,
     tocWords: countWords(toc),
+    formatDebt: debt,
+    templateVersion,
     files: files.map((f) => ({
       name: f.name,
       present: f.body.length > 0,

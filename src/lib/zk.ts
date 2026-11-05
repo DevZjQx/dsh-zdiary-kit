@@ -14,6 +14,9 @@ import type { Config } from '../config/store.ts'
 import { ExecError, findOnPath, run } from './exec.ts'
 import { parseFrontmatter, setFrontmatter } from './frontmatter.ts'
 import { isMetaPath, META_NAMES } from './meta.ts'
+import { similarCandidates } from './similar.ts'
+import type { SimilarCandidate } from './similar.ts'
+import { normalizeTitle } from './wikilink.ts'
 
 export class ZkError extends Error {
   readonly hint: string | undefined
@@ -90,11 +93,6 @@ export function localDate(iso: string): string {
   const mm = String(d.getMonth() + 1).padStart(2, '0')
   const dd = String(d.getDate()).padStart(2, '0')
   return `${d.getFullYear()}-${mm}-${dd}`
-}
-
-/** 标题查重用的归一化：压空白 + 小写（与 lint 的重名口径一致） */
-function normalizeTitle(title: string): string {
-  return String(title ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
 }
 
 /** 废弃原因最多这么长：frontmatter 是给人看的审计线，不是自由文本容器 */
@@ -779,6 +777,8 @@ export interface NewNoteResult {
   title: string
   /** 归档里的同名旧结论（建之前那次全库扫描顺带算出来的，不再额外跑一次 zk） */
   archived: ArchivedTitleHit[]
+  /** 同目录下标题相似的已有笔记（P2）：只提示，不阻断；归档不参与，归一化后全等的也不重复报 */
+  similar: SimilarCandidate[]
   /** summary 是否真的写进了文件（false = 没给、正文里已有 Summary，或收尾失败；后两种看 summaryWarning） */
   summaryApplied: boolean
   /** 给了 summary 却没写进去的原因；笔记本身已经建好，不影响调用方继续用 */
@@ -837,8 +837,9 @@ export async function createNote(
   // 以前是各跑一次 `zk list`：同一个库扫两遍，还多起一个进程。
   const dupCheck = cfg.structure !== 'layered'
   let archived: ArchivedTitleHit[] = []
+  let similar: SimilarCandidate[] = []
+  let snapshot: NoteRecord[] | null = null
   if (hasNotebook(cfg)) {
-    let snapshot: NoteRecord[] | null = null
     try {
       snapshot = await scan(cfg, signal)
     } catch (err) {
@@ -907,6 +908,15 @@ export async function createNote(
   if (!fs.existsSync(abs)) throw new ZkError(`zk 说建好了但文件不存在：${abs}`)
   // 扩展名被用户改成 .markdown 等时，预判可能漏掉；这里再兜一次（只删本次新建的文件）
   const createdRel = relPathOf(cfg, abs)
+  // 相似标题（P2）：按**实际落下的目录**比同目录标题（layered 不给 dir 时由 type / group 决定）。
+  // 只提示、不阻断 —— 精确同名在上面已经报错；口径与 zk_lint 的 similarTitles 同一份实现。
+  if (snapshot) {
+    similar = similarCandidates(
+      snapshot.filter((n) => !inArchive(cfg, n.path)),
+      title,
+      path.posix.dirname(createdRel),
+    )
+  }
   if (isMetaPath(createdRel)) {
     if (!before.has(path.basename(abs))) {
       try { fs.rmSync(abs, { force: true }) } catch { /* 删不掉也拦下 */ }
@@ -956,7 +966,7 @@ export async function createNote(
       summaryWarning = `summary 没写进去：${err instanceof Error ? err.message : String(err)}（文件已建好，可以直接编辑那一节）`
     }
   }
-  return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived, summaryApplied, summaryWarning }
+  return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived, similar, summaryApplied, summaryWarning }
 }
 
 export interface ArchivedTitleHit {
