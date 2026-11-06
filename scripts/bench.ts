@@ -126,6 +126,20 @@ interface Ctx {
 
 type CaseOutcome = { truncated?: boolean; count?: number } | void
 
+/** 旧对照用例直接拿裸 zk list --format json 的 stdout：count 按 JSON 数组篇数算，字符数交给 bytes 列 */
+function countListJson(out: string): number {
+  const text = out.trim()
+  const start = text.indexOf('[')
+  const end = text.lastIndexOf(']')
+  if (start < 0 || end <= start) return 0
+  try {
+    const parsed: unknown = JSON.parse(text.slice(start, end + 1))
+    return Array.isArray(parsed) ? parsed.length : 0
+  } catch {
+    return 0
+  }
+}
+
 const CASES: Case[] = [
   {
     id: 'search.cjk',
@@ -184,7 +198,8 @@ const CASES: Case[] = [
     timeoutMs: 60_000,
     run: async ({ cfg }) => {
       const out = await zk(cfg, ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', '10000'])
-      return { count: out.length, truncated: out.length >= 10_000 }
+      const count = countListJson(out)
+      return { count, truncated: count >= 10_000 }
     },
   },
   {
@@ -194,7 +209,8 @@ const CASES: Case[] = [
     timeoutMs: 60_000,
     run: async ({ cfg }) => {
       const out = await zk(cfg, ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', '2000'])
-      return { count: out.length, truncated: out.length >= 2000 }
+      const count = countListJson(out)
+      return { count, truncated: count >= 2000 }
     },
   },
   {
@@ -204,7 +220,8 @@ const CASES: Case[] = [
     timeoutMs: 60_000,
     run: async ({ cfg }) => {
       const out = await zk(cfg, ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', '200'])
-      return { count: out.length, truncated: out.length >= 200 }
+      const count = countListJson(out)
+      return { count, truncated: count >= 200 }
     },
   },
   {

@@ -423,7 +423,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   `bun run fixture`（生成 1k / 10k 规模夹具，比例与边界样本见 `docs/plan.md` §0.5；
   `--links-per-note` 决定链接密度 —— 建索引成本主要花在链接上，产出目录自带 `.zk/config.toml`，进去 `zk index` 即可）·
   `bun run bench`（成本表：逐用例真起 zk，记子进程数 / 回传字节 / 峰值 RSS / p50 / p95；默认 1k、3 轮）
-- **耗时差两个数量级**：`bun run test` 约 50 s（208 个用例，真起 zk）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
+- **耗时差两个数量级**：`bun run test` 约 50 s（211 个用例，真起 zk）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
   10k 上光一条 `graph.full` 就是 30 s、冷建索引几分钟。所以 `bench` **不在** `check` / CI 里，跟测试完全分开，不会因为你跑测试而变慢。
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。

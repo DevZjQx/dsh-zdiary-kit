@@ -4,7 +4,7 @@
  * 设计边界（和设置页的写 API 完全分开）：
  *   · 只挂 4 条 GET 路由，全部在 /dsh-zdiary-kit 下，和 DSH 同端口，不自己 listen；
  *   · 方法门：GET / HEAD 以外一律 405，默认拒绝 —— 不是「没写 POST 就算只读」；
- *   · 副作用门：只调 hasNotebook / allNotes / searchNotes / readNote / backlinksOf，
+ *   · 副作用门：只调 hasNotebook / scanNotes / searchNotes / readNote / backlinksOf，
  *     **不调 ensureNotebook**（那会建库）、不跑 init / index / install；
  *   · 面门：不读 /api/settings 的 snapshot，不返回 zkPath / 配置文件路径 / absPath；
  *   · 地址门：只认回环（Host + 对端地址），DSH 绑到 0.0.0.0 时视图也不会跟着上网。
