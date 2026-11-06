@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 3.5.0
+# dsh-zdiary-kit 3.6.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -391,7 +391,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 设置页 404 | `cordis.patch.yml` 里的 `name:` 与安装后的包名不一致 |
 | 设置页 503 | 宿主没有 `connection` 服务，信任栅栏按 fail-closed 拒绝（工具不受影响） |
 | 安装 zk 报「解包失败」 | 系统没有 `tar`；手动解包后把 `zk` 放进 `~/.dsh/zdiary/bin` |
-| 搜索结果不全 | 索引落后：点「重建索引」（`zk index`），或确认文件没被 `.zk/config.toml` 的 `exclude` 排除 |
+| 搜索结果不全 | 经过 `zk_append` / `zk_link` / `zk_new` 带 `summary` 的写入，插件会在下一次检索前自动补一次增量索引（写后可读，见下）；仍然不全就点「重建索引」（`zk index`），或确认文件没被 `.zk/config.toml` 的 `exclude` 排除。人在插件之外直接改文件不会被感知：`zk-kit doctor` / `zk_lint` 会按目录 mtime 给「索引可能落后」提示 |
 | 工具报「索引还没建好 / 索引不完整」 | 大库第一次建索引，或上次建到一半被中断：插件在后台跑 `zk index`，最多先等 15 秒就返回，过一会儿重试即可；**不要同时再手动跑 `zk index`**。反复失败就点「重建索引」看完整报错 |
 | 自检报「✗ 长期记忆：N/预算 词」 | AGENTS + USER + MEMORY 写太长：先压缩，或在设置页调高「注入预算」（超预算时注入先丢 MEMORY 里日期最旧的条目，一条日期都没有才退回从末尾往前丢） |
 | 体检报「记忆链接：N 条失效」 | `MEMORY.md` / `USER.md` 里的 `[[来源]]` 指向的笔记已归档或删除：改成 `archive/` 下的新路径，或改指活笔记；显式写 `archive/` 的链接不算失效 |
@@ -423,7 +423,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   `bun run fixture`（生成 1k / 10k 规模夹具，比例与边界样本见 `docs/plan.md` §0.5；
   `--links-per-note` 决定链接密度 —— 建索引成本主要花在链接上，产出目录自带 `.zk/config.toml`，进去 `zk index` 即可）·
   `bun run bench`（成本表：逐用例真起 zk，记子进程数 / 回传字节 / 峰值 RSS / p50 / p95；默认 1k、3 轮）
-- **耗时差两个数量级**：`bun run test` 约 50 s（211 个用例，真起 zk）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
+- **耗时差两个数量级**：`bun run test` 约 50 s（220 个用例，真起 zk）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
   10k 上光一条 `graph.full` 就是 30 s、冷建索引几分钟。所以 `bench` **不在** `check` / CI 里，跟测试完全分开，不会因为你跑测试而变慢。
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。

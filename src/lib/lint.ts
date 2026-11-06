@@ -27,7 +27,7 @@ import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import type { Completeness, GraphEdge, NoteRecord } from './zk.ts'
 import {
-  backlinksOf, GRAPH_BUDGET_NOTES, graphEdges, localDate, MAX_SCAN, scanNotes, scanNotesWithFlag,
+  backlinksOf, GRAPH_BUDGET_NOTES, graphEdges, indexLagHint, localDate, MAX_SCAN, scanNotes, scanNotesWithFlag,
   outlinksOf, parseErrorWarnings,
 } from './zk.ts'
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
@@ -341,6 +341,11 @@ export interface LintResult {
    * 日记不计入：它按天自动增长，一年就能把任何库顶到 150 篇，可知识量并没有涨。
    */
   indexHint: boolean
+  /**
+   * 「索引可能落后」的提示（R6）：工具写入会在下一次检索前自动补索引，
+   * 这里只报「补不上 / 外部编辑」两种残留情况；空串 = 没有提示。只读，不自动重建。
+   */
+  indexLag: string
 }
 
 /** 标题归一化与链接解析在 `lib/wikilink.ts`（dream 也用同一套）；这里保留导出，免得调用方跟着搬 */
@@ -1251,5 +1256,7 @@ export async function lintNotebook(
     timeline: timelineStatus(cfg, now),
     // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
     indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
+    // 放在最后算：前面的读命令已经把 pending 的 dirty 补掉了，剩下的是「补不上 / 外部编辑」
+    indexLag: indexLagHint(cfg) ?? '',
   }
 }

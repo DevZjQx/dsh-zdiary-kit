@@ -4845,3 +4845,212 @@ describe('M5.1：静默天花板三态化（§9.3 第 3 步）', () => {
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// R6 写后可读（plan §8.1 / §8.4 / §9.5 / §10.3 第 2 条 / §10.4 第 3 项）
+// ─────────────────────────────────────────────────────────────────────────────
+describe('R6: 写后可读', () => {
+  const fresh = async (name: string) => {
+    const c = store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure: 'flat' })
+    await notebookLib.ensureNotebook(c)
+    return c
+  }
+
+  /**
+   * 假 zk：预置一份「完整」的 db（indexStateOf=ready），只记 argv、按需慢建库 / 建库失败。
+   * 与 M5.0a 的 stub 不同：那里故意不给 db 来测冷建；R6 的 flush 只在完整 db 上跑。
+   */
+  const stubZk = (dir: string, opts: { sleepSec?: number; fail?: string } = {}) => {
+    const nb = path.join(dir, 'nb')
+    fs.mkdirSync(path.join(nb, '.zk'), { recursive: true })
+    fs.writeFileSync(path.join(nb, '.zk', 'config.toml'), '')
+    fs.writeFileSync(path.join(nb, '.zk', 'notebook.db'), '')
+    fs.mkdirSync(path.join(nb, 'notes'), { recursive: true })
+    fs.writeFileSync(path.join(nb, 'notes', 'seed.md'), '# seed\n')
+    const log = path.join(dir, 'stub.log')
+    const bin = path.join(dir, 'zk-stub.sh')
+    const lines = [
+      '#!/bin/sh',
+      'nb=""',
+      'prev=""',
+      'for a in "$@"; do',
+      '  if [ "$a" = "--version" ]; then echo "zk 0.15.7"; exit 0; fi',
+      '  if [ "$prev" = "--notebook-dir" ]; then nb="$a"; fi',
+      '  prev="$a"',
+      'done',
+      'echo "$*" >> ' + JSON.stringify(log),
+      'case "$*" in',
+      '  *" index "*)',
+      opts.sleepSec ? '    sleep ' + opts.sleepSec : '    :',
+      ...(opts.fail
+        ? ['    echo ' + JSON.stringify(opts.fail) + ' >&2', '    exit 1']
+        : ['    if [ -n "$nb" ]; then : > "$nb/.zk/notebook.db"; fi', '    exit 0']),
+      '    ;;',
+      'esac',
+      'exit 0',
+      '',
+    ]
+    fs.writeFileSync(bin, lines.join('\n'))
+    fs.chmodSync(bin, 0o755)
+    const c = store.normalizeConfig({ notebook: nb, zkPath: bin, structure: 'flat' })
+    return { c, log, nb }
+  }
+
+  const calls = (log: string): string[] => {
+    try { return fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) } catch { return [] }
+  }
+  const indexCalls = (log: string): number => calls(log).filter((line) => line.includes(' index ')).length
+
+  const withPolicy = async (patch: { waitMs?: number; autoBuildMaxNotes?: number }, fn: () => Promise<void>): Promise<void> => {
+    const before = { waitMs: zk.indexPolicy.waitMs, autoBuildMaxNotes: zk.indexPolicy.autoBuildMaxNotes }
+    Object.assign(zk.indexPolicy, patch)
+    try { await fn() } finally { Object.assign(zk.indexPolicy, before) }
+  }
+
+  it('append → search：刚追加的正文立刻能搜到', async () => {
+    const c = await fresh('nb-r6-append')
+    try {
+      const note = await zk.createNote(c, { title: 'R6 追加源', content: '初始正文' })
+      // 先读一次把 createNote 之前的脏状态清干净，确保下面这条断言只针对 append
+      await zk.searchNotes(c, { query: '不存在的词', limit: 5 })
+      zk.appendToNote(c, note.path, '写后可读独有词甲乙丙')
+      const hits = await zk.searchNotes(c, { query: '写后可读独有词甲乙丙', limit: 10 })
+      expect(hits.map((n) => n.path)).toContain(note.path)
+      expect(zk.indexDirtyState(c).generation).toBe(zk.indexDirtyState(c).indexedGeneration)
+    } finally {
+      fs.rmSync(c.notebook, { recursive: true, force: true })
+    }
+  })
+
+  it('link → lint：新入链不再把目标报成孤儿', async () => {
+    const c = await fresh('nb-r6-link')
+    try {
+      const a = await zk.createNote(c, { title: 'R6 链接来源', content: '来源正文' })
+      const b = await zk.createNote(c, { title: 'R6 链接目标', content: '目标正文' })
+      const before = await lintLib.lintNotebook(c)
+      expect(before.orphans.items.some((i) => i.path === b.path)).toBe(true)
+      await zk.linkNotes(c, a.path, b.path)
+      const after = await lintLib.lintNotebook(c)
+      expect(after.orphans.items.some((i) => i.path === b.path)).toBe(false)
+    } finally {
+      fs.rmSync(c.notebook, { recursive: true, force: true })
+    }
+  })
+
+  it('new + summary → search：回填的摘要立刻能搜到', async () => {
+    const c = await fresh('nb-r6-summary')
+    try {
+      const made = await zk.createNote(c, { title: 'R6 摘要笔记', content: '正文', summary: '摘要独有词丁戊己' })
+      const hits = await zk.searchNotes(c, { query: '摘要独有词丁戊己', limit: 10 })
+      expect(hits.map((n) => n.path)).toContain(made.path)
+    } finally {
+      fs.rmSync(c.notebook, { recursive: true, force: true })
+    }
+  })
+
+  it('连续两次 append 中间不读：下一次检索只起一次 zk index', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-r6-twice-'))
+    try {
+      const { c, log } = stubZk(dir)
+      zk.appendToNote(c, 'notes/seed.md', '第一次追加')
+      zk.appendToNote(c, 'notes/seed.md', '第二次追加')
+      expect(zk.indexDirtyState(c).generation).toBe(2)
+      expect(indexCalls(log)).toBe(0)
+      await zk.allNotes(c)
+      expect(indexCalls(log)).toBe(1)
+      const s = zk.indexDirtyState(c)
+      expect(s.generation).toBe(s.indexedGeneration)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('索引失败：append 照常落盘，dirty 保留并在下一次读重试', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-r6-fail-'))
+    try {
+      const { c, log, nb } = stubZk(dir, { fail: 'boom: index failed' })
+      zk.appendToNote(c, 'notes/seed.md', '失败也要落盘')
+      expect(fs.readFileSync(path.join(nb, 'notes', 'seed.md'), 'utf8')).toContain('失败也要落盘')
+      await zk.allNotes(c) // flush 内部吞掉失败，读不报错
+      expect(indexCalls(log)).toBe(1)
+      const first = zk.indexDirtyState(c)
+      expect(first.generation).toBeGreaterThan(first.indexedGeneration)
+      await zk.allNotes(c)
+      expect(indexCalls(log)).toBe(2) // 标记还在 → 下一次继续重试
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('半库（interrupted）优先给 ensureIndexReady：flush 不建索引、也不读半库', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-r6-half-'))
+    try {
+      const { c, log, nb } = stubZk(dir, { sleepSec: 0.6 })
+      zk.appendToNote(c, 'notes/seed.md', '半库时的写入')
+      fs.writeFileSync(path.join(nb, '.zk', 'notebook.db-journal'), 'x')
+      await withPolicy({ autoBuildMaxNotes: 0, waitMs: 100 }, async () => {
+        const err = await zk.allNotes(c).catch((e: unknown) => e)
+        expect((err as { code?: string }).code).toBe('index-building')
+      })
+      expect(indexCalls(log)).toBe(1) // 只有 ensureIndexReady 的后台建库，flush 一次都没起
+      expect(calls(log).some((line) => line.includes(' list '))).toBe(false)
+      const s = zk.indexDirtyState(c)
+      expect(s.generation).toBeGreaterThan(s.indexedGeneration) // dirty 留到 db 完整后再补
+      await new Promise((r) => setTimeout(r, 900)) // 让后台建库收尾，别把进程留给下一个用例
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('别的进程持锁时：不再起第二个 zk index，stale 回退且 dirty 保留', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-r6-lock-'))
+    try {
+      const { c, log, nb } = stubZk(dir)
+      zk.appendToNote(c, 'notes/seed.md', '并发时的写入')
+      // 伪造一个「活着」的持锁进程（pid 就是当前进程，不会被判 stale）
+      fs.writeFileSync(
+        path.join(nb, '.zk', 'dsh-index.lock'),
+        JSON.stringify({ token: 'other-process', pid: process.pid, at: Date.now() }),
+      )
+      await withPolicy({ waitMs: 120 }, async () => {
+        const warning = await zk.flushIndexIfDirty(c)
+        expect(warning).toContain('完整但可能过期')
+      })
+      expect(indexCalls(log)).toBe(0)
+      const s = zk.indexDirtyState(c)
+      expect(s.generation).toBeGreaterThan(s.indexedGeneration)
+      fs.rmSync(path.join(nb, '.zk', 'dsh-index.lock'), { force: true })
+      await zk.allNotes(c) // 锁放开后正常补上
+      expect(indexCalls(log)).toBe(1)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('外部在插件之外新增文件：doctor 用的 indexLagHint 报「索引可能落后」', async () => {
+    const c = await fresh('nb-r6-doctor')
+    try {
+      await zk.indexNotebook(c)
+      expect(zk.indexLagHint(c)).toBeNull()
+      fs.writeFileSync(path.join(c.notebook, c.notesDir, 'external.md'), '# 外部编辑\n')
+      // 把 db mtime 拨早，模拟「索引建好之后才有人改文件」
+      const db = path.join(c.notebook, '.zk', 'notebook.db')
+      const old = new Date(Date.now() - 10_000)
+      fs.utimesSync(db, old, old)
+      expect(zk.indexLagHint(c)).toContain('外部编辑')
+    } finally {
+      fs.rmSync(c.notebook, { recursive: true, force: true })
+    }
+  })
+
+  it('indexLagHint：还有写入没进索引时点名次数（补不上 / 冷却中的残留）', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-r6-lag-'))
+    try {
+      const { c } = stubZk(dir)
+      zk.markIndexDirty(c)
+      expect(zk.indexLagHint(c)).toContain('1 次写入没进索引')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+

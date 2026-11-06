@@ -1204,6 +1204,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           persona: LINT_PERSONA,
           timeline: LINT_TIMELINE,
           indexHint: { type: 'boolean' },
+          indexLag: { type: 'string' },
         }, ['notebook', 'notes', 'truncated', 'completeness', 'scanLimit', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'indexHint']),
       },
       async run(args, env) {
@@ -1278,6 +1279,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }
         if (oneWay.completeness === 'partial') lines.push('⚠️ 建图笔记载入触到上限：单向链接可能误报（回链边未加载），先归档旧笔记再跑一次')
         else if (oneWay.completeness === 'unknown') lines.push('⚠️ 无法确认单向链接的边集是否完整（旧版 zk 未给出载入篇数）：可能误报')
+        if (v.indexLag) lines.push('⚠️ 索引可能落后：' + v.indexLag)
         lines.push('（只报告，没有改动任何文件）')
         return text(lines.join('\n'))
       },

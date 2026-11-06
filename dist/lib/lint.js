@@ -24,7 +24,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { backlinksOf, GRAPH_BUDGET_NOTES, graphEdges, localDate, MAX_SCAN, scanNotes, scanNotesWithFlag, outlinksOf, parseErrorWarnings, } from './zk.js';
+import { backlinksOf, GRAPH_BUDGET_NOTES, graphEdges, indexLagHint, localDate, MAX_SCAN, scanNotes, scanNotesWithFlag, outlinksOf, parseErrorWarnings, } from './zk.js';
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { daysSinceDate, entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries } from './memory-format.js';
@@ -948,5 +948,7 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         timeline: timelineStatus(cfg, now),
         // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
         indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
+        // 放在最后算：前面的读命令已经把 pending 的 dirty 补掉了，剩下的是「补不上 / 外部编辑」
+        indexLag: indexLagHint(cfg) ?? '',
     };
 }

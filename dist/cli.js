@@ -9,7 +9,7 @@ import { CFG_FILE } from './config/paths.js';
 import { NOTE_KINDS, ensureNotebook, fixGroupConfig, groupOverlapNotes, newNoteDir, structureStatus } from './lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
 import { installZk, sourceLabel } from './lib/install.js';
-import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, } from './lib/zk.js';
+import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, indexLagHint, } from './lib/zk.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook, personaStatus, timelineStatus } from './lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from './lib/dream.js';
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
@@ -408,6 +408,10 @@ async function doctor() {
         try {
             const s = await notebookStats(cfg);
             rows.push(`✓ 索引：${s.notes} 篇笔记 / ${s.tags} 个标签 / 断链 ${s.brokenLinks} / 孤立 ${s.orphans}`);
+            // 外部编辑（不经过工具）没有 dirty 标记：靠 db 与目录的 mtime 粗判，只提示不自动重建
+            const lag = indexLagHint(cfg);
+            if (lag)
+                rows.push(`⚠️ 索引可能落后：${lag}`);
             // frontmatter 写坏的笔记不在索引里：zk 只在 stderr 吭一声，不主动收就永远没人知道
             const warnings = [];
             await allNotes(cfg, { warnings });
