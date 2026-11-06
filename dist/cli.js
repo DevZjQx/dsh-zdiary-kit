@@ -9,7 +9,7 @@ import { CFG_FILE } from './config/paths.js';
 import { NOTE_KINDS, ensureNotebook, fixGroupConfig, groupOverlapNotes, newNoteDir, structureStatus } from './lib/notebook.js';
 import { buildMemoryPayload, formatFileShares } from './lib/memory.js';
 import { installZk, sourceLabel } from './lib/install.js';
-import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, indexLagHint, } from './lib/zk.js';
+import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, indexPolicy, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, indexLagHint, } from './lib/zk.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook, personaStatus, timelineStatus } from './lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from './lib/dream.js';
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
@@ -605,7 +605,8 @@ async function main() {
             return;
         }
         case 'index': {
-            await indexNotebook(cfg);
+            // 显式重建：别的进程在建就等它（等满 waitMs），不另起第二个 zk index
+            await indexNotebook(cfg, undefined, { lockWaitMs: indexPolicy.waitMs });
             print(json ? { ok: true } : '✓ 索引已重建', json);
             return;
         }

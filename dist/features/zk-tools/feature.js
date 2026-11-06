@@ -1104,7 +1104,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     timeline: LINT_TIMELINE,
                     indexHint: { type: 'boolean' },
                     indexLag: { type: 'string' },
-                }, ['notebook', 'notes', 'truncated', 'completeness', 'scanLimit', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'indexHint']),
+                }, ['notebook', 'notes', 'truncated', 'completeness', 'scanLimit', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'indexHint', 'indexLag']),
             },
             async run(args, env) {
                 const cfg = configFor(env.workspace, env.sessionId);

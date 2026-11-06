@@ -122,7 +122,7 @@ function baseArgs(cfg) {
 /** stderr 里的一行 warning（`zk: warning: ...`），exit 0 时也会出现 */
 const WARNING_LINE = /^zk: warning: /;
 /**
- * 索引策略。测试会改 `waitMs` / `autoBuildMaxNotes` 把等待压到毫秒级；
+ * 索引策略。测试会改 `waitMs` / `lockWaitMs` / `autoBuildMaxNotes` 把等待压到毫秒级；
  * 生产路径一律用默认值（不要从配置里读 —— 这几个数是按 §0.5.1 的实测定的）。
  */
 export const indexPolicy = {
@@ -130,6 +130,11 @@ export const indexPolicy = {
     buildTimeoutMs: 30 * 60_000,
     /** 冷建时最多阻塞工具调用多久；等不到就让调用先失败，后台继续建 */
     waitMs: 15_000,
+    /**
+     * 别的进程持锁时，读路径最多等多久（显式重建传 `waitMs`）。
+     * 不能用 15 s：10k 库建库要几分钟，这期间的每次读都会白卡一轮。
+     */
+    lockWaitMs: 2_000,
     /** 这个规模以内让命令自己建：200 篇约 1 s，塞进长超时也不会卡住调用 */
     autoBuildMaxNotes: 200,
     /** 建索引连续失败时，这段时间内直接报错、不重启进程（避免 fork 风暴） */
@@ -199,9 +204,11 @@ export function indexDirtyState(cfg) {
 /**
  * 「索引可能落后」的粗判（doctor / zk_lint 只提示，不自动重建）。
  *
- * 外部编辑不在 dirty 标记范围内，靠 mtime 兜一层：只 stat 笔记本根目录的顶层条目，
- * 不逐篇扫描（10⁴ 篇不付 10⁴ 次 stat）。目录 mtime 在增删文件时变，
- * 改已有文件的正文不会动目录 mtime —— 所以只能叫「可能」，不是保证。
+ * 两条线索：
+ *   1. 我们自己写盘留下的 dirty（generation > indexedGeneration）—— 准确；
+ *   2. 外部在插件之外动文件：只看顶层条目的 mtime（10⁴ 篇不付 10⁴ 次 stat）。
+ *      目录 mtime 只在**新增 / 删除 / 改名**时变；改已有文件的正文不会变 ——
+ *      所以正文的外部修改**一定漏报**，不是「可能漏报」。注释与文案都不要把这点说小。
  */
 export function indexLagHint(cfg) {
     if (!hasNotebook(cfg))
@@ -234,7 +241,9 @@ export function indexLagHint(cfg) {
         return null;
     }
     // 留 1 s 余量：同一秒里建完索引又写文件，不算「落后」
-    return newest > dbMtime + 1000 ? '有笔记在索引建好之后被改过（可能是外部编辑）；到设置页点「重建索引」' : null;
+    return newest > dbMtime + 1000
+        ? '笔记本顶层有新增 / 删除 / 改名，或索引落后于库（外部直接改正文不会被发现）；到设置页点「重建索引」'
+        : null;
 }
 /** 估算篇数：只为了报「首次要扫 N 篇」，不追求精确，封顶 2 万（大库不必数完） */
 function approxNoteCount(cfg, cap = 20_000) {
@@ -284,6 +293,8 @@ function indexFailureText(err) {
     return String(err).slice(0, 300);
 }
 const INDEX_HINT = '到设置页点「重建索引」，或在这个笔记本里跑 zk index 看完整输出';
+/** 锁文件刚建好、token 还没写完的宽限期：这段窗口里读不出 JSON 不能当 stale */
+const LOCK_WRITE_GRACE_MS = 5_000;
 function buildLockPath(cfg) {
     return path.join(cfg.notebook, '.zk', 'dsh-index.lock');
 }
@@ -298,52 +309,81 @@ function tryAcquireIndexLock(cfg) {
     try {
         fs.mkdirSync(path.dirname(file), { recursive: true });
     }
-    catch {
-        return null;
+    catch (err) {
+        return { kind: 'failed', reason: errnoText(err) };
     }
     for (let attempt = 0; attempt < 2; attempt += 1) {
+        let fd;
         try {
-            const fd = fs.openSync(file, 'wx');
-            try {
-                fs.writeFileSync(fd, JSON.stringify({ token, pid: process.pid, at: Date.now() }));
-            }
-            finally {
-                fs.closeSync(fd);
-            }
-            return { token };
+            fd = fs.openSync(file, 'wx');
         }
         catch (err) {
-            if (err.code !== 'EEXIST')
-                return null;
+            const code = err.code;
+            // 只有 EEXIST 才是「别人持锁」；EACCES / EROFS / ENOSPC 是建不出来
+            if (code !== 'EEXIST')
+                return { kind: 'failed', reason: errnoText(err) };
             if (!indexLockStale(file))
-                return null;
+                return { kind: 'held' };
             try {
                 fs.rmSync(file, { force: true });
             }
             catch { /* 别人也在清：下一轮再说 */ }
+            continue;
         }
+        try {
+            fs.writeFileSync(fd, JSON.stringify({ token, pid: process.pid, at: Date.now() }));
+        }
+        catch (err) {
+            // 半成品锁文件必须自己收掉：留着会让别人白等一个宽限期
+            try {
+                fs.rmSync(file, { force: true });
+            }
+            catch { /* 删不掉就靠宽限期 */ }
+            return { kind: 'failed', reason: errnoText(err) };
+        }
+        finally {
+            try {
+                fs.closeSync(fd);
+            }
+            catch { /* 已经关了 */ }
+        }
+        return { kind: 'acquired', lock: { token } };
     }
-    return null;
+    return { kind: 'held' };
+}
+function errnoText(err) {
+    const code = err?.code;
+    return code || (err instanceof Error ? err.message : String(err));
 }
 function indexLockStale(file) {
+    let st;
     try {
-        const st = fs.statSync(file);
-        if (Date.now() - st.mtimeMs > indexPolicy.buildTimeoutMs)
-            return true;
-        const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-        if (typeof data.pid === 'number') {
-            try {
-                process.kill(data.pid, 0);
-            }
-            catch {
-                return true;
-            }
-        }
-        return false;
+        st = fs.statSync(file);
     }
     catch {
         return true;
-    } // 锁文件没了 / 读不出来：当 stale 让下一轮重试
+    } // 锁没了：让下一轮重试
+    const age = Date.now() - st.mtimeMs;
+    if (age > indexPolicy.buildTimeoutMs)
+        return true;
+    let data;
+    try {
+        data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+    catch {
+        // 刚 openSync 还没写入 token（或写到一半）：给几秒宽限。
+        // 这里若一律当 stale，会把别人刚建好的锁删掉，两个进程同时跑 zk index —— 正是这把锁要防的。
+        return age > LOCK_WRITE_GRACE_MS;
+    }
+    if (typeof data.pid === 'number') {
+        try {
+            process.kill(data.pid, 0);
+        }
+        catch {
+            return true;
+        }
+    }
+    return false;
 }
 function releaseIndexLock(cfg, lock) {
     const file = buildLockPath(cfg);
@@ -356,7 +396,8 @@ function releaseIndexLock(cfg, lock) {
 }
 /**
  * 启动一次索引：进程内 single-flight 靠 builds Map，跨进程靠调用方先抢到的锁。
- * M5.0a 的冷建路径不传 lock —— 那时 db 本来就不完整，与 flush 互斥（见 flushIndexIfDirty）。
+ * 不传 lock 的只有两种：M5.0a 的冷建路径（db 本来就不完整，与 flush 互斥）、
+ * 以及锁建不出来时的降级（退回 R6 之前的行为，不让显式重建失败）。
  * 成功时按「建库前拍下的 generation」清 dirty：建库期间的写入会留下差值，不会被误清。
  */
 function startIndexBuild(cfg, loc, signal, lock) {
@@ -385,6 +426,15 @@ function startIndexBuild(cfg, loc, signal, lock) {
     return build;
 }
 const STALE_INDEX_WARNING = '索引刷新还没完成，这次读的是「完整但可能过期」的索引（新写入稍后可见）；不要手动再跑 zk index';
+/** 同一条告警按「笔记本 + generation」去重：10k 库上每次读都刷一行只会把日志淹掉 */
+const staleWarned = new Map();
+function warnStaleOnce(cfg, warning) {
+    const generation = readIndexState(cfg).generation;
+    if (staleWarned.get(cfg.notebook) === generation)
+        return;
+    staleWarned.set(cfg.notebook, generation);
+    console.warn(`[zdiary] ${warning}`);
+}
 function indexIsDirty(cfg) {
     const s = readIndexState(cfg);
     return s.generation > s.indexedGeneration;
@@ -404,10 +454,13 @@ async function waitForBuild(build, signal) {
     }
     return settled ?? 'timeout';
 }
-/** 别的进程持锁时：等它放开，不并发起第二个 zk index */
-async function waitForIndexLockRelease(cfg, signal) {
+/**
+ * 别的进程持锁时：等它放开，不并发起第二个 zk index。
+ * 读路径只等 `indexPolicy.lockWaitMs`（2 s）：10k 库建库要几分钟，等满 15 s 只会让每次读都卡住。
+ */
+async function waitForIndexLockRelease(cfg, signal, budgetMs = indexPolicy.lockWaitMs) {
     const file = buildLockPath(cfg);
-    const deadline = Date.now() + indexPolicy.waitMs;
+    const deadline = Date.now() + budgetMs;
     while (Date.now() < deadline) {
         if (!fs.existsSync(file))
             return true;
@@ -441,16 +494,26 @@ export async function flushIndexIfDirty(cfg, signal) {
     const key = cfg.notebook;
     let build = builds.get(key);
     if (!build) {
-        const lock = tryAcquireIndexLock(cfg);
-        if (!lock) {
-            // 另一个进程正在建：等它放开（最多 waitMs）；等不到就带着完整但过期的 db 继续
-            const released = await waitForIndexLockRelease(cfg, signal);
-            if (released && !indexIsDirty(cfg))
-                return null;
-            return STALE_INDEX_WARNING;
-        }
+        // 先解析二进制、再抢锁：反过来的话 requireZk 抛错会把锁文件留到 30 分钟后才被判 stale
         const loc = await requireZk(cfg);
-        build = startIndexBuild(cfg, loc, signal, lock);
+        for (let attempt = 0; attempt < 2 && !build; attempt += 1) {
+            const acquired = tryAcquireIndexLock(cfg);
+            if (acquired.kind === 'failed') {
+                return `索引锁建不出来（${acquired.reason}）：这次读的是完整但可能过期的索引；检查 .zk 目录的权限与磁盘，再到设置页点「重建索引」`;
+            }
+            if (acquired.kind === 'held') {
+                // 另一个进程正在建：只等一小会儿；等不到就带着完整但过期的 db 继续（dirty 保留）
+                const released = await waitForIndexLockRelease(cfg, signal);
+                if (!indexIsDirty(cfg))
+                    return null;
+                if (!released)
+                    break;
+                continue;
+            }
+            build = startIndexBuild(cfg, loc, signal, acquired.lock);
+        }
+        if (!build)
+            return STALE_INDEX_WARNING;
     }
     const settled = await waitForBuild(build, signal);
     if (settled === 'error')
@@ -541,7 +604,7 @@ export async function zk(cfg, args, opts = {}) {
     if (!explicitBuild) {
         const warning = await flushIndexIfDirty(cfg, opts.signal);
         if (warning)
-            console.warn(`[zdiary] ${warning}`);
+            warnStaleOnce(cfg, warning);
     }
     const timeoutMs = explicitBuild
         ? (opts.timeoutMs ?? 60_000)
@@ -994,7 +1057,9 @@ export async function scanNotes(cfg, opts = {}, signal) {
     const parsed = parseLeanList(await zk(cfg, args, { signal, warnings: opts.warnings }), cfg);
     const capped = parsed.notes.length > limit;
     const notes = capped ? parsed.notes.slice(0, limit) : parsed.notes;
-    const completeness = parsed.malformed ? 'unknown' : capped ? 'partial' : 'complete';
+    // 与 searchNotesDetailed 的 finish 同口径：partial（触顶）优先于 unknown（解析失败），
+    // 两种情况同时成立时先说「还有更多」，再说「解析可能不全」。
+    const completeness = capped ? 'partial' : parsed.malformed ? 'unknown' : 'complete';
     return { notes, completeness, scanned: notes.length, limit };
 }
 /** 旧入口：只要笔记。需要三态（lint / dream / 首页）用 `scanNotes`。 */
@@ -1748,16 +1813,34 @@ function distributionOf(live) {
 }
 /**
  * 显式重建（设置页「重建索引」/ `zk-kit index`）：走建库预算（30 min），不再 120 s 杀掉。
- * 已经有后台建库在跑时直接等它 —— 并发第二个 zk 进程只会撞 SQLite 写锁。
+ * 进程内已有后台建库时直接等它；跨进程先抢 `dsh-index.lock`，抢不到就不起第二个 zk 进程
+ * （并发两个只会撞 SQLite 写锁）。`lockWaitMs` 只给显式重建用：写路径（refreshIndexQuietly）
+ * 不应该把自己卡在别人的建库上。
+ * 锁建不出来（权限 / 磁盘）时退回旧行为直接建：显式重建不能因为拿不到锁而失败。
  */
-export async function indexNotebook(cfg, signal) {
+export async function indexNotebook(cfg, signal, opts = {}) {
     const running = builds.get(cfg.notebook);
     if (running) {
         await running.promise;
         return;
     }
     const loc = await requireZk(cfg);
-    await startIndexBuild(cfg, loc, signal).promise;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        const acquired = tryAcquireIndexLock(cfg);
+        if (acquired.kind === 'failed') {
+            await startIndexBuild(cfg, loc, signal).promise;
+            return;
+        }
+        if (acquired.kind === 'acquired') {
+            await startIndexBuild(cfg, loc, signal, acquired.lock).promise;
+            return;
+        }
+        // 别的进程在建：等它放开，不并发起第二个 zk index
+        const released = await waitForIndexLockRelease(cfg, signal, opts.lockWaitMs ?? indexPolicy.lockWaitMs);
+        if (released)
+            return;
+    }
+    throw new ZkError('另一个进程正在建索引，这次不另起一个 zk index', `已等了 ${Math.round((opts.lockWaitMs ?? indexPolicy.lockWaitMs) / 1000)} 秒；过一会儿再试，或等它建完（索引状态可在设置页看）`, 'index-building');
 }
 /**
  * 我们自己动过文件（改名 / 搬归档）之后补一次增量索引。

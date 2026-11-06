@@ -304,6 +304,25 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 与根目录的 `AGENTS.md` / `MEMORY.md` / `USER.md` / `DREAMS.md` / `INDEX.md` / `WORKFLOW.md` 不进检索与笔记 / 标签 / 断链 / 孤立统计；
 `archive/` 的归档数由 `zk_stats` 单独统计（`archived` / `superseded`）。`-x` 传绝对路径：它是相对 cwd 解析的，传相对名在换工作目录后会静默失效。
 
+## 索引与「写后可读」
+
+zk 的索引（`.zk/notebook.db`）是缓存：文件落盘不等于能搜到。插件在写入**落盘之后**记一个 dirty 标记
+（`.zk/dsh-index-state.json` 里的 `generation` / `indexedGeneration`），下一次任何读（检索 / `zk_lint` / `zk_dream` / `zk_stats`）
+之前先补一次增量 `zk index`，最多等 15 秒：
+
+- 建完 → 这次读到的就是新内容（`zk_append`、`zk_link`、`zk_new` 带 `summary`、改名、归档都覆盖）；
+- 建不完 / 失败 / 另一个进程正在建 → 这次读「**完整但可能过期**」的索引，并打一条
+  `[zdiary] 索引刷新还没完成…`（同一次写入只打一遍）；dirty 保留，下次读再补；
+- 半库不读：db 不完整（missing / interrupted）时 flush 不接手，交给冷建守卫 —— 小库自己补完，
+  大库报「索引在建」，绝不退回读半截索引。
+
+读路径与「重建索引」共用一把跨进程锁（`.zk/dsh-index.lock`），所以插件进程和 `zk-kit` 命令行不会同时跑两个 `zk index`
+（两个并发只会撞 SQLite 写锁）。
+
+**外部编辑**（编辑器 / agent 原生 `Edit`，不经 `zk_*`）插件感知不到：`zk-kit doctor` / `zk_lint` 只按笔记本顶层目录的
+mtime 粗判 —— 新增 / 删除 / 改名会提示「索引可能落后」，**改已有笔记的正文不会**（目录 mtime 不变）。
+改完正文要让 `zk_search` 搜到，点一次「重建索引」；文件内容本身没有被动过。
+
 ## zk 从哪来（优先级）
 
 1. 设置页「zk 路径」（显式指定，最优先）
@@ -391,7 +410,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 设置页 404 | `cordis.patch.yml` 里的 `name:` 与安装后的包名不一致 |
 | 设置页 503 | 宿主没有 `connection` 服务，信任栅栏按 fail-closed 拒绝（工具不受影响） |
 | 安装 zk 报「解包失败」 | 系统没有 `tar`；手动解包后把 `zk` 放进 `~/.dsh/zdiary/bin` |
-| 搜索结果不全 | 经过 `zk_append` / `zk_link` / `zk_new` 带 `summary` 的写入，插件会在下一次检索前自动补一次增量索引（写后可读，见下）；仍然不全就点「重建索引」（`zk index`），或确认文件没被 `.zk/config.toml` 的 `exclude` 排除。人在插件之外直接改文件不会被感知：`zk-kit doctor` / `zk_lint` 会按目录 mtime 给「索引可能落后」提示 |
+| 搜索结果不全 | 先看两点：① 刚写过的内容（`zk_append` / `zk_link` / `zk_new` 带 `summary` / 改名 / 归档）本来会在下一次读之前自动补一次增量索引；补不上或别的进程正在建时，日志里会有 `[zdiary] 索引刷新还没完成…`，dirty 会留到下次读再补。② 真正补不上就点「重建索引」（`zk index`），或确认文件没被 `.zk/config.toml` 的 `exclude` 排除。**外部直接编辑（不经过 `zk_*`）改已有笔记的正文，插件不会感知**：`zk-kit doctor` / `zk_lint` 只按顶层目录 mtime 粗判「索引可能落后」，新增 / 删除 / 改名才触发，改正文不触发 —— 改完正文要能搜到就点一次「重建索引」 |
 | 工具报「索引还没建好 / 索引不完整」 | 大库第一次建索引，或上次建到一半被中断：插件在后台跑 `zk index`，最多先等 15 秒就返回，过一会儿重试即可；**不要同时再手动跑 `zk index`**。反复失败就点「重建索引」看完整报错 |
 | 自检报「✗ 长期记忆：N/预算 词」 | AGENTS + USER + MEMORY 写太长：先压缩，或在设置页调高「注入预算」（超预算时注入先丢 MEMORY 里日期最旧的条目，一条日期都没有才退回从末尾往前丢） |
 | 体检报「记忆链接：N 条失效」 | `MEMORY.md` / `USER.md` 里的 `[[来源]]` 指向的笔记已归档或删除：改成 `archive/` 下的新路径，或改指活笔记；显式写 `archive/` 的链接不算失效 |
@@ -423,7 +442,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   `bun run fixture`（生成 1k / 10k 规模夹具，比例与边界样本见 `docs/plan.md` §0.5；
   `--links-per-note` 决定链接密度 —— 建索引成本主要花在链接上，产出目录自带 `.zk/config.toml`，进去 `zk index` 即可）·
   `bun run bench`（成本表：逐用例真起 zk，记子进程数 / 回传字节 / 峰值 RSS / p50 / p95；默认 1k、3 轮）
-- **耗时差两个数量级**：`bun run test` 约 50 s（220 个用例，真起 zk）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
+- **耗时差两个数量级**：`bun run test` 约 100 s（223 个用例，真起 zk；机器快慢能差一倍）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
   10k 上光一条 `graph.full` 就是 30 s、冷建索引几分钟。所以 `bench` **不在** `check` / CI 里，跟测试完全分开，不会因为你跑测试而变慢。
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。

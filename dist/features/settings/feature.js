@@ -18,7 +18,7 @@ import { ensureNotebook, structureStatus, writeAgentsTemplate, writePersonaTempl
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
 import { personaStatus } from '../../lib/lint.js';
 import { installZk, sourceLabel } from '../../lib/install.js';
-import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.js';
+import { hasNotebook, indexNotebook, indexPolicy, notebookStats, resolveZk } from '../../lib/zk.js';
 const P = `${ROUTE_BASE}/api`;
 async function zkStatus(cfg) {
     const loc = await resolveZk(cfg);
@@ -214,7 +214,8 @@ export function registerSettings({ route, isTrusted }) {
         }
         const cfg = config();
         try {
-            await indexNotebook(cfg);
+            // 显式重建：别的进程在建就等它（等满 waitMs），不另起第二个 zk index
+            await indexNotebook(cfg, undefined, { lockWaitMs: indexPolicy.waitMs });
             json(res, 200, { ok: true, ...(await snapshot(cfg)) });
         }
         catch (err) {

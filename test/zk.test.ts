@@ -4900,8 +4900,15 @@ describe('R6: 写后可读', () => {
   }
   const indexCalls = (log: string): number => calls(log).filter((line) => line.includes(' index ')).length
 
-  const withPolicy = async (patch: { waitMs?: number; autoBuildMaxNotes?: number }, fn: () => Promise<void>): Promise<void> => {
-    const before = { waitMs: zk.indexPolicy.waitMs, autoBuildMaxNotes: zk.indexPolicy.autoBuildMaxNotes }
+  const withPolicy = async (
+    patch: { waitMs?: number; lockWaitMs?: number; autoBuildMaxNotes?: number },
+    fn: () => Promise<void>,
+  ): Promise<void> => {
+    const before = {
+      waitMs: zk.indexPolicy.waitMs,
+      lockWaitMs: zk.indexPolicy.lockWaitMs,
+      autoBuildMaxNotes: zk.indexPolicy.autoBuildMaxNotes,
+    }
     Object.assign(zk.indexPolicy, patch)
     try { await fn() } finally { Object.assign(zk.indexPolicy, before) }
   }
@@ -5036,9 +5043,68 @@ describe('R6: 写后可读', () => {
       const db = path.join(c.notebook, '.zk', 'notebook.db')
       const old = new Date(Date.now() - 10_000)
       fs.utimesSync(db, old, old)
-      expect(zk.indexLagHint(c)).toContain('外部编辑')
+      expect(zk.indexLagHint(c)).toContain('新增 / 删除 / 改名')
     } finally {
       fs.rmSync(c.notebook, { recursive: true, force: true })
+    }
+  })
+
+  it('半成品锁（刚建好、token 还没写完）不当 stale：不并发起第二个 zk index', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-r6-lock-race-'))
+    try {
+      const { c, log, nb } = stubZk(dir)
+      // openSync('wx') 成功、writeFileSync 还没跑到的窗口：空文件
+      fs.writeFileSync(path.join(nb, '.zk', 'dsh-index.lock'), '')
+      zk.appendToNote(c, 'notes/seed.md', '锁窗口里的写入')
+      await withPolicy({ lockWaitMs: 60 }, async () => {
+        const warning = await zk.flushIndexIfDirty(c)
+        expect(warning).toContain('完整但可能过期')
+      })
+      // 没把别人的锁当垃圾清掉，也就没起第二个 zk index
+      expect(indexCalls(log)).toBe(0)
+      expect(fs.existsSync(path.join(nb, '.zk', 'dsh-index.lock'))).toBe(true)
+      expect(zk.indexDirtyState(c).generation).toBeGreaterThan(zk.indexDirtyState(c).indexedGeneration)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('超过宽限期的半成品锁会被清掉并接替（崩掉的进程不永久堵索引）', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-r6-lock-stale-'))
+    try {
+      const { c, log, nb } = stubZk(dir)
+      const lock = path.join(nb, '.zk', 'dsh-index.lock')
+      fs.writeFileSync(lock, '')
+      const old = new Date(Date.now() - 60_000)
+      fs.utimesSync(lock, old, old)
+      zk.appendToNote(c, 'notes/seed.md', '宽限期之后的写入')
+      await withPolicy({ lockWaitMs: 60 }, async () => { await zk.allNotes(c) })
+      expect(indexCalls(log)).toBe(1)
+      expect(fs.existsSync(lock)).toBe(false)
+      const s = zk.indexDirtyState(c)
+      expect(s.generation).toBe(s.indexedGeneration)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('显式重建遇到别的进程持锁：等不到就报 index-building，不并发起第二个 index', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-r6-lock-rebuild-'))
+    try {
+      const { c, log, nb } = stubZk(dir)
+      fs.writeFileSync(
+        path.join(nb, '.zk', 'dsh-index.lock'),
+        JSON.stringify({ token: 'other-process', pid: process.pid, at: Date.now() }),
+      )
+      let err: unknown = null
+      await withPolicy({ lockWaitMs: 60 }, async () => {
+        try { await zk.indexNotebook(c) } catch (e) { err = e }
+      })
+      expect(err instanceof zk.ZkError).toBe(true)
+      expect((err as zk.ZkError).code).toBe('index-building')
+      expect(indexCalls(log)).toBe(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
     }
   })
 

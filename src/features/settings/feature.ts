@@ -22,7 +22,7 @@ import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
 import { personaStatus } from '../../lib/lint.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
 import { installZk, sourceLabel } from '../../lib/install.ts'
-import { hasNotebook, indexNotebook, notebookStats, resolveZk } from '../../lib/zk.ts'
+import { hasNotebook, indexNotebook, indexPolicy, notebookStats, resolveZk } from '../../lib/zk.ts'
 import type { ZkLocation } from '../../lib/zk.ts'
 import type { RouteHandler } from '../../lib/dsh.ts'
 
@@ -215,7 +215,8 @@ export function registerSettings({ route, isTrusted }: SettingsDeps): void {
     if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return }
     const cfg = config()
     try {
-      await indexNotebook(cfg)
+      // 显式重建：别的进程在建就等它（等满 waitMs），不另起第二个 zk index
+      await indexNotebook(cfg, undefined, { lockWaitMs: indexPolicy.waitMs })
       json(res, 200, { ok: true, ...(await snapshot(cfg)) })
     } catch (err) {
       json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) })

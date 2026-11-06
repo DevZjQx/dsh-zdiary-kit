@@ -13,7 +13,7 @@ import { buildMemoryPayload, formatFileShares } from './lib/memory.ts'
 import { installZk, sourceLabel } from './lib/install.ts'
 import {
   resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
-  appendDaily, linkNotes, notebookStats, indexNotebook, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError,
+  appendDaily, linkNotes, notebookStats, indexNotebook, indexPolicy, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError,
   allNotes, parseErrorWarnings, indexLagHint,
 } from './lib/zk.ts'
 import type { NoteRecord } from './lib/zk.ts'
@@ -620,7 +620,8 @@ async function main(): Promise<void> {
     }
 
     case 'index': {
-      await indexNotebook(cfg)
+      // 显式重建：别的进程在建就等它（等满 waitMs），不另起第二个 zk index
+      await indexNotebook(cfg, undefined, { lockWaitMs: indexPolicy.waitMs })
       print(json ? { ok: true } : '✓ 索引已重建', json)
       return
     }

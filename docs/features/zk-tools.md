@@ -271,3 +271,15 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 正则这一路单独兜错：子串匹配超时 / 报错时退回 FTS 的结果并按 `fts` 报，不让一次检索整体失败（FTS 0 命中时则返回空）。
 这种情况下 `completeness = unknown`：结果可能少了正则补的那部分，不能当成「全部命中」。
 `zk_query` 是 `zk list` 的透传接口，保持原语义。
+
+**写后可读（R6，3.6.0）.** `zk_append` / `zk_link` / `zk_new` 的 `summary` 回填 / 改名 / 搬归档之后，
+插件在 `.zk/dsh-index-state.json` 记 `generation`（每次写入 +1）与 `indexedGeneration`（最近一次成功 `zk index` 覆盖到的快照）。
+两者不等就是 dirty，下一个 `zk()` 读（检索 / lint / dream / stats / 反查都算）之前自动补一次 `zk index`，最多等 15 秒：
+建完就读到新内容；建不完 / 失败 / 另一个进程在建则「完整但可能过期」回退，打一条 `[zdiary]` 告警（同一 generation 只打一次），
+dirty 留到下次读。**回退只允许落在完整 db 上**：db 不完整（missing / interrupted）时 flush 不接手，交给 `ensureIndexReady` 的冷建守卫，
+不把 M5.0a 修掉的「读→杀→半库→再读」循环放回来。跨进程 single-flight 靠 `.zk/dsh-index.lock`（O_EXCL + pid / mtime 判 stale，
+锁文件刚建好但 token 没写完的几秒内不当 stale，否则会把别人刚建的锁当垃圾删掉 → 两个 `zk index` 并发）；
+读路径与显式重建都先抢这把锁，不并发起第二个 `zk index`。
+`zk_new` 本身不需要标脏：`zk new` 自己会把新文件写进索引；只有摘要回填（`fs.writeFileSync` 绕过了 zk）才补标。
+外部编辑不被感知：`indexLagHint`（doctor / `zk_lint` 的 `indexLag`）只比 `notebook.db` 与笔记本**顶层**条目的 mtime，
+约十次 stat 而不是 10⁴ 次；目录 mtime 只在新增 / 删除 / 改名时变，**改已有笔记的正文一定漏报**（不是「可能漏报」）。
