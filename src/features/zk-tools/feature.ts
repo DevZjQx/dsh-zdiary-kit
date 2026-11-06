@@ -65,9 +65,10 @@ const LINT_ONE_WAY = objSchema(
     bodyOnly: { type: 'number' },
     linksOnly: { type: 'boolean' },
     edgesTruncated: { type: 'boolean' },
+    completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
     items: { type: 'array', items: LINT_ONE_WAY_ITEM },
   },
-  ['total', 'edges', 'bodyOnly', 'linksOnly', 'edgesTruncated', 'items'],
+  ['total', 'edges', 'bodyOnly', 'linksOnly', 'edgesTruncated', 'completeness', 'items'],
 )
 const LINT_STALE = objSchema(
   {
@@ -94,6 +95,8 @@ const LINT_SIMILAR = objSchema(
   {
     total: { type: 'number' },
     truncated: { type: 'boolean' },
+    completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
+    droppedGroups: { type: 'number' },
     items: {
       type: 'array',
       items: objSchema({
@@ -103,7 +106,7 @@ const LINT_SIMILAR = objSchema(
       }, ['titles', 'paths', 'score']),
     },
   },
-  ['total', 'truncated', 'items'],
+  ['total', 'truncated', 'completeness', 'droppedGroups', 'items'],
 )
 /** 记忆层体检：MEMORY.md / USER.md 里的来源链是否还指向活笔记 */
 const LINT_MEMORY = objSchema(
@@ -460,6 +463,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           notebook: { type: 'string' },
           count: { type: 'number' },
           matchStrategy: { type: 'string', enum: ['fts', 'regex', 'mixed'] },
+          completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
+          hasMore: { type: 'boolean' },
+          scanned: { type: 'number' },
           notes: {
             type: 'array',
             items: objSchema({
@@ -471,7 +477,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               lead: { type: 'string' },
             }, ['title', 'path', 'absPath', 'tags', 'created', 'lead']),
           },
-        }, ['notebook', 'count', 'matchStrategy', 'notes']),
+        }, ['notebook', 'count', 'matchStrategy', 'completeness', 'hasMore', 'scanned', 'notes']),
       },
       async run(args, env) {
         const cfg: Config = configFor(env.workspace, env.sessionId)
@@ -490,16 +496,29 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           notebook: cfg.notebook,
           count: result.notes.length,
           matchStrategy: result.matchStrategy,
+          completeness: result.completeness,
+          hasMore: result.hasMore,
+          scanned: result.scanned,
           notes: result.notes.map((n) => ({ title: n.title, path: n.path, absPath: n.absPath, tags: n.tags, created: dateOnly(n.created), lead: n.lead })),
         }
       },
       render(_args, value) {
-        const v = value as { notebook: string; count: number; matchStrategy: string; notes: NoteRecord[] }
-        if (!v.count) return text(`没有匹配的笔记（笔记本 ${v.notebook}）`)
+        const v = value as {
+          notebook: string; count: number; matchStrategy: string
+          completeness: 'complete' | 'partial' | 'unknown'; hasMore: boolean; scanned: number
+          notes: NoteRecord[]
+        }
+        if (!v.count) {
+          return text(`没有匹配的笔记（笔记本 ${v.notebook}）` +
+            (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「库里没有」' : ''))
+        }
         const how = v.matchStrategy === 'mixed'
           ? '（中文：全文 + 子串合并，已补上全文索引漏掉的）'
           : v.matchStrategy === 'regex' ? '（全文无结果，已退回子串匹配）' : ''
-        return text(`${v.count} 条（笔记本 ${v.notebook}）${how}\n` + v.notes.map(noteLine).join('\n'))
+        const tail = v.completeness === 'unknown'
+          ? '\n⚠️ 无法确认结果是否完整（解析失败 / 补充检索失败），先别把它当成全部命中'
+          : v.hasMore ? `\n⚠️ 还有更多匹配没返回（已检查 ${v.scanned} 条候选）；要更全就提高 limit 或加过滤条件` : ''
+        return text(`${v.count} 条（笔记本 ${v.notebook}）${how}\n` + v.notes.map(noteLine).join('\n') + tail)
       },
     }),
 
@@ -531,6 +550,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         schema: objSchema({
           notebook: { type: 'string' },
           count: { type: 'number' },
+          completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
+          hasMore: { type: 'boolean' },
+          scanned: { type: 'number' },
           notes: {
             type: 'array',
             items: objSchema({
@@ -546,13 +568,13 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               archived: { type: 'boolean' },
             }, ['title', 'path', 'absPath', 'type', 'status', 'authority', 'tags', 'created', 'lead', 'archived']),
           },
-        }, ['notebook', 'count', 'notes']),
+        }, ['notebook', 'count', 'completeness', 'hasMore', 'scanned', 'notes']),
       },
       async run(args, env) {
         const cfg: Config = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         const includeArchived = args.include_archived === true
-        const notes = await searchNotes(cfg, {
+        const result = await searchNotesDetailed(cfg, {
           query: args.query ? String(args.query) : undefined,
           tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
           paths: Array.isArray(args.dirs) ? args.dirs.map(String) : undefined,
@@ -567,9 +589,13 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           limit: args.limit === undefined ? 10 : Number(args.limit),
           sort: args.sort ? String(args.sort) : 'created-desc',
         }, env.signal)
+        const notes = result.notes
         return {
           notebook: cfg.notebook,
           count: notes.length,
+          completeness: result.completeness,
+          hasMore: result.hasMore,
+          scanned: result.scanned,
           notes: notes.map((n) => ({
             title: n.title,
             path: n.path,
@@ -586,13 +612,23 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }
       },
       render(_args, value) {
-        const v = value as { notebook: string; count: number; notes: Array<Record<string, unknown>> }
-        if (!v.count) return text(`没有匹配的笔记（笔记本 ${v.notebook}）`)
+        const v = value as {
+          notebook: string; count: number; completeness: 'complete' | 'partial' | 'unknown'
+          hasMore: boolean; scanned: number
+          notes: Array<Record<string, unknown>>
+        }
+        if (!v.count) {
+          return text(`没有匹配的笔记（笔记本 ${v.notebook}）` +
+            (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「记忆里没有」' : ''))
+        }
+        const tail = v.completeness === 'unknown'
+          ? '\n⚠️ 无法确认结果是否完整（解析失败 / 补充检索失败），先别把它当成全部命中'
+          : v.hasMore ? `\n⚠️ 还有更多匹配没返回（已检查 ${v.scanned} 条候选）；要更全就提高 limit 或缩小过滤范围` : ''
         const lines = v.notes.map((n, i) => {
           const badges = [String(n.type || '—'), String(n.status || 'no-status'), n.archived ? '已归档' : ''].filter(Boolean)
           return `${i + 1}. ${String(n.title)}  [${badges.join(' · ')}]\n   ${String(n.absPath || n.path)} · ${String(n.created)}${String(n.lead) ? '\n   ' + String(n.lead) : ''}`
         })
-        return text(`${v.count} 条（笔记本 ${v.notebook}）\n` + lines.join('\n'))
+        return text(`${v.count} 条（笔记本 ${v.notebook}）\n` + lines.join('\n') + tail)
       },
     }),
 
@@ -1150,6 +1186,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           notebook: { type: 'string' },
           notes: { type: 'number' },
           truncated: { type: 'boolean' },
+          completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
+          scanLimit: { type: 'number' },
           staleDays: { type: 'number' },
           parseErrors: LINT_PARSE,
           orphans: LINT_BUCKET,
@@ -1166,7 +1204,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           persona: LINT_PERSONA,
           timeline: LINT_TIMELINE,
           indexHint: { type: 'boolean' },
-        }, ['notebook', 'notes', 'truncated', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'indexHint']),
+        }, ['notebook', 'notes', 'truncated', 'completeness', 'scanLimit', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'indexHint']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -1226,9 +1264,20 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const memLine = formatMemoryLinks(v.memoryLinks)
         if (memLine) lines.push(memLine)
         lines.push(...formatLintExtras(v))
-        if (v.similarTitles.truncated) lines.push('⚠️ 疑似重复只比较了部分笔记（同目录超过 300 篇或扫描触顶）：可能漏报')
-        if (v.truncated) lines.push('⚠️ 笔记数触到扫描上限：结果不完整（只会漏报，不会误报），先归档旧笔记再跑一次')
-        if (oneWay.edgesTruncated) lines.push('⚠️ 建图笔记载入触到上限：单向链接可能误报（回链边未加载），先归档旧笔记再跑一次')
+        if (v.similarTitles.completeness === 'partial') {
+          lines.push(
+            '⚠️ 疑似重复只比较了部分笔记：可能漏报' +
+            (v.similarTitles.droppedGroups > 0 ? '（' + v.similarTitles.droppedGroups + ' 组超过 300 篇，只比较了前 300 篇）' : '') +
+            (v.completeness === 'partial' ? '（笔记扫描触顶）' : ''),
+          )
+        }
+        if (v.completeness === 'partial') {
+          lines.push('⚠️ 笔记数触到扫描上限（' + v.scanLimit + ' 篇）：结果不完整（只会漏报，不会误报），先归档旧笔记再跑一次')
+        } else if (v.completeness === 'unknown') {
+          lines.push('⚠️ 扫描结果无法完整解析：下面的数字不能当成全部（可能少报）')
+        }
+        if (oneWay.completeness === 'partial') lines.push('⚠️ 建图笔记载入触到上限：单向链接可能误报（回链边未加载），先归档旧笔记再跑一次')
+        else if (oneWay.completeness === 'unknown') lines.push('⚠️ 无法确认单向链接的边集是否完整（旧版 zk 未给出载入篇数）：可能误报')
         lines.push('（只报告，没有改动任何文件）')
         return text(lines.join('\n'))
       },
@@ -1262,6 +1311,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           windowDays: { type: 'number' },
           since: { type: 'string' },
           truncated: { type: 'boolean' },
+          completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
+          scanLimit: { type: 'number' },
           graphSkipped: { type: 'boolean' },
           graphBudget: { type: 'number' },
           memory: objSchema({
@@ -1325,7 +1376,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               reason: { type: 'string', enum: ['stale', 'source-missing', 'source-superseded'] },
             }, ['entry', 'date', 'age', 'reason']),
           },
-        }, ['notebook', 'windowDays', 'since', 'truncated', 'graphSkipped', 'graphBudget', 'memory', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds', 'retireCandidates']),
+        }, ['notebook', 'windowDays', 'since', 'truncated', 'completeness', 'scanLimit', 'graphSkipped', 'graphBudget', 'memory', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds', 'retireCandidates']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -1398,7 +1449,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           }
         }
         if (!v.newNotes.length && !v.dailyLooseEnds.length && !v.topCited.length) lines.push('这个窗口里没有新材料。')
-        if (v.truncated) lines.push('⚠️ 笔记数触到扫描上限：窗口与排名都不完整')
+        if (v.completeness === 'partial') lines.push('⚠️ 笔记数触到扫描上限（' + v.scanLimit + ' 篇）：窗口与排名都不完整')
+        else if (v.completeness === 'unknown') lines.push('⚠️ 扫描结果无法完整解析：窗口与排名可能不完整')
         if (v.graphSkipped) {
           lines.push('⚠️ 库超过全图统计上限（' + v.graphBudget + ' 篇），这次没统计入链：被引数与 topCited 是空的，不代表没人引用；可在设置页调整「全图统计上限（篇）」（graphBudgetNotes）')
         }
@@ -1432,7 +1484,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             type: 'array',
             items: objSchema({ tag: { type: 'string' }, count: { type: 'number' } }, ['tag', 'count']),
           },
-        }, ['notebook', 'defaultNotebook', 'pinned', 'notes', 'tags', 'brokenLinks', 'orphans', 'archived', 'superseded', 'byDir', 'byTag']),
+          completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
+          scanLimit: { type: 'number' },
+        }, ['notebook', 'defaultNotebook', 'pinned', 'notes', 'tags', 'brokenLinks', 'orphans', 'archived', 'superseded', 'byDir', 'byTag', 'completeness', 'scanLimit']),
       },
       async run(_args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -1451,6 +1505,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           notebook: string; defaultNotebook?: string; pinned?: string
           notes: number; tags: number; brokenLinks: number; orphans: number; archived: number; superseded: number
           byDir: Array<{ dir: string; count: number }>; byTag: Array<{ tag: string; count: number }>
+          completeness?: 'complete' | 'partial' | 'unknown'; scanLimit?: number
         }
         const drift = v.pinned && v.pinned !== v.defaultNotebook
           ? `\n本会话固定在「${v.pinned}」；全局默认是「${v.defaultNotebook}」（要跟随用 zk_use ${v.defaultNotebook}）`
@@ -1461,10 +1516,14 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const tags = v.byTag.length
           ? '\n标签：' + v.byTag.map((t) => `#${t.tag} ${t.count}`).join(' · ')
           : ''
+        const atLeast = v.completeness === 'complete' ? '' : '≥'
+        const partial = v.completeness === 'partial'
+          ? `\n⚠️ 只扫描了前 ${v.scanLimit} 篇：上面的数字是下限`
+          : v.completeness === 'unknown' ? '\n⚠️ 扫描结果无法完整解析：上面的数字可能偏少' : ''
         return text(
           `笔记本 ${v.notebook}${drift}\n` +
-          `笔记 ${v.notes} 篇 · 标签 ${v.tags} 个 · 断链 ${v.brokenLinks} 篇 · 孤立 ${v.orphans} 篇 · 归档 ${v.archived} 篇（superseded ${v.superseded}）` +
-          dirs + tags,
+          `笔记 ${atLeast}${v.notes} 篇 · 标签 ${atLeast}${v.tags} 个 · 断链 ${v.brokenLinks} 篇 · 孤立 ${v.orphans} 篇 · 归档 ${atLeast}${v.archived} 篇（superseded ${atLeast}${v.superseded}）` +
+          dirs + tags + partial,
         )
       },
     }),

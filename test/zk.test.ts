@@ -1952,10 +1952,12 @@ describe('M3: 巡检与做梦', () => {
     const full = await zk.graphEdges(cfgTr)
     expect(full.edges.length).toBe(2)
     expect(full.truncated).toBe(false)
+    expect(full.completeness).toBe('complete')
     // --limit 数的是笔记（1 来源 + 2 目标 = 3），不是边；limit=2 时只载入 2 篇、丢一条边
     const cut = await zk.graphEdges(cfgTr, undefined, { limit: 2 })
     expect(cut.edges.length).toBe(1)
     expect(cut.truncated).toBe(true)
+    expect(cut.completeness).toBe('partial')
 
     // 链接稀疏时不能靠「边里出现过的笔记数」：两端的笔记可能一篇都没载入 → 0 条边、0 个节点
     const sparseDir = path.join(home, 'nb-edges-sparse')
@@ -4767,6 +4769,79 @@ describe('M5.0b: 按篇反查（不建全图）', () => {
     expect(skipped.topCited).toEqual([])
     expect(skipped.newNotes.every((n) => n.cited === 0)).toBe(true)
     expect(skipped.counts.window).toBe(full.counts.window)
+  })
+})
+
+describe('M5.1：静默天花板三态化（§9.3 第 3 步）', () => {
+  it('status 过滤 > 200 命中：取足再过滤，不漏结果', async () => {
+    const dir = path.join(home, 'nb-ceiling-filter')
+    const c = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'flat' })
+    await notebookLib.ensureNotebook(c)
+    const notesDir = path.join(c.notebook, c.notesDir)
+    fs.mkdirSync(notesDir, { recursive: true })
+    const write = (name: string, status: string, title: string): void => {
+      fs.writeFileSync(path.join(notesDir, name + '.md'),
+        `---\ntitle: "${title}"\nstatus: ${status}\ntype: concept\n---\n\n# ${title}\n\nbody\n`, 'utf8')
+    }
+    // 250 篇 superseded 全排在前面（title-asc），旧的 fetchLimit=200 会一条 active 都找不到
+    for (let i = 0; i < 250; i += 1) write('a-old-' + i, 'superseded', 'a-old-' + i)
+    for (let i = 0; i < 50; i += 1) write('z-new-' + i, 'active', 'z-new-' + i)
+    await zk.indexNotebook(c)
+
+    const active = await zk.searchNotesDetailed(c, { status: ['active'], type: ['concept'], limit: 50, sort: 'title-asc' })
+    expect(active.notes).toHaveLength(50)
+    expect(active.notes.every((n) => n.status === 'active')).toBe(true)
+    expect(active.scanned).toBe(300)
+    expect(active.completeness).toBe('complete')
+    expect(active.hasMore).toBe(false)
+
+    // 正常 limit 截断也要说清楚：300 篇命中只要 200 篇
+    const limited = await zk.searchNotesDetailed(c, { limit: 200, sort: 'title-asc' })
+    expect(limited.notes).toHaveLength(200)
+    expect(limited.completeness).toBe('partial')
+    expect(limited.hasMore).toBe(true)
+    expect(limited.scanned).toBe(201) // limit + 1：只检查到「还有第 201 条」为止
+  })
+
+  it('scanNotes：limit + 1 区分「正好 N 篇」与「还有更多」', async () => {
+    const dir = path.join(home, 'nb-ceiling-scan')
+    const c = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'flat' })
+    await notebookLib.ensureNotebook(c)
+    const notesDir = path.join(c.notebook, c.notesDir)
+    fs.mkdirSync(notesDir, { recursive: true })
+    for (let i = 0; i < 5; i += 1) fs.writeFileSync(path.join(notesDir, 'note-' + i + '.md'), '# note ' + i + '\n')
+    await zk.indexNotebook(c)
+
+    const cut = await zk.scanNotes(c, { limit: 3 })
+    expect(cut.notes).toHaveLength(3)
+    expect(cut.scanned).toBe(3)
+    expect(cut.completeness).toBe('partial')
+
+    const full = await zk.scanNotes(c, { limit: 5 })
+    expect(full.notes).toHaveLength(5)
+    expect(full.completeness).toBe('complete')
+  })
+
+  test('similarTitles：超过 300 篇的组报 droppedGroups，不再只给一个布尔', () => {
+    const notes: zk.NoteRecord[] = Array.from({ length: 301 }, (_, i) => ({
+      title: `相似标题第${i}号`,
+      path: `notes/similar-${i}.md`,
+      absPath: `/tmp/notes/similar-${i}.md`,
+      link: `[[notes/similar-${i}]]`,
+      tags: [],
+      created: '2026-01-01T00:00:00Z',
+      modified: '2026-01-01T00:00:00Z',
+      lead: '',
+      words: 1,
+      metadata: {},
+      status: 'active',
+      type: 'concept',
+      authority: 'expert',
+    }))
+    const bucket = lintLib.similarTitles(notes, false)
+    expect(bucket.droppedGroups).toBe(1)
+    expect(bucket.truncated).toBe(true)
+    expect(bucket.completeness).toBe('partial')
   })
 })
 

@@ -466,6 +466,91 @@ export function hasCjk(text) {
     return CJK_TEXT.test(String(text ?? ''));
 }
 /**
+ * 全量遍历用的字段格式（plan §0.5.1）：10k 实测 JSON 17.2 MB，
+ * 这些字段只要约 2 MB，且省掉 body / rawContent / snippets。
+ *
+ * 分隔符用控制字符：标题 / 标签 / lead 里几乎不会出现；lead 放最后，
+ * 解析时把剩余段重新拼回去，避免正文里的分隔符把记录切断。
+ */
+const LEAN_FIELD = '\u001f';
+const LEAN_RECORD = '\u001e';
+const LEAN_TAG = '\u001c';
+const LEAN_TEMPLATE = [
+    '{{absPath}}',
+    '{{title}}',
+    '{{wordCount}}',
+    '{{created}}',
+    '{{modified}}',
+    `{{join tags "${LEAN_TAG}"}}`,
+    '{{metadata.status}}',
+    '{{metadata.type}}',
+    '{{metadata.authority}}',
+    '{{metadata.date}}',
+    '{{metadata.supersede-reason}}',
+    '{{lead}}',
+].join(LEAN_FIELD);
+/** zk 模板给的是 `2026-01-02 03:04:05 +0000 UTC`，转成 Date 能吃的 ISO（zk 存的是 UTC） */
+function leanIso(value) {
+    const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/.exec(String(value).trim());
+    return m ? `${m[1]}T${m[2]}Z` : String(value).trim();
+}
+/**
+ * 解析 LEAN_TEMPLATE 的输出。字段顺序与模板一一对应；不足 11 段说明 zk 行为变了，
+ * 记 malformed（调用方报 unknown，而不是把空数组当「没有笔记」）。
+ */
+function parseLeanList(stdout, cfg) {
+    const text = String(stdout ?? '');
+    if (!text.trim())
+        return { notes: [], malformed: false };
+    const notes = [];
+    let malformed = false;
+    for (const chunk of text.split(LEAN_RECORD)) {
+        const record = chunk.replace(/^[\r\n]+|[\r\n]+$/g, '');
+        if (!record.trim())
+            continue;
+        const parts = record.split(LEAN_FIELD);
+        if (parts.length < 11) {
+            malformed = true;
+            continue;
+        }
+        const [absPath, title, words, created, modified, tags, status, type, authority, date, reason] = parts;
+        const lead = parts.slice(11).join(LEAN_FIELD).replace(/\s+/g, ' ').trim().slice(0, 200);
+        const abs = absPath ?? '';
+        if (!abs) {
+            malformed = true;
+            continue;
+        }
+        const rel = path.relative(cfg.notebook, abs).split(path.sep).join('/');
+        const metadata = {};
+        if (status)
+            metadata.status = status;
+        if (type)
+            metadata.type = type;
+        if (authority)
+            metadata.authority = authority;
+        if (date)
+            metadata.date = date;
+        if (reason)
+            metadata['supersede-reason'] = reason;
+        notes.push({
+            title: String(title ?? ''),
+            path: rel,
+            absPath: abs,
+            link: `[[${rel.replace(/\.[^./]+$/, '')}]]`,
+            tags: String(tags ?? '').split(LEAN_TAG).map((t) => t.trim()).filter(Boolean),
+            created: leanIso(created ?? ''),
+            modified: leanIso(modified ?? ''),
+            lead,
+            words: Number(words ?? 0),
+            metadata,
+            status: String(status ?? ''),
+            type: String(type ?? ''),
+            authority: String(authority ?? ''),
+        });
+    }
+    return { notes, malformed };
+}
+/**
  * 检索 + 用了哪种匹配策略。
  *
  * 中文只在 0 命中时兜底是不够的：FTS 命中 1–2 条时模型会以为「库里只有这些」，
@@ -477,10 +562,15 @@ export async function searchNotesDetailed(cfg, opts = {}, signal) {
     const statuses = (opts.status ?? []).filter(Boolean);
     const types = (opts.type ?? []).filter(Boolean);
     const jsFilter = statuses.length > 0 || types.length > 0;
-    // status / type 只能在 JS 层过滤（Z6），但 --limit 是 zk 先截断 —— 过滤前必须多取，否则「前 10 条里没有 active」会假空。
-    const fetchLimit = jsFilter ? 200 : limit;
-    const build = (strategy) => {
-        const args = ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', String(fetchLimit)];
+    // 有 JS 过滤时不能只取前 200 条：10k 库里前 200 条可能只有 3 条 active，
+    // 而全库有 50 条 —— 那是静默漏结果，不是截断。zk 没有 offset，无法真分页；
+    // 改用只取必要字段的一次全量扫描（10k ≈ 2 MB / 2.6 s，JSON 是 17.2 MB），
+    // 取到 MAX_SCAN + 1 条，超过 MAX_SCAN 才能确定「触顶」而不是刚好 10 000 条。
+    const scanLimit = MAX_SCAN;
+    const build = (strategy, format, fetchLimit) => {
+        const args = ['list', '--quiet', '--no-pager', '--format', format, '--limit', String(fetchLimit)];
+        if (format === LEAN_TEMPLATE)
+            args.push('-d', LEAN_RECORD);
         for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived }))
             args.push('-x', name);
         if (opts.query)
@@ -509,40 +599,124 @@ export async function searchNotesDetailed(cfg, opts = {}, signal) {
     // 否则工具枚举里给得出这个值、查询却永远命中 0 条。
     const keep = (n) => (statuses.length === 0 || statuses.includes(n.status || 'active')) &&
         (types.length === 0 || types.includes(n.type) || (types.includes('daily') && isUnderDir(n.path, cfg.dailyDir)));
-    const runStrategy = async (strategy) => {
-        const notes = parseList(await zk(cfg, build(strategy), { signal })).map((raw) => toRecord(raw, cfg));
-        return (jsFilter ? notes.filter(keep) : notes).slice(0, limit);
+    /** 无 JS 过滤：limit + 1 就够判断 hasMore，继续走 JSON（小、字段全） */
+    const plainStrategy = async (strategy) => {
+        const notes = parseList(await zk(cfg, build(strategy, 'json', limit + 1), { signal }))
+            .map((raw) => toRecord(raw, cfg));
+        return { notes, examined: notes.length };
     };
-    try {
-        const hits = await runStrategy();
-        // 没有查询词 / 纯 ASCII：维持单进程
-        if (!opts.query || !hasCjk(opts.query)) {
-            if (hits.length === 0 && opts.query)
-                return { notes: await runStrategy('re'), matchStrategy: 'regex' };
-            return { notes: hits, matchStrategy: 'fts' };
-        }
-        // 含中文：FTS 与正则各跑一次，合并去重（FTS 的排序在前，正则补漏在后）。
-        // 正则这一路单独兜住：FTS 已经有结果时，子串匹配出错不该把整次检索拖成失败 ——
-        // 退回 hits、按 fts 报告，与「正则没补到东西」是同一个可观测结果。
-        let regex = [];
+    /** 有 JS 过滤：扫到 MAX_SCAN + 1，过滤后再按 limit 截断；字段格式见 LEAN_TEMPLATE */
+    const filteredStrategy = async (strategy) => {
+        const parsed = parseLeanList(await zk(cfg, build(strategy, LEAN_TEMPLATE, scanLimit + 1), { signal }), cfg);
+        return {
+            notes: parsed.notes.filter(keep),
+            examined: parsed.notes.length,
+            capped: parsed.notes.length > scanLimit,
+            malformed: parsed.malformed,
+        };
+    };
+    const finish = (notes, examined, extra = {}) => {
+        const more = notes.length > limit || extra.capped === true;
+        const completeness = more
+            ? 'partial'
+            : extra.malformed || extra.strategyFailed ? 'unknown' : 'complete';
+        return { notes: notes.slice(0, limit), hasMore: more, completeness, scanned: examined, matchStrategy: 'fts' };
+    };
+    /**
+     * mixed 的判据必须看「截断后的可见结果」：FTS 已占满 limit 时，正则补的那条
+     * 即使存在也会被 slice 掉，不能还报 mixed（否则界面谎称补上了全文索引漏掉的）。
+     */
+    const strategyOf = (base, merged) => {
+        const top = new Set(base.slice(0, limit).map((n) => n.path));
+        const visibleExtra = merged.slice(0, limit).some((n) => !top.has(n.path));
+        return visibleExtra ? (base.length ? 'mixed' : 'regex') : base.length ? 'fts' : 'regex';
+    };
+    if (!jsFilter) {
         try {
-            regex = await runStrategy('re');
+            const hits = await plainStrategy();
+            // 没有查询词 / 纯 ASCII：维持单进程
+            if (!opts.query || !hasCjk(opts.query)) {
+                if (hits.examined === 0 && opts.query) {
+                    const retry = await plainStrategy('re');
+                    return { ...finish(retry.notes, retry.examined), matchStrategy: 'regex' };
+                }
+                return finish(hits.notes, hits.examined);
+            }
+            // 含中文：FTS 与正则各跑一次，合并去重（FTS 的排序在前，正则补漏在后）。
+            // 正则这一路单独兜住：FTS 已经有结果时，子串匹配出错不该把整次检索拖成失败。
+            let regex = null;
+            let strategyFailed = false;
+            try {
+                regex = await plainStrategy('re');
+            }
+            catch (err) {
+                if (!(err instanceof ZkError))
+                    throw err;
+                strategyFailed = true;
+            }
+            const seen = new Set(hits.notes.map((n) => n.path));
+            const merged = [...hits.notes];
+            for (const n of regex?.notes ?? []) {
+                if (seen.has(n.path))
+                    continue;
+                seen.add(n.path);
+                merged.push(n);
+            }
+            return {
+                ...finish(merged, hits.examined + (regex?.examined ?? 0), { strategyFailed }),
+                matchStrategy: strategyOf(hits.notes, merged),
+            };
+        }
+        catch (err) {
+            if (opts.query && err instanceof ZkError) {
+                const retry = await plainStrategy('re');
+                return { ...finish(retry.notes, retry.examined), matchStrategy: 'regex' };
+            }
+            throw err;
+        }
+    }
+    // ── 有 status / type 过滤：取足再过滤 ─────────────────────────────
+    try {
+        const hits = await filteredStrategy();
+        if (!opts.query || !hasCjk(opts.query)) {
+            if (hits.examined === 0 && opts.query) {
+                const retry = await filteredStrategy('re');
+                return { ...finish(retry.notes, retry.examined, retry), matchStrategy: 'regex' };
+            }
+            return finish(hits.notes, hits.examined, hits);
+        }
+        let regex = null;
+        let strategyFailed = false;
+        try {
+            regex = await filteredStrategy('re');
         }
         catch (err) {
             if (!(err instanceof ZkError))
                 throw err;
+            strategyFailed = true;
         }
-        const seen = new Set(hits.map((n) => n.path));
-        const merged = [...hits, ...regex.filter((n) => !seen.has(n.path))].slice(0, limit);
-        // 补漏真的进了结果才算 mixed：FTS 正好占满 limit 时正则那条会被 slice 掉，
-        // 再报 mixed 就是谎报「补上了全文索引漏掉的」（界面文案据此说话）。
-        if (merged.length === hits.length)
-            return { notes: hits, matchStrategy: hits.length ? 'fts' : 'regex' };
-        return { notes: merged, matchStrategy: hits.length ? 'mixed' : 'regex' };
+        const seen = new Set(hits.notes.map((n) => n.path));
+        const merged = [...hits.notes];
+        for (const n of regex?.notes ?? []) {
+            if (seen.has(n.path))
+                continue;
+            seen.add(n.path);
+            merged.push(n);
+        }
+        return {
+            ...finish(merged, hits.examined + (regex?.examined ?? 0), {
+                capped: hits.capped || regex?.capped === true,
+                malformed: hits.malformed || regex?.malformed === true,
+                strategyFailed,
+            }),
+            matchStrategy: strategyOf(hits.notes, merged),
+        };
     }
     catch (err) {
-        if (opts.query && err instanceof ZkError)
-            return { notes: await runStrategy('re'), matchStrategy: 'regex' };
+        if (opts.query && err instanceof ZkError) {
+            const retry = await filteredStrategy('re');
+            return { ...finish(retry.notes, retry.examined, retry), matchStrategy: 'regex' };
+        }
         throw err;
     }
 }
@@ -552,25 +726,47 @@ export async function searchNotes(cfg, opts = {}, signal) {
 }
 /** 巡检 / 做梦一次最多扫多少篇：到顶就告警，不静默截断（静默失败最难查） */
 export const MAX_SCAN = 10_000;
-/** 一次取回全部笔记（巡检 / 做梦用；调用方自己截断）。`warnings` 见 `zk()`。 */
-export async function allNotes(cfg, opts = {}, signal) {
+/**
+ * 一次取回全部笔记（巡检 / 做梦 / 首页用），并明确「有没有扫全」。
+ *
+ * 取 `limit + 1` 条：刚好等于 limit 时不能判断是不是触顶，多取一条才分得出
+ * 「库里正好 10 000 篇」和「还有第 10 001 篇」。字段用 LEAN_TEMPLATE：
+ * 10k 实测 JSON 17.2 MB / 2.3 s，精简格式约 2 MB / 2.6 s，少 8 倍字节。
+ * `warnings` 见 `zk()`。
+ */
+export async function scanNotes(cfg, opts = {}, signal) {
     const limit = Math.min(MAX_SCAN, Math.max(1, Math.trunc(opts.limit ?? MAX_SCAN)));
-    const args = ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', String(limit)];
+    const args = ['list', '--quiet', '--no-pager', '--format', LEAN_TEMPLATE, '-d', LEAN_RECORD, '--limit', String(limit + 1)];
     for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived }))
         args.push('-x', name);
-    return parseList(await zk(cfg, args, { signal, warnings: opts.warnings })).map((raw) => toRecord(raw, cfg));
+    const parsed = parseLeanList(await zk(cfg, args, { signal, warnings: opts.warnings }), cfg);
+    const capped = parsed.notes.length > limit;
+    const notes = capped ? parsed.notes.slice(0, limit) : parsed.notes;
+    const completeness = parsed.malformed ? 'unknown' : capped ? 'partial' : 'complete';
+    return { notes, completeness, scanned: notes.length, limit };
+}
+/** 旧入口：只要笔记。需要三态（lint / dream / 首页）用 `scanNotes`。 */
+export async function allNotes(cfg, opts = {}, signal) {
+    return (await scanNotes(cfg, opts, signal)).notes;
 }
 /**
  * 用 zk 的过滤器挑笔记，只取**绝对路径**。
  * 别用 `{{path}}`：它相对 cwd，换个工作目录就变成 `../../tmp/...`（Z4 同款坑）。
- * 一类过滤器一次进程，不要按笔记逐条跑。
+ * 一类过滤器一次进程，不要按笔记逐条跑；取 MAX_SCAN + 1 条才能区分「正好 10 000」与「还有更多」。
  */
-export async function notesWithFlag(cfg, flag, signal) {
-    const args = ['list', '--quiet', '--no-pager', '--format', '{{absPath}}', '--limit', '10000', flag];
+export async function scanNotesWithFlag(cfg, flag, signal) {
+    const args = ['list', '--quiet', '--no-pager', '--format', '{{absPath}}', '--limit', String(MAX_SCAN + 1), flag];
     for (const name of excludedNames(cfg))
         args.push('-x', name);
     const out = await zk(cfg, args, { signal });
-    return out.split('\n').map((line) => line.trim()).filter(Boolean);
+    const all = out.split('\n').map((line) => line.trim()).filter(Boolean);
+    const capped = all.length > MAX_SCAN;
+    const paths = capped ? all.slice(0, MAX_SCAN) : all;
+    return { paths, completeness: capped ? 'partial' : 'complete', scanned: paths.length };
+}
+/** 旧入口：只要路径（调用方不需要三态时用） */
+export async function notesWithFlag(cfg, flag, signal) {
+    return (await scanNotesWithFlag(cfg, flag, signal)).paths;
 }
 /**
  * `zk graph` 的 `--limit` 上限。注意它限的是**笔记载入数**（`zk graph --help`：`Limit the number of notes found`），
@@ -596,13 +792,13 @@ export async function graphEdges(cfg, signal, opts = {}) {
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
     if (start < 0 || end <= start)
-        return { edges: [], truncated: false };
+        return { edges: [], truncated: false, completeness: 'unknown' };
     let graph;
     try {
         graph = JSON.parse(text.slice(start, end + 1));
     }
     catch {
-        return { edges: [], truncated: false };
+        return { edges: [], truncated: false, completeness: 'unknown' };
     }
     const out = [];
     const nodes = new Set();
@@ -618,7 +814,10 @@ export async function graphEdges(cfg, signal, opts = {}) {
     }
     // notes 是实际载入的笔记数；两个条件取或，宁可多报一次也别静默漏掉告警
     const loaded = Array.isArray(graph.notes) ? graph.notes.length : 0;
-    return { edges: out, truncated: loaded >= limit || nodes.size >= limit };
+    const truncated = loaded >= limit || nodes.size >= limit;
+    // 没有 notes 数组（老 zk）时，nodes 没到上限也不能断言完整
+    const completeness = truncated ? 'partial' : Array.isArray(graph.notes) ? 'complete' : 'unknown';
+    return { edges: out, truncated, completeness };
 }
 /**
  * 全图预算的默认值（篇数）：真正生效的是配置 `graphBudgetNotes`（默认取它）。
@@ -641,15 +840,16 @@ async function linkedNotes(cfg, flag, rel, opts = {}, signal) {
     const root = path.resolve(cfg.notebook);
     const abs = path.resolve(cfg.notebook, rel);
     if (abs !== root && !abs.startsWith(root + path.sep))
-        return { notes: [], truncated: false };
+        return { notes: [], truncated: false, completeness: 'complete' };
     if (!fs.existsSync(abs))
-        return { notes: [], truncated: false };
+        return { notes: [], truncated: false, completeness: 'complete' };
     const limit = Math.min(MAX_SCAN, Math.max(1, Math.trunc(opts.limit ?? MAX_LINK_NOTES)));
     const args = ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', String(limit + 1), flag, abs];
     for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived }))
         args.push('-x', name);
     const notes = parseList(await zk(cfg, args, { signal })).map((raw) => toRecord(raw, cfg));
-    return { notes: notes.slice(0, limit), truncated: notes.length > limit };
+    const truncated = notes.length > limit;
+    return { notes: notes.slice(0, limit), truncated, completeness: truncated ? 'partial' : 'complete' };
 }
 /** 谁链到这篇（入链 / 反链）。路径是笔记本相对的；目标不存在时返回空，不返回全库 */
 export async function backlinksOf(cfg, rel, opts = {}, signal) {
@@ -1251,7 +1451,8 @@ export async function notebookStats(cfg, signal) {
     // 并发的进程会互相看到对方写到一半的结果，同一次统计里「归档」和「活跃」就对不上。
     const brokenLinks = await count(['--broken-links']);
     const orphans = await count(['--orphan']);
-    const all = await allNotes(cfg, { includeArchived: true }, signal);
+    const scan = await scanNotes(cfg, { includeArchived: true }, signal);
+    const all = scan.notes;
     const live = all.filter((n) => !inArchive(cfg, n.path));
     // 标签数只从可见笔记汇总：zk tag list 没有 -x，直接用它会把 raw/inbox/archive/meta 的标签也算进来。
     return {
@@ -1263,6 +1464,8 @@ export async function notebookStats(cfg, signal) {
         // 含已归档的，以及手工标了但没搬进 archive 的（正常流程会搬，这里兜手滑）
         superseded: all.filter((n) => n.status === 'superseded').length,
         ...distributionOf(live),
+        completeness: scan.completeness,
+        scanLimit: scan.limit,
     };
 }
 /**

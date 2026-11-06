@@ -14,8 +14,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
-import type { NoteRecord } from './zk.ts'
-import { allNotes, GRAPH_BUDGET_NOTES, graphEdges, localDate, MAX_SCAN } from './zk.ts'
+import type { Completeness, NoteRecord } from './zk.ts'
+import { GRAPH_BUDGET_NOTES, graphEdges, localDate, scanNotes } from './zk.ts'
 import { parseFrontmatter } from './frontmatter.ts'
 // memory.ts 也 import 本模块（DREAM_INTERVAL_DAYS / daysSinceDream）：这里是运行期才取用，
 // 循环引用在 ESM 下安全 —— 不要在模块顶层调用 memoryUsage。
@@ -146,6 +146,10 @@ export interface DreamResult {
   since: string
   /** true = 触到扫描上限，窗口与排名都不完整 */
   truncated: boolean
+  /** 三态写法：complete / partial（扫描触顶）/ unknown（扫描结果无法解析） */
+  completeness: Completeness
+  /** 本次扫描上限（MAX_SCAN） */
+  scanLimit: number
   /**
    * true = 库太大（> 生效的 `graphBudget`，默认 `graphBudgetNotes = 2000`），这次没有建全图统计入链。
    * `cited` / `citedBy` 全是 0、`topCited` 为空 —— 那是「没算」，不是「没人引」。
@@ -381,7 +385,8 @@ export async function dreamNotebook(
   const sinceMs = now.getTime() - windowDays * 86_400_000
 
   // 顺序跑：两个 zk 进程同时补索引会撞 SQLite 写锁（lint 里同样处理）
-  const notes = await allNotes(cfg, {}, signal)
+  const scan = await scanNotes(cfg, {}, signal)
+  const notes = scan.notes
   // 全图在 10k 上 26–31 s / 17 MB（plan §0.5.1）：超过预算就不建，并显式告诉调用方。
   // 预算来自配置（设置页可调）；opts.graphBudget 只给测试覆盖。
   const graphBudget = Math.max(0, Math.trunc(opts.graphBudget ?? cfg.graphBudgetNotes ?? GRAPH_BUDGET_NOTES))
@@ -511,7 +516,9 @@ export async function dreamNotebook(
     notebook: cfg.notebook,
     windowDays,
     since: localDate(new Date(sinceMs).toISOString()),
-    truncated: notes.length >= MAX_SCAN,
+    truncated: scan.completeness !== 'complete',
+    completeness: scan.completeness,
+    scanLimit: scan.limit,
     graphSkipped: !graphReady,
     graphBudget,
     counts: {

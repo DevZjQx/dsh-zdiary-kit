@@ -21,7 +21,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { execStats } from '../src/lib/exec.ts'
-import { allNotes, backlinksOf, graphEdges, notebookStats, searchNotesDetailed, zk, resolveZk } from '../src/lib/zk.ts'
+import { backlinksOf, graphEdges, notebookStats, scanNotes, searchNotesDetailed, zk, resolveZk } from '../src/lib/zk.ts'
 import { buildMemoryPayload } from '../src/lib/memory.ts'
 import { lintNotebook } from '../src/lib/lint.ts'
 import { dreamNotebook } from '../src/lib/dream.ts'
@@ -158,33 +158,53 @@ const CASES: Case[] = [
     },
   },
   {
+    id: 'scan.10k',
+    tool: '首页 / 标签页 / lint / dream',
+    what: '全量扫描（精简字段，limit + 1 判触顶）',
+    timeoutMs: 60_000,
+    run: async ({ cfg }) => {
+      const scan = await scanNotes(cfg, { limit: 10_000 })
+      return { count: scan.notes.length, truncated: scan.completeness !== 'complete' }
+    },
+  },
+  {
+    id: 'search.filtered',
+    tool: 'zk_query',
+    what: 'status 过滤（取足到 MAX_SCAN + 1 再过滤）',
+    timeoutMs: 60_000,
+    run: async ({ cfg }) => {
+      const r = await searchNotesDetailed(cfg, { status: ['active'], limit: 10 })
+      return { count: r.notes.length, truncated: r.completeness !== 'complete' }
+    },
+  },
+  {
     id: 'list.10k',
     tool: 'zk_search / 首页',
     what: '全量列笔记（--format json --limit 10000）',
     timeoutMs: 60_000,
     run: async ({ cfg }) => {
-      const notes = await allNotes(cfg, { limit: 10_000 })
-      return { count: notes.length, truncated: notes.length >= 10_000 }
+      const out = await zk(cfg, ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', '10000'])
+      return { count: out.length, truncated: out.length >= 10_000 }
     },
   },
   {
     id: 'list.2k',
     tool: '首页 / 标签页',
-    what: 'INDEX_LIMIT 现取值（--limit 2000）',
+    what: '旧 INDEX_LIMIT 对照（--format json --limit 2000）',
     timeoutMs: 60_000,
     run: async ({ cfg }) => {
-      const notes = await allNotes(cfg, { limit: 2000 })
-      return { count: notes.length, truncated: notes.length >= 2000 }
+      const out = await zk(cfg, ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', '2000'])
+      return { count: out.length, truncated: out.length >= 2000 }
     },
   },
   {
     id: 'list.200',
     tool: 'zk_search',
-    what: '静默天花板（--limit 200）',
+    what: '旧 fetchLimit 对照（--format json --limit 200）',
     timeoutMs: 60_000,
     run: async ({ cfg }) => {
-      const notes = await allNotes(cfg, { limit: 200 })
-      return { count: notes.length, truncated: notes.length >= 200 }
+      const out = await zk(cfg, ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', '200'])
+      return { count: out.length, truncated: out.length >= 200 }
     },
   },
   {

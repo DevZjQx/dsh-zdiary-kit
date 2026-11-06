@@ -173,12 +173,19 @@ function lintReport(r) {
     if (memLine)
         lines.push(memLine);
     lines.push(...formatLintExtras(r));
-    if (r.similarTitles.truncated)
-        lines.push('⚠️ 疑似重复只比较了部分笔记（同目录超过 300 篇或扫描触顶）：可能漏报');
-    if (r.truncated)
-        lines.push('⚠️ 笔记数触到扫描上限：结果不完整（只会漏报，不会误报）');
-    if (oneWay.edgesTruncated)
+    if (r.similarTitles.completeness === 'partial') {
+        lines.push('⚠️ 疑似重复只比较了部分笔记：可能漏报' +
+            (r.similarTitles.droppedGroups > 0 ? `（${r.similarTitles.droppedGroups} 组超过 300 篇，只比较了前 300 篇）` : '') +
+            (r.completeness === 'partial' ? '（笔记扫描触顶）' : ''));
+    }
+    if (r.completeness === 'partial')
+        lines.push(`⚠️ 笔记数触到扫描上限（${r.scanLimit} 篇）：结果不完整（只会漏报，不会误报）`);
+    else if (r.completeness === 'unknown')
+        lines.push('⚠️ 扫描结果无法完整解析：下面的数字不能当成全部（可能少报）');
+    if (oneWay.completeness === 'partial')
         lines.push('⚠️ 建图笔记载入触到上限：单向链接可能误报（回链边未加载）');
+    else if (oneWay.completeness === 'unknown')
+        lines.push('⚠️ 无法确认单向链接的边集是否完整（旧版 zk 未给出载入篇数）：可能误报');
     lines.push('（只报告，没有改动任何文件）');
     return lines.join('\n');
 }
@@ -250,8 +257,10 @@ function dreamReport(r) {
     }
     if (!r.newNotes.length && !r.dailyLooseEnds.length && !r.topCited.length)
         lines.push('这个窗口里没有新材料。');
-    if (r.truncated)
-        lines.push('⚠️ 笔记数触到扫描上限：窗口与排名都不完整');
+    if (r.completeness === 'partial')
+        lines.push(`⚠️ 笔记数触到扫描上限（${r.scanLimit} 篇）：窗口与排名都不完整`);
+    else if (r.completeness === 'unknown')
+        lines.push('⚠️ 扫描结果无法完整解析：窗口与排名可能不完整');
     if (r.graphSkipped) {
         lines.push(`⚠️ 库超过全图统计上限（${r.graphBudget} 篇），这次没统计入链：被引数与 topCited 是空的，不代表没人引用；可在设置页调整「全图统计上限（篇）」（graphBudgetNotes）`);
     }

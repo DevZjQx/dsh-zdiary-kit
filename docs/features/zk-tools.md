@@ -54,8 +54,11 @@ stdout 原样返回（不做 JSON 解析），超过 `maxReadChars` 截断；exi
 所有查询都带 `excludedNames(cfg)` 的**绝对路径**排除（`raw` / `inbox` / `archive` + 七个 meta 文件）：
 `-x` 是相对 cwd 解析的，传相对名在换工作目录后会静默失效。`zk_query` 的 `include_archived: true` 会去掉 archive 排除；
 如果没显式给 `status`，此时也不再默认卡 `active`（否则归档里的 `superseded` 永远查不出来）。
-`status` / `type` 只能靠 `metadata` 在 JS 层过滤（zk 的 `--match` 不索引 frontmatter），
-所以带这两个过滤时会先按 `--limit 200` 多取再截断 —— 否则「前 10 条里没有 active」会被误读成「没有结果」。
+`status` / `type` 只能靠 `metadata` 在 JS 层过滤（zk 的 `--match` 不索引 frontmatter）。
+带这两个过滤时不再只取前 200 条：zk 没有 offset，改为一次取到 `MAX_SCAN + 1`（10k 约 2 MB / 2.6 s，JSON 是 17.2 MB），
+过滤后再按 `limit` 截断 —— 否则「前 200 条里没有 active、全库其实有 50 条」就是静默漏结果。
+结果带 `completeness`（`complete` / `partial` / `unknown`）、`hasMore` 与 `scanned`：
+`partial` 说明还有命中没返回（`limit` 或扫描上限），`unknown` 表示解析 / 补充检索失败、不能当作「没有」。
 `status` 缺省按 `active` 算（`include_archived: true` 且未显式给 status 是例外）：0.1.0 的老笔记没有 frontmatter，不这样兜，flat vault 上一条都查不出来。
 `type: daily` 按 `cfg.dailyDir` 路径匹配：layered 日记模板没有 frontmatter，老日记也没有；只按 `metadata.type` 比对的话，枚举里的 `daily` 永远命中 0 条。
 `zk_new` 撞名直接报错（`zk new` 遇到同名文件是 exit 0 + 不写内容，Z8），不自动加后缀。
@@ -173,7 +176,8 @@ render 明说「被引数与 topCited 是空的，不代表没人引用」——
 全报会淹掉真问题；断链仍包含日记。
 `similarTitles`（P2-10）是「改一两个字」的疑似重复：NFKC + 去标点后按字符二元组算 Jaccard ≥ 0.6，
 或短串（≥ 6 字）被长串包含；只在同目录内比较，短于 4 字的标题跳过（`RAG` / `RAG 2` 的二元组太少，噪声大于信号）。
-与 `duplicateTitles` 分开报：全等的直接进重名，不再进疑似；只在内存里比较，同目录超过 300 篇或扫描触顶时置 `truncated`。只报告，合并由人裁决。
+与 `duplicateTitles` 分开报：全等的直接进重名，不再进疑似；只在内存里比较，同目录超过 300 篇或扫描触顶时置 `truncated`，
+并在 `completeness = partial` 的同时报 `droppedGroups`（有几组只比较了前 300 篇）。只报告，合并由人裁决。
 **日记与纯数字标题不参与**：日记标题就是日期（`2026-10-01` / `2026-10-02` 的二元组相似度是 0.86），
 不排除的话一年日记能吐出上千组误报、把真问题淹掉；按日期 / 编号命名的笔记同理（`isDaily` 在调用方过滤，纯数字 key 在函数内跳过）。
 `timeline`（3.1）查日记时间轴，只报告、不改文件：layered（有 `## Events`，大小写不敏感，与 `appendDaily` 找小节的口径一致）
@@ -198,7 +202,8 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 搜不到，也不会出现在上面任何一个桶里（表现成邻居突然孤儿 / 断链）。`zk()` 收 exit 0 的 stderr warning，
 按 `excludedNames` 同一套口径过滤（归档 / raw / inbox / meta 的坏文件本来就不参与检索，报了只会淹掉真问题），
 `zk_lint` 与 `zk-kit doctor` 各回一行；`doctor` 用 ⚠️ 标，不影响它的退出码。
-一次最多扫 10000 篇，到顶时两个工具都返回 `truncated: true` 并在文本里告警：笔记扫描少一篇只会漏报。
+一次最多扫 10000 篇，到顶时两个工具都返回 `truncated: true`、`completeness: partial`（带 `scanLimit`）并在文本里告警：
+笔记扫描少一篇只会漏报。三态是新字段，旧客户端可忽略 `completeness`，但不能再把「返回条数」当「结果数」。
 边是另一条上限：小库的 `zk graph --limit 10000`（数的是笔记载入数）到顶、或大库的按篇反查触到
 50 个目标 / 60 个子进程时，`oneWayLinks.edgesTruncated` 为 true —— 缺掉的回链边会把双向误判成单向，
 这是巡检里唯一可能**误报**的截断，看到告警先归档旧笔记或缩小排查范围再重跑。
@@ -264,4 +269,5 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 纯 ASCII 查询仍只跑一个进程，不付这份开销。`mixed` 只在正则补到的笔记**真的进了返回**时才报：FTS 占满 `limit` 时
 两者按 `limit` 合并会把补的分片切掉，那时仍报 `fts`，界面文案不会谎称「已补上」。
 正则这一路单独兜错：子串匹配超时 / 报错时退回 FTS 的结果并按 `fts` 报，不让一次检索整体失败（FTS 0 命中时则返回空）。
+这种情况下 `completeness = unknown`：结果可能少了正则补的那部分，不能当成「全部命中」。
 `zk_query` 是 `zk list` 的透传接口，保持原语义。

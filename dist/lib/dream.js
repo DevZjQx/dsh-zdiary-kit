@@ -13,7 +13,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { allNotes, GRAPH_BUDGET_NOTES, graphEdges, localDate, MAX_SCAN } from './zk.js';
+import { GRAPH_BUDGET_NOTES, graphEdges, localDate, scanNotes } from './zk.js';
 import { parseFrontmatter } from './frontmatter.js';
 // memory.ts 也 import 本模块（DREAM_INTERVAL_DAYS / daysSinceDream）：这里是运行期才取用，
 // 循环引用在 ESM 下安全 —— 不要在模块顶层调用 memoryUsage。
@@ -286,7 +286,8 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
     const windowDays = windowDaysOf(cfg, now, opts.days);
     const sinceMs = now.getTime() - windowDays * 86_400_000;
     // 顺序跑：两个 zk 进程同时补索引会撞 SQLite 写锁（lint 里同样处理）
-    const notes = await allNotes(cfg, {}, signal);
+    const scan = await scanNotes(cfg, {}, signal);
+    const notes = scan.notes;
     // 全图在 10k 上 26–31 s / 17 MB（plan §0.5.1）：超过预算就不建，并显式告诉调用方。
     // 预算来自配置（设置页可调）；opts.graphBudget 只给测试覆盖。
     const graphBudget = Math.max(0, Math.trunc(opts.graphBudget ?? cfg.graphBudgetNotes ?? GRAPH_BUDGET_NOTES));
@@ -419,7 +420,9 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         notebook: cfg.notebook,
         windowDays,
         since: localDate(new Date(sinceMs).toISOString()),
-        truncated: notes.length >= MAX_SCAN,
+        truncated: scan.completeness !== 'complete',
+        completeness: scan.completeness,
+        scanLimit: scan.limit,
         graphSkipped: !graphReady,
         graphBudget,
         counts: {

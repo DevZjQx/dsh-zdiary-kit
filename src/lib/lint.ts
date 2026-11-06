@@ -25,9 +25,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
-import type { GraphEdge, NoteRecord } from './zk.ts'
+import type { Completeness, GraphEdge, NoteRecord } from './zk.ts'
 import {
-  allNotes, backlinksOf, GRAPH_BUDGET_NOTES, graphEdges, localDate, MAX_SCAN, notesWithFlag,
+  backlinksOf, GRAPH_BUDGET_NOTES, graphEdges, localDate, MAX_SCAN, scanNotes, scanNotesWithFlag,
   outlinksOf, parseErrorWarnings,
 } from './zk.ts'
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
@@ -107,6 +107,13 @@ export interface LintSimilarBucket {
   total: number
   /** true = 候选太多只看了一部分 / 笔记扫描触顶：只漏报，不误报 */
   truncated: boolean
+  /**
+   * complete = 所有同目录对都算过；partial = 有组被 SIMILAR_GROUP_MAX 截断或扫描触顶；
+   * unknown = 扫描结果无法解析（scanNotes 给的）
+   */
+  completeness: Completeness
+  /** 因超过 SIMILAR_GROUP_MAX 而只比较了前 300 篇的组数（不是被丢的条目数） */
+  droppedGroups: number
   items: LintSimilarGroup[]
 }
 
@@ -132,6 +139,8 @@ export interface LintOneWayBucket {
    * 这边**缺一条回链边就会把双向误判成单向** —— 触顶必须显式报出来。
    */
   edgesTruncated: boolean
+  /** 上面那条的三种写法：partial = 边集不完整；unknown = 老 zk 连是否触顶都判断不了 */
+  completeness: Completeness
   items: LintOneWayEntry[]
 }
 
@@ -298,6 +307,10 @@ export interface LintResult {
    * 边截断是另一回事，见 `oneWayLinks.edgesTruncated`。
    */
   truncated: boolean
+  /** 三态写法：complete / partial（扫描触顶）/ unknown（扫描结果无法解析） */
+  completeness: Completeness
+  /** 本次扫描上限（MAX_SCAN）；页面用它解释「为什么只统计了这么多」 */
+  scanLimit: number
   staleDays: number
   /** zk 解析不了 frontmatter 的笔记：它们不在索引里，下面各桶都统计不到 */
   parseErrors: LintParseBucket
@@ -379,11 +392,13 @@ export function similarTitles(notes: NoteRecord[], scanTruncated: boolean, max =
   }
 
   let truncated = scanTruncated
+  let droppedGroups = 0
   const found: LintSimilarGroup[] = []
   for (const group of groups.values()) {
     let list = group
     if (list.length > SIMILAR_GROUP_MAX) {
       truncated = true
+      droppedGroups += 1
       list = list.slice(0, SIMILAR_GROUP_MAX)
     }
     for (let i = 0; i < list.length; i++) {
@@ -404,7 +419,8 @@ export function similarTitles(notes: NoteRecord[], scanTruncated: boolean, max =
     }
   }
   found.sort((a, b) => b.score - a.score || a.paths[0].localeCompare(b.paths[0]))
-  return { total: found.length, truncated, items: found.slice(0, max) }
+  const completeness: Completeness = truncated ? 'partial' : 'complete'
+  return { total: found.length, truncated, completeness, droppedGroups, items: found.slice(0, max) }
 }
 
 /** 注入的三份 meta 里只有 MEMORY / USER 会写来源链接；AGENTS 是规则，不查 */
@@ -978,10 +994,18 @@ export async function lintNotebook(
   const isDaily = (abs: string): boolean =>
     path.resolve(abs) === dailyAbs || path.resolve(abs).startsWith(dailyAbs + path.sep)
 
-  const notes = await allNotes(cfg, { warnings }, signal)
-  const orphanAbs = await notesWithFlag(cfg, '--orphan', signal)
-  const brokenAbs = await notesWithFlag(cfg, '--broken-links', signal)
-  const taglessAbs = await notesWithFlag(cfg, '--tagless', signal)
+  const scan = await scanNotes(cfg, { warnings }, signal)
+  const notes = scan.notes
+  const orphanScan = await scanNotesWithFlag(cfg, '--orphan', signal)
+  const brokenScan = await scanNotesWithFlag(cfg, '--broken-links', signal)
+  const taglessScan = await scanNotesWithFlag(cfg, '--tagless', signal)
+  const orphanAbs = orphanScan.paths
+  const brokenAbs = brokenScan.paths
+  const taglessAbs = taglessScan.paths
+  // 任一过滤器触顶都意味着对应桶少了；三态取最坏值（partial > unknown > complete）
+  const worst = (values: Completeness[]): Completeness =>
+    values.includes('partial') ? 'partial' : values.includes('unknown') ? 'unknown' : 'complete'
+  const completeness = worst([scan.completeness, orphanScan.completeness, brokenScan.completeness, taglessScan.completeness])
   // 别用 `path.resolve(n.absPath || n.path)`：absPath 缺失时相对路径会按进程 cwd 解析，键就错了。
   const byAbs = new Map(
     notes.map((n) => [n.absPath ? path.resolve(n.absPath) : path.resolve(cfg.notebook, n.path), n]),
@@ -1077,13 +1101,14 @@ export async function lintNotebook(
     let left = MAX_ONE_WAY_QUERIES
     const spend = (): boolean => (left > 0 ? ((left -= 1), true) : false)
 
-    const missingAbs = await notesWithFlag(cfg, '--missing-backlink', signal)
-    const targets = missingAbs
+    const missing = await scanNotesWithFlag(cfg, '--missing-backlink', signal)
+    let truncated = missing.completeness !== 'complete'
+    const targets = missing.paths
       .map((abs) => path.relative(cfg.notebook, abs).split(path.sep).join('/'))
       .filter((rel) => byPath.has(rel) && !isDaily(path.resolve(cfg.notebook, rel)))
       .sort((a, b) => a.localeCompare(b))
     const capped = targets.slice(0, MAX_ONE_WAY_TARGETS)
-    let truncated = targets.length > capped.length
+    if (targets.length > capped.length) truncated = true
 
     const rows: OneWayRow[] = []
     for (const target of capped) {
@@ -1111,9 +1136,11 @@ export async function lintNotebook(
   const graphBudget = Math.max(0, Math.trunc(opts.graphBudget ?? cfg.graphBudgetNotes ?? GRAPH_BUDGET_NOTES))
   const oneWayRows: OneWayRow[] = []
   let oneWayTruncated = false
+  let oneWayCompleteness: Completeness = 'complete'
   if (notes.length <= graphBudget) {
     const graph = await graphEdges(cfg, signal)
     oneWayTruncated = graph.truncated
+    oneWayCompleteness = graph.completeness
     // 图里的路径是笔记本相对：先拼回绝对路径再判断是不是日记（isDaily 收的是绝对路径）
     for (const row of oneWayLinks(graph.edges, notes, (p) => isDaily(path.resolve(cfg.notebook, p)))) {
       oneWayRows.push({
@@ -1125,6 +1152,7 @@ export async function lintNotebook(
     const scanned = await oneWayByQueries()
     oneWayRows.push(...scanned.rows)
     oneWayTruncated = scanned.truncated
+    oneWayCompleteness = scanned.truncated ? 'partial' : 'complete'
   }
 
   const linksOnly = opts.linksOnly === true
@@ -1173,11 +1201,12 @@ export async function lintNotebook(
     bodyOnly,
     linksOnly,
     edgesTruncated: oneWayTruncated,
+    completeness: oneWayCompleteness,
     items: oneWayItems.slice(0, MAX_ITEMS),
   }
 
   const parseErrors = parseErrorWarnings(cfg, warnings)
-  const scanTruncated = notes.length >= MAX_SCAN
+  const scanTruncated = completeness !== 'complete'
 
   const staleNotes = notes
     .map((n) => ({ note: n, at: Date.parse(n.modified) }))
@@ -1200,6 +1229,8 @@ export async function lintNotebook(
     notebook: cfg.notebook,
     notes: notes.length,
     truncated: scanTruncated,
+    completeness,
+    scanLimit: scan.limit,
     staleDays,
     parseErrors: { total: parseErrors.length, items: parseErrors.slice(0, MAX_ITEMS) },
     orphans: bucket(orphanAbs.filter((abs) => !isDaily(abs))),

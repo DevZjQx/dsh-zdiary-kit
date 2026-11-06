@@ -17,8 +17,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isLoopback, json, ROUTE_BASE } from '../../lib/http.ts'
 import { config } from '../../config/store.ts'
 import type { Config } from '../../config/store.ts'
-import { absPathOf, allNotes, backlinksOf, hasNotebook, isUnderDir, localDate, readNote, searchNotes, ZkError } from '../../lib/zk.ts'
-import type { NoteDoc, NoteRecord } from '../../lib/zk.ts'
+import { absPathOf, backlinksOf, hasNotebook, isUnderDir, localDate, readNote, scanNotes, searchNotes, ZkError } from '../../lib/zk.ts'
+import type { NoteDoc, NoteRecord, NoteScanResult } from '../../lib/zk.ts'
 import { isMetaPath } from '../../lib/meta.ts'
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
 import { RETIRED_ENTRY_RE } from '../../lib/memory-format.ts'
@@ -35,8 +35,6 @@ const FEED = `${BASE}/feed.xml`
 const API_NOTES = `${BASE}/api/notes`
 const API_NOTE = `${BASE}/api/note`
 
-/** 一次索引最多载入多少篇（超出只在页脚说明，不静默装作全量） */
-const INDEX_LIMIT = 2000
 /** 页面 / API 单篇正文上限：日记再长也不该把浏览器拖死 */
 const MAX_CONTENT = 200_000
 /** 磁盘文件上限：超过就不读（readNote 会把整篇读进内存） */
@@ -198,8 +196,14 @@ function searchForm(value = ''): string {
   return `<form class="search" method="get" action="${VIEW}"><input type="search" name="q" value="${esc(value)}" placeholder="搜索标题、正文…" aria-label="搜索"><button type="submit">搜索</button></form>`
 }
 
+/** 首页 / 标签页要「有没有扫全」；MAX_SCAN 是唯一的载入上限（不再用 2000 截断计数） */
+async function loadScan(cfg: Config): Promise<NoteScanResult> {
+  return scanNotes(cfg)
+}
+
+/** 只需要笔记的调用方（搜索兜底 / 记忆页反链解析） */
 async function loadAll(cfg: Config): Promise<NoteRecord[]> {
-  return allNotes(cfg, { limit: INDEX_LIMIT })
+  return (await loadScan(cfg)).notes
 }
 
 /** 搜索 / 标签走 zk；`q` 与 `tag` 同时给就是两个条件一起收（zk 按 AND 处理，不静默忽略其中一个） */
@@ -213,14 +217,16 @@ async function pickNotes(cfg: Config, opts: { q?: string; tag?: string; limit: n
 // ── 页面 ──────────────────────────────────────────────────────────────
 
 async function handleHome(res: ServerResponse, cfg: Config): Promise<void> {
-  const all = await loadAll(cfg)
+  const scan = await loadScan(cfg)
+  const all = scan.notes
+  const atLeast = scan.completeness === 'complete' ? '' : '≥'
   const recent = [...all].sort(byModified).slice(0, 30)
   const journal = all.filter((note) => isUnderDir(note.path, cfg.dailyDir) || note.type === 'daily').sort(byModified).slice(0, 10)
   const tags = tagCounts(all)
   const body = [
     `<h1>${esc(cfg.active || 'zdiary')}</h1>`,
     searchForm(),
-    `<p class="meta">${all.length} 篇笔记 · ${tags.length} 个标签 · 只读</p>`,
+    `<p class="meta">${atLeast}${all.length} 篇笔记 · ${atLeast}${tags.length} 个标签 · 只读</p>`,
     '<h2>最近更新</h2>',
     noteTable(recent),
     '<h2>日记</h2>',
@@ -230,7 +236,9 @@ async function handleHome(res: ServerResponse, cfg: Config): Promise<void> {
       ? `<p class="tags">${tags.slice(0, 80).map(([tag, count]) => `<a href="${esc(viewHref({ p: 'tag', tag }))}">#${esc(tag)}</a><span class="count">${count}</span>`).join(' · ')}</p>`
       : '<p class="meta">还没有标签。</p>',
   ].join('\n')
-  const note = all.length >= INDEX_LIMIT ? `只载入了最近 ${INDEX_LIMIT} 篇；更早的请用搜索。` : undefined
+  const note = scan.completeness === 'partial'
+    ? `只扫描了前 ${scan.limit} 篇（库更大）；更早的请用搜索。`
+    : scan.completeness === 'unknown' ? '索引结果无法完整解析：下面的数字可能偏少。' : undefined
   sendHtml(res, 200, shell(cfg, '首页', body, note))
 }
 
@@ -292,8 +300,9 @@ function renderMemoryBody(body: string, linkFor: (target: string) => string | nu
  * 载荷预览只转义展示（与 zk_context 同源），不提供编辑 —— 写仍然只走 zk_* / 编辑器。
  */
 async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
-  let all: NoteRecord[] = []
-  try { all = await loadAll(cfg) } catch { /* 索引挂了也能读记忆，双链退化成纯文字 */ }
+  let scan: NoteScanResult | null = null
+  try { scan = await loadScan(cfg) } catch { /* 索引挂了也能读记忆，双链退化成纯文字 */ }
+  const all = scan?.notes ?? []
   const linkFor = linkResolver(all)
 
   const read = (name: string): string => {
@@ -365,6 +374,9 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
     '<h1>记忆</h1>',
     `<p class="meta">${esc(usage)}</p>`,
     formatLine ? `<p class="meta">${esc(formatLine)}</p>` : '',
+    scan && scan.completeness !== 'complete'
+      ? `<p class="meta">${scan.completeness === 'partial' ? `只扫描了前 ${scan.limit} 篇：页面里的双链可能没解析到更早的笔记。` : '索引结果无法完整解析：页面里的双链可能不完整。'}</p>`
+      : '',
     '<p class="meta">根目录 meta 由人和 agent 直接编辑，不进检索；这里只读，不提供编辑。</p>',
     `<h2>人格</h2>`,
     `<p class="meta">${esc(personaSummary)}</p>`,
@@ -392,12 +404,15 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
 }
 
 async function handleTags(res: ServerResponse, cfg: Config): Promise<void> {
-  const notes = await loadAll(cfg)
+  const scan = await loadScan(cfg)
+  const notes = scan.notes
+  const atLeast = scan.completeness === 'complete' ? '' : '≥'
   const tags = tagCounts(notes)
   const body = [
     `<p class="crumb"><a href="${VIEW}">首页</a> / 标签</p>`,
     '<h1>标签</h1>',
-    `<p class="meta">${tags.length} 个标签 · ${notes.length} 篇笔记</p>`,
+    `<p class="meta">${atLeast}${tags.length} 个标签 · ${atLeast}${notes.length} 篇笔记` +
+      (scan.completeness === 'complete' ? '' : `（只扫描了前 ${scan.limit} 篇）`) + '</p>',
     tags.length
       ? `<p class="tags">${tags.map(([tag, count]) => `<a href="${esc(viewHref({ p: 'tag', tag }))}">#${esc(tag)}</a><span class="count">${count}</span>`).join(' · ')}</p>`
       : '<p class="meta">还没有标签。</p>',
