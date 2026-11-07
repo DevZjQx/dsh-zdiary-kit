@@ -81,6 +81,59 @@ ZK_BIN=/path/to/zk bun run bench --fixture .tmp/fixture/10k-1 --cases scan.10k,s
 这次 p50 / p95 整体低于基线是机器负载与磁盘缓存波动，不是本项带来的优化；
 子进程数不变（1），`parseLeanList` 多切一列是 JS 内 O(n) 字符串操作，不新增 zk 进程。
 
+## 10k 三档链接密度补测（§12.4 R8 `limit` 代理口径，2026-11-07）
+
+**缘起**：`docs/plan.md` §12.4 把「R8 `limit` 上限 200 在 10k / 3 档链接密度下的字节与 p95 仍须实测后定」列为未决。
+R8（`zk_walk`）未排期、未实现，bench 用例表里没有对应项，因此用现有 `backlinks` 用例（`backlinksOf` →
+`zk list --link-to`，默认 `MAX_LINK_NOTES = 200`）做**代理口径**测量。
+
+```bash
+ZK_BIN=/path/to/zk bun scripts/fixture.ts --notes 10000 --links-per-note 0.2 --out .tmp/fixture/10k-0.2 --json
+ZK_BIN=/path/to/zk bun scripts/fixture.ts --notes 10000 --links-per-note 3 --out .tmp/fixture/10k-3 --json
+ZK_BIN=/path/to/zk bun run bench --fixture .tmp/fixture/10k-<x> --cases backlinks --iterations 3 --json --out .tmp/bench-10k-<x>.json
+```
+
+`<x>` = `0.2` / `1` / `3`（`10k-1` 是已有夹具，只重跑）；落盘 `.tmp/bench-10k-0.2.json` /
+`.tmp/bench-10k-1-backlinks.json` / `.tmp/bench-10k-3.json`。三档都是 10 000 篇、seed 42，
+真实链接数 2 000 / 10 000 / 30 000（读 `.fixture.json`）；**bench JSON 里的 `linksPerNote` 是 CLI 默认值 1，
+显式 `--fixture` 时没传该参数，不代表真实密度，以 `links` 字段为准**。
+
+| 档 | 链接数 | 冷建索引 | 子进程 | 字节 | p50 | p95 | 峰值RSS | count | 超限 |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.2 链/篇 | 2 000 | 115.6 s | 1 | 0 KB | 390.5 ms | 396.4 ms | 25.3 MB | 0 | complete |
+| 1 链/篇 | 10 000 | 已热 | 1 | 0 KB | 627.4 ms | 1293.5 ms | 31.3 MB | 0 | complete |
+| 3 链/篇 | 30 000 | 999.7 s | 1 | 0 KB | 772.3 ms | 833.4 ms | 53.7 MB | 0 | complete |
+
+p95 非单调（396 / 1294 / 833 ms）是机器负载与磁盘缓存波动，不是随链接密度的规律；冷建 3 链/篇
+实测 999.7 s，与 §0.5.1「建索引成本 ≈ 6.6 s + 26 ms × 链接数」同量级。
+
+**关键发现：这个代理口径测不到 R8 的传输字节。** 三档 `count` 都是 0、`bytes` 都是 0，原因不在链接密度：
+
+- 夹具生成的 wikilink 目标是 frontmatter `title`（如 `[[检索方法 0]]`，含空格），而 zk 0.15.7 按**文件名 stem**
+  解析（`检索方法-0.md`）。查 `10k-1/.zk/notebook.db` 的 `links` 表：10 003 条链接的 `target_id`
+  **全部为 null**，即一条都没落到笔记上。这也解释了全表里 `backlinks` 为什么是 0 KB。
+- bench 的 `pickSample` 取 `notes/concepts` 排序第一篇，恰好是边界笔记 `dup-title-a.md`，本身也没有链接。
+- 直接验证：`--link-to` 传**绝对路径**（`linkedNotes` 的现行做法）返回 0 条；传相对路径则过滤条件被忽略、
+  退化为全库 201 条 / 214 KB —— 正是 `docs/plan.md` §12.1 第 5 条警告的坑在夹具上复现。
+  换用普通原子笔记作种子，结果同样是 0 条。
+
+**能补上的部分：200 条钳制的传输上界。** 绕开链接过滤，直接量 `linkedNotes` 用的
+`--format json --limit 201`（含 `rawContent`）满载输出：
+
+| 档 | `--limit 201` 满载字节 | 单条约 |
+|---|---|---|
+| 0.2 链/篇 | 212 851 B（≈208 KB） | 1 059 B |
+| 1 链/篇 | 214 173 B（≈209 KB） | 1 066 B |
+| 3 链/篇 | 214 701 B（≈210 KB） | 1 068 B |
+
+即 `limit` 钳在 200 后，单方向最坏传输量约 210 KB，远小于 `graph.full` 的 13.9 MB；三档几乎相同
+（笔记长度相近，与链接密度无关）。R8 设计里 `both` 方向会各调一次 `backlinksOf` / `outlinksOf`，
+按 **2 个子进程 / 约 2× 字节外推**，这是外推不是实测。
+
+**结论**：§12.4 的 R8 `limit` 未决项只补到「按篇反查 1 个子进程的 p95 + 200 条传输上界」，
+**`--link-to` 的直接实测仍待 R8 落地后，在 wikilink 能被 zk 解析的库（或修正夹具链接格式）上补**；
+该项未闭合，`docs/plan.md` §11 三项因此仍不具备「进 §10.4」的条件。
+
 ## 1k 复跑（3.8.0 发布后基线核对，2026-11-07）
 
 **命令 / 口径**：`ZK_BIN=/home/glm-agent/.dsh/zdiary/bin/zk bun run bench` —— 不指定 `--fixture` 时默认取
