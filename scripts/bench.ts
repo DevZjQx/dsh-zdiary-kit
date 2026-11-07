@@ -21,7 +21,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { execStats } from '../src/lib/exec.ts'
-import { backlinksOf, graphEdges, notebookStats, scanNotes, searchNotesDetailed, zk, resolveZk } from '../src/lib/zk.ts'
+import { backlinksOf, graphEdges, notebookStats, outlinksOf, scanNotes, searchNotesDetailed, zk, resolveZk } from '../src/lib/zk.ts'
 import { buildMemoryPayload } from '../src/lib/memory.ts'
 import { lintNotebook } from '../src/lib/lint.ts'
 import { dreamNotebook } from '../src/lib/dream.ts'
@@ -121,7 +121,10 @@ interface Case {
 
 interface Ctx {
   cfg: Config
+  /** 入链最多的笔记（backlinks / walk.both 的种子），由夹具清单给出 */
   sample: string
+  /** 出链最多的笔记（outlinks 的种子） */
+  sampleOut: string
   /** §0.5 成本表口径：库的篇数与链接数，读夹具的 .fixture.json（真实值，不是 CLI 参数） */
   notes: number
   links: number
@@ -286,13 +289,37 @@ const CASES: Case[] = [
   {
     id: 'backlinks',
     tool: 'bidi',
-    what: '按篇反查（backlinksOf / --link-to，默认 200 条）',
+    what: '按篇反查（backlinksOf / --link-to，默认 200 条；种子取入链最多的笔记）',
     timeoutMs: 60_000,
     run: async ({ cfg, sample }) => {
       // 必须走生产入口：手写 --link-to + 相对路径时，路径按 **bench 的 cwd** 解析；
       // 不存在就会丢掉过滤条件返回全库（plan §0.5.1 的坑），测出来的不是反查。
       const r = await backlinksOf(cfg, sample)
       return { count: r.notes.length, truncated: r.truncated }
+    },
+  },
+  {
+    id: 'outlinks',
+    tool: 'zk_walk (out)',
+    what: '按篇正查出链（outlinksOf / --linked-by，默认 200 条；种子取出链最多的笔记）',
+    timeoutMs: 60_000,
+    run: async ({ cfg, sampleOut }) => {
+      const r = await outlinksOf(cfg, sampleOut)
+      return { count: r.notes.length, truncated: r.truncated }
+    },
+  },
+  {
+    // plan §11.3 / §12.4：R8（zk_walk direction=both）的成本口径 —— 单种子、两次按篇反查，不建全图。
+    // 这行不是 zk_walk 本身（未实现），是它落地后必须对得上的代理数：2 个子进程、两笔传输字节相加。
+    id: 'walk.both',
+    tool: 'zk_walk (both)',
+    what: 'R8 代理：单种子 both = backlinksOf + outlinksOf 顺序两次',
+    timeoutMs: 120_000,
+    run: async ({ cfg, sample }) => {
+      const back = await backlinksOf(cfg, sample)
+      const out = await outlinksOf(cfg, sample)
+      const paths = new Set([...back.notes, ...out.notes].map((n) => n.path))
+      return { count: paths.size, truncated: back.truncated || out.truncated }
     },
   },
   {
@@ -384,7 +411,21 @@ function ensureFixture(opts: Options): void {
   }
 }
 
-function pickSample(dir: string): string {
+/**
+ * 反查 / 正查的种子：优先用夹具清单里链数最多的那篇。
+ *
+ * 固定取 `notes/concepts` 排序第一篇的话，会命中边界笔记（`dup-title-a.md` / `long-note.md`），
+ * 它们本来就没链接，于是 `--link-to` 恒 0 条、成本表上「反查很便宜」——测的不是反查（§12.4）。
+ * 老夹具没有 `samples` 字段时退回目录扫描，别让 bench 因此跑不起来。
+ */
+function pickSample(dir: string, key: 'inbound' | 'outbound' = 'inbound'): string {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, '.fixture.json'), 'utf8')) as {
+      samples?: Record<string, unknown>
+    }
+    const rel = String(m.samples?.[key] ?? '')
+    if (rel && fs.existsSync(path.join(dir, rel))) return rel
+  } catch { /* 没有清单：走下面的兜底 */ }
   const candidates = ['notes/concepts', 'notes', 'journal', '.']
   for (const rel of candidates) {
     const abs = path.join(dir, rel)
@@ -475,7 +516,12 @@ async function main(): Promise<void> {
   }
 
   const counts = fixtureCounts(opts.fixture, opts.notes, opts.linksPerNote)
-  const ctx: Ctx = { cfg, sample: pickSample(opts.fixture), ...counts }
+  const ctx: Ctx = {
+    cfg,
+    sample: pickSample(opts.fixture, 'inbound'),
+    sampleOut: pickSample(opts.fixture, 'outbound'),
+    ...counts,
+  }
   const cases = opts.only.length > 0 ? CASES.filter((c) => opts.only.includes(c.id)) : CASES
   if (cases.length === 0) throw new Error('--cases 没有匹配：' + opts.only.join(','))
   const missing = opts.only.filter((id) => !CASES.some((c) => c.id === id))

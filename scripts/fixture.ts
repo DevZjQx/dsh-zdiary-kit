@@ -194,13 +194,14 @@ function main(): void {
   const nSource = Math.max(1, Math.round(total * 0.15))
   const nAtom = Math.max(1, total - nRaw - nJournal - nArchive - nSource)
 
-  // ── 1. 原子笔记：先全部生成标题与正文，再统一挂链接（链接只能指向已存在的标题） ──
+  // ── 1. 原子笔记：先全部生成标题与正文，再统一挂链接（链接只能指向已存在的笔记） ──
   const atoms: Note[] = []
-  const titles: string[] = []
+  const stems: string[] = []
   const dirs = ['notes/concepts', 'notes/entities', 'notes/patterns'] as const
   for (let i = 0; i < nAtom; i++) {
     const title = TOPICS[i % TOPICS.length]! + QUALIFIERS[(i * 7) % QUALIFIERS.length]! + ' ' + i
-    const rel = dirs[i % dirs.length]! + '/' + slug(title) + '.md'
+    const stem = slug(title)
+    const rel = dirs[i % dirs.length]! + '/' + stem + '.md'
     const date = dayOf(i % 900)
     const body = [
       frontmatter([
@@ -217,7 +218,7 @@ function main(): void {
       asciiLine(rnd),
       '\n',
     ].join('')
-    titles.push(title)
+    stems.push(stem)
     atoms.push({ title, rel, body })
     counts.atom++
   }
@@ -226,23 +227,46 @@ function main(): void {
   const brokenLinks: string[] = []
   const totalLinks = Math.round(total * opts.linksPerNote)
   const perNote = new Map<number, string[]>()
+  // 谁被我链到 / 我链了谁：给 bench 挑「真有入链 / 出链」的种子。
+  // 原来固定取 notes/concepts 排序第一篇，恰好是没有链接的边界笔记，反查恒为 0 条，
+  // 成本表上看起来像「反查很便宜」（docs/bench-baseline.md「代理口径测不到」）。
+  const inbound = new Map<number, number>()
+  const outbound = new Map<number, number>()
   for (let k = 0; k < totalLinks; k++) {
     const idx = k % atoms.length
     const broken = k % 20 === 7 // 5% 断链：顺带养活 broken-links / 孤儿检测
-    const target = broken
-      ? '幽灵笔记 ' + k
-      : titles[Math.floor(rnd() * Math.max(1, titles.length))]!
+    const targetIdx = Math.floor(rnd() * Math.max(1, stems.length))
+    // 用文件名 stem（`[[检索方法-0]]`），不是 frontmatter title（`[[检索方法 0]]`）：
+    // zk 0.15.7 按文件名 stem 解析 wikilink，带空格的标题会留下 target_id = null 的死链，
+    // 于是 `--link-to` 恒 0 条 —— 链接密度参数就白设了（plan §12.4）。
+    const target = broken ? '幽灵笔记 ' + k : stems[targetIdx]!
     const list = perNote.get(idx) ?? []
     list.push(target)
     perNote.set(idx, list)
     if (broken) brokenLinks.push(target)
-    else links.push(target)
+    else {
+      links.push(target)
+      inbound.set(targetIdx, (inbound.get(targetIdx) ?? 0) + 1)
+      outbound.set(idx, (outbound.get(idx) ?? 0) + 1)
+    }
   }
   for (const [idx, targets] of perNote) {
     const note = atoms[idx]!
     note.body += '\n见 ' + targets.map((t) => '[[' + t + ']]').join('、') + '。\n'
   }
   for (const note of atoms) writeNote(opts.out, note)
+
+  /** 链数最多的那篇（同数取下标最小，保证固定种子可复现）；没有链接时返回 -1 */
+  const busiest = (m: Map<number, number>): number => {
+    let at = -1
+    let best = 0
+    for (const [i, n] of [...m.entries()].sort((a, b) => a[0] - b[0])) {
+      if (n > best) { best = n; at = i }
+    }
+    return at
+  }
+  const busiestIn = busiest(inbound)
+  const busiestOut = busiest(outbound)
 
   // ── 2. 来源（15%）：放在 notes/sources，frontmatter 带出处 ──
   for (let i = 0; i < nSource; i++) {
@@ -417,7 +441,14 @@ function main(): void {
     counts,
     files,
     bytes,
-    links: { valid: links.length, broken: brokenLinks.length },
+    links: { valid: links.length, broken: brokenLinks.length, format: 'stem' },
+    // bench 的种子：必须是真有入链 / 出链的笔记，否则按篇反查测出来是 0（见上）
+    samples: {
+      inbound: busiestIn >= 0 ? atoms[busiestIn]!.rel : '',
+      inboundLinks: busiestIn >= 0 ? inbound.get(busiestIn)! : 0,
+      outbound: busiestOut >= 0 ? atoms[busiestOut]!.rel : '',
+      outboundLinks: busiestOut >= 0 ? outbound.get(busiestOut)! : 0,
+    },
     edge: {
       longNoteChars: longText.length,
       legacyNoFrontmatter: 3,
@@ -435,7 +466,9 @@ function main(): void {
   console.log('✓ 夹具已生成：' + summary.out)
   console.log('  篇数 ' + total + '（原子 ' + counts.atom + ' · 来源 ' + counts.source + ' · 日记 ' + counts.journal +
     ' · 归档 ' + counts.archive + ' · raw ' + counts.raw + '）')
-  console.log('  链接 ' + links.length + '（断链 ' + brokenLinks.length + '，' + opts.linksPerNote + ' 链/篇）')
+  console.log('  链接 ' + links.length + '（断链 ' + brokenLinks.length + '，' + opts.linksPerNote + ' 链/篇，stem 形式）')
+  if (busiestIn >= 0) console.log('  种子：入链 ' + inbound.get(busiestIn) + ' 条 → ' + atoms[busiestIn]!.rel +
+    ' · 出链 ' + outbound.get(busiestOut) + ' 条 → ' + atoms[busiestOut]!.rel)
   console.log('  文件 ' + files + ' / ' + kb + ' KB，用时 ' + summary.elapsedMs + ' ms')
   console.log('  边界：长笔记 ' + longText.length + ' 字 · 无 frontmatter 3 · 重名 1 · 相似 1 · 同日 MEMORY 2 · 无日期 1')
   const shown = path.relative(process.cwd(), opts.out)

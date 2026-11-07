@@ -135,6 +135,9 @@ p95 非单调（396 / 1294 / 833 ms）是机器负载与磁盘缓存波动，不
 
 ### 直接实测（`.tmp` 可解析副本，2026-11-07）
 
+> **已被下一节取代（2026-11-07）**：同一修正已并入 `scripts/fixture.ts`，本节的可解析副本探针只作历史记录；
+> 三档直接实测与当前可复现口径见「夹具链接可解析化后的三档实测」。
+
 代理口径测不到 `--link-to` 的真实输出，因此在 `.tmp` 下做一次性副本补测：
 `.tmp/r8-probe.ts` 把 `.tmp/fixture/10k-1` 复制成 `.tmp/r8-fixture/10k-1-linked`，
 把 9 502 条 `[[title]]` 改成 `[[stem]]`（保留 501 条故意断链 / meta 链接），
@@ -165,13 +168,71 @@ p95 非单调（396 / 1294 / 833 ms）是机器负载与磁盘缓存波动，不
   `docs/plan.md` §12.4 的 R8 `limit` 项算**部分闭合**；副本是一次性探针，未并入产品夹具生成器，
   既有 10k 基线的链接不可解析问题仍在，`docs/plan.md` §11 三项仍不具备「进 §10.4」的条件。
 
+## 夹具链接可解析化后的三档实测（2026-11-07，§12.4 R8 闭合）
+
+**根因与修法**：旧夹具用 frontmatter `title` 生成 wikilink（`[[检索方法 0]]`，含空格），而 zk 0.15.7
+按**文件名 stem** 解析（`检索方法-0.md`）——`links.target_id` 全为 null，`--link-to` 恒 0 条 / 0 字节，
+链接密度参数等于白设。修正落在夹具生成器本身，不再依赖一次性副本：
+
+- `scripts/fixture.ts`：wikilink 改用 `slug(title)`（即文件名 stem），仍是 5% 故意断链（`幽灵笔记 k`）；
+  `.fixture.json` 新增 `links.format = 'stem'` 与 `samples`（入链最多 / 出链最多的笔记，同数按下标小者，固定种子可复现）。
+- `scripts/bench.ts`：`pickSample` 读 `samples.inbound` / `samples.outbound`（老夹具无此字段时退回目录扫描）。
+  原来固定取 `notes/concepts` 排序第一篇，恰好是边界笔记 `dup-title-a.md` / `long-note.md`，本身没有链接，
+  `backlinks` 一行永远是 0 条 —— 测的不是反查。
+- 新增两条用例：`outlinks`（`outlinksOf` / `--linked-by`）与 `walk.both`（单种子 `backlinksOf` + `outlinksOf`
+  顺序两次，即 R8 `zk_walk direction=both` 的成本代理）。用例总数 16 → **18**。
+
+**复现**（三档各一次；`--force` 会重建夹具，随后 bench 自己冷建索引并把 `coldIndexMs` 记进 JSON）：
+
+```bash
+ZK_BIN=/path/to/zk bun scripts/fixture.ts --notes 10000 --links-per-note <0.2|1|3> --force --json
+ZK_BIN=/path/to/zk bun run bench --fixture .tmp/fixture/10k-<x> \
+  --cases backlinks,outlinks,walk.both --iterations 3 --json --out .tmp/bench-10k-<x>-walk.json
+```
+
+落盘：`.tmp/fx-10k-<x>.json`（夹具清单）、`.tmp/bench-10k-<x>-walk.json`（三行结果）。
+10 000 篇、seed 42；链接数 2 000 / 10 000 / 30 000（valid 1 900 / 9 500 / 28 500，断链 100 / 500 / 1 500）。
+
+| 档 | 链接 | 冷建索引 | 用例 | 种子（入链 / 出链） | 子进程 | 字节 | p50 | p95 | count | 超限 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0.2 链/篇 | 2 000 | 81.1 s | `backlinks`（in） | `同步拆解-1853`（4 / 1） | 1 | 5 882 B | 488.7 ms | 610.3 ms | 4 | complete |
+| | | | `outlinks`（out） | 同篇 | 1 | 1 993 B | 550.3 ms | 578.8 ms | 1 | complete |
+| | | | `walk.both` | 同篇 | **2** | 7 195 B | 994.3 ms | 1 324.3 ms | 5 | complete |
+| 1 链/篇 | 10 000 | 248.3 s | `backlinks`（in） | `摘要观察-172`（7 / 2） | 1 | 11 600 B | 538.4 ms | 546.3 ms | 7 | complete |
+| | | | `outlinks`（out） | 同篇 | 1 | 4 037 B | 535.6 ms | 544.0 ms | 2 | complete |
+| | | | `walk.both` | 同篇 | **2** | 15 076 B | 1 045.6 ms | 1 052.4 ms | 9 | complete |
+| 3 链/篇 | 30 000 | 745.0 s | `backlinks`（in） | `周审方法-1288`（12 / 5） | 1 | 23 526 B | 923.5 ms | 939.5 ms | 12 | complete |
+| | | | `outlinks`（out） | 同篇 | 1 | 9 655 B | 878.2 ms | 914.0 ms | 5 | complete |
+| | | | `walk.both` | 同篇 | **2** | 32 341 B | 1 794.2 ms | 1 824.7 ms | 17 | complete |
+
+1k 口径复跑（`bun run bench --iterations 3`，18 条全绿 / exit 0）：`backlinks` 1 进程 / 12 241 B / p95 98.6 ms（7 条）、
+`outlinks` 1 / 3 648 B / 92.5 ms（2 条）、`walk.both` 2 / 14 056 B / 183.5 ms（8 条）。落盘 `.tmp/bench-1k-18.json`。
+
+**结论**：
+
+- R8 的成本口径在**产品夹具**上闭合：三档都实测到 `both` = **2 个子进程**、字节 = in + out 之和、
+  p95 0.18–1.82 s（1k → 10k/3 链），与先前副本探针的 1 链/篇结果（2 进程 / 13 986 B / 1 095 ms）同量级，
+  外推不再是外推。
+- 夹具修好后，`--link-to` 与 `--linked-by` 都能真正按密度出结果：`links` 表里 null `target_id` 只剩故意断链
+  + 3 条 MEMORY 标题式链接（1k：1003 条中 53 条 null = 50 断链 + 3 meta）。
+- **冷建索引新数字 81.1 / 248.3 / 745.0 s** 与旧代理表（115.6 / 热 / 999.7 s）同量级（机器与磁盘缓存波动）；
+  链接密度仍是冷建的主成本项。
+- **夹具没有 hub**：链接目标是均匀随机，最大入链只有 4 / 7 / 12 条，三档都**触不到 `limit=200`**，
+  因此 `partial` 分支和 200 条满载传输在这套夹具上测不出来。最坏传输仍以 `--limit 201` 满载的
+  212–215 KB（上节）为界；R8 的 `partial` / 触顶行为须在测试内自建 hub 库验证（或后续给夹具加一篇 hub 边界笔记，
+  那会改变 `samples` 与三档数字，须整档重跑，本轮不做）。
+- 全表里 `backlinks` 一行（0 条 / 0 KB）是**修正前**的数字，其余行（`scan` / `list` / `graph` / `lint` / `dream` /
+  `search`）与链接文本形式无关、仍然可用；重建后 `graph.full` 的边数从 0 变成 950（1k：旧夹具的 wikilink
+  一条都解析不到，传输量仍主要来自节点列表，量级不变）。
+  若要更新全表需重跑一次 10k，本轮只重跑反查三行。
+
 ## 1k 复跑（3.8.0 发布后基线核对，2026-11-07）
 
 **命令 / 口径**：`ZK_BIN=/home/glm-agent/.dsh/zdiary/bin/zk bun run bench` —— 不指定 `--fixture` 时默认取
 `.tmp/fixture/1k-1`（seed 42，1 000 篇 / 1 000 链、1 链/篇，索引已热、无冷建），3 轮；
 zk 0.15.7 / linux-x64（WSL）/ bun 1.4.4，与全表同一台机器、同一个 zk。
 **本节是 1k 口径，与全表及 R3 / 稳定 ID 补测的 10k 数字不可直接比绝对值**；用途是确认 3.8.0 发布后
-16 条现有用例全部可跑、无报错，不是给 R8 补测 —— `scripts/bench.ts` 的用例表里没有 `zk_walk` / R8，
+16 条现有用例全部可跑、无报错（当时用例表还没有 `zk_walk` / R8；现为 18 条，见上一节），
 `docs/plan.md` §11 的提案仍未排期、未实现（§12 六轮评审打回）。
 一次运行 19 s、exit 0、表格无 `✗` 行；数字取自终端表格，本次未另落盘 JSON（要落盘可加
 `--json --out .tmp/bench-1k-1.json`）。
