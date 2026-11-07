@@ -19,6 +19,7 @@ import {
 import type { NoteRecord } from './lib/zk.ts'
 import { formatLintExtras, formatMemoryLinks, lintNotebook, personaStatus, timelineStatus } from './lib/lint.ts'
 import type { LintResult } from './lib/lint.ts'
+import { assembleRecall } from './lib/recall.ts'
 import { dreamNotebook, STALE_DAYS } from './lib/dream.ts'
 import type { DreamResult } from './lib/dream.ts'
 
@@ -32,6 +33,8 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit persona                     人格状态：PERSONA.md 的用量 / 上限 / 体检（只读）
   zk-kit new --title T [--name 文件名] [--summary 摘要] [--body B] [--tags a,b] [--dir notes] [--type source|concept|entity|pattern]
   zk-kit search [词] [--tags a,b] [--since 日期] [--limit 5] [--json]
+  zk-kit recall [词] [--budget 500] [--limit 30] [--tags a,b] [--json]
+                                      检索 + 按词数预算装配成一段上下文（只读）
   zk-kit read <路径> | --query 词 [--max-chars n] [--json]
   zk-kit daily [--entry 一段] [--date yesterday]
   zk-kit append <路径> --text 一段 [--heading 标题]
@@ -557,6 +560,22 @@ async function main(): Promise<void> {
         ? '\n（中文查询：全文 + 子串合并，已补上全文索引漏掉的）'
         : result.matchStrategy === 'regex' ? '\n（全文无结果，已退回子串匹配）' : ''
       print(json ? result.notes : noteList(result.notes) + how, json)
+      return
+    }
+
+    case 'recall': {
+      await ensureNotebook(cfg)
+      const r = await assembleRecall(cfg, {
+        query: pos[0] || str(flags.query) || undefined,
+        tags: list(flags.tags),
+        since: str(flags.since) || undefined,
+        until: str(flags.until) || undefined,
+        limit: Number(str(flags.limit)) || undefined,
+        budget: Number(str(flags.budget)) || undefined,
+      })
+      const kept = r.notes.filter((n) => n.included).length
+      print(json ? r : (r.text || '没有匹配的笔记') +
+        `\n\n（${r.used}/${r.budget} 词 · 收录 ${kept}/${r.notes.length} 篇）`, json)
       return
     }
 

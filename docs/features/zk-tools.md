@@ -2,7 +2,7 @@
 
 **Purpose.** 让模型用 zk 思维工作：先查重、再写原子笔记、用双链连起来、每天记一段。
 
-**Owns.** 13 个内置工具定义（`zk_search` / `zk_query` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
+**Owns.** 14 个内置工具定义（`zk_search` / `zk_query` / `zk_recall` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
 `zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
 `.zk/config.toml` 的 `[alias]` 派生的 `zk_<别名>` 工具：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
@@ -23,7 +23,7 @@
 **Public surface.** `buildTools()`（按默认工作区的笔记本配置构建，测试用）与 `registerZkTools(tools)`（返回撤销函数）。
 
 **Alias tools（`zk_<别名>`）.** 默认**不注册**：`aliasTools` 为 false 时 `buildTools` 连 `.zk/config.toml` 都不读，
-内置工具固定 13 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
+内置工具固定 14 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
 （设置页「工具」组的复选框，或 `zk-kit config set aliasTools=true`，只认 `true`；拼错的值归一化成 false 并在 `config set` 时回显）。
 打开后，插件加载时读所有已配置笔记本的 `.zk/config.toml`，把 `[alias]` 表里未注释的键注册成工具；
 同名只取第一本。工具名用下划线而不是点号：DSH 的 function-name 契约是 `[A-Za-z0-9_-]`（`zk.lucky` 会被 provider 拒绝）。
@@ -281,6 +281,13 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
   `total` 是**精确命中总数（含结构化过滤后），只在 `completeness === 'complete'` 时给**：zk 的 `Found N notes` 会被 `--limit` 截断（实测 115 命中、`--limit 10` 时只报 `Found 10 notes`），拿不到 limit 之外的真实总数，额外起一个进程去数又违反「不新增子进程」。`partial` / `unknown` 时 `total` 缺失，`hasMore` / `completeness` 已经说明「还有多少不知道」，不拿 `count` 冒充。
 - **R3 中文多词**：`splitCjkQuery` 按空白 / 标点切词、去重、保留 ≥2 字、最多 4 个；少于 2 词、纯 ASCII 或超过 4 词都退回原来的「整串正则」两遍策略。多词时正则这一路换成转义后的 `(?:词1|词2|…)` **一次进程召回**（不逐词起进程），再用 `rawContent` 算每个命中覆盖了几个词，按 `coverage` 降序 → 原 FTS 顺序 → `created-desc` 排序；精简格式路径没有 `rawContent`，用 `title / lead / snippet` 算覆盖度（best effort）。`zk_query` 的旧描述「中文召回不完整，尽量配合 tags 使用」已改成与 `zk_search` 一致。
 - **R7 0 命中**：CJK 查询 0 命中时 render 追加「中文全文不切词：换更短的词，或按 tags 查」（`zk_query` 提示 `tags` 参数）；纯 ASCII 0 命中文案不变，提示不动 `notes` / `count`。
+
+**召回装配（R4，§10.4 第 5 项）.** 新增只读 `zk_recall`（`lib/recall.ts`）：检索之后按词数预算把命中笔记拼成一段可直接读的上下文，补上「召回之后还有装配」，插件此前停在 top-k。
+- 只做机械装配：不读全文、不做向量 / LLM rerank / 跨回合 dedup、不新增 zk 进程；一次 `searchNotesDetailed` 取候选（默认 30 条），其余全在内存里拼。
+- 分组轮转：按 `type` → 首个标签 → 「未分类」分组，各组轮流取一条，组内保持检索顺序；预算不会被排在最前的那一类全吃掉。
+- 每条取 `title` / `path` / `absPath` / `words` 与 `snippet`（比 `lead` 多信息时用它），`budget` / `used` 走 `countWords` 口径（中文 2 字 1 词）。放不下就**整条丢弃、不切半句**，`notes[].reason` 明写 `included` / `duplicate` / `empty` / `over-budget`；`used` 是对最终整段文本算的（分隔符也计入），所以一定 `<= budget`。
+- 0 命中返回空 `text` / 空 `notes` / `used = 0`，不编造；`completeness` / `hasMore` 沿用检索三态 —— 装配过的只是本次候选，不代表库里没有别的。需要全文仍由宿主原生 `read` 按 `absPath` 取。
+- 命令行 `zk-kit recall [词] [--budget 500] [--limit 30] [--json]`，与工具走同一份 `assembleRecall`。
 
 **写后可读（R6，3.6.0）.** `zk_append` / `zk_link` / `zk_new` 的 `summary` 回填 / 改名 / 搬归档之后，
 插件在 `.zk/dsh-index-state.json` 记 `generation`（每次写入 +1）与 `indexedGeneration`（最近一次成功 `zk index` 覆盖到的快照）。

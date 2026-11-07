@@ -4,7 +4,7 @@
  *
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
- *   · 13 个内置工具能注册、能执行、能渲染（zk_context 也执行一次；`[alias]` 别名工具按配置另行追加）；
+ *   · 14 个内置工具能注册、能执行、能渲染（zk_context 也执行一次；`[alias]` 别名工具按配置另行追加）；
  *   · 8 条设置路由 + 4 条只读路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
@@ -94,7 +94,7 @@ for (const tool of tools) checkSchema(tool.output.schema, `${tool.name}.output.s
 
 console.log('工具：' + tools.map((t) => t.name).join(', '))
 console.log('路由：' + [...routes.keys()].join(', '))
-if (tools.length !== 13) throw new Error('工具数量不对：' + tools.length)
+if (tools.length !== 14) throw new Error('工具数量不对：' + tools.length)
 // 8 条设置页路由 + 4 条只读路由（view / feed.xml / api/notes / api/note）
 if (routes.size !== 12) throw new Error('路由数量不对：' + routes.size)
 
@@ -113,6 +113,9 @@ if (String(created.absPath) !== path.join(notebook, String(created.path))) throw
 const searched = await call('zk_search', { query: '冒烟', limit: 5 })
 const hit = (searched.notes as Array<{ absPath?: string }>)[0]
 if (!hit?.absPath || !fs.existsSync(hit.absPath)) throw new Error('zk_search 没返回可用的 absPath')
+const recalled = await call('zk_recall', { query: '冒烟', budget: 200, limit: 5 })
+if (Number(recalled.used) > Number(recalled.budget)) throw new Error('zk_recall 超预算')
+if (!Array.isArray(recalled.notes) || !(recalled.notes as unknown[]).length) throw new Error('zk_recall 没有装配出笔记')
 await call('zk_daily', { entry: '冒烟测试：日记也通了。' })
 await call('zk_new', { title: '被链接的笔记', body: '目标。' })
 await call('zk_link', { from: created.path, to: '被链接的笔记' })

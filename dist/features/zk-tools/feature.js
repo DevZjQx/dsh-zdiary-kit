@@ -1,5 +1,5 @@
 /**
- * zk 工具（feature 的公共入口）：13 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
+ * zk 工具（feature 的公共入口）：14 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
  *
  * 设计要点：
  *   · 除 zk_context（只读 meta 文件，不依赖 zk）外，每个工具进来先 ensureNotebook —— 第一次调用就自动建好笔记本，用户不用先点设置页；
@@ -18,6 +18,7 @@ import { ensureNotebook, newNoteDir } from '../../lib/notebook.js';
 import { searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, runAlias, hasCjk, ZkError, } from '../../lib/zk.js';
 import { configuredAliases, readAliases } from '../../lib/alias.js';
 import { buildMemoryPayload, META_FILES } from '../../lib/memory.js';
+import { assembleRecall } from '../../lib/recall.js';
 import { META_NAMES } from '../../lib/meta.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from '../../lib/dream.js';
@@ -576,6 +577,93 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     return `${i + 1}. ${String(n.title)}  [${badges.join(' · ')}]\n   ${String(n.absPath || n.path)} · ${String(n.created)}${detail ? '\n   ' + detail : ''}`;
                 });
                 return text(`${v.count} 条（笔记本 ${v.notebook}）\n` + lines.join('\n') + tail);
+            },
+        }),
+        t({
+            name: 'zk_recall',
+            description: '召回装配：先按 query / 过滤条件检索（与 zk_search 同一套 R1–R3），再按词数预算把命中笔记拼成一段可直接读的上下文。' +
+                '每条带标题、路径、absPath 与全文词数，放不下就整条丢弃、不切半句；需要全文仍用原生 read 读 absPath。' +
+                'budget 按 countWords 口径（中文 2 字 1 词），used 一定不超过 budget。' +
+                '不做语义判断 / 重排 / 跨回合去重；completeness 沿用检索三态，装配过的 ≠ 全部命中。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    query: S.str('全文检索词（中文自动并用子串、多词按覆盖度合并；不给则按过滤条件列最近的笔记）'),
+                    tags: S.arr('按标签过滤（AND）', S.str('标签名，不带 #')),
+                    since: S.str('只看这个日期之后创建的笔记'),
+                    until: S.str('只看这个日期之前创建的笔记'),
+                    orphan: S.bool('只看没有反链的孤立笔记'),
+                    brokenLinks: S.bool('只看含断链的笔记'),
+                    include_archived: S.bool('连 archive/ 里的废弃笔记一起查（默认 false）'),
+                    type: S.enum('只要这个类型的笔记', ['daily', 'source', 'concept', 'entity', 'pattern']),
+                    status: S.enum('只要这个状态（默认 active）', ['active', 'superseded']),
+                    limit: S.num('候选检索条数（1-200，默认 30；装配只在这些候选里挑）'),
+                    sort: S.enum('排序方式；有 query 默认 relevance（按 FTS 相关性），无 query 回退 created-desc', ['relevance', 'created-desc', 'created-asc', 'modified-desc', 'title-asc']),
+                    budget: S.num('装配词数预算（默认 500，范围 1-5000；中文 2 字 1 词）'),
+                },
+                additionalProperties: false,
+            },
+            output: {
+                schema: objSchema({
+                    notebook: { type: 'string' },
+                    text: { type: 'string' },
+                    used: { type: 'number' },
+                    budget: { type: 'number' },
+                    completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
+                    hasMore: { type: 'boolean' },
+                    notes: {
+                        type: 'array',
+                        items: objSchema({
+                            title: { type: 'string' },
+                            path: { type: 'string' },
+                            absPath: { type: 'string' },
+                            included: { type: 'boolean' },
+                            reason: { type: 'string', enum: ['included', 'duplicate', 'empty', 'over-budget'] },
+                        }, ['title', 'path', 'absPath', 'included', 'reason']),
+                    },
+                }, ['notebook', 'text', 'used', 'budget', 'completeness', 'hasMore', 'notes']),
+            },
+            async run(args, env) {
+                const cfg = configFor(env.workspace, env.sessionId);
+                await ensureNotebook(cfg, env.signal);
+                const includeArchived = args.include_archived === true;
+                const r = await assembleRecall(cfg, {
+                    query: args.query ? String(args.query) : undefined,
+                    tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
+                    since: args.since ? String(args.since) : undefined,
+                    until: args.until ? String(args.until) : undefined,
+                    orphan: args.orphan === true,
+                    brokenLinks: args.brokenLinks === true,
+                    includeArchived,
+                    type: args.type ? [String(args.type)] : undefined,
+                    // 与 zk_query 同口径：默认只给活着的，显式 include_archived 时不再默认卡 active
+                    status: args.status ? [String(args.status)] : includeArchived ? undefined : ['active'],
+                    limit: args.limit === undefined ? undefined : Number(args.limit),
+                    sort: args.sort ? String(args.sort) : undefined,
+                    budget: args.budget === undefined ? undefined : Number(args.budget),
+                }, env.signal);
+                return { notebook: cfg.notebook, ...r };
+            },
+            render(args, value) {
+                const v = value;
+                const kept = v.notes.filter((n) => n.included).length;
+                const dropped = v.notes.length - kept;
+                if (!v.notes.length) {
+                    return text(`没有匹配的笔记（笔记本 ${v.notebook}）` +
+                        zeroHitHint(args, '或按 tags 查') +
+                        (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「库里没有」' : ''));
+                }
+                const lines = [`召回装配：${v.used}/${v.budget} 词 · 收录 ${kept}/${v.notes.length} 篇（笔记本 ${v.notebook}）`];
+                if (v.text)
+                    lines.push('', v.text);
+                if (dropped)
+                    lines.push(`（${dropped} 篇没放进去：整条丢弃，没有切半句；原因见 notes[].reason）`);
+                const tail = v.completeness === 'unknown'
+                    ? '⚠️ 无法确认结果是否完整（解析失败 / 补充检索失败），先别把它当成全部命中'
+                    : v.hasMore ? '⚠️ 还有更多匹配没返回；要提高 limit 或缩小过滤范围' : '';
+                if (tail)
+                    lines.push(tail);
+                return text(lines.join('\n'));
             },
         }),
         t({

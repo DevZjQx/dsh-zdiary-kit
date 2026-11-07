@@ -41,6 +41,7 @@ const readonlyHtml = await import('../src/features/readonly/html.ts')
 const timelineLib = await import('../src/lib/timeline.ts')
 const similarLib = await import('../src/lib/similar.ts')
 const execLib = await import('../src/lib/exec.ts')
+const recallLib = await import('../src/lib/recall.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
@@ -2346,10 +2347,10 @@ describe('daily', () => {
 })
 
 describe('tools', () => {
-  it('13 个工具，参数校验拒绝坏输入', () => {
+  it('14 个工具，参数校验拒绝坏输入', () => {
     const defs = toolsFeature.buildTools()
     expect(defs.map((d) => d.name)).toEqual([
-      'zk_search', 'zk_query', 'zk_new', 'zk_daily', 'zk_append', 'zk_link', 'zk_supersede',
+      'zk_search', 'zk_query', 'zk_recall', 'zk_new', 'zk_daily', 'zk_append', 'zk_link', 'zk_supersede',
       'zk_rename',
       'zk_context', 'zk_lint', 'zk_dream', 'zk_stats', 'zk_use',
     ])
@@ -2710,7 +2711,7 @@ describe('alias tools', () => {
     }
   })
 
-  it('开关默认关：[alias] 里有条目也不注册成工具，内置工具仍是 13 个', async () => {
+  it('开关默认关：[alias] 里有条目也不注册成工具，内置工具仍是 14 个', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-alias-off-'))
     try {
       store.writeConfig({
@@ -2735,7 +2736,7 @@ describe('alias tools', () => {
 
       const defs = toolsFeature.buildTools(() => dir)
       expect(defs.map((d) => d.name)).not.toContain('zk_lucky')
-      expect(defs).toHaveLength(13)
+      expect(defs).toHaveLength(14)
     } finally {
       store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'], aliasTools: false })
       fs.rmSync(dir, { recursive: true, force: true })
@@ -5288,6 +5289,117 @@ describe('R1 / R2 / R3 / R7：检索召回质量（§10.4 第 4 项）', () => {
       expect(out.count).toBe(0)
       expect(out.notes).toEqual([])
       expect(search.output.render({ query: '不存在的中文词' }, out)[0].text).toContain('换更短的词')
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('R4：召回装配层（§10.4 第 5 项）', () => {
+  const originalConfig = {
+    notebooks: { default: { path: notebook, structure: 'flat' as const } },
+    active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+    defaultTags: ['default'], aliasTools: false,
+  }
+  const setup = async (name: string) => {
+    const dir = path.join(home, name)
+    store.writeConfig({
+      notebooks: { default: { path: dir, structure: 'flat' } },
+      active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+      defaultTags: [], aliasTools: false,
+    })
+    const c = store.config()
+    await notebookLib.ensureNotebook(c)
+    return { c, dir }
+  }
+  const restore = (): void => { store.writeConfig(originalConfig) }
+  const write = (c: ReturnType<typeof store.config>, file: string, date: string, body: string): void => {
+    const dir = path.join(c.notebook, c.notesDir)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, file),
+      `---\ndate: ${date}\ntitle: "${file.replace(/\.md$/, '')}"\ntype: concept\nstatus: active\n---\n\n${body}\n`, 'utf8')
+  }
+
+  it('装配：used <= budget、每个 included 都带 path/absPath、整条丢弃不切半句；0 命中不编造', async () => {
+    const { c, dir } = await setup('nb-r4-assemble')
+    try {
+      write(c, 'a.md', '2024-01-01', '# 记忆甲\n\n这是一段关于记忆系统的正文，内容写得长一些以便占满预算。\n')
+      write(c, 'b.md', '2024-01-02', '# 记忆乙\n\n另一段关于记忆系统的正文，也写得长一点用来占预算。\n')
+      write(c, 'c.md', '2024-01-03', '# 记忆丙\n\n第三段关于记忆系统的正文，同样写得长一点用来占预算。\n')
+      await zk.indexNotebook(c)
+
+      const tool = toolsFeature.buildTools(() => dir).find((d) => d.name === 'zk_recall')!
+      const env = { signal: AbortSignal.timeout(30_000) }
+      const out = await tool.execute({ query: '记忆', budget: 500, limit: 10 }, env) as Record<string, unknown>
+      expect(undeclaredKeys(out, tool.output.schema)).toEqual([])
+      expect(lossyPaths(out)).toEqual([])
+      expect(Number(out.used)).toBeLessThanOrEqual(Number(out.budget))
+      const notes = out.notes as Array<Record<string, unknown>>
+      const included = notes.filter((n) => n.included)
+      expect(included.length).toBeGreaterThan(0)
+      expect(included.every((n) => typeof n.path === 'string' && n.path &&
+        typeof n.absPath === 'string' && n.absPath)).toBe(true)
+      for (const n of included) expect(String(out.text)).toContain(String(n.absPath))
+      expect(tool.output.render({ query: '记忆', budget: 500 }, out)[0].text).toContain('召回装配')
+
+      // 预算收紧：放不下的整条丢弃，被挡下的笔记的 absPath 不该出现在装配文本里（不许切半句）
+      const tight = await tool.execute({ query: '记忆', budget: 18, limit: 10 }, env) as Record<string, unknown>
+      expect(Number(tight.used)).toBeLessThanOrEqual(18)
+      const tightNotes = tight.notes as Array<Record<string, unknown>>
+      expect(tightNotes.some((n) => !n.included && n.reason === 'over-budget')).toBe(true)
+      for (const n of tightNotes.filter((n) => !n.included)) {
+        expect(String(tight.text)).not.toContain(String(n.absPath))
+      }
+
+      // 0 命中：空 text / 空 notes / used = 0，不编造
+      const zero = await tool.execute({ query: '完全不存在的中文词xyz', limit: 10 }, env) as Record<string, unknown>
+      expect(zero.text).toBe('')
+      expect(zero.notes).toEqual([])
+      expect(zero.used).toBe(0)
+      expect(tool.output.render({ query: '完全不存在的中文词xyz' }, zero)[0].text).toContain('没有匹配的笔记')
+    } finally {
+      restore()
+    }
+  })
+
+  it('不读全文 / 不新增 zk 进程；budget 夹紧；used 与 countWords(text) 一致', async () => {
+    const { c } = await setup('nb-r4-cost')
+    try {
+      write(c, 'a.md', '2024-01-01', '# 记忆甲\n\n记忆系统的正文\n')
+      await zk.indexNotebook(c)
+      await zk.resolveZk(c) // 预热 zk 定位，别把 --version 算进子进程数
+
+      execLib.execStats.calls = 0
+      const r = await recallLib.assembleRecall(c, { query: '记忆', limit: 10 })
+      const recallCalls = execLib.execStats.calls
+      execLib.execStats.calls = 0
+      await zk.searchNotesDetailed(c, { query: '记忆', limit: 10, sort: 'relevance' })
+      expect(recallCalls).toBe(execLib.execStats.calls)
+      expect(r.used).toBe(memory.countWords(r.text))
+      expect(r.used).toBeLessThanOrEqual(r.budget)
+      expect(r.notes.every((n) => n.title && n.path && n.absPath)).toBe(true)
+
+      expect((await recallLib.assembleRecall(c, { query: '记忆', budget: -5 })).budget).toBe(1)
+      expect((await recallLib.assembleRecall(c, { query: '记忆', budget: 99_999 })).budget)
+        .toBe(recallLib.MAX_RECALL_BUDGET)
+    } finally {
+      restore()
+    }
+  })
+
+  it('CLI zk-kit recall 与工具同口径', async () => {
+    const { c } = await setup('nb-r4-cli')
+    try {
+      write(c, 'a.md', '2024-01-01', '# 记忆甲\n\n记忆系统的正文\n')
+      await zk.indexNotebook(c)
+      const cli = path.resolve(import.meta.dir, '..', 'src', 'cli.ts')
+      const run = spawnSync(process.execPath, [cli, 'recall', '记忆', '--budget', '60', '--json'],
+        { env: process.env, encoding: 'utf8', timeout: 30_000 })
+      expect(run.status).toBe(0)
+      const out = JSON.parse(String(run.stdout)) as Record<string, unknown>
+      expect(Number(out.used)).toBeLessThanOrEqual(Number(out.budget))
+      expect((out.notes as unknown[]).length).toBeGreaterThan(0)
+      expect(typeof out.text).toBe('string')
     } finally {
       restore()
     }

@@ -12,6 +12,7 @@
 |---|---|
 | `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要与命中片段 `snippet`；中文自动并用子串、多词按覆盖度合并（`matchStrategy` 说明用了 `fts` / `regex` / `mixed`）；有 query 时默认按 FTS 相关性排序，显式 `sort` 才改顺序；`total` 只在结果完整（未截断）时给，触顶看 `hasMore` / `completeness` |
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active）；中文多词同样按覆盖度合并、`snippet` 与 `total` 口径同 `zk_search` |
+| `zk_recall` | 召回装配：先按 query / 过滤条件检索（与 `zk_search` 同一套 R1–R3），再按词数预算 `budget`（默认 500）把命中笔记拼成一段可直接读的上下文；每条带标题、路径、`absPath` 与全文词数，放不下就整条丢弃、不切半句，被挡下的原因在 `notes[].reason`；`used` 一定不超过 `budget`（中文 2 字 1 词）；不读全文、不新增 zk 进程、不做重排 / 跨回合去重；`completeness` 沿用检索三态，装配过的 ≠ 全部命中。命令行对应 `zk-kit recall` |
 | `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/`、`inbox/`、`archive/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面；归档只放 `zk_supersede` 搬进去的旧结论）；同目录里有「改一两个字」的相似标题时在 `similar` 里提示（带分数，只提示、不阻断）；中文笔记没有任何标签时在 `tagWarning` 里提示（只提示，不阻断） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题）；根目录 meta 文件拒写 |
 | `zk_daily` | 打开/创建某天的日记，并追加一条带时间的记录（layered 模板写进 `## Events` 的 `### HH:MM`，flat 追加到文件末尾的 `## HH:MM`） |
@@ -437,13 +438,13 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉，并检查没有顶层声明
   （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：13 个内置工具各跑一遍 + 12 条路由（设置 8 + 只读 4）都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
+  `bun run smoke`（加载 dist：14 个内置工具各跑一遍 + 12 条路由（设置 8 + 只读 4）都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
   `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）·
   `bun run fixture`（生成 1k / 10k 规模夹具，比例与边界样本见 `docs/plan.md` §0.5；
   `--links-per-note` 决定链接密度 —— 建索引成本主要花在链接上，产出目录自带 `.zk/config.toml`，进去 `zk index` 即可）·
   `bun run bench`（成本表：逐用例真起 zk，记子进程数 / 回传字节 / 峰值 RSS / p50 / p95 与库的篇数 / 链接数；默认 1k、3 轮；
   全量 10k 实测与复跑方法见 `docs/bench-baseline.md`）
-- **耗时差两个数量级**：`bun run test` 约 100 s（227 个用例，真起 zk；机器快慢能差一倍）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
+- **耗时差两个数量级**：`bun run test` 约 100 s（230 个用例，真起 zk；机器快慢能差一倍）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
   10k 上光一条 `graph.full` 就是 30 s、冷建索引几分钟。所以 `bench` **不在** `check` / CI 里，跟测试完全分开，不会因为你跑测试而变慢。
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
@@ -465,6 +466,7 @@ src/
 │   ├── frontmatter.ts            # 只改 status / superseded-by 这类标量，其余行原样保留
 │   ├── meta.ts                   # meta 文件清单（注入 3 份 / 排除 7 份，一个真相）
 │   ├── lint.ts / dream.ts        # 巡检与做梦：只报告，绝不写文件
+│   ├── recall.ts                 # R4 召回装配：按词数预算拼装检索结果（只读）
 │   ├── notebook.ts               # 自举：zk init + 日记模板 + group 配置（幂等）
 │   ├── install.ts / platform.ts  # 内置 zk：平台映射、下载、解包、验证
 │   ├── tool.ts                   # 最小 JSON Schema 构造 + 输入校验（裸注册工具自己兜）
@@ -472,7 +474,7 @@ src/
 │   ├── dsh.ts                    # 宿主契约（纯类型，编译后为空）
 │   └── exec.ts / http.ts / json-file.ts
 ├── features/
-│   ├── zk-tools/feature.ts       # 13 个内置工具 + [alias] 别名工具
+│   ├── zk-tools/feature.ts       # 14 个内置工具 + [alias] 别名工具
 │   ├── settings/                 # 宿主 API + 浏览器 section
 │   └── readonly/                 # 只读视图：GET-only 路由 + Web 1.0 渲染（无 JS）
 └── cli.ts                        # zk-kit 命令行
