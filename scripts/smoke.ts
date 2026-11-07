@@ -4,7 +4,7 @@
  *
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
- *   · 14 个内置工具能注册、能执行、能渲染（zk_context 也执行一次；`[alias]` 别名工具按配置另行追加）；
+ *   · 15 个内置工具能注册、能执行、能渲染（zk_context 也执行一次；`[alias]` 别名工具按配置另行追加）；
  *   · 8 条设置路由 + 4 条只读路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
@@ -94,7 +94,7 @@ for (const tool of tools) checkSchema(tool.output.schema, `${tool.name}.output.s
 
 console.log('工具：' + tools.map((t) => t.name).join(', '))
 console.log('路由：' + [...routes.keys()].join(', '))
-if (tools.length !== 14) throw new Error('工具数量不对：' + tools.length)
+if (tools.length !== 15) throw new Error('工具数量不对：' + tools.length)
 // 8 条设置页路由 + 4 条只读路由（view / feed.xml / api/notes / api/note）
 if (routes.size !== 12) throw new Error('路由数量不对：' + routes.size)
 
@@ -119,6 +119,10 @@ if (!Array.isArray(recalled.notes) || !(recalled.notes as unknown[]).length) thr
 await call('zk_daily', { entry: '冒烟测试：日记也通了。' })
 await call('zk_new', { title: '被链接的笔记', body: '目标。' })
 await call('zk_link', { from: created.path, to: '被链接的笔记' })
+const walked = await call('zk_walk', { path: created.path, direction: 'out' })
+if (!(walked.notes as unknown[]).length) throw new Error('zk_walk 没返回出链邻居')
+const neighbour = (walked.notes as Array<Record<string, unknown>>)[0]!
+if (!neighbour?.linkLine) throw new Error('zk_walk 没给出这条边的那一行（§14.1）')
 await call('zk_append', { path: created.path, text: '追加一段。', heading: '补充' })
 const queried = await call('zk_query', { tags: ['smoke'], status: 'active' })
 if (Number(queried.count) < 1) throw new Error('zk_query 没查到刚写的笔记')
@@ -130,7 +134,9 @@ const linted = await call('zk_lint', {})
 if (typeof (linted.orphans as Record<string, unknown>).total !== 'number') throw new Error('zk_lint 输出不对')
 const dreamed = await call('zk_dream', { days: 7 })
 if (!Array.isArray(dreamed.newNotes)) throw new Error('zk_dream 输出不对')
-await call('zk_stats', {})
+const stats = await call('zk_stats', {})
+const usage = stats.usage as Record<string, number>
+if (!(usage.walk >= 1)) throw new Error('zk_stats 没记到 zk_walk 的计数（§14.4）')
 await call('zk_context', {})
 await call('zk_use', {})
 

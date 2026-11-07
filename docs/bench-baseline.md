@@ -275,3 +275,46 @@ ZK_BIN=/path/to/zk bun run bench                                      # 1k 复�
 
 改了工具就按同一口径补测，把新数字并回本表；`bun run bench --list` 看全部用例，
 `--cases a,b` 只跑改动相关的几条。
+
+## R8 `zk_walk` 真入口实测（§10.4 第 8 项，2026-11-07）
+
+`walk.both` 从代理（`backlinksOf` + `outlinksOf` 手写两次）改成走真的 `walkFrom` 后复跑。
+夹具 `.tmp/fixture/1k-1` / `.tmp/fixture/10k-1`（1 链/篇），zk 0.15.7 / WSL / bun 1.4.4：
+
+| 库 | 用例 | 种子 | 子进程 | 字节 | p50 | p95 | 峰值 RSS |
+|---|---|---|---|---|---|---|---|
+| 1k / 1 链 | `walk.both` | 路径（入链最多那篇） | 2 | 14 056 B | 393.9 ms | 489.7 ms | 24 MB |
+| 1k / 1 链 | `walk.title` | frontmatter 标题 | 3 | 14 296 B | 535.1 ms | 618.5 ms | 24 MB |
+| 10k / 1 链 | `walk.both` | 路径 | 2 | 15 076 B | 1 836.5 ms | 2 048.6 ms | 32 MB |
+| 10k / 1 链 | `walk.title` | frontmatter 标题 | 3 | 15 317 B | 2 473.6 ms | 3 433.7 ms | 32 MB |
+
+- **口径没变**：`both` 恒 2 个子进程（`--link-to` + `--linked-by`），字节 = 两笔传输相加；
+  标题 / id 种子多一次 `zk list -M exact --limit 5` 解析（+1 进程、+约 240 B）。
+  10k 上的 p95 比 2026-11-07 的代理实测（1 052 ms）高一档，是同一台机器的负载波动（同批 3 轮），
+  量级与 §0.5 的 `--linked-by` / `--link-to` 0.4 s 结论一致，不是新增调用类型。
+- 0.2 / 3 链档没有单独复跑：路径种子的调用序列与代理完全相同（同样是两次按篇反查），
+  那两档的字节 / p95 见上一节；标题种子按上表的 +1 进程 / +约 240 B 外推。
+- 夹具无 hub（均匀随机链，最大入链 4 / 7 / 12），触不到 `limit = 200`；`partial` 分支由
+  `test/zk.test.ts` 的 R8 用例自建 `limit: 1` 验证（工具层只给 complete / partial 二态）。
+
+## §14 本地读路径实测（2026-11-07，零子进程的两项）
+
+`counterEntries`（死胡同探针）与 `entryPoints(via: query)` 都不起 zk 进程，所以 **不进 `bench.ts`**
+（它记的是子进程 / 传输字节）。这里的数字来自一次性探针 `.tmp/probe-cost.ts`（可删）：
+读 `searchNotesDetailed(query='记忆预算', limit=10)` 的结果，各跑 5 次取 p50 / max。
+夹具 `.tmp/fixture/1k-1` / `10k-1`（1 链/篇，归档占 8%），zk 0.15.7 / WSL / bun 1.4.4：
+
+| 库 | 归档篇数 | `archivedCounterparts`（10 条命中对照） | `entryPointsOf`（query 命中） |
+|---|---|---|---|
+| 1k | 80 | p50 5.5 ms · max 11.5 ms · scanned 80 | p50 0.8 ms · max 2.8 ms |
+| 10k | 800 | p50 49.5 ms · max 64.5 ms · scanned 800 | p50 0.7 ms · max 3.1 ms |
+
+- 口径：探针按「归档篇数」线性增长（每篇一次读文件 + frontmatter 解析），**与库的笔记数无关**，
+  上界是 `MAX_ARCHIVE_SCAN = 2000` 篇（触顶 `counterEntriesTruncated`）。放进一次 1–2 s 的检索里，
+  占比 2–5%，所以没做缓存 —— 缓存要处理「归档被 supersede 改动」的失效，不值得。
+- `entryPointsOf` 的查询比对是纯内存（`similarKeyOf` 之外只有字符串包含），与库规模无关；
+  **路径式来源落地 = 0 子进程**。标题式来源且不在结果集里时**不做**批量解析（10k 上
+  `zk list -M re -m '(?:…)` 实测 p50 687 ms / 3 条 1 045 ms），只给入口名（`resolved: false`），
+  由 agent 自己 `zk_walk` 跟进去。这条是**实测后放弃**的，不是漏做。
+- `zk_walk` 的 `section` / `linkLine`：入链用邻居 JSON 里已付费的 `rawContent`，出链读一次种子文件，
+  子进程数仍是 2 / 3（见上一节），字节增量在 `walk.both` / `walk.title` 的同一数量级内（各邻居 +40–160 B）。

@@ -42,6 +42,10 @@ const timelineLib = await import('../src/lib/timeline.ts')
 const similarLib = await import('../src/lib/similar.ts')
 const execLib = await import('../src/lib/exec.ts')
 const recallLib = await import('../src/lib/recall.ts')
+const entryPointsLib = await import('../src/lib/entry-points.ts')
+const archiveProbe = await import('../src/lib/archive-probe.ts')
+const usageLib = await import('../src/lib/usage.ts')
+const edgeContext = await import('../src/lib/edge-context.ts')
 const wikilinkLib = await import('../src/lib/wikilink.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
@@ -2351,10 +2355,10 @@ describe('daily', () => {
 })
 
 describe('tools', () => {
-  it('14 个工具，参数校验拒绝坏输入', () => {
+  it('15 个工具，参数校验拒绝坏输入', () => {
     const defs = toolsFeature.buildTools()
     expect(defs.map((d) => d.name)).toEqual([
-      'zk_search', 'zk_query', 'zk_recall', 'zk_new', 'zk_daily', 'zk_append', 'zk_link', 'zk_supersede',
+      'zk_search', 'zk_query', 'zk_recall', 'zk_walk', 'zk_new', 'zk_daily', 'zk_append', 'zk_link', 'zk_supersede',
       'zk_rename',
       'zk_context', 'zk_lint', 'zk_dream', 'zk_stats', 'zk_use',
     ])
@@ -2715,7 +2719,7 @@ describe('alias tools', () => {
     }
   })
 
-  it('开关默认关：[alias] 里有条目也不注册成工具，内置工具仍是 14 个', async () => {
+  it('开关默认关：[alias] 里有条目也不注册成工具，内置工具仍是 15 个', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-alias-off-'))
     try {
       store.writeConfig({
@@ -2740,7 +2744,7 @@ describe('alias tools', () => {
 
       const defs = toolsFeature.buildTools(() => dir)
       expect(defs.map((d) => d.name)).not.toContain('zk_lucky')
-      expect(defs).toHaveLength(14)
+      expect(defs).toHaveLength(15)
     } finally {
       store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'], aliasTools: false })
       fs.rmSync(dir, { recursive: true, force: true })
@@ -5511,11 +5515,13 @@ describe('G1 / G4：写 MEMORY 前的容量可见（§10.4 第 6 项）', () => 
     }
   })
 
-  it('模板升到 v9：两份 AGENTS 都带指针、WORKFLOW 说明做法，且都守住词数预算', () => {
-    expect(agentsTpl.TEMPLATE_VERSION).toBe(9)
+  it('模板升到 v10：两份 AGENTS 都把 zk_walk 一跳写进查重那一步，且都守住词数预算', () => {
+    expect(agentsTpl.TEMPLATE_VERSION).toBe(10)
     expect(agentsTpl.TEMPLATE_SENTINELS[agentsTpl.TEMPLATE_VERSION]).toBeDefined()
+    expect(agentsTpl.TEMPLATE_SENTINELS[agentsTpl.TEMPLATE_VERSION]!.required).toContain('zk_walk')
     expect(notebookLib.AGENTS_TEMPLATE).toContain('改 MEMORY 前看 zk_context')
-    expect(notebookLib.AGENTS_TEMPLATE_FLAT).toContain('改 MEMORY 前看 zk_context')
+    expect(notebookLib.AGENTS_TEMPLATE).toContain('zk_walk 一跳')
+    expect(notebookLib.AGENTS_TEMPLATE_FLAT).toContain('zk_walk 一跳')
     expect(notebookLib.WORKFLOW_TEMPLATE).toContain('dropCandidates')
     expect(memory.countWords(notebookLib.AGENTS_TEMPLATE)).toBeLessThanOrEqual(190)
     expect(memory.countWords(notebookLib.AGENTS_TEMPLATE_FLAT)).toBeLessThanOrEqual(90)
@@ -5650,6 +5656,489 @@ describe('§10.4 第 7 项：稳定 ID（§9.2）', () => {
 
       // 只读：一次巡检 / 做梦 / 两次工具调用都不写任何笔记或 meta 文件
       expect(snapshot(dir)).toBe(before)
+    } finally {
+      restore()
+    }
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §11 插入评审通过后：R8 / R9-v1 / R10（§10.4 第 8–10 项）
+// ─────────────────────────────────────────────────────────────────────────────
+describe('R8 / R9-v1 / R10：入口 + 一跳（§10.4 第 8–10 项）', () => {
+  const originalConfig = {
+    notebooks: { default: { path: notebook, structure: 'flat' as const } },
+    active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+    defaultTags: ['default'], aliasTools: false,
+  }
+  const setup = async (name: string) => {
+    const dir = path.join(home, name)
+    store.writeConfig({
+      notebooks: { default: { path: dir, structure: 'flat' } },
+      active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+      defaultTags: [], aliasTools: false,
+    })
+    const c = store.config()
+    await notebookLib.ensureNotebook(c)
+    return { c, dir }
+  }
+  const restore = (): void => { store.writeConfig(originalConfig) }
+  const tool = (dir: string, name: string) =>
+    toolsFeature.buildTools(() => dir).find((d) => d.name === name)!
+  const idOf = (abs: string): string => fm.parseFrontmatter(fs.readFileSync(abs, 'utf8')).fields.id ?? ''
+  const seedOf = (p: string): string => p.replace(/\.md$/, '')
+
+  it('R8：路径 / 标题 / id 种子结果一致；按篇反查不建全图（路径 2 进程、标题 3）；归档默认不出现', async () => {
+    const { c, dir } = await setup('nb-r8-walk')
+    try {
+      const seed = await zk.createNote(c, { title: '种子笔记', content: '种子正文' })
+      const out = await zk.createNote(c, { title: '出链目标', content: '出链正文' })
+      const back1 = await zk.createNote(c, { title: '入链一', content: '入链正文' })
+      const back2 = await zk.createNote(c, { title: '入链二', content: '入链正文' })
+      await zk.linkNotes(c, seed.path, out.path)
+      await zk.linkNotes(c, back1.path, seed.path)
+      await zk.linkNotes(c, back2.path, seed.path)
+
+      // 归档笔记也链向种子：默认排除，includeArchived 才出现（与 excludedNames 同口径）
+      const archived = path.join(dir, c.archiveDir, 'old-seed.md')
+      fs.mkdirSync(path.dirname(archived), { recursive: true })
+      fs.writeFileSync(archived, `---\ntitle: 旧种子\nstatus: superseded\n---\n\n[[${seedOf(seed.path)}]]\n`, 'utf8')
+      await zk.indexNotebook(c)
+
+      // oracle：全图在该篇上的边（1k 以下的小库，只用来对账，不作生产依赖）
+      const graph = await zk.graphEdges(c)
+      const inOracle = graph.edges.filter((e) => e.targetPath === seed.path).map((e) => e.sourcePath).sort()
+      const outOracle = graph.edges.filter((e) => e.sourcePath === seed.path).map((e) => e.targetPath).sort()
+
+      const byPath = await zk.walkFrom(c, { seed: seed.path })
+      const rel = (relation: 'in' | 'out') => byPath.notes.filter((n) => n.relation === relation).map((n) => n.path).sort()
+      expect(rel('in')).toEqual(inOracle)
+      expect(rel('out')).toEqual(outOracle)
+      expect(rel('in')).toContain(back1.path)
+      expect(rel('in')).toContain(back2.path)
+      expect(rel('out')).toEqual([out.path])
+      expect(byPath.completeness).toBe('complete')
+      expect(byPath.truncated).toBe(false)
+      // 种子自身不会出现在邻居里
+      expect(byPath.notes.every((n) => n.path !== seed.path)).toBe(true)
+
+      // 标题 / [[标题]] / [[id]] / 绝对路径 → 同一批邻居
+      const pathsOf = (r: Awaited<ReturnType<typeof zk.walkFrom>>) => r.notes.map((n) => n.path).sort()
+      expect(pathsOf(await zk.walkFrom(c, { seed: '种子笔记' }))).toEqual(pathsOf(byPath))
+      expect(pathsOf(await zk.walkFrom(c, { seed: '[[种子笔记]]' }))).toEqual(pathsOf(byPath))
+      expect(pathsOf(await zk.walkFrom(c, { seed: seed.absPath }))).toEqual(pathsOf(byPath))
+      const id = idOf(seed.absPath)
+      expect(id).toMatch(/^[0-9a-f]{10}$/)
+      expect(pathsOf(await zk.walkFrom(c, { seed: `[[${id}]]` }))).toEqual(pathsOf(byPath))
+
+      // 不存在 / 不精确命中 → 空，不退化成「返回全库」
+      expect((await zk.walkFrom(c, { seed: 'no/such/note.md' })).seed).toBeNull()
+      expect((await zk.walkFrom(c, { seed: '不存在的标题' })).seed).toBeNull()
+      // `-M exact` 是按词精确、不是整串相等：前缀相同的另一篇不能被当成本种子
+      expect((await zk.walkFrom(c, { seed: '种子' })).seed).toBeNull()
+
+      // 归档默认不出现；include_archived 才回来
+      expect(pathsOf(byPath)).not.toContain(path.relative(dir, archived).split(path.sep).join('/'))
+      const withArchived = await zk.walkFrom(c, { seed: seed.path, direction: 'in', includeArchived: true })
+      expect(withArchived.notes.map((n) => n.path)).toContain(path.relative(dir, archived).split(path.sep).join('/'))
+
+      // limit 触顶 = partial，明说「邻居没列全」
+      const capped = await zk.walkFrom(c, { seed: seed.path, direction: 'in', limit: 1 })
+      expect(capped.notes).toHaveLength(1)
+      expect(capped.truncated).toBe(true)
+      expect(capped.completeness).toBe('partial')
+
+      // 成本：路径种子 2 个子进程；标题 / id 种子多一次 `-M exact` 解析（3 个）
+      await zk.resolveZk(c)
+      execLib.execStats.calls = 0
+      await zk.walkFrom(c, { seed: seed.path, direction: 'both' })
+      expect(execLib.execStats.calls).toBe(2)
+      execLib.execStats.calls = 0
+      await zk.walkFrom(c, { seed: '种子笔记', direction: 'both' })
+      expect(execLib.execStats.calls).toBe(3)
+      execLib.execStats.calls = 0
+      await zk.walkFrom(c, { seed: `[[${id}]]`, direction: 'out' })
+      expect(execLib.execStats.calls).toBe(2)
+
+      // 工具层：schema / lossy / render / 种子缺失时不出现 seed 键
+      const env = { signal: AbortSignal.timeout(30_000) }
+      const walk = tool(dir, 'zk_walk')
+      expect(walk.parameters.required).toEqual(['path'])
+      const wout = await walk.execute({ path: seed.path }, env) as Record<string, unknown>
+      expect(wout.count).toBe(3) // 2 条入链 + 1 条出链（归档默认不在内，种子自身不计）
+      expect(undeclaredKeys(wout, walk.output.schema)).toEqual([])
+      expect(lossyPaths(wout)).toEqual([])
+      expect(walk.output.render({ path: seed.path }, wout)[0].text).toContain('1 跳邻居')
+      const gone = await walk.execute({ path: 'not/here.md' }, env) as Record<string, unknown>
+      expect('seed' in gone).toBe(false)
+      expect(gone.count).toBe(0)
+      expect(walk.output.render({ path: 'not/here.md' }, gone)[0].text).toContain('没找到种子笔记')
+      expect(undeclaredKeys(gone, walk.output.schema)).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  it('R9-v1：MEMORY 活条目 → 本次结果集入口；search / query / recall 同口径；退役与归档不误报', async () => {
+    const { c, dir } = await setup('nb-r9-entry')
+    try {
+      const a = await zk.createNote(c, { title: '记忆甲', content: '唯甲词 召回关键词' })
+      const b = await zk.createNote(c, { title: '记忆乙', content: '唯乙词 召回关键词' })
+      // 归档里的旧结论：显式 archive/ 链接是「有意引用旧结论」，不是活入口
+      const archived = path.join(dir, c.archiveDir, 'old.md')
+      fs.mkdirSync(path.dirname(archived), { recursive: true })
+      fs.writeFileSync(archived, '---\ntitle: 旧结论\nstatus: superseded\n---\n\n旧正文\n', 'utf8')
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+        '# MEMORY', '',
+        `- 2026-01-01 甲已晋升 [[${seedOf(a.path)}]]`,
+        `- 2026-02-02 乙也已晋升 [[${seedOf(b.path)}]]`,
+        `- 2026-03-03 指向归档的有意引用 [[${c.archiveDir}/old]]`,
+        `- [superseded 2026-04-04] 旧结论 → [[${seedOf(a.path)}]]`,
+        '',
+      ].join('\n'), 'utf8')
+      await zk.indexNotebook(c)
+
+      const env = { signal: AbortSignal.timeout(30_000) }
+      const search = tool(dir, 'zk_search')
+      const both = await search.execute({ query: '召回关键词', limit: 10 }, env) as Record<string, unknown>
+      const points = both.entryPoints as Array<{ entry: string; title: string; path: string; absPath: string }>
+      expect(points.map((p) => p.path).sort()).toEqual([a.path, b.path].sort())
+      expect(points.every((p) => !p.entry.includes('superseded'))).toBe(true)
+      expect(points.every((p) => !p.entry.includes('archive/'))).toBe(true)
+      expect(points.every((p) => fs.existsSync(p.absPath))).toBe(true)
+      expect(undeclaredKeys(both, search.output.schema)).toEqual([])
+      expect(lossyPaths(both)).toEqual([])
+      expect(search.output.render({ query: '召回关键词' }, both)[0].text).toContain('已晋升结论的入口')
+
+      // 只命中甲时只剩甲那条
+      const only = await search.execute({ query: '唯甲词', limit: 10 }, env) as Record<string, unknown>
+      expect((only.entryPoints as Array<{ path: string }>).map((p) => p.path)).toEqual([a.path])
+
+      // zk_query / zk_recall 与 zk_search 共用同一份计算
+      const query = tool(dir, 'zk_query')
+      const qout = await query.execute({ query: '唯甲词' }, env) as Record<string, unknown>
+      expect((qout.entryPoints as Array<{ path: string }>).map((p) => p.path)).toEqual([a.path])
+      expect(undeclaredKeys(qout, query.output.schema)).toEqual([])
+      expect(query.output.render({ query: '唯甲词' }, qout)[0].text).toContain('已晋升结论的入口')
+
+      const recallTool = tool(dir, 'zk_recall')
+      const rout = await recallTool.execute({ query: '唯甲词', budget: 300 }, env) as Record<string, unknown>
+      expect((rout.entryPoints as Array<{ path: string }>).map((p) => p.path)).toEqual([a.path])
+      expect(undeclaredKeys(rout, recallTool.output.schema)).toEqual([])
+      expect(recallTool.output.render({ query: '唯甲词' }, rout)[0].text).toContain('已晋升结论的入口')
+
+      // 零子进程：入口计算本身不碰 zk
+      await zk.resolveZk(c)
+      execLib.execStats.calls = 0
+      const direct = entryPointsLib.entryPointsOf(c, [
+        { title: a.title, path: a.path, absPath: a.absPath, id: idOf(a.absPath) },
+      ])
+      expect(direct.points.map((p) => p.path)).toEqual([a.path])
+      expect(direct.truncated).toBe(false)
+      expect(execLib.execStats.calls).toBe(0)
+
+      // 入口上限 5 条：多出来的不静默丢，输出 entryPointsTruncated + render 明说
+      const many = await zk.createNote(c, { title: '第六篇', content: '唯甲词 召回关键词' })
+      const manyMore = await zk.createNote(c, { title: '第五篇', content: '唯甲词 召回关键词' })
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+        '# MEMORY', '',
+        ...[a, b, many, manyMore].map((n, i) => `- 2026-01-0${i + 1} 结论 ${i} [[${seedOf(n.path)}]]`),
+        ...[0, 1, 2, 3].map((i) => `- 2026-02-0${i + 1} 再一条 ${i} [[${seedOf(a.path)}]]`),
+        '',
+      ].join('\n'), 'utf8')
+      await zk.indexNotebook(c)
+      const capped = await search.execute({ query: '唯甲词', limit: 10 }, env) as Record<string, unknown>
+      expect((capped.entryPoints as unknown[]).length).toBe(entryPointsLib.MAX_ENTRY_POINTS)
+      expect(capped.entryPointsTruncated).toBe(true)
+      expect(undeclaredKeys(capped, search.output.schema)).toEqual([])
+      expect(search.output.render({ query: '唯甲词' }, capped)[0].text).toContain('还有更多入口没列')
+
+      // 没有 MEMORY.md 的老库：整个键不出现（输出与改动前一致）
+      const bare = await setup('nb-r9-bare')
+      const bareOut = await tool(bare.dir, 'zk_search').execute({ query: '召回关键词' }, env) as Record<string, unknown>
+      expect('entryPoints' in bareOut).toBe(false)
+      expect(undeclaredKeys(bareOut, tool(bare.dir, 'zk_search').output.schema)).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  test('R10：模板 v10 把 zk_walk 一并写进查重那一步，词数 190 / 88（不提高预算）', () => {
+    expect(agentsTpl.TEMPLATE_VERSION).toBe(10)
+    expect(memory.countWords(agentsTpl.AGENTS_TEMPLATE)).toBe(190)
+    expect(memory.countWords(agentsTpl.AGENTS_TEMPLATE_FLAT)).toBe(88)
+    expect(agentsTpl.AGENTS_TEMPLATE).toContain('1. zk_query / zk_search 查重，zk_walk 一跳（中文查 tags）。')
+    expect(agentsTpl.AGENTS_TEMPLATE_FLAT).toContain('1. zk_search 查重，zk_walk 一跳；中文必打 tags（FTS 不切中文）。')
+    expect(agentsTpl.TEMPLATE_SENTINELS[10]!.required).toContain('zk_walk')
+  })
+
+  it('R10：只把首行数字改成 v10、正文没加 zk_walk 的老库被报「标记与内容不符」', async () => {
+    const { c, dir } = await setup('nb-r10-sentinel')
+    try {
+      const faked = notebookLib.AGENTS_TEMPLATE.replace('，zk_walk 一跳', '')
+      fs.writeFileSync(path.join(dir, 'AGENTS.md'), faked, 'utf8')
+      const st = lintLib.templateStatus(c)
+      expect(st.version).toBe(10)
+      expect(st.mismatch).toBe(true)
+      expect(st.mismatchDetail).toContain('zk_walk')
+
+      fs.writeFileSync(path.join(dir, 'AGENTS.md'), notebookLib.AGENTS_TEMPLATE, 'utf8')
+      const clean = lintLib.templateStatus(c)
+      expect(clean.version).toBe(10)
+      expect(clean.stale).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-11-07 复核后补的三处（plan §14）：边的语义 / 入口不再是注解 / 死胡同可见
+// ─────────────────────────────────────────────────────────────────────────────
+describe('§14：边的语义、入口不再是注解、死胡同可见', () => {
+  const originalConfig = {
+    notebooks: { default: { path: notebook, structure: 'flat' as const } },
+    active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+    defaultTags: ['default'], aliasTools: false,
+  }
+  const setup = async (name: string) => {
+    const dir = path.join(home, name)
+    store.writeConfig({
+      notebooks: { default: { path: dir, structure: 'flat' } },
+      active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+      defaultTags: [], aliasTools: false,
+    })
+    const c = store.config()
+    await notebookLib.ensureNotebook(c)
+    return { c, dir }
+  }
+  const restore = (): void => { store.writeConfig(originalConfig) }
+  const tool = (dir: string, name: string) =>
+    toolsFeature.buildTools(() => dir).find((d) => d.name === name)!
+  const stem = (p: string): string => p.replace(/\.md$/, '')
+
+  test('linkContextOf：只认真链接，不认代码块与纯文本提及', () => {
+    const md = [
+      '# 标题',
+      '',
+      '## 甲',
+      '```',
+      `[[notes/x]]`,
+      '```',
+      '提到了 notes/x 但没有链接',
+      '## 乙',
+      `- 见 [[notes/x|别名]] 因为预算按词算`,
+    ].join('\n')
+    const hit = edgeContext.linkContextOf(md, { title: 'X', path: 'notes/x.md' }, 'seed.md')
+    expect(hit?.section).toBe('乙')
+    expect(hit?.line).toContain('因为预算按词算')
+    // Markdown 行内链接也认，且 ../ 按源文件位置解析
+    const rel = edgeContext.linkContextOf('## 丙\n见 [x](../notes/x.md) 的说明', { title: 'X', path: 'notes/x.md' }, 'notes/sub/seed.md')
+    expect(rel?.section).toBe('丙')
+    // 找不到就不编
+    expect(edgeContext.linkContextOf('## 丁\n没有链接', { title: 'X', path: 'notes/x.md' }, 'seed.md')).toBeNull()
+  })
+
+  it('R8 补：每条邻居带「那条边所在的小节 + 那一行」，两条出链不再长得一样（0 个额外子进程）', async () => {
+    const { c, dir } = await setup('nb-ctx')
+    try {
+      const seed = await zk.createNote(c, { title: '种子', content: '种子正文' })
+      const b = await zk.createNote(c, { title: '出链乙', content: '乙正文' })
+      const d = await zk.createNote(c, { title: '出链丁', content: '丁正文' })
+      const back = await zk.createNote(c, { title: '入链丙', content: '丙正文' })
+      fs.writeFileSync(seed.absPath, [
+        '---', 'title: 种子', '---', '',
+        '## 甲小节', '',
+        `- 先看 [[${stem(b.path)}]]：预算怎么算`, '',
+        '## 乙小节', '',
+        `- 再看 [[${stem(d.path)}]]：归档怎么查`, '',
+      ].join('\n'), 'utf8')
+      await zk.linkNotes(c, back.path, seed.path)
+      await zk.indexNotebook(c)
+
+      const r = await zk.walkFrom(c, { seed: seed.path })
+      const byPath = new Map(r.notes.map((n) => [n.path, n]))
+      expect(byPath.get(b.path)?.section).toBe('甲小节')
+      expect(byPath.get(b.path)?.linkLine).toContain('预算怎么算')
+      expect(byPath.get(d.path)?.section).toBe('乙小节')
+      // 关键回归：原来两条出链的 lead 相同（都是邻居首段），等于只给了标题
+      expect(byPath.get(b.path)?.linkLine).not.toBe(byPath.get(d.path)?.linkLine)
+      // 入链的「那一行」写在邻居里，指向种子
+      expect(byPath.get(back.path)?.relation).toBe('in')
+      expect(byPath.get(back.path)?.linkLine).toContain(stem(seed.path))
+
+      // 字节来自已有的 rawContent / 一次本地读：子进程数一点没涨
+      await zk.resolveZk(c)
+      execLib.execStats.calls = 0
+      await zk.walkFrom(c, { seed: seed.path, direction: 'both' })
+      expect(execLib.execStats.calls).toBe(2)
+
+      const env = { signal: AbortSignal.timeout(30_000) }
+      const walk = tool(dir, 'zk_walk')
+      const out = await walk.execute({ path: seed.path }, env) as Record<string, unknown>
+      expect(undeclaredKeys(out, walk.output.schema)).toEqual([])
+      expect(lossyPaths(out)).toEqual([])
+      const rendered = walk.output.render({ path: seed.path }, out)[0].text
+      expect(rendered).toContain('〔甲小节〕')
+      expect(rendered).toContain('预算怎么算')
+    } finally {
+      restore()
+    }
+  })
+
+  it('R9 补：MEMORY 条目命中查询 → 来源不在结果集里也是入口（via=query）；raw / 归档不当入口', async () => {
+    const { c, dir } = await setup('nb-entry-query')
+    try {
+      const promoted = await zk.createNote(c, { title: '已晋升结论的来源', content: '正文里没有那个词' })
+      const plain = await zk.createNote(c, { title: '普通命中', content: '查询词在这里' })
+      fs.mkdirSync(path.join(dir, 'raw'), { recursive: true })
+      fs.writeFileSync(path.join(dir, 'raw', 'scratch.md'), '---\ntitle: 草稿\n---\n\n草稿正文\n', 'utf8')
+      fs.mkdirSync(path.join(dir, c.archiveDir), { recursive: true })
+      fs.writeFileSync(path.join(dir, c.archiveDir, 'old.md'), '---\ntitle: 旧结论\nstatus: superseded\n---\n\n旧正文\n', 'utf8')
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+        '# MEMORY', '',
+        `- 2026-01-01 关于查询词的结论 [[${stem(promoted.path)}]]`,
+        '- 2026-01-02 关于查询词的标题式入口 [[标题式入口]]',
+        '- 2026-01-03 原始素材不算入口 [[raw/scratch]]',
+        `- 2026-01-04 旧结论也不算 [[${c.archiveDir}/old]]`,
+        '',
+      ].join('\n'), 'utf8')
+      await zk.indexNotebook(c)
+
+      const env = { signal: AbortSignal.timeout(30_000) }
+      const search = tool(dir, 'zk_search')
+      const out = await search.execute({ query: '查询词', limit: 10 }, env) as Record<string, unknown>
+      expect((out.notes as Array<{ path: string }>).map((n) => n.path)).toEqual([plain.path])
+      const points = out.entryPoints as Array<{
+        entry: string; title: string; path: string; via: string; absPath: string; resolved: boolean
+      }>
+      // 路径式来源：本地读盘就能落地；标题式且不在结果集里：只给入口名（不为补一次路径再起进程）
+      expect(points.map((p) => [p.path, p.via, p.resolved])).toEqual([
+        [promoted.path, 'query', true],
+        ['', 'query', false],
+      ])
+      expect(points[1]!.title).toBe('标题式入口')
+      expect(fs.existsSync(points[0]!.absPath)).toBe(true)
+      expect(search.output.render({ query: '查询词' }, out)[0].text).toContain('zk_walk 走进去')
+      expect(undeclaredKeys(out, search.output.schema)).toEqual([])
+      expect(lossyPaths(out)).toEqual([])
+      expect(search.output.render({ query: '查询词' }, out)[0].text).toContain('来源不必在本批结果里')
+
+      // 零子进程：来源解析只读盘 / 只读 MEMORY
+      await zk.resolveZk(c)
+      execLib.execStats.calls = 0
+      const direct = entryPointsLib.entryPointsOf(c, [{ title: plain.title, path: plain.path, absPath: plain.absPath, id: '' }], { query: '查询词' })
+      expect(direct.points.map((p) => [p.path, p.resolved])).toEqual([[promoted.path, true], ['', false]])
+      expect(execLib.execStats.calls).toBe(0)
+
+      // 0 命中也不影响入口：查询词只出现在 MEMORY 里时，仍然给入口（这正是「索引」该干的事）
+      const noHits = await search.execute({ query: '关于查询词', limit: 10 }, env) as Record<string, unknown>
+      expect(noHits.count).toBe(0)
+      expect((noHits.entryPoints as Array<{ via: string }>).map((p) => p.via)).toEqual(['query', 'query'])
+      expect(search.output.render({ query: '关于查询词' }, noHits)[0].text)
+        .toContain('MEMORY 里与查询相关的入口')
+
+      // 没有 query 时只剩「结果集注解」语义（老行为不变）
+      const noQuery = entryPointsLib.entryPointsOf(c, [{ title: plain.title, path: plain.path, absPath: plain.absPath, id: '' }])
+      expect(noQuery.points).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  it('死胡同：归档里的同名旧结论在检索结果里可见，带原因与替代结论；include_archived 不重复报', async () => {
+    const { c, dir } = await setup('nb-counter')
+    try {
+      const live = await zk.createNote(c, { title: '记忆预算的算法', content: '现行结论正文' })
+      fs.mkdirSync(path.join(dir, c.archiveDir), { recursive: true })
+      fs.writeFileSync(path.join(dir, c.archiveDir, 'old-budget.md'), [
+        '---', 'title: 记忆预算的算法（旧版）', 'status: superseded',
+        'supersede-reason: 记忆预算改成按词算', `superseded-by: "[[${stem(live.path)}]]"`,
+        '---', '', '旧正文', '',
+      ].join('\n'), 'utf8')
+      // 只在归档里出现过的另一条旧结论：用来测「0 命中 ≠ 从来没有」
+      fs.writeFileSync(path.join(dir, c.archiveDir, 'old-formula.md'), [
+        '---', 'title: 预算公式的旧写法', 'status: superseded',
+        'supersede-reason: 公式换成词数口径', '---', '', '更旧的正文', '',
+      ].join('\n'), 'utf8')
+      await zk.indexNotebook(c)
+
+      const env = { signal: AbortSignal.timeout(30_000) }
+      const search = tool(dir, 'zk_search')
+      const out = await search.execute({ query: '现行结论', limit: 10 }, env) as Record<string, unknown>
+      const counters = out.counterEntries as Array<Record<string, unknown>>
+      expect(counters).toHaveLength(1)
+      expect(String(counters[0]!.reason)).toContain('按词算')
+      expect(String(counters[0]!.supersededBy)).toContain(stem(live.path))
+      expect(String(counters[0]!.path)).toBe(`${c.archiveDir}/old-budget.md`)
+      expect(undeclaredKeys(out, search.output.schema)).toEqual([])
+      expect(lossyPaths(out)).toEqual([])
+      expect(search.output.render({ query: '现行结论' }, out)[0].text).toContain('归档里有同名旧结论')
+
+      // 零子进程：探针只读归档文件
+      await zk.resolveZk(c)
+      execLib.execStats.calls = 0
+      const probe = archiveProbe.archivedCounterparts(c, [{ title: live.title, path: live.path }])
+      expect(probe.entries).toHaveLength(1)
+      expect(execLib.execStats.calls).toBe(0)
+
+      // 0 命中但归档里有：说清「没有」不等于「从来没有」
+      const zero = await search.execute({ query: '预算公式的旧写法', limit: 10 }, env) as Record<string, unknown>
+      expect(zero.count).toBe(0)
+      const zeroCounters = zero.counterEntries as Array<Record<string, unknown>>
+      expect(zeroCounters).toHaveLength(1)
+      expect(String(zeroCounters[0]!.reason)).toContain('词数口径')
+      expect(search.output.render({ query: '预算公式的旧写法' }, zero)[0].text).toContain('没有活笔记命中')
+
+      // 显式 include_archived 时归档已经在结果里，不再重复提醒
+      const query = tool(dir, 'zk_query')
+      const withArch = await query.execute({ query: '现行结论', include_archived: true }, env) as Record<string, unknown>
+      expect('counterEntries' in withArch).toBe(false)
+      expect(undeclaredKeys(withArch, query.output.schema)).toEqual([])
+
+      // 没有归档的库：一个字都不多
+      const bare = await setup('nb-counter-bare')
+      const bareOut = await tool(bare.dir, 'zk_search').execute({ query: '现行结论' }, env) as Record<string, unknown>
+      expect('counterEntries' in bareOut).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('本地聚合计数：zk_stats 能看到入口 / 一跳被用了没有；只存计数，不存查询词', async () => {
+    const { c, dir } = await setup('nb-usage')
+    try {
+      const a = await zk.createNote(c, { title: '计数甲', content: '计数正文' })
+      const b = await zk.createNote(c, { title: '计数乙', content: '计数正文' })
+      await zk.linkNotes(c, a.path, b.path)
+      await zk.indexNotebook(c)
+
+      const env = { signal: AbortSignal.timeout(30_000) }
+      await tool(dir, 'zk_walk').execute({ path: a.path }, env)
+      await tool(dir, 'zk_search').execute({ query: '计数' }, env)
+
+      const statsTool = tool(dir, 'zk_stats')
+      const stats = await statsTool.execute({}, env) as Record<string, unknown>
+      const usage = stats.usage as Record<string, number | string>
+      expect(usage.walk).toBe(1)
+      expect(usage.search).toBe(1)
+      expect(usage.recall).toBe(0)
+      expect(String(usage.since)).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+      expect(undeclaredKeys(stats, statsTool.output.schema)).toEqual([])
+      expect(lossyPaths(stats)).toEqual([])
+      expect(statsTool.output.render({}, stats)[0].text).toContain('入口 / 一跳：walk 1 次')
+
+      // 隐私：文件里只有键与数字，没有查询词 / 路径
+      const raw = fs.readFileSync(path.join(dir, '.zk', 'dsh-usage.json'), 'utf8')
+      expect(raw).not.toContain('计数')
+      expect(raw).not.toContain(a.path)
+      expect(JSON.parse(raw).counts).toEqual({ walk: 1, search: 1 })
+
+      // 计数读不到 / 写不进去都不该影响工具：把文件弄坏，下一次照样能检索
+      fs.writeFileSync(path.join(dir, '.zk', 'dsh-usage.json'), '{坏掉的', 'utf8')
+      expect(usageLib.readUsage(c).counts).toEqual({})
+      const stillWorks = await tool(dir, 'zk_search').execute({ query: '计数' }, env) as Record<string, unknown>
+      expect(Number(stillWorks.count)).toBe(2)
     } finally {
       restore()
     }

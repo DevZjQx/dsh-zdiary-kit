@@ -12,12 +12,14 @@
 - `lib/memory-format.ts`：条目的唯一切分口径 —— `splitMemoryEntries` / `isRetiredEntry` / `entryDate` /
   `stripRetiredEntries` / `daysSinceDate` / `memoryFormatDebt`（日期与来源缺口的机械计数）；
   memory、dream、lint 共用，禁止各写一套
+- `lib/entry-points.ts`：MEMORY 当检索入口（R9）—— `liveMemoryEntries` / `entryPointsOf`（`via: query` 的来源可以不在结果集里），
+  把「命中笔记 ← 已在 MEMORY 的哪条结论」接出来；索引只用本次结果笔记建、路径式来源直接读盘，零子进程（见下）
 - `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）；`dreamNotebook` 用它算默认窗口
 - `lib/wikilink.ts`：`[[链接]]` 的解析口径（路径 → `.md` → `archive/` → 活笔记标题），lint 与 dream 共用一份
 - `lib/persona-template.ts`：`PERSONA_TEMPLATE` 与独立版本标记（`<!-- zdiary-persona: vN -->`，
   不复用 `zdiary-template` —— AGENTS 改版不该让人格文件误报旧版）；只走 opt-in 写入，已存在不覆盖
-- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 180 词），flat 用精简版
-  （80 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
+- `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 190 词），flat 用精简版
+  （88 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
   layered 初始化自动写，flat 只有 `ensureNotebook(cfg, signal, { withAgents: true })` / `zk-kit init --with-agents` /
   设置页「写入 AGENTS.md 模板」才写；已存在一律不覆盖。
   `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
@@ -67,6 +69,20 @@
 P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）、
 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记）。0.9 起注入会省略退役条目（notice 说明省略了几条），
 但文件不删、不改 —— 「注入 = 文件原文」收窄为「注入 = 原文去掉退役条目」（D3）。
+
+**MEMORY 不只当注入载荷（R9，§10.4 第 9 项 / §14.2）。** 宿主支持注入时 MEMORY 正文每轮都在系统提示里，
+缺的不是「可见」，是「可导航」。
+`zk_search` / `zk_query` / `zk_recall` 因此多一个可选 `entryPoints`，两种来源分开标 `via`：
+- `via: 'result'`：条目指向**本次命中**的笔记 → 那条结论首行 + 路径（3.9.0 原语义，是注解）；
+- `via: 'query'`：**条目本身命中检索词** → 来源不必在结果集里。这是索引该有的方向：关键词 → 卡号，
+  而那张卡可以不含这个词。路径式 `[[notes/x]]` 直接读盘落地（`resolved: true`，0 子进程）；
+  标题 / id 式且不在本批结果里时 `resolved: false`，只给入口名，渲染成「用 `zk_walk` 走进去」——
+  不为补一次路径再起一个 zk 进程。
+口径集中在 `lib/entry-points.ts`：条目切分 / 退役判断复用 `splitMemoryEntries` / `isRetiredEntry`，
+`[[链接]]` 解析复用 `WIKI_LINK` / `resolveWikiTarget`（与 lint / dream 同一份）；退役行不计、显式 `archive/` 链接
+不算活入口（旧结论归死胡同探针）。索引只用本次结果笔记建，所以**不扫库**；没有 MEMORY.md 或解析失败时整个键不出现，
+老库输出与改动前一致。查询比对是机械的（空格分词 + CJK 二元组），最多 5 条，只做字符串比较 ——
+「哪条更相关」仍是 agent 的活。
 为什么要有：`zk_supersede` 只重写 `zk graph` 里的入链，meta 文件被 `excludedNames` 排除在图外 ——
 链接不会跟着搬，`--broken-links` 也看不见。语义重复仍留给 agent，插件不碰。
 稳定 ID 让来源链接可以选择不绑路径：写成 `[[<id>]]`（从笔记 frontmatter 读）时，改名后仍落到同一篇；
@@ -97,7 +113,8 @@ P1-3 的日期 / 退役格式 + P2-15 的版本标记后为 189 词；P2-8 去�
 v4 去掉「宿主不会自动加载本文件」一句后为 175 词（单测锁 `≤190`；flat 精简版锁 `≤90`，v4 起实测 76）；
 v5 在 MEMORY 条目约定后补「先 zk_read 核对来源」后为 180 词（flat 80）；v7 精简模板后仍为 180 词（flat 80）；
 v8 把 `zk_read` 改成原生 `read` 后仍为 180 词（flat 80）；
-v9 两份模板各补一句「改 MEMORY 前看 zk_context 余量」、WORKFLOW.md 补做法后为 188 词（flat 86）。
+v9 两份模板各补一句「改 MEMORY 前看 zk_context 余量」、WORKFLOW.md 补做法后为 188 词（flat 86）；
+v10 两份模板把 `zk_walk 一跳` 并进查重那一步后为 190 词（flat 88，各 +2 词，不提高预算）。
 `AGENTS.md` 是硬规则，单独超预算也不截断，只回显告警；文件内容里的 `</system-reminder>` 会被转义，
 截断目录里的段落标题同样转义 —— 不许提前闭合插件自己的框；任何一份文件读不到都当作不存在，笔记本没建好时返回空载荷而不是报错。
 

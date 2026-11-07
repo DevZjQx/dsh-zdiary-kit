@@ -1,5 +1,5 @@
 /**
- * zk 工具（feature 的公共入口）：14 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
+ * zk 工具（feature 的公共入口）：15 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
  *
  * 设计要点：
  *   · 除 zk_context（只读 meta 文件，不依赖 zk）外，每个工具进来先 ensureNotebook —— 第一次调用就自动建好笔记本，用户不用先点设置页；
@@ -21,15 +21,20 @@ import { ensureNotebook, newNoteDir } from '../../lib/notebook.ts'
 import {
   searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily,
   linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir,
-  localDate as dateOnly, runAlias, hasCjk, ZkError,
+  localDate as dateOnly, runAlias, hasCjk, walkFrom, ZkError,
 } from '../../lib/zk.ts'
-import type { NoteRecord, SupersedeResult, RenameResult } from '../../lib/zk.ts'
+import type { NoteRecord, SupersedeResult, RenameResult, WalkDirection } from '../../lib/zk.ts'
 import { configuredAliases, readAliases } from '../../lib/alias.ts'
 import type { AliasDefinition } from '../../lib/alias.ts'
 import { buildMemoryPayload, memoryCapacity, META_FILES } from '../../lib/memory.ts'
 import type { MemoryCapacity } from '../../lib/memory.ts'
 import { assembleRecall } from '../../lib/recall.ts'
 import type { RecallResult } from '../../lib/recall.ts'
+import { entryPointsOf } from '../../lib/entry-points.ts'
+import type { EntryPoint } from '../../lib/entry-points.ts'
+import { archivedCounterparts, describeCounterEntries } from '../../lib/archive-probe.ts'
+import type { CounterEntry } from '../../lib/archive-probe.ts'
+import { bumpUsage, readUsage } from '../../lib/usage.ts'
 import { META_NAMES } from '../../lib/meta.ts'
 import type { MemoryPayload } from '../../lib/memory.ts'
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.ts'
@@ -58,6 +63,32 @@ const objSchema = (properties: Record<string, SchemaNode>, required: string[]): 
 
 /** lint 输出的三个共用形状（每类最多 50 条 + 总数） */
 const LINT_ENTRY = objSchema({ title: { type: 'string' }, path: { type: 'string' } }, ['title', 'path'])
+/** R9：MEMORY.md 的活条目 → 入口（`via: query` 的来源可以不在本次结果里） */
+const ENTRY_POINT = objSchema(
+  {
+    entry: { type: 'string' },
+    title: { type: 'string' },
+    path: { type: 'string' },
+    absPath: { type: 'string' },
+    via: { type: 'string', enum: ['query', 'result'] },
+    /** false = 标题 / id 写法且不在本批结果里：只有入口名，落地交给 zk_walk */
+    resolved: { type: 'boolean' },
+  },
+  ['entry', 'title', 'via', 'resolved'],
+)
+/** 死胡同探针：归档里同名的废弃结论（不是第二份结果列表） */
+const COUNTER_ENTRY = objSchema(
+  {
+    matched: { type: 'string' },
+    title: { type: 'string' },
+    path: { type: 'string' },
+    absPath: { type: 'string' },
+    reason: { type: 'string' },
+    supersededBy: { type: 'string' },
+    score: { type: 'number' },
+  },
+  ['matched', 'title', 'path', 'absPath', 'reason', 'supersededBy', 'score'],
+)
 const LINT_BUCKET = objSchema(
   { total: { type: 'number' }, items: { type: 'array', items: LINT_ENTRY } },
   ['total', 'items'],
@@ -335,6 +366,37 @@ function detailOf(n: { lead?: string; snippet?: string }): string {
   return n.snippet && n.snippet !== n.lead ? n.snippet : (n.lead ?? '')
 }
 
+/** R9：把 MEMORY 入口挂在检索结果末尾；没有就一个字都不加（老库输出与改动前一致） */
+function entryPointLines(points: EntryPoint[] | undefined, truncated = false): string {
+  if (!points?.length) return ''
+  // 两种来源分开写：`query` 是「你的查询在 MEMORY 里有对应结论」，来源可能不在本批结果里；
+  // `result` 只是本批结果的注解。混在一起写，agent 会以为两件事一样。
+  const query = points.filter((p) => p.via === 'query')
+  const result = points.filter((p) => p.via !== 'query')
+  const where = (p: EntryPoint): string => p.resolved
+    ? p.path
+    : `[[${p.title}]]（不在本批结果里：用 zk_walk 走进去）`
+  const block = (title: string, list: EntryPoint[]): string => title +
+    list.map((p) => `· ${p.entry} → ${where(p)}`).join('\n') + '\n'
+  return '\n\n' +
+    (query.length ? block('MEMORY 里与查询相关的入口（来源不必在本批结果里）：\n', query) : '') +
+    (result.length ? block('已晋升结论的入口（MEMORY.md 指向本批结果）：\n', result) : '') +
+    (truncated ? '（只回前 5 条：还有更多入口没列）' : '')
+}
+
+/** 死胡同提醒（措辞与 `zk-kit search` 共用一份）；没有就一个字都不加 */
+function counterBlockOf(
+  entries: CounterEntry[] | undefined,
+  truncated: boolean | undefined,
+  zeroHit: boolean,
+): string {
+  const body = describeCounterEntries(
+    { entries: entries ?? [], truncated: truncated === true },
+    { zeroHit },
+  )
+  return body ? '\n\n' + body : ''
+}
+
 function noteLine(n: NoteRecord, index: number): string {
   const head = `${index + 1}. ${n.title || n.path}`
   const meta = [n.absPath || n.path, dateOnly(n.created)].filter(Boolean).join(' · ')
@@ -463,7 +525,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         '在 zk 知识库里搜索笔记（全文 / 标签 / 日期 / 断链 / 孤立笔记），返回标题、相对路径、绝对路径、标签、创建日、摘要与命中片段。' +
         '找到后用原生 read 读全文：notes[].absPath 可以直接传给 read。写笔记前先用它查重。' +
         '中文会自动并用子串，多词按覆盖度合并（FTS 不切中文）：matchStrategy 说明这次用了 fts / regex / mixed，mixed 表示补到了全文索引漏掉的笔记。' +
-        '有 query 时默认按 FTS 相关性排序，显式给 sort 才改顺序。',
+        '有 query 时默认按 FTS 相关性排序，显式给 sort 才改顺序。' +
+        '结果还带 entryPoints（MEMORY 的活条目：via=query 表示这条结论跟查询有关，来源可以不在本次结果里）' +
+        '与 counterEntries（归档里同名旧结论 + 废弃原因，先看它别把废掉的结论重新提出来）。',
       parameters: {
         type: 'object',
         properties: {
@@ -503,13 +567,21 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               snippet: { type: 'string' },
             }, ['title', 'path', 'absPath', 'tags', 'created', 'lead']),
           },
+          /** R9：只在有命中且 MEMORY 里有对应活条目时出现 */
+          entryPoints: { type: 'array', items: ENTRY_POINT },
+          /** 入口超过上限时出现（true），不静默少列 */
+          entryPointsTruncated: { type: 'boolean' },
+          /** 死胡同探针：归档里同名的废弃结论（零子进程；只提示，不改结果集） */
+          counterEntries: { type: 'array', items: COUNTER_ENTRY },
+          counterEntriesTruncated: { type: 'boolean' },
         }, ['notebook', 'count', 'matchStrategy', 'completeness', 'hasMore', 'scanned', 'notes']),
       },
       async run(args, env) {
         const cfg: Config = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg)
+        const query = args.query ? String(args.query) : undefined
         const result = await searchNotesDetailed(cfg, {
-          query: args.query ? String(args.query) : undefined,
+          query,
           tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
           since: args.since ? String(args.since) : undefined,
           until: args.until ? String(args.until) : undefined,
@@ -519,6 +591,14 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           // R1：有 query 且没显式给 sort → relevance（不传 --sort，保住 FTS 相关性顺序）
           sort: args.sort ? String(args.sort) : (args.query ? 'relevance' : 'created-desc'),
         })
+        // R9：查询命中的 MEMORY 条目 → 入口（来源可以不在本批结果里）；先只读，不新增 zk 进程
+        const { points: entryPoints, truncated: entryPointsTruncated } = entryPointsOf(cfg, result.notes, { query })
+        const counters = archivedCounterparts(cfg, result.notes, { query })
+        bumpUsage(cfg, [
+          'search',
+          ...(entryPoints.length ? ['entryPoints' as const] : []),
+          ...(counters.entries.length ? ['counterEntries' as const] : []),
+        ])
         return {
           notebook: cfg.notebook,
           count: result.notes.length,
@@ -532,6 +612,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             created: dateOnly(n.created), lead: n.lead, words: n.words,
             ...(n.snippet ? { snippet: n.snippet } : {}),
           })),
+          ...(entryPoints.length ? { entryPoints } : {}),
+          ...(entryPointsTruncated ? { entryPointsTruncated } : {}),
+          ...(counters.entries.length ? { counterEntries: counters.entries } : {}),
+          ...(counters.truncated ? { counterEntriesTruncated: true } : {}),
         }
       },
       render(args, value) {
@@ -540,11 +624,16 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           completeness: 'complete' | 'partial' | 'unknown'; hasMore: boolean; scanned: number
           total?: number
           notes: NoteRecord[]
+          entryPoints?: EntryPoint[]
+          entryPointsTruncated?: boolean
+          counterEntries?: CounterEntry[]
+          counterEntriesTruncated?: boolean
         }
+        const counters = counterBlockOf(v.counterEntries, v.counterEntriesTruncated, v.count === 0)
         if (!v.count) {
           return text(`没有匹配的笔记（笔记本 ${v.notebook}）` +
             zeroHitHint(args, '或按 tags 查') +
-            (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「库里没有」' : ''))
+            (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「库里没有」' : '') + entryPointLines(v.entryPoints, v.entryPointsTruncated) + counters)
         }
         const how = v.matchStrategy === 'mixed'
           ? '（中文：全文 + 子串合并，已补上全文索引漏掉的）'
@@ -552,7 +641,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const tail = v.completeness === 'unknown'
           ? '\n⚠️ 无法确认结果是否完整（解析失败 / 补充检索失败），先别把它当成全部命中'
           : v.hasMore ? `\n⚠️ 还有更多匹配没返回（已检查 ${v.scanned} 条候选）；要更全就提高 limit 或加过滤条件` : ''
-        return text(`${v.count} 条（笔记本 ${v.notebook}）${how}\n` + v.notes.map(noteLine).join('\n') + tail)
+        return text(`${v.count} 条（笔记本 ${v.notebook}）${how}\n` + v.notes.map(noteLine).join('\n') +
+          entryPointLines(v.entryPoints, v.entryPointsTruncated) + tail + counters)
       },
     }),
 
@@ -562,7 +652,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         '结构化检索记忆：按 type（daily/source/concept/entity/pattern）、status（active/superseded）、标签、目录、日期、断链、孤立过滤。' +
         '默认只看 active 且不含归档；传 include_archived: true 会连归档一起查，此时未显式给 status 就不再默认过滤 active。' +
         '中文会自动并用子串，多词按覆盖度合并；有 query 时默认按 FTS 相关性排序。' +
-        '这是查「记忆里有什么」的主入口。',
+        '这是查「记忆里有什么」的主入口。entryPoints / counterEntries 与 zk_search 同口径。',
       parameters: {
         type: 'object',
         properties: {
@@ -608,14 +698,22 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               archived: { type: 'boolean' },
             }, ['title', 'path', 'absPath', 'type', 'status', 'authority', 'tags', 'created', 'lead', 'archived']),
           },
+          /** R9：只在有命中且 MEMORY 里有对应活条目时出现 */
+          entryPoints: { type: 'array', items: ENTRY_POINT },
+          /** 入口超过上限时出现（true），不静默少列 */
+          entryPointsTruncated: { type: 'boolean' },
+          /** 死胡同探针：归档里同名的废弃结论（include_archived 时不重复报） */
+          counterEntries: { type: 'array', items: COUNTER_ENTRY },
+          counterEntriesTruncated: { type: 'boolean' },
         }, ['notebook', 'count', 'completeness', 'hasMore', 'scanned', 'notes']),
       },
       async run(args, env) {
         const cfg: Config = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         const includeArchived = args.include_archived === true
+        const query = args.query ? String(args.query) : undefined
         const result = await searchNotesDetailed(cfg, {
-          query: args.query ? String(args.query) : undefined,
+          query,
           tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
           paths: Array.isArray(args.dirs) ? args.dirs.map(String) : undefined,
           type: args.type ? [String(args.type)] : undefined,
@@ -631,6 +729,16 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           sort: args.sort ? String(args.sort) : (args.query ? 'relevance' : 'created-desc'),
         }, env.signal)
         const notes = result.notes
+        // R9：与 zk_search 共用同一份计算（查询命中的来源可以不在本批结果里；零子进程）
+        const { points: entryPoints, truncated: entryPointsTruncated } = entryPointsOf(cfg, notes, { query })
+        const counters = includeArchived
+          ? { entries: [] as CounterEntry[], scanned: 0, truncated: false }
+          : archivedCounterparts(cfg, notes, { query })
+        bumpUsage(cfg, [
+          'query',
+          ...(entryPoints.length ? ['entryPoints' as const] : []),
+          ...(counters.entries.length ? ['counterEntries' as const] : []),
+        ])
         return {
           notebook: cfg.notebook,
           count: notes.length,
@@ -653,6 +761,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             ...(n.snippet ? { snippet: n.snippet } : {}),
             archived: n.path.startsWith(cfg.archiveDir + '/'),
           })),
+          ...(entryPoints.length ? { entryPoints } : {}),
+          ...(entryPointsTruncated ? { entryPointsTruncated } : {}),
+          ...(counters.entries.length ? { counterEntries: counters.entries } : {}),
+          ...(counters.truncated ? { counterEntriesTruncated: true } : {}),
         }
       },
       render(args, value) {
@@ -660,11 +772,16 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           notebook: string; count: number; completeness: 'complete' | 'partial' | 'unknown'
           hasMore: boolean; scanned: number
           notes: Array<Record<string, unknown>>
+          entryPoints?: EntryPoint[]
+          entryPointsTruncated?: boolean
+          counterEntries?: CounterEntry[]
+          counterEntriesTruncated?: boolean
         }
+        const counters = counterBlockOf(v.counterEntries, v.counterEntriesTruncated, v.count === 0)
         if (!v.count) {
           return text(`没有匹配的笔记（笔记本 ${v.notebook}）` +
             zeroHitHint(args, '或给 tags 参数按标签查') +
-            (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「记忆里没有」' : ''))
+            (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「记忆里没有」' : '') + entryPointLines(v.entryPoints, v.entryPointsTruncated) + counters)
         }
         const tail = v.completeness === 'unknown'
           ? '\n⚠️ 无法确认结果是否完整（解析失败 / 补充检索失败），先别把它当成全部命中'
@@ -674,7 +791,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           const detail = detailOf({ lead: String(n.lead ?? ''), snippet: String(n.snippet ?? '') })
           return `${i + 1}. ${String(n.title)}  [${badges.join(' · ')}]\n   ${String(n.absPath || n.path)} · ${String(n.created)}${detail ? '\n   ' + detail : ''}`
         })
-        return text(`${v.count} 条（笔记本 ${v.notebook}）\n` + lines.join('\n') + tail)
+        return text(`${v.count} 条（笔记本 ${v.notebook}）\n` + lines.join('\n') +
+          entryPointLines(v.entryPoints, v.entryPointsTruncated) + tail + counters)
       },
     }),
 
@@ -722,7 +840,15 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               reason: { type: 'string', enum: ['included', 'duplicate', 'empty', 'over-budget'] },
             }, ['title', 'path', 'absPath', 'included', 'reason']),
           },
-        }, ['notebook', 'text', 'used', 'budget', 'completeness', 'hasMore', 'notes']),
+          /** R9：与 zk_search / zk_query 共用同一份计算（没有就是空数组，不另算） */
+          entryPoints: { type: 'array', items: ENTRY_POINT },
+          /** 入口超过上限（true），不静默少列 */
+          entryPointsTruncated: { type: 'boolean' },
+          /** 死胡同探针：归档里同名的废弃结论 */
+          counterEntries: { type: 'array', items: COUNTER_ENTRY },
+          counterEntriesTruncated: { type: 'boolean' },
+        }, ['notebook', 'text', 'used', 'budget', 'completeness', 'hasMore', 'notes',
+          'entryPoints', 'entryPointsTruncated', 'counterEntries', 'counterEntriesTruncated']),
       },
       async run(args, env) {
         const cfg: Config = configFor(env.workspace, env.sessionId)
@@ -749,19 +875,131 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const v = value as RecallResult & { notebook: string }
         const kept = v.notes.filter((n) => n.included).length
         const dropped = v.notes.length - kept
+        const counters = counterBlockOf(v.counterEntries, v.counterEntriesTruncated, v.notes.length === 0)
         if (!v.notes.length) {
           return text(`没有匹配的笔记（笔记本 ${v.notebook}）` +
             zeroHitHint(args, '或按 tags 查') +
-            (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「库里没有」' : ''))
+            (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「库里没有」' : '') + entryPointLines(v.entryPoints, v.entryPointsTruncated) + counters)
         }
         const lines = [`召回装配：${v.used}/${v.budget} 词 · 收录 ${kept}/${v.notes.length} 篇（笔记本 ${v.notebook}）`]
         if (v.text) lines.push('', v.text)
         if (dropped) lines.push(`（${dropped} 篇没放进去：整条丢弃，没有切半句；原因见 notes[].reason）`)
+        // `via: 'query'` 的入口已经写进 text（排在装配正文之前）；只有预算放不下时才会在这里补回
+        const inText = v.text.includes('入口（MEMORY 命中）')
+        const points = entryPointLines(inText ? v.entryPoints.filter((p) => p.via !== 'query') : v.entryPoints,
+          v.entryPointsTruncated)
+        if (points) lines.push(points.trimStart())
         const tail = v.completeness === 'unknown'
           ? '⚠️ 无法确认结果是否完整（解析失败 / 补充检索失败），先别把它当成全部命中'
           : v.hasMore ? '⚠️ 还有更多匹配没返回；要提高 limit 或缩小过滤范围' : ''
         if (tail) lines.push(tail)
+        if (counters) lines.push(counters.trimStart())
         return text(lines.join('\n'))
+      },
+    }),
+
+    t({
+      name: 'zk_walk',
+      description:
+        '从一篇笔记出发走一跳邻居（只读）：direction=both 同时看反链与出链，in=谁链到它，out=它链到谁。' +
+        '种子写相对笔记本的路径、绝对路径，或精确标题 / 稳定 id（[[标题]] / [[id]] 也认）；不精确命中就返回空，不会退回全库。' +
+        '按篇反查、不建全图，成本与库规模基本无关；limit 硬顶 200，触顶 completeness=partial（邻居没列全，不代表没有）。' +
+        '每条邻居带 section / linkLine：那条边所在的小节与那一行 —— 没有它，同一篇种子的出链只有一串标题。' +
+        '只回标题 / 路径 / absPath / 摘要 / 那一行，全文仍用原生 read 读 absPath；不改标题、不自动 link、不写任何文件。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: S.str('种子笔记：相对笔记本的路径、绝对路径，或精确标题 / 稳定 id（也认 [[标题]] / [[id]]）'),
+          direction: S.enum('走哪个方向：both 反链 + 出链，in 只看谁链到它，out 只看它链到谁（默认 both）', ['both', 'in', 'out']),
+          limit: S.num('每个方向最多几条（1-200，默认 10）'),
+          include_archived: S.bool('连 archive/ 里的废弃笔记一起看（默认 false）'),
+        },
+        required: ['path'],
+        additionalProperties: false,
+      },
+      output: {
+        schema: objSchema({
+          notebook: { type: 'string' },
+          /** 种子解析失败时整个键不出现（null 过不了 object 校验，不拿空对象冒充） */
+          seed: objSchema({ title: { type: 'string' }, path: { type: 'string' }, absPath: { type: 'string' } }, ['title', 'path', 'absPath']),
+          direction: { type: 'string', enum: ['both', 'in', 'out'] },
+          count: { type: 'number' },
+          truncated: { type: 'boolean' },
+          /** 只有 complete / partial：按篇反查没有产生 unknown 的路径 */
+          completeness: { type: 'string', enum: ['complete', 'partial'] },
+          notes: {
+            type: 'array',
+            items: objSchema({
+              title: { type: 'string' },
+              path: { type: 'string' },
+              absPath: { type: 'string' },
+              relation: { type: 'string', enum: ['in', 'out'] },
+              lead: { type: 'string' },
+              /** 这条边所在的 `##` / `###` 小节；找不到时键不出现（plan §14.1） */
+              section: { type: 'string' },
+              /** 这条边的那一行（压空白、截 160 码点）：没有它，同一篇种子的出链长得一模一样 */
+              linkLine: { type: 'string' },
+            }, ['title', 'path', 'absPath', 'relation', 'lead']),
+          },
+        }, ['notebook', 'direction', 'count', 'truncated', 'completeness', 'notes']),
+      },
+      async run(args, env) {
+        const cfg: Config = configFor(env.workspace, env.sessionId)
+        await ensureNotebook(cfg, env.signal)
+        const seed = args.path === undefined || args.path === null ? '' : String(args.path)
+        if (!seed.trim()) throw new ZkError('种子不能为空', '给 path：相对笔记本的路径，或精确标题 / id')
+        const direction = (args.direction === undefined ? 'both' : String(args.direction)) as WalkDirection
+        const r = await walkFrom(cfg, {
+          seed,
+          direction,
+          limit: args.limit === undefined ? 10 : Number(args.limit),
+          includeArchived: args.include_archived === true,
+        }, env.signal)
+        bumpUsage(cfg, ['walk'])
+        return {
+          notebook: cfg.notebook,
+          ...(r.seed ? { seed: r.seed } : {}),
+          direction,
+          count: r.notes.length,
+          truncated: r.truncated,
+          completeness: r.completeness,
+          notes: r.notes,
+        }
+      },
+      render(args, value) {
+        const v = value as {
+          notebook: string
+          seed?: { title: string; path: string; absPath: string }
+          direction: 'both' | 'in' | 'out'
+          count: number
+          truncated: boolean
+          completeness: 'complete' | 'partial'
+          notes: Array<{
+            title: string; path: string; absPath: string; relation: 'in' | 'out'
+            lead: string; section?: string; linkLine?: string
+          }>
+        }
+        if (!v.seed) {
+          return text(`没找到种子笔记：${String(args.path ?? '')}\n` +
+            '要写相对 / 绝对路径，或精确标题 / 稳定 id；不精确匹配时不猜（不会退回全库）')
+        }
+        const label = v.seed.title && v.seed.title !== v.seed.path ? `${v.seed.title} · ${v.seed.path}` : v.seed.path
+        if (!v.count) {
+          return text(`「${label}」没有 ${v.direction === 'both' ? '入链或出链' : v.direction === 'in' ? '入链' : '出链'}邻居（笔记本 ${v.notebook}）`)
+        }
+        const lines = v.notes.map((n, i) => {
+          const arrow = n.relation === 'in' ? '← 链向本篇' : '→ 本篇链到'
+          const detail = detailOf({ lead: n.lead })
+          // 先给「为什么这条边存在」，再给摘要：同一篇种子的出链摘要往往逐字相同
+          const why = n.linkLine || n.section
+            ? `\n   ${n.section ? `〔${n.section}〕` : '〔无小节〕'} ${n.linkLine ?? ''}`.trimEnd()
+            : ''
+          return `${i + 1}. ${arrow}  ${n.title || n.path}${why}\n   ${n.absPath || n.path}${detail ? '\n   ' + detail : ''}`
+        })
+        const tail = v.truncated
+          ? '\n⚠️ 邻居没列全（触到 limit）；这不代表只有这些，要提高 limit 再走一次'
+          : ''
+        return text(`${v.count} 篇 1 跳邻居（种子 ${label} · 笔记本 ${v.notebook}）\n` + lines.join('\n') + tail)
       },
     }),
 
@@ -1672,18 +1910,39 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           },
           completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
           scanLimit: { type: 'number' },
-        }, ['notebook', 'defaultNotebook', 'pinned', 'notes', 'tags', 'brokenLinks', 'orphans', 'archived', 'superseded', 'byDir', 'byTag', 'completeness', 'scanLimit']),
+          /** 本地聚合计数（plan §14.4）：只看「入口 / 一跳」这条路有没有被用上，不记查询词 */
+          usage: objSchema({
+            since: { type: 'string' },
+            search: { type: 'number' },
+            query: { type: 'number' },
+            recall: { type: 'number' },
+            walk: { type: 'number' },
+            entryPoints: { type: 'number' },
+            counterEntries: { type: 'number' },
+          }, ['since', 'search', 'query', 'recall', 'walk', 'entryPoints', 'counterEntries']),
+        }, ['notebook', 'defaultNotebook', 'pinned', 'notes', 'tags', 'brokenLinks', 'orphans', 'archived', 'superseded', 'byDir', 'byTag', 'completeness', 'scanLimit', 'usage']),
       },
       async run(_args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
         await ensureNotebook(cfg, env.signal)
         const stats = await notebookStats(cfg, env.signal)
         const state = sessionState(env.workspace, env.sessionId)
+        const usage = readUsage(cfg)
+        const count = (key: string): number => usage.counts[key] ?? 0
         return {
           notebook: cfg.notebook,
           defaultNotebook: state.defaultName,
           pinned: state.diverged ? state.pinned : '',
           ...stats,
+          usage: {
+            since: usage.since,
+            search: count('search'),
+            query: count('query'),
+            recall: count('recall'),
+            walk: count('walk'),
+            entryPoints: count('entryPoints'),
+            counterEntries: count('counterEntries'),
+          },
         }
       },
       render(_args, value) {
@@ -1692,6 +1951,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           notes: number; tags: number; brokenLinks: number; orphans: number; archived: number; superseded: number
           byDir: Array<{ dir: string; count: number }>; byTag: Array<{ tag: string; count: number }>
           completeness?: 'complete' | 'partial' | 'unknown'; scanLimit?: number
+          usage?: { since: string; search: number; query: number; recall: number; walk: number; entryPoints: number; counterEntries: number }
         }
         const drift = v.pinned && v.pinned !== v.defaultNotebook
           ? `\n本会话固定在「${v.pinned}」；全局默认是「${v.defaultNotebook}」（要跟随用 zk_use ${v.defaultNotebook}）`
@@ -1706,10 +1966,14 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const partial = v.completeness === 'partial'
           ? `\n⚠️ 只扫描了前 ${v.scanLimit} 篇：上面的数字是下限`
           : v.completeness === 'unknown' ? '\n⚠️ 扫描结果无法完整解析：上面的数字可能偏少' : ''
+        const usage = v.usage && (v.usage.walk || v.usage.entryPoints || v.usage.counterEntries || v.usage.recall)
+          ? `\n入口 / 一跳：walk ${v.usage.walk} 次 · 召回 ${v.usage.recall} 次 · 入口回显 ${v.usage.entryPoints} 次 · 死胡同提醒 ${v.usage.counterEntries} 次` +
+            (v.usage.since ? `（自 ${v.usage.since.slice(0, 10)}）` : '')
+          : '\n入口 / 一跳：还没有计数（zk_walk / zk_recall / 入口与死胡同提醒都没被用过）'
         return text(
           `笔记本 ${v.notebook}${drift}\n` +
           `笔记 ${atLeast}${v.notes} 篇 · 标签 ${atLeast}${v.tags} 个 · 断链 ${v.brokenLinks} 篇 · 孤立 ${v.orphans} 篇 · 归档 ${atLeast}${v.archived} 篇（superseded ${atLeast}${v.superseded}）` +
-          dirs + tags + partial,
+          dirs + tags + partial + usage,
         )
       },
     }),

@@ -1,4 +1,7 @@
 import { countWords } from './memory.js';
+import { entryPointsOf } from './entry-points.js';
+import { archivedCounterparts } from './archive-probe.js';
+import { bumpUsage } from './usage.js';
 import { searchNotesDetailed } from './zk.js';
 export const DEFAULT_RECALL_BUDGET = 500;
 export const MAX_RECALL_BUDGET = 5_000;
@@ -60,8 +63,18 @@ export async function assembleRecall(cfg, opts = {}, signal) {
     }, signal);
     const items = [];
     const seen = new Set();
+    // R9：入口卡排在装配正文之前。`via: 'query'` 的条目指向的笔记可以不在本次结果里 ——
+    // 这是卢曼的索引方向（关键词 → 卡号），`via: 'result'` 那些已经在这段正文里，不重复占预算。
+    const entryPoints = entryPointsOf(cfg, result.notes, { query: opts.query });
+    const entryLines = entryPoints.points.filter((p) => p.via === 'query')
+        .map((p) => `· ${p.entry} → ${p.resolved ? p.absPath : `[[${p.title}]]（用 zk_walk 走进去）`}`);
     let text = '';
-    let used = 0;
+    if (entryLines.length) {
+        const block = `入口（MEMORY 命中）：\n${entryLines.join('\n')}`;
+        if (countWords(block) <= budget)
+            text = block;
+    }
+    let used = text ? countWords(text) : 0;
     let index = 0;
     for (const n of roundRobin(result.notes)) {
         const note = {
@@ -95,10 +108,22 @@ export async function assembleRecall(cfg, opts = {}, signal) {
         index += 1;
         items.push(note);
     }
+    const counters = opts.includeArchived
+        ? { entries: [], scanned: 0, truncated: false }
+        : archivedCounterparts(cfg, result.notes, { query: opts.query });
+    bumpUsage(cfg, [
+        'recall',
+        ...(entryPoints.points.length ? ['entryPoints'] : []),
+        ...(counters.entries.length ? ['counterEntries'] : []),
+    ]);
     return {
         text, used, budget,
         completeness: result.completeness,
         hasMore: result.hasMore,
         notes: items,
+        entryPoints: entryPoints.points,
+        entryPointsTruncated: entryPoints.truncated,
+        counterEntries: counters.entries,
+        counterEntriesTruncated: counters.truncated,
     };
 }

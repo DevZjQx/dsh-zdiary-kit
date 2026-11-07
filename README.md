@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 3.8.0
+# dsh-zdiary-kit 3.9.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -10,9 +10,10 @@
 
 | 工具 | 干什么 |
 |---|---|
-| `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要与命中片段 `snippet`；中文自动并用子串、多词按覆盖度合并（`matchStrategy` 说明用了 `fts` / `regex` / `mixed`）；有 query 时默认按 FTS 相关性排序，显式 `sort` 才改顺序；`total` 只在结果完整（未截断）时给，触顶看 `hasMore` / `completeness` |
-| `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active）；中文多词同样按覆盖度合并、`snippet` 与 `total` 口径同 `zk_search` |
-| `zk_recall` | 召回装配：先按 query / 过滤条件检索（与 `zk_search` 同一套 R1–R3），再按词数预算 `budget`（默认 500）把命中笔记拼成一段可直接读的上下文；每条带标题、路径、`absPath` 与全文词数，放不下就整条丢弃、不切半句，被挡下的原因在 `notes[].reason`；`used` 一定不超过 `budget`（中文 2 字 1 词）；不读全文、不新增 zk 进程、不做重排 / 跨回合去重；`completeness` 沿用检索三态，装配过的 ≠ 全部命中。命令行对应 `zk-kit recall` |
+| `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要与命中片段 `snippet`；中文自动并用子串、多词按覆盖度合并（`matchStrategy` 说明用了 `fts` / `regex` / `mixed`）；有 query 时默认按 FTS 相关性排序，显式 `sort` 才改顺序；`total` 只在结果完整（未截断）时给，触顶看 `hasMore` / `completeness`；带 `entryPoints`（MEMORY 的活条目：`via=query` 是「这条结论跟你的查询有关」，来源可以不在结果集里；`via=result` 是「这条结论指向本批结果」）与 `counterEntries`（归档里同名旧结论：`supersede` 的原因 + 被谁取代 —— 先看它，别把废掉的结论重新提出来） |
+| `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active，也不再重复报死胡同 —— 归档已经在结果里）；中文多词同样按覆盖度合并、`snippet` 与 `total` 口径同 `zk_search`；`entryPoints` / `counterEntries` 与 `zk_search` 同口径 |
+| `zk_recall` | 召回装配：先按 query / 过滤条件检索（与 `zk_search` 同一套 R1–R3），再按词数预算 `budget`（默认 500）把命中笔记拼成一段可直接读的上下文；每条带标题、路径、`absPath` 与全文词数，放不下就整条丢弃、不切半句，被挡下的原因在 `notes[].reason`；`used` 一定不超过 `budget`（中文 2 字 1 词）；不读全文、不新增 zk 进程、不做重排 / 跨回合去重；`completeness` 沿用检索三态，装配过的 ≠ 全部命中；`entryPoints` / `counterEntries` 与 `zk_search` 共用同一份计算，`via=query` 的入口卡会排在装配正文之前（占同一份预算）。命令行对应 `zk-kit recall` |
+| `zk_walk` | 从一篇笔记出发走一跳邻居（只读）：`direction=both` 看反链 + 出链，`in` 只看谁链到它，`out` 只看它链到谁；种子写相对 / 绝对路径或精确标题 / 稳定 id（`[[标题]]` / `[[id]]` 也认），不精确命中就返回空、不会退回全库；按篇反查、不建全图（路径种子 2 个子进程），`limit` 硬顶 200，触顶 `completeness=partial`（邻居没列全，不代表没有）；每条邻居带 `section` / `linkLine`（那条边所在的小节与那一行 —— 没有它，同一篇种子的出链只有一串标题），只回标题 / 路径 / `absPath` / 摘要 / 那一行，全文仍用原生 read，**0 个额外子进程**。命令行对应 `zk-kit walk` |
 | `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/`、`inbox/`、`archive/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面；归档只放 `zk_supersede` 搬进去的旧结论）；同目录里有「改一两个字」的相似标题时在 `similar` 里提示（带分数，只提示、不阻断）；中文笔记没有任何标签时在 `tagWarning` 里提示（只提示，不阻断） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题）；根目录 meta 文件拒写 |
 | `zk_daily` | 打开/创建某天的日记，并追加一条带时间的记录（layered 模板写进 `## Events` 的 `### HH:MM`，flat 追加到文件末尾的 `## HH:MM`） |
@@ -22,7 +23,7 @@
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）与角色人格 `PERSONA.md`（单独成段、不截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时这些内容每轮已自动带进系统提示。改 MEMORY 前用它看余量：`headroom` / `wouldTruncate` / `dropCandidates` 说明「再加一条会丢谁」，给 `proposed_entry` 或 `extra_words` 就能预估；同日条目按位置决胜（`sameDateCount`），不假装有使用频率 |
 | `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本 / 人格（缺失·旧版·比插件新·标记与内容不符·未填占位符）/ 日记时间轴（最近 90 天的空块·倒序·格式·位置），每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；另给 `missingId`（缺稳定 id 的非日记笔记数，只提示不回填）；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、已在 MEMORY 的、窗口外积压、daily 未完成项、被引最多（先按「被日记提到几天」排）；带 `missingId`（缺稳定 id 的非日记笔记数）；只报告 |
-| `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded），以及顶层目录与前 10 个标签的实时分布 |
+| `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded），顶层目录与前 10 个标签的实时分布；外加 `usage`：本地聚合计数（`walk` / `recall` / `entryPoints` / `counterEntries` 各用了几次，自某天起）—— 用来看「入口 + 一跳」这条路到底有没有被用上。只存计数，不记查询词、不记路径 |
 | `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |
 | `zk_<别名>` | 笔记本 `.zk/config.toml` 的 `[alias]` 里定义的自定义命令（例如 `lucky = "zk list --quiet --format full --sort random --limit 1"`）注册成工具：调用等于 `zk <别名> [args]`，`args` 追加到命令里的 `$@`；输出按原样返回。紧邻别名上方的注释（或行尾注释）作为工具说明；改完 config.toml 要重载插件才会出现新工具。**默认关闭**，见下 |
 
@@ -307,6 +308,25 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 与根目录的 `AGENTS.md` / `MEMORY.md` / `USER.md` / `DREAMS.md` / `INDEX.md` / `WORKFLOW.md` 不进检索与笔记 / 标签 / 断链 / 孤立统计；
 `archive/` 的归档数由 `zk_stats` 单独统计（`archived` / `superseded`）。`-x` 传绝对路径：它是相对 cwd 解析的，传相对名在换工作目录后会静默失效。
 
+## 检索路径：入口、一跳、死胡同
+
+插件借了卢曼卡片盒的**写法规约**（一笔记一件事 / 标题即结论 / 只连真实概念关联 / supersede 不删），
+检索这一侧只补了三件「纸质约束不成立、但机制可移植」的事，其余一律加法：
+
+- **入口不只有全文索引**：`MEMORY.md` 每条活条目就是一张「概念 → 入口卡」。
+  `zk_search` / `zk_query` / `zk_recall` 的 `entryPoints` 里，`via=query` 表示这条结论跟你的查询有关 ——
+  它指向的笔记**可以不在本次结果里**（路径式来源直接落地；标题式只给入口名，用 `zk_walk` 跟进去）。
+- **一跳**：`zk_walk` 从任意一篇出发看邻居，每条带 `section` / `linkLine`，即「这条边为什么存在」。
+  不做 depth 2 / 递归 / 全图游走：agent 拿到 `absPath` 就能自己连走，把深度做进工具只是省一次往返，
+  却要重新过一遍成本表。
+- **死胡同**：`counterEntries` 把 `archive/` 里同名（或标题高度相似）的旧结论带出来，附 `supersede` 的原因与
+  被谁取代。`zk_supersede` 的旧结论默认不进检索 —— 这条提醒就是补那个洞：**「库里没有」不等于「从来没出现过」**。
+  0 命中时也会查一次（拿查询词当标题比），文案会明说「没有活笔记命中，但归档里有同名旧结论」。
+
+这三件都是本地读 / 已付过费的字节：`zk_walk` 的子进程数与 3.9.0 之前一样（路径种子 2 个），
+`entryPoints` / `counterEntries` **不新增 zk 进程**（10k 夹具上死胡同探针 p50 约 50 ms，入口计算 < 5 ms）。
+`zk_stats.usage` 的计数落在 `<笔记本>/.zk/dsh-usage.json`，只有键与数字。
+
 ## 索引与「写后可读」
 
 zk 的索引（`.zk/notebook.db`）是缓存：文件落盘不等于能搜到。插件在写入**落盘之后**记一个 dirty 标记
@@ -370,6 +390,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 读 | `zk-kit read notes/f2sj.md`，或 `zk-kit read --query 搜索词`；`--max-chars` 可调 |
 | 续写 | `zk-kit append notes/f2sj.md --text "追一段" --heading 后续` |
 | 双链 | `zk-kit link notes/a.md "某篇标题"` |
+| 一跳 | `zk-kit walk notes/a.md --direction both --limit 10`（`--limit` 是**每个方向**的上限；种子也可写精确标题 / 稳定 id；按篇反查、不建全图） |
 | 指定目录 | `zk-kit new --title 标题 --dir notes/concepts`（layered 下 type 由目录所属 group 决定，目录必须在 group 下）；也可以只给 `--type concept`，目录跟着类型走；两者都没有、或目录不在 group 里都会报错 |
 | 指定文件名 | `zk-kit new --title 很长的中文结论标题 --name 短文件名`（只换文件名，标题与正文不动；不给就是拼音 slug） |
 | 带摘要 | `zk-kit new --title 标题 --summary "一句话"`（写进模板的 `## Summary`；正文里已写了就不覆盖并告警） |
@@ -442,13 +463,13 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   浏览器半边 `client.ts` 零 import，`postbuild` 把 tsc 补的 `export {}` 删掉，并检查没有顶层声明
   （DSH 会把多个插件的 `client.js` 拼进同一个 combo 脚本，顶层 `const` / `function` 会撞名导致插件不激活）。
 - `bun run typecheck` · `bun run build` · `bun run test`（真起 zk）·
-  `bun run smoke`（加载 dist：14 个内置工具各跑一遍 + 12 条路由（设置 8 + 只读 4）都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
+  `bun run smoke`（加载 dist：15 个内置工具各跑一遍 + 12 条路由（设置 8 + 只读 4）都发真实请求（`/install` 只验非法版本，不下载），并检查输出 schema 在 DSH 支持的子集内）·
   `bun run docs`（把 README / docs 里 `zk-kit …` 代码块在临时 vault 上逐条真跑；`smoke` 末尾会带上）·
   `bun run fixture`（生成 1k / 10k 规模夹具；库规模 / 链接密度与各用例的 10k 实测、复跑方法见 `docs/bench-baseline.md`；
   `--links-per-note` 决定链接密度 —— 建索引成本主要花在链接上，产出目录自带 `.zk/config.toml`，进去 `zk index` 即可）·
   `bun run bench`（成本表：逐用例真起 zk，记子进程数 / 回传字节 / 峰值 RSS / p50 / p95 与库的篇数 / 链接数；默认 1k、3 轮；
   全量 10k 实测与复跑方法见 `docs/bench-baseline.md`）
-- **耗时差两个数量级**：`bun run test` 约 100 s（236 个用例，真起 zk；机器快慢能差一倍）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
+- **耗时差两个数量级**：`bun run test` 约 110 s（245 个用例，真起 zk；机器快慢能差一倍）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
   10k 上光一条 `graph.full` 就是 30 s、冷建索引几分钟。所以 `bench` **不在** `check` / CI 里，跟测试完全分开，不会因为你跑测试而变慢。
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
@@ -478,7 +499,7 @@ src/
 │   ├── dsh.ts                    # 宿主契约（纯类型，编译后为空）
 │   └── exec.ts / http.ts / json-file.ts
 ├── features/
-│   ├── zk-tools/feature.ts       # 14 个内置工具 + [alias] 别名工具
+│   ├── zk-tools/feature.ts       # 15 个内置工具 + [alias] 别名工具
 │   ├── settings/                 # 宿主 API + 浏览器 section
 │   └── readonly/                 # 只读视图：GET-only 路由 + Web 1.0 渲染（无 JS）
 └── cli.ts                        # zk-kit 命令行

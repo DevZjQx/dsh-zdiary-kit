@@ -14,12 +14,14 @@ import { installZk, sourceLabel } from './lib/install.ts'
 import {
   resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
   appendDaily, linkNotes, notebookStats, indexNotebook, indexPolicy, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError,
-  allNotes, parseErrorWarnings, indexLagHint,
+  allNotes, parseErrorWarnings, indexLagHint, walkFrom,
 } from './lib/zk.ts'
 import type { NoteRecord } from './lib/zk.ts'
 import { formatLintExtras, formatMemoryLinks, lintNotebook, personaStatus, timelineStatus } from './lib/lint.ts'
 import type { LintResult } from './lib/lint.ts'
 import { assembleRecall } from './lib/recall.ts'
+import { entryPointsOf } from './lib/entry-points.ts'
+import { archivedCounterparts, describeCounterEntries } from './lib/archive-probe.ts'
 import { dreamNotebook, STALE_DAYS } from './lib/dream.ts'
 import type { DreamResult } from './lib/dream.ts'
 
@@ -35,6 +37,8 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit search [词] [--tags a,b] [--since 日期] [--limit 5] [--json]
   zk-kit recall [词] [--budget 500] [--limit 30] [--tags a,b] [--json]
                                       检索 + 按词数预算装配成一段上下文（只读）
+  zk-kit walk <种子> [--direction both|in|out] [--limit 10] [--json]
+                                      一跳邻居（按篇反查，不建全图；--limit 是每个方向的上限；种子可为路径 / 精确标题 / id，只读）
   zk-kit read <路径> | --query 词 [--max-chars n] [--json]
   zk-kit daily [--entry 一段] [--date yesterday]
   zk-kit append <路径> --text 一段 [--heading 标题]
@@ -560,7 +564,14 @@ async function main(): Promise<void> {
       const how = result.matchStrategy === 'mixed'
         ? '\n（中文查询：全文 + 子串合并，已补上全文索引漏掉的）'
         : result.matchStrategy === 'regex' ? '\n（全文无结果，已退回子串匹配）' : ''
-      print(json ? result.notes : noteList(result.notes) + how, json)
+      // 与 zk_search 同口径：MEMORY 入口 + 死胡同提醒（都是零子进程的本地读）
+      const points = entryPointsOf(cfg, result.notes, { query }).points
+      const entryLines = points.length
+        ? '\n\nMEMORY 入口：\n' + points.map((p) => `· ${p.entry} → ${p.resolved ? p.path : `[[${p.title}]]（不在本批结果里）`}`).join('\n')
+        : ''
+      const counters = describeCounterEntries(archivedCounterparts(cfg, result.notes, { query }), { zeroHit: !result.notes.length })
+      const counterLines = counters ? '\n\n' + counters : ''
+      print(json ? result.notes : noteList(result.notes) + how + entryLines + counterLines, json)
       return
     }
 
@@ -575,8 +586,36 @@ async function main(): Promise<void> {
         budget: Number(str(flags.budget)) || undefined,
       })
       const kept = r.notes.filter((n) => n.included).length
+      const counters = describeCounterEntries({ entries: r.counterEntries, truncated: r.counterEntriesTruncated }, { zeroHit: !r.notes.length })
       print(json ? r : (r.text || '没有匹配的笔记') +
-        `\n\n（${r.used}/${r.budget} 词 · 收录 ${kept}/${r.notes.length} 篇）`, json)
+        `\n\n（${r.used}/${r.budget} 词 · 收录 ${kept}/${r.notes.length} 篇）` +
+        (counters ? '\n\n' + counters : ''), json)
+      return
+    }
+
+    case 'walk': {
+      const seed = pos[0] || str(flags.path)
+      if (!seed) throw new ZkError('用法：zk-kit walk <路径 / 精确标题 / id> [--direction both|in|out] [--limit 10]')
+      await ensureNotebook(cfg)
+      const direction = (str(flags.direction) || 'both') as 'both' | 'in' | 'out'
+      if (!['both', 'in', 'out'].includes(direction)) throw new ZkError(`方向只能是 both / in / out：${direction}`)
+      const r = await walkFrom(cfg, {
+        seed,
+        direction,
+        limit: Number(str(flags.limit)) || undefined,
+        includeArchived: flags.include_archived === true,
+      })
+      if (json) { print(r, true); return }
+      if (!r.seed) {
+        print(`没找到种子笔记：${seed}\n要写路径，或精确标题 / id；不精确匹配时不猜`, false)
+        return
+      }
+      const head = `${r.notes.length} 篇 1 跳邻居（种子 ${r.seed.path}）`
+      const lines = r.notes.map((n) => {
+        const why = n.linkLine ? `\n   〔${n.section || '无小节'}〕 ${n.linkLine}` : ''
+        return `${n.relation === 'in' ? '←' : '→'} ${n.path}  ${n.title}${why}`
+      })
+      print([head, ...lines, r.truncated ? '（邻居没列全：触到 limit）' : ''].filter(Boolean).join('\n'), false)
       return
     }
 

@@ -19,7 +19,8 @@ import { parseFrontmatter, setFrontmatter } from './frontmatter.ts'
 import { isMetaPath, META_NAMES } from './meta.ts'
 import { similarCandidates } from './similar.ts'
 import type { SimilarCandidate } from './similar.ts'
-import { normalizeTitle } from './wikilink.ts'
+import { linkContextOf } from './edge-context.ts'
+import { normalizeTitle, noteKey } from './wikilink.ts'
 
 export class ZkError extends Error {
   readonly hint: string | undefined
@@ -1468,6 +1469,12 @@ export interface LinkedNotes {
   truncated: boolean
   /** complete = 全部命中；partial = 触到 limit */
   completeness: Completeness
+  /**
+   * 只有 `keepContent` 时才给：path → 原文。
+   * 这些字节本来就在 `--format json` 的传输里，留着是为了让 `zk_walk` 说清「这条边为什么存在」，
+   * 不额外起进程、不额外读盘（plan §14.1）。
+   */
+  contents?: Map<string, string>
 }
 
 /**
@@ -1480,7 +1487,7 @@ async function linkedNotes(
   cfg: Config,
   flag: '--link-to' | '--linked-by',
   rel: string,
-  opts: { limit?: number; includeArchived?: boolean } = {},
+  opts: { limit?: number; includeArchived?: boolean; keepContent?: boolean } = {},
   signal?: AbortSignal,
 ): Promise<LinkedNotes> {
   const root = path.resolve(cfg.notebook)
@@ -1490,16 +1497,25 @@ async function linkedNotes(
   const limit = Math.min(MAX_SCAN, Math.max(1, Math.trunc(opts.limit ?? MAX_LINK_NOTES)))
   const args = ['list', '--quiet', '--no-pager', '--format', 'json', '--limit', String(limit + 1), flag, abs]
   for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived })) args.push('-x', name)
-  const notes = parseList(await zk(cfg, args, { signal })).map((raw) => toRecord(raw, cfg))
+  const raws = parseList(await zk(cfg, args, { signal }))
+  const notes = raws.map((raw) => toRecord(raw, cfg))
   const truncated = notes.length > limit
-  return { notes: notes.slice(0, limit), truncated, completeness: truncated ? 'partial' : 'complete' }
+  const result: LinkedNotes = { notes: notes.slice(0, limit), truncated, completeness: truncated ? 'partial' : 'complete' }
+  if (opts.keepContent) {
+    const contents = new Map<string, string>()
+    for (let i = 0; i < notes.length; i += 1) {
+      contents.set(notes[i]!.path, String(raws[i]?.rawContent ?? raws[i]?.body ?? ''))
+    }
+    result.contents = contents
+  }
+  return result
 }
 
 /** 谁链到这篇（入链 / 反链）。路径是笔记本相对的；目标不存在时返回空，不返回全库 */
 export async function backlinksOf(
   cfg: Config,
   rel: string,
-  opts: { limit?: number; includeArchived?: boolean } = {},
+  opts: { limit?: number; includeArchived?: boolean; keepContent?: boolean } = {},
   signal?: AbortSignal,
 ): Promise<LinkedNotes> {
   const found = await linkedNotes(cfg, '--link-to', rel, opts, signal)
@@ -1510,11 +1526,171 @@ export async function backlinksOf(
 export async function outlinksOf(
   cfg: Config,
   rel: string,
-  opts: { limit?: number; includeArchived?: boolean } = {},
+  opts: { limit?: number; includeArchived?: boolean; keepContent?: boolean } = {},
   signal?: AbortSignal,
 ): Promise<LinkedNotes> {
   const found = await linkedNotes(cfg, '--linked-by', rel, opts, signal)
   return { ...found, notes: found.notes.filter((n) => n.path !== rel) }
+}
+
+/** 走的方向：`in` = 谁链到我（反链），`out` = 我链到谁（出链）；`both` = 各查一次 */
+export type WalkDirection = 'both' | 'in' | 'out'
+
+/** 邻居的方向（`both` 时按 in 先 out 后合并，同一篇只出一次） */
+export type WalkRelation = 'in' | 'out'
+
+export interface WalkNeighbor {
+  title: string
+  path: string
+  absPath: string
+  relation: WalkRelation
+  /** 摘要（不回显全文：全文仍交宿主 read） */
+  lead: string
+  /** 这条边所在的 `##` / `###` 小节；找不到就是空串（plan §14.1） */
+  section?: string
+  /** 这条边的那一行（压空白、截 160 码点）：没有它，八条边长得一模一样 */
+  linkLine?: string
+}
+
+export interface WalkSeed {
+  title: string
+  path: string
+  absPath: string
+}
+
+export interface WalkResult {
+  /** 种子解析失败（不存在 / 标题与 id 都不精确匹配）时为 null，结果为空 —— 不退回「全库」 */
+  seed: WalkSeed | null
+  notes: WalkNeighbor[]
+  /** true = 任一方向触到 limit（三态里的 partial，不是「只有这些」） */
+  truncated: boolean
+  /** 只有 complete / partial：`linkedNotes` 没有产生 unknown 的路径，不谎称三态（类型也钳住） */
+  completeness: 'complete' | 'partial'
+}
+
+/** `[[目标|别名]]` / `[[目标#小节]]` / `./notes/x.md` → `notes/x` 形态的裸目标 */
+function walkSeedTarget(raw: string): string {
+  let target = String(raw ?? '').trim()
+  const wrapped = /^\[\[([^\]]*)\]\]$/.exec(target)
+  if (wrapped) target = String(wrapped[1] ?? '')
+  return target.split('|')[0].split('#')[0].trim().replace(/\\/g, '/').replace(/^\.\//, '')
+}
+
+/** 看起来是路径（含目录分隔符或 .md 后缀）—— 路径种子不查索引，直接看磁盘 */
+function looksLikePath(target: string): boolean {
+  return target.includes('/') || /\.(md|markdown)$/i.test(target)
+}
+
+function seedAt(cfg: Config, rel: string, opts: { includeArchived?: boolean } = {}): WalkSeed | null {
+  const root = path.resolve(cfg.notebook)
+  const abs = path.resolve(cfg.notebook, rel)
+  if (abs !== root && !abs.startsWith(root + path.sep)) return null
+  // 种子也是「进入网络的入口」：meta / raw / inbox 不是可导航的笔记，归档要先显式允许。
+  // 与邻居侧的 `excludedNames` 同口径 —— 不能只有邻居过滤、种子随便进（plan §14.5）。
+  const norm = rel.replace(/\\/g, '/').replace(/^\.\//, '')
+  if (isMetaPath(norm)) return null
+  if (norm === 'raw' || norm.startsWith('raw/') || norm === 'inbox' || norm.startsWith('inbox/')) return null
+  if (!opts.includeArchived && inArchive(cfg, norm)) return null
+  try {
+    if (!fs.statSync(abs).isFile()) return null
+  } catch { return null }
+  let title = ''
+  try { title = String(parseFrontmatter(fs.readFileSync(abs, 'utf8')).fields.title ?? '') } catch { /* 标题只作回显 */ }
+  return { title: title || path.basename(rel, path.extname(rel)), path: rel, absPath: abs }
+}
+
+/**
+ * 种子解析：路径 / `[[路径]]` 只看磁盘（0 个子进程）；标题 / `[[id]]` 走一次 `zk list -M exact`（1 个子进程）。
+ *
+ * 为什么不用「全库扫描 + resolveWikiTarget」：10k 上那是一整趟 `zk list`（约 2.6 s / 2 MB），
+ * 会把单种子 1 跳从 2 个进程抬到 3 个，与 R8 的成本口径（§11.3）不符。
+ * `-M exact` 实测能命中 frontmatter 的 id 与标题，但它是「逐词精确」而不是「整串相等」
+ * （`记忆预算` 会同时命中 `记忆预算的另一篇`），所以拿到候选后还要在 JS 里比对一次
+ * id / 标题 / 文件名，对不上就当没找到 —— 不拿第一个命中冒充种子。
+ */
+async function resolveWalkSeed(
+  cfg: Config,
+  raw: string,
+  opts: { includeArchived?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<WalkSeed | null> {
+  const target = walkSeedTarget(raw)
+  if (!target) return null
+  if (looksLikePath(target)) {
+    const candidates = /\.(md|markdown)$/i.test(target) ? [target] : [target, `${target}.md`]
+    for (const candidate of candidates) {
+      const hit = seedAt(cfg, candidate, opts)
+      if (hit) return hit
+    }
+    return null
+  }
+
+  const args = [
+    'list', '--quiet', '--no-pager', '--format', LEAN_TEMPLATE, '-d', LEAN_RECORD,
+    '--limit', '5', '-M', 'exact', '-m', target,
+  ]
+  // 与邻居的排除口径一致：include_archived 时种子也可以是一篇归档笔记
+  for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived })) args.push('-x', name)
+  const notes = parseLeanList(await zk(cfg, args, { signal }), cfg).notes
+  const wanted = normalizeTitle(target)
+  const hit = notes.find((n) => n.id && n.id === target)
+    ?? notes.find((n) => normalizeTitle(n.title) === wanted)
+    ?? notes.find((n) => normalizeTitle(path.basename(n.path, path.extname(n.path))) === wanted)
+  return hit ? { title: hit.title || path.basename(hit.path, path.extname(hit.path)), path: hit.path, absPath: hit.absPath } : null
+}
+
+/**
+ * R8：从一篇种子出发走一跳（按篇反查，不建全图）。
+ *
+ * 成本：路径种子 = `both` 2 个子进程（backlinksOf + outlinksOf，10k 实测见 docs/bench-baseline.md）；
+ * 标题 / id 种子再加一次 `-M exact` 解析（共 3 个）。`limit` 硬钳 `MAX_LINK_NOTES` = 200，
+ * 不用 `MAX_SCAN` —— 后者配合 `--format json` 会吐 17 MB，等于把全图成本放回来。
+ * 默认排除 archive / raw / meta（与 `excludedNames` 同口径）：邻居与**种子**两侧都过滤，
+ * 不能只过滤一侧（plan §14.5）。
+ *
+ * 每条邻居多带 `section` / `linkLine`（那条边所在的小节与那一行）：
+ * 入链用邻居 JSON 里已经在传输的 `rawContent`，出链读一次种子文件 —— 两边都是 **0 个额外子进程**。
+ * 没有这两个字段，`lead` 对同一篇种子的所有出链是同一段文字，等于只给了 8 个标题（plan §14.1）。
+ */
+export async function walkFrom(
+  cfg: Config,
+  opts: { seed: string; direction?: WalkDirection; limit?: number; includeArchived?: boolean },
+  signal?: AbortSignal,
+): Promise<WalkResult> {
+  const direction = opts.direction ?? 'both'
+  const limit = Math.min(MAX_LINK_NOTES, Math.max(1, Math.trunc(opts.limit ?? 10)))
+  const seed = await resolveWalkSeed(cfg, opts.seed, { includeArchived: opts.includeArchived }, signal)
+  if (!seed) return { seed: null, notes: [], truncated: false, completeness: 'complete' }
+
+  const directions: WalkRelation[] = direction === 'both' ? ['in', 'out'] : [direction]
+  const notes: WalkNeighbor[] = []
+  const seen = new Set<string>()
+  let truncated = false
+  // 出链的「那一行」写在种子里；入链的写在邻居里（JSON 里已经带了 rawContent）
+  let seedContent = ''
+  if (direction !== 'in') {
+    try { seedContent = fs.readFileSync(seed.absPath, 'utf8') } catch { seedContent = '' }
+  }
+  for (const relation of directions) {
+    const found = relation === 'in'
+      ? await backlinksOf(cfg, seed.path, { limit, includeArchived: opts.includeArchived, keepContent: true }, signal)
+      : await outlinksOf(cfg, seed.path, { limit, includeArchived: opts.includeArchived }, signal)
+    if (found.truncated) truncated = true
+    for (const note of found.notes) {
+      // 按身份键去重：互链的笔记两个方向都会出现，只报一次（先 in 后 out）
+      const key = noteKey(note)
+      if (seen.has(key)) continue
+      seen.add(key)
+      const ctx = relation === 'out'
+        ? linkContextOf(seedContent, note, seed.path)
+        : linkContextOf(found.contents?.get(note.path) ?? '', seed, note.path)
+      notes.push({
+        title: note.title, path: note.path, absPath: note.absPath, relation, lead: note.lead,
+        ...(ctx ? { section: ctx.section, linkLine: ctx.line } : {}),
+      })
+    }
+  }
+  return { seed, notes, truncated, completeness: truncated ? 'partial' : 'complete' }
 }
 
 /**

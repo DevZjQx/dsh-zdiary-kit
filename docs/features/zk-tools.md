@@ -2,7 +2,7 @@
 
 **Purpose.** 让模型用 zk 思维工作：先查重、再写原子笔记、用双链连起来、每天记一段。
 
-**Owns.** 14 个内置工具定义（`zk_search` / `zk_query` / `zk_recall` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
+**Owns.** 15 个内置工具定义（`zk_search` / `zk_query` / `zk_recall` / `zk_walk` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
 `zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
 `.zk/config.toml` 的 `[alias]` 派生的 `zk_<别名>` 工具：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
@@ -36,7 +36,7 @@ LEAN 模板加一列 `{{metadata.id}}`，`parseLeanList` 的定长字段从 11 �
 相似标题继续只作 warning，不升级为去重方案。
 
 **Alias tools（`zk_<别名>`）.** 默认**不注册**：`aliasTools` 为 false 时 `buildTools` 连 `.zk/config.toml` 都不读，
-内置工具固定 14 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
+内置工具固定 15 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
 （设置页「工具」组的复选框，或 `zk-kit config set aliasTools=true`，只认 `true`；拼错的值归一化成 false 并在 `config set` 时回显）。
 打开后，插件加载时读所有已配置笔记本的 `.zk/config.toml`，把 `[alias]` 表里未注释的键注册成工具；
 同名只取第一本。工具名用下划线而不是点号：DSH 的 function-name 契约是 `[A-Za-z0-9_-]`（`zk.lucky` 会被 provider 拒绝）。
@@ -301,6 +301,61 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 - 每条取 `title` / `path` / `absPath` / `words` 与 `snippet`（比 `lead` 多信息时用它），`budget` / `used` 走 `countWords` 口径（中文 2 字 1 词）。放不下就**整条丢弃、不切半句**，`notes[].reason` 明写 `included` / `duplicate` / `empty` / `over-budget`；`used` 是对最终整段文本算的（分隔符也计入），所以一定 `<= budget`。
 - 0 命中返回空 `text` / 空 `notes` / `used = 0`，不编造；`completeness` / `hasMore` 沿用检索三态 —— 装配过的只是本次候选，不代表库里没有别的。需要全文仍由宿主原生 `read` 按 `absPath` 取。
 - 命令行 `zk-kit recall [词] [--budget 500] [--limit 30] [--json]`，与工具走同一份 `assembleRecall`。
+
+**一跳入口（R8，§10.4 第 8 项）.** 新增只读 `zk_walk`（`lib/zk.ts` 的 `walkFrom`）：从一篇种子出发走一跳，补上「沿链接走」的入口。
+- **种子解析**：路径（相对 / 绝对 / `[[路径]]`）只看磁盘，**0 个子进程**；标题 / `[[标题]]` / `[[id]]` 走一次
+  `zk list -M exact --limit 5`，再在 JS 里按 id / 标题 / 文件名精确比对 —— `-M exact` 是「逐词精确」而不是整串相等
+  （实测 `记忆预算` 会同时命中 `记忆预算的另一篇`），所以对不上就当没找到，**不拿第一个命中冒充种子，也不退回全库**。
+- **走法**：`backlinksOf` / `outlinksOf`（各一次 `zk list --link-to` / `--linked-by`），默认 `both` = 2 个子进程；
+  标题 / id 种子再加一次解析（3 个）。互链的邻居按身份键去重，`in` 先 `out` 后。**不建全图、不递归、不 depth 2**。
+- **边界**：`limit` 硬钳 `MAX_LINK_NOTES` = 200（不是 `MAX_SCAN` 10 000：后者配 `--format json` 会吐 17 MB，等于把全图成本放回来）；
+  默认排除 archive / raw / meta（`excludedNames` 同口径），`include_archived: true` 才连归档一起看；
+  `complete / partial` 二态（按篇反查没有产生 `unknown` 的路径，**不谎称三态**），触顶明说「邻居没列全，不代表没有」。
+  每条邻居还带 `section` / `linkLine`（§14.1，`lib/edge-context.ts` 的 `linkContextOf`）：那条边所在的 `##` / `###` 小节与**那一行**。
+  没有它，`lead` 对同一篇种子的所有出链是同一段文字（邻居首段），等于只给了 8 个标题 ——
+  而 Sammelverweise 的价值在于「关于 X 见这几处」。字节是白捡的：入链用邻居 JSON 里已经在传输的 `rawContent`，
+  出链读一次种子文件，**0 个额外子进程**；只认 wiki 双链与 Markdown 行内链接，代码块里的 `[[…]]` 不算，
+  找不到就整个键不出现（不拿「提到了标题」冒充链接）。
+  只回标题 / 路径 / `absPath` / 摘要 / 那一行，全文仍由宿主原生 `read` 取；不改标题、不自动 link、不写任何文件。
+- 命令行 `zk-kit walk <种子> [--direction both|in|out] [--limit 10] [--json]`，与工具共用 `walkFrom`。
+- 成本（`docs/bench-baseline.md` 的三档实测）：路径种子 `both` 恒 2 子进程，10k 上 p95 1.3 / 1.1 / 1.8 s，
+  传输 7.2 / 15.1 / 32.3 KB（0.2 / 1 / 3 链每篇）；全图同库 26–31 s / 17 MB。
+
+**MEMORY 当检索入口（R9，§10.4 第 9 项 / §14.2）.** `zk_search` / `zk_query` / `zk_recall` 的结果多一个可选 `entryPoints`。
+两条来源，`via` 分开写：
+- `via: 'result'` —— 条目指向**本次命中**的笔记：把「这条已晋升结论」贴回结果（3.9.0 原语义）；
+- `via: 'query'` —— **条目本身命中检索词**：来源不必在结果集里。这才是索引的方向（关键词 → 卡号 → 那张卡
+  可以不含这个词）。原来用 `byPath` 卡死，只做成了注解。
+- 落地（`resolved`）：路径式 `[[notes/x]]` 直接读盘、**0 子进程**；标题 / id 式且不在结果集里时
+  `resolved: false`，只给入口名（`title` 就是 `[[…]]` 里那一串，`path` / `absPath` 是空串 —— 不编），
+  渲染成「用 zk_walk 走进去」。不为了补一次路径再起一个 zk 进程（10k 上 `zk list -M re` 实测 0.7–1.0 s）。
+- 口径在 `lib/entry-points.ts`：条目切分 / 退役判断复用 `splitMemoryEntries` / `isRetiredEntry`，
+  链接解析复用 `WIKI_LINK` / `resolveWikiTarget`；退役行不计（D3），归档目标归死胡同探针、不当活入口，
+  `raw/` / `inbox/` / 根目录 meta 一律不算入口。
+- 查询比对是**机械的**：ASCII 按空格分词、CJK 长串补二元组，`entry` 文本包含任一比对项即命中；
+  不排序（按 MEMORY 文件顺序）、不做语义判断（「哪条更相关」仍是 agent 的活）；最多 5 条（`MAX_ENTRY_POINTS`），
+  超出置 `entryPointsTruncated`。
+- 解析失败或没有 MEMORY.md 时整个键不出现（老库输出与改动前一致），不谎称完整。
+
+**死胡同可见（§14.3）.** `lib/archive-probe.ts`：检索命中一篇活笔记时，顺手看 `archive/` 里有没有**同名旧结论**，
+带出 `supersede-reason` 与 `superseded-by`，放进 `counterEntries`（最多 3 条）。
+- 为什么：`zk_supersede` 搬进归档的旧结论被 `excludedNames` 排除出检索，只有 `zk_new` 写同名时才提示一次 ——
+  于是 agent 在读 / 想的阶段看不到「这条路试过、为什么废」，只能重新踩一遍。这不是「不查全」的谦逊，
+  是主动隐藏反例。
+- 成本：**零子进程、零 zk 调用**。只读 `archive/` 下的文件（10k 夹具 800 篇 → 10 条命中比对 p50 50 ms），
+  标题相似度复用 `lib/similar.ts` 的同一份口径；扫描上限 `MAX_ARCHIVE_SCAN` = 2000，触顶置 `counterEntriesTruncated`
+  （没看全 ≠ 没有）；对照项最多 `MAX_COUNTER_PROBES` = 50 条命中。
+- 0 命中且给了 query 时改拿查询词当标题比 —— 「库里没有」不等于「从来没出现过」；渲染文案不再是「没有匹配」，
+  而是「没有活笔记命中，但归档里有同名旧结论」。
+- 只提示：不改默认结果集、不改 `completeness` 口径、不判断「是不是同一个错误」；`include_archived: true` 时
+  归档已经在结果里，不再重复报。
+
+**本地聚合计数（§14.4）.** `lib/usage.ts` 在 `.zk/dsh-usage.json` 记「哪个工具被调了几次」
+（`search` / `query` / `recall` / `walk` / `entryPoints` / `counterEntries`）＋首次计数时间，`zk_stats.usage` 读出来。
+- 只存键与数字：不记查询词、不记路径、不上报。写入失败 / 文件损坏一律静默降级，不影响工具调用。
+- 目的：到 3.9.0 为止入口 / 一跳的验收全是机械口径（子进程数、字节、schema、与 `graph` 对账），
+  没有一条问「这条路有没有被真的用上」。`zk_stats` 的 `usage` 是唯一可观测的代理 ——
+  发布后过一段时间看 `walk` / `entryPoints` / `counterEntries` 有没有涨。
 
 **写 MEMORY 前的容量（G1 / G4，§10.4 第 6 项）.** 复用 `zk_context`，不新增 `zk_memory_check`：
 入参加 `proposed_entry` / `extra_words`，输出增量 `headroom` / `extraWords` / `wouldTruncate` /

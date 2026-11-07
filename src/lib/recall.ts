@@ -7,6 +7,11 @@
  */
 import type { Config } from '../config/store.ts'
 import { countWords } from './memory.ts'
+import { entryPointsOf } from './entry-points.ts'
+import type { EntryPoint } from './entry-points.ts'
+import { archivedCounterparts } from './archive-probe.ts'
+import type { CounterEntry } from './archive-probe.ts'
+import { bumpUsage } from './usage.ts'
 import { searchNotesDetailed } from './zk.ts'
 import type { Completeness, NoteRecord, SearchOptions } from './zk.ts'
 
@@ -33,6 +38,14 @@ export interface RecallResult {
   completeness: Completeness
   hasMore: boolean
   notes: RecallNote[]
+  /** R9：MEMORY.md 的活条目（`via: query` 的来源可以不在本次结果里） */
+  entryPoints: EntryPoint[]
+  /** true = 命中的入口超过上限，只回了前几条（§0.5 第 3 条：上限不许静默） */
+  entryPointsTruncated: boolean
+  /** 死胡同探针：归档里与本次候选同名的废弃结论（零子进程；没有就是空数组） */
+  counterEntries: CounterEntry[]
+  /** true = 归档扫描触到上限，只看了前 N 篇（没看全 ≠ 没有） */
+  counterEntriesTruncated: boolean
 }
 
 export const DEFAULT_RECALL_BUDGET = 500
@@ -94,8 +107,17 @@ export async function assembleRecall(cfg: Config, opts: RecallOptions = {}, sign
 
   const items: RecallNote[] = []
   const seen = new Set<string>()
+  // R9：入口卡排在装配正文之前。`via: 'query'` 的条目指向的笔记可以不在本次结果里 ——
+  // 这是卢曼的索引方向（关键词 → 卡号），`via: 'result'` 那些已经在这段正文里，不重复占预算。
+  const entryPoints = entryPointsOf(cfg, result.notes, { query: opts.query })
+  const entryLines = entryPoints.points.filter((p) => p.via === 'query')
+    .map((p) => `· ${p.entry} → ${p.resolved ? p.absPath : `[[${p.title}]]（用 zk_walk 走进去）`}`)
   let text = ''
-  let used = 0
+  if (entryLines.length) {
+    const block = `入口（MEMORY 命中）：\n${entryLines.join('\n')}`
+    if (countWords(block) <= budget) text = block
+  }
+  let used = text ? countWords(text) : 0
   let index = 0
   for (const n of roundRobin(result.notes)) {
     const note: RecallNote = {
@@ -130,10 +152,22 @@ export async function assembleRecall(cfg: Config, opts: RecallOptions = {}, sign
     items.push(note)
   }
 
+  const counters = opts.includeArchived
+    ? { entries: [] as CounterEntry[], scanned: 0, truncated: false }
+    : archivedCounterparts(cfg, result.notes, { query: opts.query })
+  bumpUsage(cfg, [
+    'recall',
+    ...(entryPoints.points.length ? ['entryPoints' as const] : []),
+    ...(counters.entries.length ? ['counterEntries' as const] : []),
+  ])
   return {
     text, used, budget,
     completeness: result.completeness,
     hasMore: result.hasMore,
     notes: items,
+    entryPoints: entryPoints.points,
+    entryPointsTruncated: entryPoints.truncated,
+    counterEntries: counters.entries,
+    counterEntriesTruncated: counters.truncated,
   }
 }

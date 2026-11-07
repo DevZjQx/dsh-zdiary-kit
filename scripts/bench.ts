@@ -21,7 +21,8 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { execStats } from '../src/lib/exec.ts'
-import { backlinksOf, graphEdges, notebookStats, outlinksOf, scanNotes, searchNotesDetailed, zk, resolveZk } from '../src/lib/zk.ts'
+import { parseFrontmatter } from '../src/lib/frontmatter.ts'
+import { backlinksOf, graphEdges, notebookStats, outlinksOf, scanNotes, searchNotesDetailed, walkFrom, zk, resolveZk } from '../src/lib/zk.ts'
 import { buildMemoryPayload } from '../src/lib/memory.ts'
 import { lintNotebook } from '../src/lib/lint.ts'
 import { dreamNotebook } from '../src/lib/dream.ts'
@@ -121,6 +122,8 @@ interface Case {
 
 interface Ctx {
   cfg: Config
+  /** 夹具目录：标题种子要读那篇笔记的 frontmatter 标题（文件名是 hyphen 版 stem，不是人输入的标题） */
+  fixture: string
   /** 入链最多的笔记（backlinks / walk.both 的种子），由夹具清单给出 */
   sample: string
   /** 出链最多的笔记（outlinks 的种子） */
@@ -310,16 +313,30 @@ const CASES: Case[] = [
   },
   {
     // plan §11.3 / §12.4：R8（zk_walk direction=both）的成本口径 —— 单种子、两次按篇反查，不建全图。
-    // 这行不是 zk_walk 本身（未实现），是它落地后必须对得上的代理数：2 个子进程、两笔传输字节相加。
+    // 走真的 walkFrom（路径种子）：2 个子进程、两笔传输字节相加；标题 / id 种子会多一次 `-M exact` 解析。
     id: 'walk.both',
     tool: 'zk_walk (both)',
-    what: 'R8 代理：单种子 both = backlinksOf + outlinksOf 顺序两次',
+    what: 'R8：单种子 both = walkFrom（路径种子：backlinksOf + outlinksOf 顺序两次）',
     timeoutMs: 120_000,
     run: async ({ cfg, sample }) => {
-      const back = await backlinksOf(cfg, sample)
-      const out = await outlinksOf(cfg, sample)
-      const paths = new Set([...back.notes, ...out.notes].map((n) => n.path))
-      return { count: paths.size, truncated: back.truncated || out.truncated }
+      const r = await walkFrom(cfg, { seed: sample, direction: 'both' })
+      return { count: r.notes.length, truncated: r.truncated }
+    },
+  },
+  {
+    // 标题 / id 种子：解析那一次 `-M exact` 也要算进去（plan §11.3 的成本口径）。
+    id: 'walk.title',
+    tool: 'zk_walk (title seed)',
+    what: 'R8：标题种子 = 解析 1 次（-M exact）+ 按篇反查 2 次',
+    timeoutMs: 120_000,
+    run: async ({ cfg, fixture, sample }) => {
+      // 传**真的 frontmatter 标题**：夹具文件名是 hyphen 版 stem，不是用户会输入的标题，
+      // `-M exact` 也不保证能按 stem 命中（那种写法本就不在种子的承诺里）
+      const raw = fs.readFileSync(path.join(fixture, sample), 'utf8')
+      const title = String(parseFrontmatter(raw).fields.title ?? path.basename(sample, path.extname(sample)))
+      const r = await walkFrom(cfg, { seed: title, direction: 'both' })
+      if (!r.seed) throw new Error('标题种子没解析到：' + title)
+      return { count: r.notes.length, truncated: r.truncated }
     },
   },
   {
@@ -518,6 +535,7 @@ async function main(): Promise<void> {
   const counts = fixtureCounts(opts.fixture, opts.notes, opts.linksPerNote)
   const ctx: Ctx = {
     cfg,
+    fixture: opts.fixture,
     sample: pickSample(opts.fixture, 'inbound'),
     sampleOut: pickSample(opts.fixture, 'outbound'),
     ...counts,
