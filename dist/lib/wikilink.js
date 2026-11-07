@@ -17,15 +17,27 @@ export const WIKI_LINK = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g;
 export function normalizeTitle(title) {
     return String(title ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
+/**
+ * 「同一篇」的身份键（§9.2）：有稳定 id 就只看 id，老笔记 / 日记退回 path。
+ * 改名 / 移动 / 重建索引不会改 frontmatter 里的 id，所以这个键不随检索地址漂移。
+ */
+export function noteKey(note) {
+    const id = String(note.id ?? '').trim();
+    return id ? `id:${id}` : `path:${note.path}`;
+}
 export function wikiIndex(notes) {
     const byTitle = new Map();
+    const byId = new Map();
     for (const note of notes) {
         for (const key of [normalizeTitle(note.title), normalizeTitle(path.basename(note.path, path.extname(note.path)))]) {
             if (key && !byTitle.has(key))
                 byTitle.set(key, note.path);
         }
+        const id = String(note.id ?? '').trim();
+        if (id && !byId.has(id))
+            byId.set(id, note.path);
     }
-    return { byTitle };
+    return { byTitle, byId };
 }
 function insideNotebook(cfg, abs) {
     const root = path.resolve(cfg.notebook);
@@ -48,6 +60,11 @@ export function resolveWikiTarget(cfg, target, index) {
     const rel = String(target ?? '').replace(/\\/g, '/').replace(/^\.\//, '').trim();
     if (!rel)
         return { status: 'missing', path: '', explicit: false };
+    // 稳定 ID 优先（§9.2）：`[[<id>]]` 直接落到那篇笔记的当前路径，改名之后也不断链。
+    // 老库没有 id，byId 为空，下面的路径 / 标题解析顺序逐字不变。
+    const byId = index.byId.get(rel);
+    if (byId)
+        return { status: 'live', path: byId, explicit: false };
     const candidates = /\.md$/i.test(rel) ? [rel] : [rel, `${rel}.md`];
     for (const candidate of candidates) {
         const abs = path.resolve(cfg.notebook, candidate);

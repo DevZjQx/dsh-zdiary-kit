@@ -58,7 +58,8 @@
 需要「别自动发布 / 别花钱」这类边界时，写进 `AGENTS.md`（工作约定）或 `PERSONA.md`（角色边界）。
 
 **记忆层与事实层的一致性。** `MEMORY.md` 每条结论后附 `[[来源路径]]`（写进 AGENTS 模板）；
-`zk_lint` 的 `memoryLinks` 只做机械核对：原路径 → 加 `.md` → `archive/` 下同名 → 活笔记标题 / 文件名，
+`zk_lint` 的 `memoryLinks` 只做机械核对：先按稳定 id 查（`[[<id>]]` → 该笔记当前路径，§10.4 第 7 项），
+未命中再走原路径 → 加 `.md` → `archive/` 下同名 → 活笔记标题 / 文件名，
 旧路径在 `archive/` 下找到同名（或活文件带 `status: superseded`）报 `superseded`，都找不到报 `missing`；
 显式写 `archive/` 的链接是有意引用，不算漂移；另数 MEMORY.md 里有多少活条目没附链接（USER 不计；
 `[[   ]]` 这种空目标不算来源）。`unlinked` / `undated` 与注入提示、记忆页共用 `memoryFormatDebt()`，
@@ -68,6 +69,9 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 但文件不删、不改 —— 「注入 = 文件原文」收窄为「注入 = 原文去掉退役条目」（D3）。
 为什么要有：`zk_supersede` 只重写 `zk graph` 里的入链，meta 文件被 `excludedNames` 排除在图外 ——
 链接不会跟着搬，`--broken-links` 也看不见。语义重复仍留给 agent，插件不碰。
+稳定 ID 让来源链接可以选择不绑路径：写成 `[[<id>]]`（从笔记 frontmatter 读）时，改名后仍落到同一篇；
+老笔记没有 id、链接也没写 id 时解析顺序与以前逐字一致。插件不把已有的 `[[来源路径]]` 自动改写成 id ——
+回填属于写路径，单独一轮（§9.2）。
 
 **Depends on.** `config/store`（`memoryBudgetWords` / `personaBudgetWords`，每次现读 —— 设置页保存后下一次工具调用就生效）、
 `lib/meta`、`lib/persona-template`、`node:fs`；宿主的 `systemPrompt` 服务（可选，没有就只留 `zk_context`）。

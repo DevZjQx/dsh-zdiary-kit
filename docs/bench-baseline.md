@@ -61,6 +61,26 @@ O(命中数 × 词数) 计算，没有第二次全库扫描。另两轮复跑（
 整串双跑为 2.7 s / 2.2 s，同量级。若低配机上长期超预算，降级开关应对**整个 CJK 双跑**生效
 （FTS 命中 ≥ N 条就不再跑 regex，或按库规模开关），不是只关多词 —— 见 `docs/plan.md` §0.5.2。
 
+## 稳定 ID 后补测（§10.4 第 7 项，2026-11-07）
+
+`lib/zk.ts` 的 LEAN 模板多一列 `{{metadata.id}}`（全量扫描 / 结构化检索），按 §0.5 第 2 条补测 10k：
+
+```
+ZK_BIN=/path/to/zk bun run bench --fixture .tmp/fixture/10k-1 --cases scan.10k,search.filtered,list.10k --iterations 3 --json --out .tmp/bench-stable-id.json
+```
+
+| 用例 | 子进程 | 字节 | p50 | p95 | 峰值 RSS | 上表基线（字节 / p95） |
+|---|---|---|---|---|---|---|
+| `scan.10k` | 1 | 2.03 MB | 2.5 s | 3.1 s | 63 MB | 2.0 MB / 5.3 s |
+| `search.filtered` | 1 | 2.03 MB | 2.4 s | 2.4 s | 63 MB | 2.0 MB / 4.2 s |
+| `list.10k` | 1 | 15.1 MB | 2.8 s | 2.9 s | 70 MB | 15.1 MB / 4.3 s |
+
+夹具 10 000 篇 / 10 000 链，笔记**全都没有 frontmatter `id`**（第 4 项生成的夹具），所以新列为空：
+字节与基线同量级（多出的是控制字符分隔符），`list.10k` 走 `--format json`、不经过 LEAN 模板，数字不变。
+真库里每篇有 id 会多约 11 字节（10 位 hex + 分隔符），10k 约 +110 KB，不改变成本量级。
+这次 p50 / p95 整体低于基线是机器负载与磁盘缓存波动，不是本项带来的优化；
+子进程数不变（1），`parseLeanList` 多切一列是 JS 内 O(n) 字符串操作，不新增 zk 进程。
+
 ## 复跑
 
 ```bash

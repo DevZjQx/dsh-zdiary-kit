@@ -22,6 +22,19 @@
 
 **Public surface.** `buildTools()`（按默认工作区的笔记本配置构建，测试用）与 `registerZkTools(tools)`（返回撤销函数）。
 
+**稳定 ID（§9.2 / §10.4 第 7 项）.**
+`zk_new` 建完笔记后在 frontmatter 写一个 10 位十六进制 `id`（`newNoteId()`，`lib/zk.ts`）：
+没有 frontmatter 的 flat 笔记补一个只含 `id` 的最小块、正文形状不变；老笔记 / 日记不回填（日记按日期命名，路径天然稳定）。
+`NoteRecord.id` 取 `metadata.id`，三条构造路径（`toRecord` / `parseLeanList` / `noteFromDisk`）都给；
+LEAN 模板加一列 `{{metadata.id}}`，`parseLeanList` 的定长字段从 11 变 12（`leadAt` 无 snippet 12 / 有 snippet 13）。
+身份判断收在一处：`lib/wikilink.ts` 的 `noteKey()` 有 id 用 `id:xxx`、缺了退回 `path:xxx`；
+`wikiIndex()` 建 `byId`（id → 当前路径），`resolveWikiTarget()` 先查 byId，所以 `[[<id>]]` 改名后仍落到同一篇；
+`promotionsOf` 用 `noteKey()` 记账，改名后不会把同一篇再报一遍候选。
+`zk_lint` / `zk_dream` 的 `missingId` 是只读计数（非日记、无 id），render 与 CLI report 都报一行「只提示不回填」；
+输出 schema 里 `missingId` 是必填项 —— 所有 schema 都是 `additionalProperties: false`，多一个 key 会让整次调用 invalid output。
+不做：批量回填、把 `id` 加进 `zk_new` 返回、把 dedup / supersede / rename 的 path+title 键改造成 id 键（那是迁移，单独一轮）；
+相似标题继续只作 warning，不升级为去重方案。
+
 **Alias tools（`zk_<别名>`）.** 默认**不注册**：`aliasTools` 为 false 时 `buildTools` 连 `.zk/config.toml` 都不读，
 内置工具固定 14 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
 （设置页「工具」组的复选框，或 `zk-kit config set aliasTools=true`，只认 `true`；拼错的值归一化成 false 并在 `config set` 时回显）。

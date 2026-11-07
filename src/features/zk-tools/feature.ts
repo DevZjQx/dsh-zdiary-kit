@@ -1336,6 +1336,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'incomplete 是 frontmatter 缺 type / status / authority 的笔记：缺失被索引落成空串，机械门会静默失效。' +
         'tags 查标签卫生（大小写变体 / 单例，标签总数 ≥ 30 才报）；template 说根目录 AGENTS.md 是不是当前版本。' +
         'similarTitles 是「改一两个字」的疑似重复（同目录、二元组相似度 ≥ 0.6）：与全等重名分开，只报告。' +
+        'missingId 是缺稳定 id 的非日记笔记数：zk_new 新建的笔记自动写 id，老笔记只提示、不回填。' +
         'timeline 是日记时间轴：最近 90 天的空块 / 倒序 / 格式（11:5x）/ 位置（layered 用 ##、或在 ## Events 外）问题，只报告不改文件。' +
         'total / counts 按全量算，items 里每篇最多 50 条明细，整个桶最多 50 篇；skipped 是过大或读不到而没检查的篇数。' +
         'indexHint=true 表示笔记（不含日记）已到 150 篇而根目录还没有 INDEX.md（只是提示，不生成静态索引）。' +
@@ -1360,6 +1361,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         schema: objSchema({
           notebook: { type: 'string' },
           notes: { type: 'number' },
+          missingId: { type: 'number' },
           truncated: { type: 'boolean' },
           completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
           scanLimit: { type: 'number' },
@@ -1380,7 +1382,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           timeline: LINT_TIMELINE,
           indexHint: { type: 'boolean' },
           indexLag: { type: 'string' },
-        }, ['notebook', 'notes', 'truncated', 'completeness', 'scanLimit', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'indexHint', 'indexLag']),
+        }, ['notebook', 'notes', 'missingId', 'truncated', 'completeness', 'scanLimit', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'indexHint', 'indexLag']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -1471,6 +1473,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'backlog 是窗口外仍未晋升的笔记（按被引数），漏做一次不会永久掉队。' +
         '库超过全图统计上限时不再建全图统计入链（默认 2000 篇，设置页可调；graphBudget 给出生效值）：' +
         'graphSkipped=true，cited / citedBy / topCited 为空 —— 那是「没算」，不是「没人引」。' +
+        'missingId 是缺稳定 id 的非日记笔记数（只提示、不回填）；MEMORY 里可以用 [[<id>]] 当来源，改名后仍指向同一篇。' +
         'memory 给记忆余量（内容词 + 提示 = 总词，余量按总词算，可以为负）；retireCandidates 给「可考虑退役」的条目' +
         '（来源归档 / 不存在、超过 ' + STALE_DAYS + ' 天未复核；显式写 archive/ 的有意引用不算）。' +
         'days 省略时窗口 = 距 DREAMS.md「上次做梦」的天数（没有则 7 天）。' +
@@ -1492,6 +1495,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           scanLimit: { type: 'number' },
           graphSkipped: { type: 'boolean' },
           graphBudget: { type: 'number' },
+          missingId: { type: 'number' },
           memory: objSchema({
             words: { type: 'number' },
             personaWords: { type: 'number' },
@@ -1557,7 +1561,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               reason: { type: 'string', enum: ['stale', 'source-missing', 'source-superseded'] },
             }, ['entry', 'date', 'age', 'reason']),
           },
-        }, ['notebook', 'windowDays', 'since', 'truncated', 'completeness', 'scanLimit', 'graphSkipped', 'graphBudget', 'memory', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds', 'retireCandidates']),
+        }, ['notebook', 'windowDays', 'since', 'truncated', 'completeness', 'scanLimit', 'graphSkipped', 'graphBudget', 'missingId', 'memory', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds', 'retireCandidates']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)
@@ -1578,6 +1582,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         lines.push('记忆：内容 ' + v.memory.words + '/' + v.memory.budget + ' 词 + 提示 ' + promptWords +
           ' = ' + memoryTotal + ' 词（余 ' + v.memory.headroom + '）' +
           (v.memory.personaWords > 0 ? ' · 人格 ' + v.memory.personaWords + ' 词（单独注入，不计入记忆预算）' : ''))
+        if (v.missingId > 0) lines.push('· 稳定 ID：' + v.missingId + ' 篇没有 id — 新笔记自动写入，老笔记只提示、不回填（§9.2）')
         if (v.retireCandidates.length) {
           lines.push('可考虑退役：')
           for (const c of v.retireCandidates.slice(0, 10)) {

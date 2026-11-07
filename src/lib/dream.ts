@@ -23,7 +23,7 @@ import { memoryUsage } from './memory.ts'
 import type { MemoryUsage } from './memory.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
 import { isDayString } from './dates.ts'
-import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
+import { normalizeTitle, noteKey, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
 
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
 export const MAX_ITEMS = 50
@@ -159,6 +159,8 @@ export interface DreamResult {
   graphSkipped: boolean
   /** 生效的全图统计上限（`graphBudgetNotes`，或调用方覆盖的值）：graphSkipped 是与它比出来的 */
   graphBudget: number
+  /** 稳定 ID（§9.2）：缺 `id` 的非日记笔记数，只读计数，不回填 */
+  missingId: number
   /** 记忆用量（与注入 / 设置页同一口径）：晋升前先知道还剩多少预算 */
   memory: MemoryUsage
   counts: {
@@ -313,17 +315,21 @@ function promotionsOf(cfg: Config, notes: NoteRecord[]): Map<string, 'link' | 't
   if (!body.trim()) return out
 
   const index = wikiIndex(notes)
+  const byPath = new Map(notes.map((n) => [n.path, n]))
   for (const match of body.matchAll(WIKI_LINK)) {
     const hit = resolveWikiTarget(cfg, String(match[1] ?? '').trim(), index)
-    if (hit.status === 'live' && hit.path) out.set(hit.path, 'link')
+    // 解析结果是路径，按身份键记账（§9.2）：有 id 的笔记改名后仍是同一篇，不会重复晋升。
+    const note = byPath.get(hit.path)
+    if (hit.status === 'live' && note) out.set(noteKey(note), 'link')
   }
 
   const lines = stripRetiredEntries(body).body.split('\n').map((line) => normalizeTitle(line)).filter(Boolean)
   for (const note of notes) {
-    if (out.has(note.path)) continue
-    const key = normalizeTitle(note.title)
-    if ([...key].length < MIN_TITLE_MATCH) continue
-    if (lines.some((line) => line.includes(key))) out.set(note.path, 'title')
+    const key = noteKey(note)
+    if (out.has(key)) continue
+    const title = normalizeTitle(note.title)
+    if ([...title].length < MIN_TITLE_MATCH) continue
+    if (lines.some((line) => line.includes(title))) out.set(key, 'title')
   }
   return out
 }
@@ -460,7 +466,7 @@ export async function dreamNotebook(
     // 日记不是晋升候选：它的「未完成项」走 dailyLooseEnds，报成「无标签」只会制造噪音
     if (isUnder(note.path, cfg.dailyDir)) continue
     // 已经进 MEMORY 的先说：否则每周原样重复，仪式几次之后就没人看了
-    const by = promoted.get(note.path)
+    const by = promoted.get(noteKey(note))
     if (by) {
       alreadyPromoted.push(candidateOf(note, by))
       continue
@@ -479,7 +485,7 @@ export async function dreamNotebook(
       if (isUnder(n.path, cfg.dailyDir)) return false
       const at = dayMs(noteDate(cfg, n))
       if (Number.isFinite(at) && at >= sinceMs) return false
-      if (promoted.has(n.path)) return false
+      if (promoted.has(noteKey(n))) return false
       return rejectionReason(n) === null
     })
     .sort((a, b) => citedOf(b) - citedOf(a) || a.title.localeCompare(b.title))
@@ -521,6 +527,8 @@ export async function dreamNotebook(
     scanLimit: scan.limit,
     graphSkipped: !graphReady,
     graphBudget,
+    // 只读计数：老笔记 / 日记没有 id 属预期，日记按日期命名、路径天然稳定，不计入
+    missingId: notes.filter((n) => !n.id && !isUnder(n.path, cfg.dailyDir)).length,
     counts: {
       window: windowNotes.length,
       daily: windowNotes.filter((n) => isUnder(n.path, cfg.dailyDir)).length,

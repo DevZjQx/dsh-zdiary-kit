@@ -287,6 +287,9 @@ export function formatLintExtras(r) {
     const timeline = formatTimeline(r.timeline);
     if (timeline)
         lines.push(timeline);
+    if (r.missingId > 0) {
+        lines.push(`· 稳定 ID：${r.missingId} 篇没有 id — 新建的笔记已自动写入，老笔记只提示、不回填（§9.2）`);
+    }
     // 缺文件 = 人格未启用（默认状态）：不报错、不占行。
     // 有旧版 / 占位符 / 标记不符时才提醒 —— 否则每个老库每次 lint 都多一条永久 ⚠️，反而训练人忽略告警。
     const persona = r.persona.items;
@@ -925,6 +928,8 @@ export async function lintNotebook(cfg, opts = {}, signal) {
     return {
         notebook: cfg.notebook,
         notes: notes.length,
+        // 只读计数：日记按日期命名、路径天然稳定，不计入；老笔记缺 id 属预期，不回填
+        missingId: nonDaily.filter((n) => !n.id).length,
         truncated: scanTruncated,
         completeness,
         scanLimit: scan.limit,

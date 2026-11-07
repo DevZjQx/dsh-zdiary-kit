@@ -9,6 +9,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { BIN_DIR } from '../config/paths.js';
 import { ExecError, findOnPath, run } from './exec.js';
 import { readJson, writeJson } from './json-file.js';
@@ -759,6 +760,7 @@ function toRecord(raw, cfg, terms = []) {
         snippet: buildSnippet(raw, terms),
         words: Number(raw.wordCount ?? 0),
         metadata,
+        id: meta('id'),
         status: meta('status'),
         type: meta('type'),
         authority: meta('authority'),
@@ -859,6 +861,7 @@ const LEAN_FIELDS = [
     '{{metadata.authority}}',
     '{{metadata.date}}',
     '{{metadata.supersede-reason}}',
+    '{{metadata.id}}',
 ];
 const LEAN_TEMPLATE = [...LEAN_FIELDS, '{{lead}}'].join(LEAN_FIELD);
 /**
@@ -882,8 +885,8 @@ function parseLeanList(stdout, cfg, withSnippet = false) {
         return { notes: [], malformed: false };
     const notes = [];
     let malformed = false;
-    // 11 个定长字段 +（可选）snippet + lead；lead 放最后，多余的段拼回去
-    const leadAt = withSnippet ? 12 : 11;
+    // 12 个定长字段（含 id）+（可选）snippet + lead；lead 放最后，多余的段拼回去
+    const leadAt = withSnippet ? 13 : 12;
     for (const chunk of text.split(LEAN_RECORD)) {
         const record = chunk.replace(/^[\r\n]+|[\r\n]+$/g, '');
         if (!record.trim())
@@ -893,8 +896,8 @@ function parseLeanList(stdout, cfg, withSnippet = false) {
             malformed = true;
             continue;
         }
-        const [absPath, title, words, created, modified, tags, status, type, authority, date, reason] = parts;
-        const snippet = withSnippet ? clipSnippet(parts[11]) : '';
+        const [absPath, title, words, created, modified, tags, status, type, authority, date, reason, id] = parts;
+        const snippet = withSnippet ? clipSnippet(parts[12]) : '';
         const lead = parts.slice(leadAt).join(LEAN_FIELD).replace(/\s+/g, ' ').trim().slice(0, 200);
         const abs = absPath ?? '';
         if (!abs) {
@@ -913,6 +916,8 @@ function parseLeanList(stdout, cfg, withSnippet = false) {
             metadata.date = date;
         if (reason)
             metadata['supersede-reason'] = reason;
+        if (id)
+            metadata.id = id;
         notes.push({
             title: String(title ?? ''),
             path: rel,
@@ -925,6 +930,7 @@ function parseLeanList(stdout, cfg, withSnippet = false) {
             snippet,
             words: Number(words ?? 0),
             metadata,
+            id: String(id ?? ''),
             status: String(status ?? ''),
             type: String(type ?? ''),
             authority: String(authority ?? ''),
@@ -1430,6 +1436,7 @@ function noteFromDisk(cfg, abs) {
         snippet: '',
         words: content.split(/\s+/).filter(Boolean).length,
         metadata: { ...fields },
+        id: fields.id ?? '',
         status: fields.status ?? '',
         type: fields.type ?? '',
         authority: fields.authority ?? '',
@@ -1494,6 +1501,13 @@ function normalizeNoteName(raw) {
         throw new ZkError(`文件名太长：${Buffer.byteLength(name)} 字节`, '文件系统单段上限是 255 字节，缩到 252 字节以内（中文约 80 字）');
     }
     return name;
+}
+/**
+ * 稳定 ID（§9.2）：10 位十六进制短随机串（40 bit，10⁴ 篇库的碰撞概率可忽略）。
+ * 纯小写 hex，不会与路径 / `.md` 后缀 / 中文标题撞形，`[[id]]` 才认得出来。
+ */
+export function newNoteId() {
+    return randomBytes(5).toString('hex');
 }
 /**
  * 用 zk new 建一篇（正文走 stdin → 模板里的 {{content}}）。
@@ -1635,6 +1649,17 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
             summaryWarning = `summary 没写进去：${err instanceof Error ? err.message : String(err)}（文件已建好，可以直接编辑那一节）`;
         }
     }
+    // 稳定 ID（§9.2）：只给 zk_new 新建的笔记写 id，老笔记 / 日记不回填。
+    // 建完才写：zk new -i 索引的是模板产物，改了文件就得标脏，让下一次读补索引（R6）。
+    // 收尾失败一律吞掉（同 markIndexDirty）：笔记已经建好，不能让一次 id 写入看起来像整次创建失败。
+    try {
+        const text = fs.readFileSync(finalAbs, 'utf8');
+        if (!parseFrontmatter(text).fields.id) {
+            fs.writeFileSync(finalAbs, setFrontmatter(text, { id: newNoteId() }), 'utf8');
+            markIndexDirty(cfg);
+        }
+    }
+    catch { /* 收尾失败：文件已落盘，不回滚、不误导 */ }
     return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived, similar, summaryApplied, summaryWarning };
 }
 /** 笔记本相对路径是否在归档目录下（supersede 会把文件搬进去，路径保持不变） */

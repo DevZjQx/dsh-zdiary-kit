@@ -211,6 +211,7 @@ function dreamReport(r: DreamResult): string {
     `记忆：内容 ${r.memory.words}/${r.memory.budget} 词 + 提示 ${promptWords} = ${memoryTotal} 词（余 ${r.memory.headroom}）` +
     (r.memory.personaWords > 0 ? ` · 人格 ${r.memory.personaWords} 词（单独注入，不计入记忆预算）` : ''),
   )
+  if (r.missingId > 0) lines.push(`· 稳定 ID：${r.missingId} 篇没有 id — 新笔记自动写入，老笔记只提示、不回填（§9.2）`)
   if (r.retireCandidates.length) {
     lines.push('可考虑退役：')
     for (const c of r.retireCandidates.slice(0, 10)) {

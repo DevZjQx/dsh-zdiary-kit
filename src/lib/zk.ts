@@ -9,6 +9,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { BIN_DIR } from '../config/paths.ts'
 import type { Config } from '../config/store.ts'
 import { ExecError, findOnPath, run } from './exec.ts'
@@ -57,6 +58,8 @@ export interface NoteRecord {
   words: number
   /** zk 原样给出的 frontmatter（Z6）；没写 frontmatter 就是空对象 */
   metadata: Record<string, unknown>
+  /** 稳定 ID（§9.2）：frontmatter 的 `id`；老笔记 / 日记没有就是空串，身份退回 path */
+  id: string
   /** metadata.status；老笔记没有这个字段 → 空串 */
   status: string
   type: string
@@ -864,6 +867,7 @@ function toRecord(raw: Record<string, unknown>, cfg: Config, terms: string[] = [
     snippet: buildSnippet(raw, terms),
     words: Number(raw.wordCount ?? 0),
     metadata,
+    id: meta('id'),
     status: meta('status'),
     type: meta('type'),
     authority: meta('authority'),
@@ -994,6 +998,7 @@ const LEAN_FIELDS = [
   '{{metadata.authority}}',
   '{{metadata.date}}',
   '{{metadata.supersede-reason}}',
+  '{{metadata.id}}',
 ]
 const LEAN_TEMPLATE = [...LEAN_FIELDS, '{{lead}}'].join(LEAN_FIELD)
 /**
@@ -1018,8 +1023,8 @@ function parseLeanList(stdout: string, cfg: Config, withSnippet = false): { note
   if (!text.trim()) return { notes: [], malformed: false }
   const notes: NoteRecord[] = []
   let malformed = false
-  // 11 个定长字段 +（可选）snippet + lead；lead 放最后，多余的段拼回去
-  const leadAt = withSnippet ? 12 : 11
+  // 12 个定长字段（含 id）+（可选）snippet + lead；lead 放最后，多余的段拼回去
+  const leadAt = withSnippet ? 13 : 12
   for (const chunk of text.split(LEAN_RECORD)) {
     const record = chunk.replace(/^[\r\n]+|[\r\n]+$/g, '')
     if (!record.trim()) continue
@@ -1028,8 +1033,8 @@ function parseLeanList(stdout: string, cfg: Config, withSnippet = false): { note
       malformed = true
       continue
     }
-    const [absPath, title, words, created, modified, tags, status, type, authority, date, reason] = parts
-    const snippet = withSnippet ? clipSnippet(parts[11]) : ''
+    const [absPath, title, words, created, modified, tags, status, type, authority, date, reason, id] = parts
+    const snippet = withSnippet ? clipSnippet(parts[12]) : ''
     const lead = parts.slice(leadAt).join(LEAN_FIELD).replace(/\s+/g, ' ').trim().slice(0, 200)
     const abs = absPath ?? ''
     if (!abs) {
@@ -1043,6 +1048,7 @@ function parseLeanList(stdout: string, cfg: Config, withSnippet = false): { note
     if (authority) metadata.authority = authority
     if (date) metadata.date = date
     if (reason) metadata['supersede-reason'] = reason
+    if (id) metadata.id = id
     notes.push({
       title: String(title ?? ''),
       path: rel,
@@ -1055,6 +1061,7 @@ function parseLeanList(stdout: string, cfg: Config, withSnippet = false): { note
       snippet,
       words: Number(words ?? 0),
       metadata,
+      id: String(id ?? ''),
       status: String(status ?? ''),
       type: String(type ?? ''),
       authority: String(authority ?? ''),
@@ -1669,6 +1676,7 @@ function noteFromDisk(cfg: Config, abs: string): NoteDoc {
     snippet: '',
     words: content.split(/\s+/).filter(Boolean).length,
     metadata: { ...fields },
+    id: fields.id ?? '',
     status: fields.status ?? '',
     type: fields.type ?? '',
     authority: fields.authority ?? '',
@@ -1764,6 +1772,14 @@ function normalizeNoteName(raw: string): string {
 
 /** 全库扫描（建笔记之前那一次）：默认走 allNotes（含归档），测试可注入一个会失败的版本 */
 export type NoteScan = (cfg: Config, signal?: AbortSignal) => Promise<NoteRecord[]>
+
+/**
+ * 稳定 ID（§9.2）：10 位十六进制短随机串（40 bit，10⁴ 篇库的碰撞概率可忽略）。
+ * 纯小写 hex，不会与路径 / `.md` 后缀 / 中文标题撞形，`[[id]]` 才认得出来。
+ */
+export function newNoteId(): string {
+  return randomBytes(5).toString('hex')
+}
 
 /**
  * 用 zk new 建一篇（正文走 stdin → 模板里的 {{content}}）。
@@ -1919,6 +1935,16 @@ export async function createNote(
       summaryWarning = `summary 没写进去：${err instanceof Error ? err.message : String(err)}（文件已建好，可以直接编辑那一节）`
     }
   }
+  // 稳定 ID（§9.2）：只给 zk_new 新建的笔记写 id，老笔记 / 日记不回填。
+  // 建完才写：zk new -i 索引的是模板产物，改了文件就得标脏，让下一次读补索引（R6）。
+  // 收尾失败一律吞掉（同 markIndexDirty）：笔记已经建好，不能让一次 id 写入看起来像整次创建失败。
+  try {
+    const text = fs.readFileSync(finalAbs, 'utf8')
+    if (!parseFrontmatter(text).fields.id) {
+      fs.writeFileSync(finalAbs, setFrontmatter(text, { id: newNoteId() }), 'utf8')
+      markIndexDirty(cfg)
+    }
+  } catch { /* 收尾失败：文件已落盘，不回滚、不误导 */ }
   return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived, similar, summaryApplied, summaryWarning }
 }
 

@@ -42,6 +42,7 @@ const timelineLib = await import('../src/lib/timeline.ts')
 const similarLib = await import('../src/lib/similar.ts')
 const execLib = await import('../src/lib/exec.ts')
 const recallLib = await import('../src/lib/recall.ts')
+const wikilinkLib = await import('../src/lib/wikilink.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
@@ -1399,12 +1400,15 @@ describe('建完收尾：摘要', () => {
     expect(raw).toContain('## Content\n\n正文一句')
   })
 
-  it('flat：没有这一小节就在一级标题下面补一节', async () => {
+  it('flat：没有这一小节就在一级标题下面补一节；新笔记自带稳定 id', async () => {
     await notebookLib.ensureNotebook(flat)
     const created = await zk.createNote(flat, { title: '扁平带摘要', summary: '扁平摘要', content: '正文' })
     expect(created.summaryApplied).toBe(true)
     const raw = fs.readFileSync(created.absPath, 'utf8')
-    expect(raw.startsWith('# 扁平带摘要\n\n## Summary\n\n扁平摘要\n\n正文')).toBe(true)
+    // 稳定 ID 给没有 frontmatter 的 flat 笔记补一个最小块：正文形状必须逐字不变
+    const { fields, body } = fm.parseFrontmatter(raw)
+    expect(fields.id).toMatch(/^[0-9a-f]{10}$/)
+    expect(body.replace(/^\n+/, '').startsWith('# 扁平带摘要\n\n## Summary\n\n扁平摘要\n\n正文')).toBe(true)
   })
 
   it('summary 是空白：当作没给，不写也不告警', async () => {
@@ -5515,5 +5519,139 @@ describe('G1 / G4：写 MEMORY 前的容量可见（§10.4 第 6 项）', () => 
     expect(notebookLib.WORKFLOW_TEMPLATE).toContain('dropCandidates')
     expect(memory.countWords(notebookLib.AGENTS_TEMPLATE)).toBeLessThanOrEqual(190)
     expect(memory.countWords(notebookLib.AGENTS_TEMPLATE_FLAT)).toBeLessThanOrEqual(90)
+  })
+})
+
+describe('§10.4 第 7 项：稳定 ID（§9.2）', () => {
+  const originalConfig = {
+    notebooks: { default: { path: notebook, structure: 'flat' as const } },
+    active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+    defaultTags: ['default'], aliasTools: false,
+  }
+  const setup = async (name: string) => {
+    const dir = path.join(home, name)
+    store.writeConfig({
+      notebooks: { default: { path: dir, structure: 'flat' } },
+      active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+      defaultTags: [], aliasTools: false,
+    })
+    const c = store.config()
+    await notebookLib.ensureNotebook(c)
+    return { c, dir }
+  }
+  const restore = (): void => { store.writeConfig(originalConfig) }
+  const tool = (dir: string, name: string) =>
+    toolsFeature.buildTools(() => dir).find((d) => d.name === name)!
+  const idOf = (abs: string): string => fm.parseFrontmatter(fs.readFileSync(abs, 'utf8')).fields.id ?? ''
+  /** 除 .zk 索引外的全部文件内容，用来证明 lint / dream 只读、不回填 */
+  const snapshot = (root: string): string => {
+    const out: string[] = []
+    const walk = (p: string): void => {
+      for (const e of fs.readdirSync(p, { withFileTypes: true })) {
+        if (e.name === '.zk') continue
+        const abs = path.join(p, e.name)
+        if (e.isDirectory()) walk(abs)
+        else out.push(`${path.relative(root, abs)}\u0000${fs.readFileSync(abs, 'utf8')}`)
+      }
+    }
+    walk(root)
+    return out.sort().join('\n')
+  }
+
+  it('newNoteId 是短随机串；zk_new 新建写 id，老笔记与日记不回填；三条读取路径都能拿到', async () => {
+    const { c, dir } = await setup('nb-stable-id-write')
+    try {
+      expect(zk.newNoteId()).toMatch(/^[0-9a-f]{10}$/)
+      expect(zk.newNoteId()).not.toBe(zk.newNoteId())
+
+      // 老笔记：手动写一份没有 frontmatter 的，插件不回填
+      const legacy = '# 老结论\n\n老正文\n'
+      const legacyAbs = path.join(dir, 'notes', 'legacy.md')
+      fs.writeFileSync(legacyAbs, legacy, 'utf8')
+      // 日记不是 zk_new，按日期命名、路径天然稳定，不写 id
+      const daily = await zk.ensureDailyNote(c)
+
+      const a = await zk.createNote(c, { title: '稳定 ID 甲', content: '甲' })
+      const b = await zk.createNote(c, { title: '稳定 ID 乙', content: '乙' })
+      const idA = idOf(a.absPath)
+      const idB = idOf(b.absPath)
+      expect(idA).toMatch(/^[0-9a-f]{10}$/)
+      expect(idB).toMatch(/^[0-9a-f]{10}$/)
+      expect(idA).not.toBe(idB)
+      expect(fs.readFileSync(legacyAbs, 'utf8')).toBe(legacy)
+      expect(fm.parseFrontmatter(fs.readFileSync(daily.absPath, 'utf8')).fields.id ?? '').toBe('')
+
+      // JSON 检索（toRecord）、精简全量扫描（parseLeanList）、按路径读盘（noteFromDisk）三条路径都有 id
+      const [hit] = await zk.searchNotes(c, { query: '稳定 ID 甲' })
+      expect(hit?.id).toBe(idA)
+      const scan = await zk.scanNotes(c, {})
+      expect(scan.notes.find((n) => n.path === a.path)?.id).toBe(idA)
+      expect((await zk.readNote(c, a.path)).id).toBe(idA)
+    } finally {
+      restore()
+    }
+  })
+
+  it('身份键 id 优先、改名不变；缺 id 退回 path；[[id]] 改名后仍落到同一篇', async () => {
+    expect(wikilinkLib.noteKey({ id: 'abc123', path: 'notes/a.md' })).toBe('id:abc123')
+    expect(wikilinkLib.noteKey({ id: 'abc123', path: 'notes/b.md' })).toBe('id:abc123')
+    expect(wikilinkLib.noteKey({ path: 'notes/a.md' })).toBe('path:notes/a.md')
+    expect(wikilinkLib.noteKey({ path: 'notes/b.md' })).toBe('path:notes/b.md')
+
+    const { c, dir } = await setup('nb-stable-id-key')
+    try {
+      // byId 记的是「当前路径」：改名之后 [[id]] 仍解析到新路径
+      const index = wikilinkLib.wikiIndex([{ title: '甲', path: 'notes/b.md', id: 'abc123' }])
+      expect(wikilinkLib.resolveWikiTarget(c, 'abc123', index).path).toBe('notes/b.md')
+      // 老库没有 id：byId 为空，标题式解析仍按原口径（不需要文件真实存在）
+      const legacyIndex = wikilinkLib.wikiIndex([{ title: '甲', path: 'notes/a.md' }])
+      expect(wikilinkLib.resolveWikiTarget(c, '甲', legacyIndex).path).toBe('notes/a.md')
+
+      // 集成：MEMORY 写 [[<id>]]，rename 之后 dream 仍把它当同一篇（不重复晋升）
+      const a = await zk.createNote(c, { title: '会改名的结论', content: '正文' })
+      const id = idOf(a.absPath)
+      const memoryBody = `# 记忆\n\n- 2026-11-07 结论 [[${id}]]\n`
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), memoryBody, 'utf8')
+      await zk.renameNote(c, { path: a.path, to: 'notes/renamed.md', dryRun: false })
+      expect(fs.existsSync(path.join(dir, 'notes', 'renamed.md'))).toBe(true)
+      // rename 会尝试重写 meta 里的入链；[[id]] 不是路径写法，改完仍应是 id 链接
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), memoryBody, 'utf8')
+      const dream = await dreamLib.dreamNotebook(c, { days: 365 })
+      expect(dream.alreadyPromoted.map((n) => n.path)).toContain('notes/renamed.md')
+    } finally {
+      restore()
+    }
+  })
+
+  it('missingId 只读计数：新笔记不算、老笔记算、日记不算；调用前后文件逐字节不变', async () => {
+    const { c, dir } = await setup('nb-stable-id-count')
+    try {
+      await zk.createNote(c, { title: '新笔记一', content: '一' })
+      await zk.createNote(c, { title: '新笔记二', content: '二' })
+      fs.writeFileSync(path.join(dir, 'notes', 'old.md'), '# 老笔记\n\n老正文\n', 'utf8')
+      await zk.ensureDailyNote(c)
+      await zk.indexNotebook(c)
+      const before = snapshot(dir)
+
+      const lint = await lintLib.lintNotebook(c)
+      const dream = await dreamLib.dreamNotebook(c, { days: 365 })
+      expect(lint.missingId).toBe(1)
+      expect(dream.missingId).toBe(1)
+
+      const env = { signal: AbortSignal.timeout(30_000) }
+      const lintOut = await tool(dir, 'zk_lint').execute({}, env) as Record<string, unknown>
+      const dreamOut = await tool(dir, 'zk_dream').execute({ days: 365 }, env) as Record<string, unknown>
+      expect(lintOut.missingId).toBe(1)
+      expect(dreamOut.missingId).toBe(1)
+      expect(undeclaredKeys(lintOut, tool(dir, 'zk_lint').output.schema)).toEqual([])
+      expect(undeclaredKeys(dreamOut, tool(dir, 'zk_dream').output.schema)).toEqual([])
+      expect(tool(dir, 'zk_lint').output.render({}, lintOut)[0].text).toContain('稳定 ID')
+      expect(tool(dir, 'zk_dream').output.render({}, dreamOut)[0].text).toContain('稳定 ID')
+
+      // 只读：一次巡检 / 做梦 / 两次工具调用都不写任何笔记或 meta 文件
+      expect(snapshot(dir)).toBe(before)
+    } finally {
+      restore()
+    }
   })
 })

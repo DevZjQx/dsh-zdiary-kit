@@ -302,6 +302,8 @@ export interface LintResult {
   notebook: string
   /** 参与巡检的笔记数（已排除 raw / inbox / archive / meta 文件） */
   notes: number
+  /** 稳定 ID（§9.2）：缺 `id` 的非日记笔记数，只读计数，不回填 */
+  missingId: number
   /**
    * true = 笔记扫描触到上限，结果不完整：只会漏报，不会误报（别当成「只有这些问题」）。
    * 边截断是另一回事，见 `oneWayLinks.edgesTruncated`。
@@ -591,11 +593,14 @@ export function formatTimeline(bucket: LintTimelineBucket): string {
  * `zk-kit lint` 与 `zk_lint` 各写一遍就会改到一半。返回空数组 = 这一库三项都没问题，不占行。
  */
 export function formatLintExtras(
-  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'persona' | 'similarTitles' | 'timeline' | 'indexHint'>,
+  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'persona' | 'similarTitles' | 'timeline' | 'indexHint' | 'missingId'>,
 ): string[] {
   const lines: string[] = []
   const timeline = formatTimeline(r.timeline)
   if (timeline) lines.push(timeline)
+  if (r.missingId > 0) {
+    lines.push(`· 稳定 ID：${r.missingId} 篇没有 id — 新建的笔记已自动写入，老笔记只提示、不回填（§9.2）`)
+  }
   // 缺文件 = 人格未启用（默认状态）：不报错、不占行。
   // 有旧版 / 占位符 / 标记不符时才提醒 —— 否则每个老库每次 lint 都多一条永久 ⚠️，反而训练人忽略告警。
   const persona = r.persona.items
@@ -1233,6 +1238,8 @@ export async function lintNotebook(
   return {
     notebook: cfg.notebook,
     notes: notes.length,
+    // 只读计数：日记按日期命名、路径天然稳定，不计入；老笔记缺 id 属预期，不回填
+    missingId: nonDaily.filter((n) => !n.id).length,
     truncated: scanTruncated,
     completeness,
     scanLimit: scan.limit,

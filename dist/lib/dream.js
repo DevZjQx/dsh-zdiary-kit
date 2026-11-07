@@ -20,7 +20,7 @@ import { parseFrontmatter } from './frontmatter.js';
 import { memoryUsage } from './memory.js';
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.js';
 import { isDayString } from './dates.js';
-import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
+import { normalizeTitle, noteKey, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
 export const MAX_ITEMS = 50;
 /** topCited 只取前几名：给 agent 一个「本周被反复引用」的提示，不是排行榜 */
@@ -211,20 +211,24 @@ function promotionsOf(cfg, notes) {
     if (!body.trim())
         return out;
     const index = wikiIndex(notes);
+    const byPath = new Map(notes.map((n) => [n.path, n]));
     for (const match of body.matchAll(WIKI_LINK)) {
         const hit = resolveWikiTarget(cfg, String(match[1] ?? '').trim(), index);
-        if (hit.status === 'live' && hit.path)
-            out.set(hit.path, 'link');
+        // 解析结果是路径，按身份键记账（§9.2）：有 id 的笔记改名后仍是同一篇，不会重复晋升。
+        const note = byPath.get(hit.path);
+        if (hit.status === 'live' && note)
+            out.set(noteKey(note), 'link');
     }
     const lines = stripRetiredEntries(body).body.split('\n').map((line) => normalizeTitle(line)).filter(Boolean);
     for (const note of notes) {
-        if (out.has(note.path))
+        const key = noteKey(note);
+        if (out.has(key))
             continue;
-        const key = normalizeTitle(note.title);
-        if ([...key].length < MIN_TITLE_MATCH)
+        const title = normalizeTitle(note.title);
+        if ([...title].length < MIN_TITLE_MATCH)
             continue;
-        if (lines.some((line) => line.includes(key)))
-            out.set(note.path, 'title');
+        if (lines.some((line) => line.includes(title)))
+            out.set(key, 'title');
     }
     return out;
 }
@@ -360,7 +364,7 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         if (isUnder(note.path, cfg.dailyDir))
             continue;
         // 已经进 MEMORY 的先说：否则每周原样重复，仪式几次之后就没人看了
-        const by = promoted.get(note.path);
+        const by = promoted.get(noteKey(note));
         if (by) {
             alreadyPromoted.push(candidateOf(note, by));
             continue;
@@ -380,7 +384,7 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         const at = dayMs(noteDate(cfg, n));
         if (Number.isFinite(at) && at >= sinceMs)
             return false;
-        if (promoted.has(n.path))
+        if (promoted.has(noteKey(n)))
             return false;
         return rejectionReason(n) === null;
     })
@@ -425,6 +429,8 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         scanLimit: scan.limit,
         graphSkipped: !graphReady,
         graphBudget,
+        // 只读计数：老笔记 / 日记没有 id 属预期，日记按日期命名、路径天然稳定，不计入
+        missingId: notes.filter((n) => !n.id && !isUnder(n.path, cfg.dailyDir)).length,
         counts: {
             window: windowNotes.length,
             daily: windowNotes.filter((n) => isUnder(n.path, cfg.dailyDir)).length,
