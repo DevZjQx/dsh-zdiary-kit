@@ -1,4 +1,4 @@
-# 10k 成本表（落盘基线）
+# 成本表（落盘基线）
 
 **口径来源**：`docs/plan.md` §0.5 第 2 条 —— 每条用例一行，记子进程数 / 传输字节 / 峰值 RSS / p50 / p95 /
 超时 / 超限行为 / **库的篇数与链接数**。这是「新增或改动工具时按口径补测」的基线，
@@ -81,11 +81,51 @@ ZK_BIN=/path/to/zk bun run bench --fixture .tmp/fixture/10k-1 --cases scan.10k,s
 这次 p50 / p95 整体低于基线是机器负载与磁盘缓存波动，不是本项带来的优化；
 子进程数不变（1），`parseLeanList` 多切一列是 JS 内 O(n) 字符串操作，不新增 zk 进程。
 
+## 1k 复跑（3.8.0 发布后基线核对，2026-11-07）
+
+**命令 / 口径**：`ZK_BIN=/home/glm-agent/.dsh/zdiary/bin/zk bun run bench` —— 不指定 `--fixture` 时默认取
+`.tmp/fixture/1k-1`（seed 42，1 000 篇 / 1 000 链、1 链/篇，索引已热、无冷建），3 轮；
+zk 0.15.7 / linux-x64（WSL）/ bun 1.4.4，与全表同一台机器、同一个 zk。
+**本节是 1k 口径，与全表及 R3 / 稳定 ID 补测的 10k 数字不可直接比绝对值**；用途是确认 3.8.0 发布后
+16 条现有用例全部可跑、无报错，不是给 R8 补测 —— `scripts/bench.ts` 的用例表里没有 `zk_walk` / R8，
+`docs/plan.md` §11 的提案仍未排期、未实现（§12 六轮评审打回）。
+一次运行 19 s、exit 0、表格无 `✗` 行；数字取自终端表格，本次未另落盘 JSON（要落盘可加
+`--json --out .tmp/bench-1k-1.json`）。
+
+| 用例 | 工具 | 子进程 | 字节 | p50 | p95 | 峰值RSS | 超时 | 超限 |
+|---|---|---|---|---|---|---|---|---|
+| `search.cjk` | zk_search | 2 | 28 KB | 271.1 ms | 371.3 ms | 26 MB | 60 s | partial |
+| `search.cjk.multi` | zk_search | 2 | 14 KB | 238.6 ms | 258.1 ms | 25 MB | 60 s | partial |
+| `search.cjk.single` | zk_search | 1 | 17 KB | 123.2 ms | 135.8 ms | 25 MB | 60 s | complete |
+| `search.ascii` | zk_search | 1 | 17 KB | 172.5 ms | 180.3 ms | 26 MB | 60 s | - |
+| `scan.10k` | 首页 / 标签页 / lint / dream | 1 | 207 KB | 373.1 ms | 426.4 ms | 29 MB | 60 s | complete |
+| `search.filtered` | zk_query | 1 | 207 KB | 310.9 ms | 419.6 ms | 29 MB | 60 s | partial |
+| `list.10k` | zk_search / 首页 | 1 | 1.6 MB | 366.1 ms | 384 ms | 33 MB | 60 s | complete |
+| `list.2k` | 首页 / 标签页 | 1 | 1.6 MB | 390.3 ms | 467.6 ms | 33 MB | 60 s | complete |
+| `list.200` | zk_search | 1 | 273 KB | 159.7 ms | 237.7 ms | 25 MB | 60 s | partial |
+| `graph.full` | bidi / zk_lint | 1 | 1.5 MB | 560.9 ms | 706.3 ms | 33 MB | 60 s | complete |
+| `lint` | zk_lint | 5 | 1.8 MB | 1.5 s | 1.8 s | 33 MB | 180 s | complete |
+| `dream` | zk_dream | 2 | 1.7 MB | 860.6 ms | 907.2 ms | 34 MB | 180 s | complete |
+| `backlinks` | bidi | 1 | 0 KB | 104.9 ms | 124 ms | 23 MB | 60 s | complete |
+| `stats` | zk_stats | 3 | 304 KB | 647.8 ms | 663.3 ms | 29 MB | 60 s | - |
+| `context` | zk_context | 0 | 0 KB | 1.7 ms | 1.7 ms | n/a | - | - |
+| `index.warm` | zk-kit index | 1 | 0 KB | 84.6 ms | 101.8 ms | 22 MB | 120 s | - |
+
+与 10k 全表的**预期差异**（不是回归）：
+
+- 1k 库装不进任何 `limit` 上限：`scan.10k` / `list.10k` / `list.2k` 都是 `complete`（10k 下前两者触顶为 `partial`）；
+  `search.cjk` / `search.cjk.multi` / `search.filtered` / `list.200` 的 `partial` 是工具自身的结果条数 / 过滤口径，与库规模无关。
+- `dream` 2 个子进程、`complete`：1k 未超 `graphBudgetNotes`（默认 2 000），仍会建全图；
+  10k 跳过全图（`graphSkipped`），所以是 1 进程 / `partial`。
+- `list.10k` 字节 1.6 MB vs 10k 的 15.1 MB、`stats` 304 KB vs 3.0 MB、`context` 1.7 ms vs 0.6 ms，
+  都是库规模 / 机器波动，口径同 §0.5 第 2 条。
+
 ## 复跑
 
 ```bash
 ZK_BIN=/path/to/zk bun run fixture --notes 10000 --links-per-note 1   # 只需一次
 ZK_BIN=/path/to/zk bun run bench --fixture .tmp/fixture/10k-1 --iterations 3 --json --out .tmp/bench-10k-1.json
+ZK_BIN=/path/to/zk bun run bench                                      # 1k 复跑（默认夹具 / 3 轮，见上一节）
 ```
 
 改了工具就按同一口径补测，把新数字并回本表；`bun run bench --list` 看全部用例，
