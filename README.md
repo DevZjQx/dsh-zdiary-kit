@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 3.6.0
+# dsh-zdiary-kit 3.7.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -350,6 +350,7 @@ zk-kit groups                        # 对照配置与 .zk/config.toml 的 group
 zk-kit groups --fix                  # 只改插件建的 group 的 paths / 组头（写前备份 .zk/config.toml.bak）
 zk-kit new --title "示例笔记" --body "正文" --tags demo --type concept
 zk-kit search --tags demo --limit 5
+zk-kit recall 示例 --budget 200        # 召回装配：按词数预算拼一段可读上下文（只读）
 zk-kit daily --entry "今天把 zk-kit 跑了一遍"
 zk-kit lint --stale-days 90          # 体检（只读）
 zk-kit dream --days 7                # 晋升材料（只读）

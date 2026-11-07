@@ -9,7 +9,7 @@
  *   ZK_BIN=/path/to/zk bun run docs
  *
  * 为什么要这层：文档里的命令不会随代码一起被类型检查，拼错子命令 / 漏了必填参数 /
- * 引用了不存在的路径，只能靠真跑发现。计划 §4 M4 的验收线就是这一条。
+ * 引用了不存在的路径，只能靠真跑发现 —— 这层文档冒烟就是为了守住这条。
  */
 import fs from 'node:fs'
 import os from 'node:os'

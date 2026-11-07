@@ -688,7 +688,7 @@ export function memoryUsage(cfg: Config): MemoryUsage {
   }
 }
 
-// ── G1 / G4：写 MEMORY 之前的容量与「下一条会丢谁」（docs/plan.md §7 G1 / §8.1 G4）──
+// ── G1 / G4：写 MEMORY 之前的容量与「下一条会丢谁」──
 
 /** 下一个会被预算挤掉的 MEMORY 条目；纯预告，磁盘不动 */
 export interface MemoryDropCandidate {
