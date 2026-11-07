@@ -5405,3 +5405,115 @@ describe('R4：召回装配层（§10.4 第 5 项）', () => {
     }
   })
 })
+
+describe('G1 / G4：写 MEMORY 前的容量可见（§10.4 第 6 项）', () => {
+  const originalConfig = {
+    notebooks: { default: { path: notebook, structure: 'flat' as const } },
+    active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+    defaultTags: ['default'], aliasTools: false,
+  }
+  const setup = async (name: string, memoryBody: string, budgetWords = 500) => {
+    const dir = path.join(home, name)
+    store.writeConfig({
+      notebooks: { default: { path: dir, structure: 'flat' } },
+      active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+      defaultTags: [], aliasTools: false, memoryBudgetWords: budgetWords,
+    })
+    const c = store.config()
+    await notebookLib.ensureNotebook(c)
+    fs.writeFileSync(path.join(dir, 'MEMORY.md'), memoryBody, 'utf8')
+    return { c, dir }
+  }
+  const restore = (): void => { store.writeConfig(originalConfig) }
+  const tool = (dir: string, name: string) =>
+    toolsFeature.buildTools(() => dir).find((d) => d.name === name)!
+
+  it('容量是 payload 的投影；extra_words / proposed_entry 预估截断并预告会丢谁；不写文件', async () => {
+    const body = [
+      '# 记忆', '',
+      '- 2026-01-01 最早的结论 [[notes/a]]',
+      '- 2026-02-02 中间的结论 [[notes/b]]',
+      '- 2026-03-03 最新的结论 [[notes/c]]',
+      '',
+    ].join('\n')
+    // 小预算让「再加 30 词」必然触发截断（参考库 headroom 为负的同一情形）
+    const { c, dir } = await setup('nb-g1-capacity', body, 60)
+    try {
+      const env = { signal: AbortSignal.timeout(30_000) }
+      const ctx = tool(dir, 'zk_context')
+      const before = fs.readFileSync(path.join(dir, 'MEMORY.md'), 'utf8')
+      const out = await ctx.execute({ extra_words: 30 }, env) as Record<string, unknown>
+      const payload = memory.buildMemoryPayload(c)
+      const usage = memory.memoryUsage(c)
+      expect(out.words).toBe(payload.words)
+      expect(out.totalWords).toBe(payload.totalWords)
+      expect(out.budget).toBe(c.memoryBudgetWords)
+      expect(out.headroom).toBe(usage.headroom)
+      expect(out.extraWords).toBe(30)
+      expect(out.wouldTruncate).toBe(30 > usage.headroom)
+      expect(undeclaredKeys(out, ctx.output.schema)).toEqual([])
+      expect(lossyPaths(out)).toEqual([])
+
+      const drops = out.dropCandidates as Array<Record<string, unknown>>
+      expect(drops.length).toBeGreaterThan(0)
+      expect(drops[0].reason).toBe('oldest') // 日期最旧的先丢
+      expect(drops.every((d) => typeof d.title === 'string' && typeof d.words === 'number')).toBe(true)
+      expect(ctx.output.render({ extra_words: 30 }, out)[0].text).toContain('容量：')
+
+      // proposed_entry 自己折算词数（不另起工具、不写文件）
+      const proposed = await ctx.execute({ proposed_entry: '这是一条准备写进长期记忆的新结论' }, env) as Record<string, unknown>
+      expect(Number(proposed.extraWords)).toBe(memory.countWords('这是一条准备写进长期记忆的新结论'))
+      expect(typeof proposed.suggestion).toBe('string')
+      expect(fs.readFileSync(path.join(dir, 'MEMORY.md'), 'utf8')).toBe(before)
+    } finally {
+      restore()
+    }
+  })
+
+  it('G4：8 条同日标 same-date、suggestion 明说按位置决胜；format 与 lint / dream 计数一致', async () => {
+    const lines = ['# 记忆', '']
+    for (let i = 0; i < 8; i += 1) lines.push(`- 2026-11-01 同日结论 ${i} [[notes/n${i}]]`)
+    lines.push('- 2026-12-01 更新的结论 [[notes/newer]]')
+    lines.push('- 没日期也没来源的结论')
+    lines.push('- [superseded 2026-11-01] 旧结论 → [[notes/old]]')
+    lines.push('')
+    const { c, dir } = await setup('nb-g4-samedate', lines.join('\n'))
+    try {
+      const env = { signal: AbortSignal.timeout(30_000) }
+      const ctx = tool(dir, 'zk_context')
+      const out = await ctx.execute({}, env) as Record<string, unknown>
+      expect(out.sameDateCount).toBe(8)
+      const drops = out.dropCandidates as Array<Record<string, unknown>>
+      expect(drops.some((d) => d.reason === 'same-date')).toBe(true)
+      expect(String(out.suggestion)).toContain('按位置决胜')
+      expect(ctx.output.render({}, out)[0].text).toContain('8 条同日，按位置决胜')
+      expect(out.format).toEqual(['undated', 'unlinked', 'retired'])
+      expect(out.retiredEntries).toBe(1)
+
+      // 同一份 MEMORY：zk_dream.memory 与 zk_lint.memoryLinks 的格式债计数必须对得上
+      const lint = await tool(dir, 'zk_lint').execute({}, env) as Record<string, unknown>
+      const dream = await tool(dir, 'zk_dream').execute({ days: 7 }, env) as Record<string, unknown>
+      const links = lint.memoryLinks as Record<string, unknown>
+      const dm = dream.memory as Record<string, unknown>
+      expect(dm.undated).toBe(links.undated)
+      expect(dm.unlinked).toBe(links.unlinked)
+      expect(dm.retired).toBe(links.retired)
+      expect(dm.undated).toBe(1)
+      expect(dm.unlinked).toBeGreaterThanOrEqual(1)
+      expect(dm.retired).toBe(1)
+      expect(undeclaredKeys(dream, tool(dir, 'zk_dream').output.schema)).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  it('模板升到 v9：两份 AGENTS 都带指针、WORKFLOW 说明做法，且都守住词数预算', () => {
+    expect(agentsTpl.TEMPLATE_VERSION).toBe(9)
+    expect(agentsTpl.TEMPLATE_SENTINELS[agentsTpl.TEMPLATE_VERSION]).toBeDefined()
+    expect(notebookLib.AGENTS_TEMPLATE).toContain('改 MEMORY 前看 zk_context')
+    expect(notebookLib.AGENTS_TEMPLATE_FLAT).toContain('改 MEMORY 前看 zk_context')
+    expect(notebookLib.WORKFLOW_TEMPLATE).toContain('dropCandidates')
+    expect(memory.countWords(notebookLib.AGENTS_TEMPLATE)).toBeLessThanOrEqual(190)
+    expect(memory.countWords(notebookLib.AGENTS_TEMPLATE_FLAT)).toBeLessThanOrEqual(90)
+  })
+})

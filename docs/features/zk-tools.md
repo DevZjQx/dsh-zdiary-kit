@@ -289,6 +289,15 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 - 0 命中返回空 `text` / 空 `notes` / `used = 0`，不编造；`completeness` / `hasMore` 沿用检索三态 —— 装配过的只是本次候选，不代表库里没有别的。需要全文仍由宿主原生 `read` 按 `absPath` 取。
 - 命令行 `zk-kit recall [词] [--budget 500] [--limit 30] [--json]`，与工具走同一份 `assembleRecall`。
 
+**写 MEMORY 前的容量（G1 / G4，§10.4 第 6 项）.** 复用 `zk_context`，不新增 `zk_memory_check`：
+入参加 `proposed_entry` / `extra_words`，输出增量 `headroom` / `extraWords` / `wouldTruncate` /
+`dropCandidates`（首行摘要 / 日期 / 词数 / `reason`）/ `format` / `suggestion` / `sameDateCount` / `retiredEntries`。
+容量全是 `buildMemoryPayload` / `memoryUsage` 的投影，条目解析复用 `splitMemoryEntries` / `entryDate`，
+不跑 zk、不写文件、不改注入文本。同日 tie 由 `sameDateCount` 与 `reason: same-date` 可见化，
+`suggestion` 明说「按位置决胜」，不假装有使用频率。`zk_dream.memory` 补 `undated` / `unlinked` / `retired`，
+与 `zk_lint.memoryLinks` 同一口径。WORKFLOW.md 补做法、两份 AGENTS 模板各加一句指针，`TEMPLATE_VERSION` 升到 9
+（细节见 `docs/features/memory.md`）。
+
 **写后可读（R6，3.6.0）.** `zk_append` / `zk_link` / `zk_new` 的 `summary` 回填 / 改名 / 搬归档之后，
 插件在 `.zk/dsh-index-state.json` 记 `generation`（每次写入 +1）与 `indexedGeneration`（最近一次成功 `zk index` 覆盖到的快照）。
 两者不等就是 dirty，下一个 `zk()` 读（检索 / lint / dream / stats / 反查都算）之前自动补一次 `zk index`，最多等 15 秒：

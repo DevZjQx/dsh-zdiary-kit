@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DREAM_INTERVAL_DAYS, daysSinceDream, lastDreamDate } from './dream.js';
 import { fileStamp } from './file-stamp.js';
-import { entryDate, memoryFormatDebt, stripRetiredEntries } from './memory-format.js';
+import { entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries, stripRetiredEntries } from './memory-format.js';
 import { templateVersionOf } from './agents-template.js';
 import { PERSONA_META_FILES, MEMORY_META_FILES } from './meta.js';
 /** vault 根目录下、按优先级排列的三份 meta 文件（定义在 lib/meta.ts，这里只挂个本地名） */
@@ -555,6 +555,7 @@ function computePayload(cfg) {
         ratio: budget > 0 ? Math.round((finalWords / budget) * 100) / 100 : 0,
         truncatedWords,
         retiredWords,
+        retiredEntries: omitted.count,
         tocWords: countWords(toc),
         formatDebt: debt,
         templateVersion,
@@ -593,6 +594,88 @@ export function memoryUsage(cfg) {
         budget: payload.budget,
         // 人格是独立层：整段（含它的告警）都不该占记忆预算，否则 dream 会误报「余量」
         headroom: payload.budget - (payload.totalWords - payload.persona.words),
+        undated: payload.formatDebt.undated,
+        unlinked: payload.formatDebt.unlinked,
+        retired: payload.retiredEntries,
         files: payload.files,
+    };
+}
+/**
+ * 「改 MEMORY 之前」的容量快照：复用 `buildMemoryPayload` / `memoryUsage` 的投影，不新增计数口径；
+ * 条目解析复用 `splitMemoryEntries` / `entryDate` / `isRetiredEntry`，与截断、`zk_lint` 同一份。
+ * 纯读：不跑 zk、不写文件。同日 tie 只做可见化（G4），不改变 `oldestIndex` 的淘汰行为。
+ */
+export function memoryCapacity(cfg, opts = {}) {
+    const payload = buildMemoryPayload(cfg);
+    const usage = memoryUsage(cfg);
+    const extraWords = typeof opts.extraWords === 'number' && Number.isFinite(opts.extraWords)
+        ? Math.max(0, Math.trunc(opts.extraWords))
+        : countWords(String(opts.proposedEntry ?? ''));
+    const wouldTruncate = extraWords > usage.headroom;
+    let body = '';
+    try {
+        body = fs.readFileSync(path.join(cfg.notebook, 'MEMORY.md'), 'utf8');
+    }
+    catch { /* 缺文件 = 空 */ }
+    const debt = memoryFormatDebt(body);
+    const retired = stripRetiredEntries(body).count;
+    // 退役条目注入时已省略，不会因预算被丢 —— 预告里不列它们
+    const entries = splitMemoryEntries(body)
+        .map((entry, index) => ({ entry, index, date: entryDate(entry) }))
+        .filter((row) => !isRetiredEntry(row.entry));
+    const withDate = entries.filter((row) => row.date !== null);
+    const oldestDate = withDate.reduce((min, row) => (row.date < min ? row.date : min), '9999-99-99');
+    const sameDateCount = withDate.filter((row) => row.date === oldestDate).length;
+    // 与 oldestIndex 同口径：有日期按最旧；同日期按位置靠后的先丢；没日期退回尾部（也是位置靠后先丢）
+    const order = [...entries].sort((a, b) => {
+        if (a.date && b.date) {
+            if (a.date !== b.date)
+                return a.date < b.date ? -1 : 1;
+            return b.index - a.index;
+        }
+        if (a.date)
+            return -1;
+        if (b.date)
+            return 1;
+        return b.index - a.index;
+    });
+    const dropCandidates = order.slice(0, 5).map(({ entry, date }) => {
+        const one = String(entry.split('\n', 1)[0] ?? '').replace(/\s+/g, ' ').trim();
+        const title = one.length > TOC_TITLE_MAX ? one.slice(0, TOC_TITLE_MAX) + '…' : one;
+        return {
+            title: title || '（无标题）',
+            date: date ?? '',
+            words: countWords(entry),
+            reason: !date ? 'undated' : sameDateCount > 1 && date === oldestDate ? 'same-date' : 'oldest',
+        };
+    });
+    const format = [];
+    if (debt.undated > 0)
+        format.push('undated');
+    if (debt.unlinked > 0)
+        format.push('unlinked');
+    if (retired > 0)
+        format.push('retired');
+    const parts = [extraWords > 0
+            ? (wouldTruncate
+                ? `再加 ${extraWords} 词会触发截断（余 ${usage.headroom} 词），先退役 / 精简 dropCandidates 里的条目`
+                : `还能放 ${usage.headroom - extraWords} 词`)
+            : (usage.headroom < 0 ? `已超预算 ${-usage.headroom} 词` : `余 ${usage.headroom} 词`)];
+    // G4：同日不是「按日期挑的」，明说是位置决胜，不假装有使用频率
+    if (sameDateCount > 1)
+        parts.push(`${sameDateCount} 条同日，按位置决胜`);
+    if (format.length)
+        parts.push(`格式债：${format.join(' / ')}`);
+    return {
+        words: payload.words,
+        totalWords: payload.totalWords,
+        budget: payload.budget,
+        headroom: usage.headroom,
+        extraWords,
+        wouldTruncate,
+        dropCandidates,
+        format,
+        sameDateCount,
+        suggestion: parts.join('；'),
     };
 }

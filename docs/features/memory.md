@@ -92,7 +92,8 @@ P1-3 的日期 / 退役格式 + P2-15 的版本标记后为 189 词；P2-8 去�
 0.9 把「超预算从底部往前丢」改成「按日期丢最旧的一条」（截断语义变了，模板必须跟着改）后为 187 词，`TEMPLATE_VERSION` 升到 3；
 v4 去掉「宿主不会自动加载本文件」一句后为 175 词（单测锁 `≤190`；flat 精简版锁 `≤90`，v4 起实测 76）；
 v5 在 MEMORY 条目约定后补「先 zk_read 核对来源」后为 180 词（flat 80）；v7 精简模板后仍为 180 词（flat 80）；
-v8 把 `zk_read` 改成原生 `read` 后仍为 180 词（flat 80）。
+v8 把 `zk_read` 改成原生 `read` 后仍为 180 词（flat 80）；
+v9 两份模板各补一句「改 MEMORY 前看 zk_context 余量」、WORKFLOW.md 补做法后为 188 词（flat 86）。
 `AGENTS.md` 是硬规则，单独超预算也不截断，只回显告警；文件内容里的 `</system-reminder>` 会被转义，
 截断目录里的段落标题同样转义 —— 不许提前闭合插件自己的框；任何一份文件读不到都当作不存在，笔记本没建好时返回空载荷而不是报错。
 
@@ -110,6 +111,17 @@ v8 把 `zk_read` 改成原生 `read` 后仍为 180 词（flat 80）。
 宁可不说，也不让提醒本身把预算吃满。与「已截断」「预算不足」互斥，三者只会出现一个。
 `zk_context` 另返回 `ratio`（两位小数，> 1 表示超预算），给模型和测试一个机器可读的用量。
 
+**写 MEMORY 之前先看余量（G1 / G4，§10.4 第 6 项）。** 不新增 `zk_memory_check`：容量就是 `zk_context` 的增量字段。
+`words` / `totalWords` / `budget` 是 payload 的投影，`headroom` 与 `memoryUsage` 同口径（可为负）；
+给 `proposed_entry` 或 `extra_words` 折算出 `extraWords` 并判 `wouldTruncate`，`dropCandidates` 预告「下一条会丢谁」
+（首行摘要 / 日期 / 词数 / `reason`），顺序与 `oldestIndex` 一致：有日期按最旧、同日按位置靠后、没日期退回尾部。
+`format` 列 `undated` / `unlinked` / `retired`，取同一份 `memoryFormatDebt` / 退役计数。
+同日 tie 是 G4：`oldestIndex` 同日期时按位置决胜，但 `fellBack` 不置位 —— 于是 `sameDateCount` 把并列条数摆出来、
+候选 `reason: same-date`，`suggestion` 明说「N 条同日，按位置决胜」，不假装有使用频率（那要等 G2 的 `lastMentioned`）。
+`zk_dream.memory` 与 `zk_lint.memoryLinks` 的 `undated` / `unlinked` / `retired` 也取同一份计数，周审入口直接看到格式债。
+**可见性收敛在 `zk_context`，不改注入 notice**：注入载荷逐字节稳定，AGENTS 只留一句指针。全程纯读：不跑 zk、不写文件。
+两份模板只在词数放得下时加指针（layered 188 / flat 86，仍守 ≤190 / ≤90），`TEMPLATE_VERSION` 升到 9。
+
 **格式债摆到眼前，不代劳（P1）。** 「按日期丢最旧」要求条目带 `YYYY-MM-DD`，可参考库里 9 条结论
 **全部没有日期** —— 淘汰只能退回按位置丢，而这件事原先只有人主动跑 `zk_lint` 才看得见。
 `lib/memory-format.ts` 的 `memoryFormatDebt()` 机械数一遍（活条目总数 / 没日期 / 没 `[[来源]]`，退役条目不算；
@@ -117,7 +129,7 @@ v8 把 `zk_read` 改成原生 `read` 后仍为 180 词（flat 80）。
 都取它，同一份 MEMORY 不会在三处给出三个数。
 注入在「记忆已用」或「已截断」那一行后面追加 `MEMORY 9 条没日期 · 3 条没来源`；
 格式债**整条量过词数**，放不下就一句都不加（不许只剩半句），已经要说「只能按位置丢」时跳过没日期那半句，避免同一个数报两遍。
-记忆页在用量下面单列一行 `格式：9/9 条没日期 · 0 条没来源 · AGENTS 模板 v5（当前 v8）`，
+记忆页在用量下面单列一行 `格式：9/9 条没日期 · 0 条没来源 · AGENTS 模板 v5（当前 v9）`，
 两个数直接取载荷里的 `formatDebt` / `templateVersion`（与注入同一份计算，不重读文件、不跑 lint；
 模板版本只读首行标记）；没有 AGENTS.md 时 `templateVersion` 也是 0，靠 `files[].present` 区分「没模板」与「旧模板」，
 不报模板这一项；三处都干净就不写这一行。两个字段也出现在 `zk_context` 的输出里（只读、不计词数）。

@@ -17,7 +17,7 @@ import { S, validateArgs } from '../../lib/tool.js';
 import { ensureNotebook, newNoteDir } from '../../lib/notebook.js';
 import { searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, runAlias, hasCjk, ZkError, } from '../../lib/zk.js';
 import { configuredAliases, readAliases } from '../../lib/alias.js';
-import { buildMemoryPayload, META_FILES } from '../../lib/memory.js';
+import { buildMemoryPayload, memoryCapacity, META_FILES } from '../../lib/memory.js';
 import { assembleRecall } from '../../lib/recall.js';
 import { META_NAMES } from '../../lib/meta.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.js';
@@ -1076,8 +1076,17 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
             description: '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回；' +
                 '角色人格（PERSONA.md）单独成段、在记忆段之前、不参与截断。' +
                 '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前）。' +
+                '改 MEMORY.md 之前用它看余量：headroom / wouldTruncate / dropCandidates 说明「再加一条会丢谁」，' +
+                '给 proposed_entry 或 extra_words 就能预估；同日条目按位置决胜（sameDateCount）。' +
                 '宿主支持注入时这些内容每轮已自动进入系统提示；宿主不支持、或想核对「被截断了多少」时用它。',
-            parameters: { type: 'object', properties: {}, additionalProperties: false },
+            parameters: {
+                type: 'object',
+                properties: {
+                    proposed_entry: S.str('打算写进 MEMORY.md 的新条目；按它估算会不会触发截断并预告会丢谁'),
+                    extra_words: S.num('新条目词数；给了就不按 proposed_entry 重算，直接按这个数估'),
+                },
+                additionalProperties: false,
+            },
             output: {
                 schema: objSchema({
                     text: { type: 'string' },
@@ -1089,6 +1098,23 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     tocWords: { type: 'number' },
                     totalWords: { type: 'number' },
                     overheadWords: { type: 'number' },
+                    // G1 / G4：写 MEMORY 前的容量（纯增量字段，旧客户端只是多看到几列）
+                    retiredEntries: { type: 'number' },
+                    headroom: { type: 'number' },
+                    extraWords: { type: 'number' },
+                    wouldTruncate: { type: 'boolean' },
+                    sameDateCount: { type: 'number' },
+                    format: { type: 'array', items: { type: 'string' } },
+                    suggestion: { type: 'string' },
+                    dropCandidates: {
+                        type: 'array',
+                        items: objSchema({
+                            title: { type: 'string' },
+                            date: { type: 'string' },
+                            words: { type: 'number' },
+                            reason: { type: 'string', enum: ['oldest', 'same-date', 'undated'] },
+                        }, ['title', 'date', 'words', 'reason']),
+                    },
                     // 格式债 / 模板版本：只读元数据，比 memoryUsage 的投影早一步就能拿到
                     formatDebt: objSchema({
                         total: { type: 'number' },
@@ -1135,15 +1161,21 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             retiredWords: { type: 'number' },
                         }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
                     },
-                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords', 'formatDebt', 'templateVersion', 'persona', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
+                }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords',
+                    'retiredEntries', 'headroom', 'extraWords', 'wouldTruncate', 'sameDateCount', 'format', 'suggestion', 'dropCandidates',
+                    'formatDebt', 'templateVersion', 'persona', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
             },
-            async run(_args, env) {
+            async run(args, env) {
                 // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
                 const cfg = configFor(env.workspace, env.sessionId);
                 const state = sessionState(env.workspace, env.sessionId);
                 const payload = buildMemoryPayload(cfg);
                 return {
                     ...payload,
+                    ...memoryCapacity(cfg, {
+                        proposedEntry: args.proposed_entry ? String(args.proposed_entry) : undefined,
+                        extraWords: args.extra_words === undefined ? undefined : Number(args.extra_words),
+                    }),
                     notebook: state.active,
                     defaultNotebook: state.defaultName,
                     pinned: state.diverged ? state.pinned : '',
@@ -1163,8 +1195,18 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     ? `笔记本「${current.name}」（${current.structure}）→ ${current.path}` +
                         (others.length ? `\n另有：${others.map((n) => `${n.name}（${n.structure}）`).join('、')} —— zk_use 切换本会话` : '')
                     : `笔记本「${v.notebook}」`;
+                // G1 / G4：写 MEMORY 前的余量、是否触发截断、同日决胜与「下一条会丢谁」
+                const capacity = `\n\n容量：余 ${v.headroom} 词（记忆内容 ${v.words}/${v.budget}，总载荷 ${v.totalWords}）` +
+                    (v.extraWords > 0 ? ` · 拟新增 ${v.extraWords} 词${v.wouldTruncate ? '（会触发截断）' : ''}` : '') +
+                    (v.sameDateCount > 1 ? ` · ${v.sameDateCount} 条同日，按位置决胜` : '') +
+                    `\n${v.suggestion}` +
+                    (v.dropCandidates.length
+                        ? '\n下一条会丢的 MEMORY 条目（预告，磁盘不动）：\n' +
+                            v.dropCandidates.map((c, i) => `${i + 1}. ${c.title}（${c.words} 词 · ${c.reason}${c.date ? ' · ' + c.date : ''}）`).join('\n')
+                        : '');
                 if (!v.text) {
-                    return text(drift + head + `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md 人格文件。`);
+                    return text(drift + head + capacity +
+                        `\n\n知识库根目录没有 ${META_FILES.join(' / ')}（或都是空的），也没有 PERSONA.md 人格文件。`);
                 }
                 const persona = v.persona?.present
                     ? `\n\n人格：正文（含标题）${v.persona.contentWords}/${v.persona.budget} 词` +
@@ -1172,7 +1214,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         (v.persona.overBudget ? `，超 ${v.persona.overWords} 词（人格不截断）` : '')
                     : '\n\n人格：未启用（根目录没有 PERSONA.md）';
                 const totals = `\n\n用量：记忆载荷 ${v.totalWords} 词（预算 ${v.budget}）`;
-                return text(drift + head + persona + totals + (v.text ? '\n\n' + v.text : ''));
+                return text(drift + head + persona + totals + capacity + (v.text ? '\n\n' + v.text : ''));
             },
         }),
         t({
@@ -1340,6 +1382,10 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         totalWords: { type: 'number' },
                         budget: { type: 'number' },
                         headroom: { type: 'number' },
+                        /** G1：与 zk_lint.memoryLinks 同一口径的格式债 / 退役计数 */
+                        undated: { type: 'number' },
+                        unlinked: { type: 'number' },
+                        retired: { type: 'number' },
                         files: {
                             type: 'array',
                             items: objSchema({
@@ -1350,7 +1396,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                                 retiredWords: { type: 'number' },
                             }, ['name', 'present', 'words', 'originalWords', 'retiredWords']),
                         },
-                    }, ['words', 'personaWords', 'totalWords', 'budget', 'headroom', 'files']),
+                    }, ['words', 'personaWords', 'totalWords', 'budget', 'headroom', 'undated', 'unlinked', 'retired', 'files']),
                     counts: objSchema({
                         window: { type: 'number' },
                         daily: { type: 'number' },

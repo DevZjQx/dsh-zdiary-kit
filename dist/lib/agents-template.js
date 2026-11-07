@@ -17,8 +17,8 @@
  * 首行 `<!-- zdiary-template: vN -->` 是版本标记：lint 据此报告「老库的 AGENTS.md 是旧版」，
  * 只报告不覆盖（模板允许用户改）。
  */
-/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧模板（v8：读取交给原生 read） */
-export const TEMPLATE_VERSION = 8;
+/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧模板（v9：改 MEMORY 前看 zk_context 余量） */
+export const TEMPLATE_VERSION = 9;
 /** 首行版本标记（实测 4 词）；不许带日期 —— 带日期的写法实测 6 词，白花 2 词 */
 export const TEMPLATE_MARK = `<!-- zdiary-template: v${TEMPLATE_VERSION} -->`;
 /** 版本标记的正则（本文件内用；外部只通过 `templateVersionOf` 取数，免得又一个口径） */
@@ -37,6 +37,7 @@ export function templateVersionOf(body) {
  */
 export const TEMPLATE_SENTINELS = {
     8: { required: ['先 read 核对来源'], forbidden: ['DSH 不会自动加载', '从底部往前丢'] },
+    9: { required: ['先 read 核对来源', '改 MEMORY 前看 zk_context'], forbidden: ['DSH 不会自动加载', '从底部往前丢'] },
 };
 export const AGENTS_TEMPLATE = `${TEMPLATE_MARK}
 
@@ -64,6 +65,7 @@ notes/{concepts,entities,patterns}/ 原子笔记 · archive/ 废弃（不删）
 每周：DREAMS.md 写「上次做梦：YYYY-MM-DD」；到期 zk_lint → zk_dream → 人裁决改 MEMORY。
 MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]，先 read 核对来源；退役写 - [superseded YYYY-MM-DD] 旧结论 → [[新结论]]，行不删。
 新条目写顶部；超预算按日期丢最旧的一条。
+改 MEMORY 前看 zk_context 余量（WORKFLOW.md 有做法）。
 `;
 /**
  * flat 结构用的模板：不出现 raw / inbox / archive / WORKFLOW.md 这些 flat 没有的路径。
@@ -83,6 +85,7 @@ export const AGENTS_TEMPLATE_FLAT = `${TEMPLATE_MARK}
 
 DREAMS.md 写「上次做梦：YYYY-MM-DD」；到期 zk_lint → zk_dream → 人裁决改 MEMORY。
 MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]，先 read 核对来源；退役写 - [superseded] 旧结论 → [[新结论]]。
+改 MEMORY 前看 zk_context 余量。
 `;
 /**
  * 根目录 WORKFLOW.md：只在「要动已有笔记」时才需要读，所以不注入、不计预算。
@@ -102,6 +105,11 @@ export const WORKFLOW_TEMPLATE = `${TEMPLATE_MARK}
 3. **contradiction** —— 同期、同情境互相冲突：一个字都不改，把两篇路径与冲突点写进 DREAMS.md，等人裁决。
 
 判断不了就按 3 处理：flag 的成本远低于悄悄改写。
+
+## 改 MEMORY.md 之前
+
+先看 zk_context 的 headroom 与 dropCandidates：余量不够就先退役 / 精简旧条目，别让新结论把最旧的挤掉。
+给 proposed_entry 能预估会不会触发截断；同日条目按位置决胜（sameDateCount），插件不猜谁更常用。
 
 ## 动笔前必须出清单
 

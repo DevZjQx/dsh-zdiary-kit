@@ -26,7 +26,7 @@ import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import { DREAM_INTERVAL_DAYS, daysSinceDream, lastDreamDate } from './dream.ts'
 import { fileStamp } from './file-stamp.ts'
-import { entryDate, memoryFormatDebt, stripRetiredEntries } from './memory-format.ts'
+import { entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
 import type { MemoryFormatDebt } from './memory-format.ts'
 import { templateVersionOf } from './agents-template.ts'
 import { PERSONA_META_FILES, MEMORY_META_FILES } from './meta.ts'
@@ -81,6 +81,8 @@ export interface MemoryPayload {
   truncatedWords: number
   /** 退役条目的词数（磁盘保留、注入省略；不算截断） */
   retiredWords: number
+  /** 退役条目的条数（与 `zk_lint.memoryLinks.retired` 同一口径） */
+  retiredEntries: number
   /** 截断目录占用的词数（0 = 没有目录） */
   tocWords: number
   /** 记忆的格式债（与注入提示、`zk_lint` 同一个 `memoryFormatDebt`）：退役条目不算 */
@@ -621,6 +623,7 @@ function computePayload(cfg: Config): MemoryPayload {
     ratio: budget > 0 ? Math.round((finalWords / budget) * 100) / 100 : 0,
     truncatedWords,
     retiredWords,
+    retiredEntries: omitted.count,
     tocWords: countWords(toc),
     formatDebt: debt,
     templateVersion,
@@ -657,6 +660,11 @@ export interface MemoryUsage {
   budget: number
   /** budget - (totalWords - personaWords)，**可以为负**：记忆内容没超、加上提示超了 */
   headroom: number
+  /** 格式债：与 `zk_lint.memoryLinks` 的 undated / unlinked 同一份 `memoryFormatDebt` */
+  undated: number
+  unlinked: number
+  /** 退役条目数（与 `zk_lint.memoryLinks.retired` 同一口径） */
+  retired: number
   files: MemoryFileInfo[]
 }
 
@@ -673,6 +681,123 @@ export function memoryUsage(cfg: Config): MemoryUsage {
     budget: payload.budget,
     // 人格是独立层：整段（含它的告警）都不该占记忆预算，否则 dream 会误报「余量」
     headroom: payload.budget - (payload.totalWords - payload.persona.words),
+    undated: payload.formatDebt.undated,
+    unlinked: payload.formatDebt.unlinked,
+    retired: payload.retiredEntries,
     files: payload.files,
+  }
+}
+
+// ── G1 / G4：写 MEMORY 之前的容量与「下一条会丢谁」（docs/plan.md §7 G1 / §8.1 G4）──
+
+/** 下一个会被预算挤掉的 MEMORY 条目；纯预告，磁盘不动 */
+export interface MemoryDropCandidate {
+  /** 条目首行摘要（与截断目录同口径，最多 40 字） */
+  title: string
+  /** 能解析出的日期；没有是空串 */
+  date: string
+  words: number
+  /** 为什么轮到它：最旧 / 同日按位置 / 没日期只能按位置 */
+  reason: 'oldest' | 'same-date' | 'undated'
+}
+
+export interface MemoryCapacity {
+  /** payload.words：记忆内容词数 */
+  words: number
+  /** payload.totalWords：模型真正收到的总载荷 */
+  totalWords: number
+  budget: number
+  /** 与 memoryUsage 同口径：budget - (totalWords - personaWords)，可为负 */
+  headroom: number
+  /** proposed_entry / extra_words 折算出的新增词数 */
+  extraWords: number
+  /** 再加这些词会不会触发截断（headroom 已为负时任何新增都会） */
+  wouldTruncate: boolean
+  dropCandidates: MemoryDropCandidate[]
+  /** 格式债标签：undated / unlinked / retired，只列非零的 */
+  format: string[]
+  /** 与最旧日期相同的活条目数（G4：同日时实际由位置决胜） */
+  sameDateCount: number
+  suggestion: string
+}
+
+export interface MemoryCapacityOptions {
+  /** 打算写进 MEMORY.md 的新条目；按 countWords 折算词数 */
+  proposedEntry?: string
+  /** 直接给新增词数（给了就不按 proposedEntry 重算） */
+  extraWords?: number
+}
+
+/**
+ * 「改 MEMORY 之前」的容量快照：复用 `buildMemoryPayload` / `memoryUsage` 的投影，不新增计数口径；
+ * 条目解析复用 `splitMemoryEntries` / `entryDate` / `isRetiredEntry`，与截断、`zk_lint` 同一份。
+ * 纯读：不跑 zk、不写文件。同日 tie 只做可见化（G4），不改变 `oldestIndex` 的淘汰行为。
+ */
+export function memoryCapacity(cfg: Config, opts: MemoryCapacityOptions = {}): MemoryCapacity {
+  const payload = buildMemoryPayload(cfg)
+  const usage = memoryUsage(cfg)
+  const extraWords = typeof opts.extraWords === 'number' && Number.isFinite(opts.extraWords)
+    ? Math.max(0, Math.trunc(opts.extraWords))
+    : countWords(String(opts.proposedEntry ?? ''))
+  const wouldTruncate = extraWords > usage.headroom
+
+  let body = ''
+  try { body = fs.readFileSync(path.join(cfg.notebook, 'MEMORY.md'), 'utf8') } catch { /* 缺文件 = 空 */ }
+  const debt = memoryFormatDebt(body)
+  const retired = stripRetiredEntries(body).count
+  // 退役条目注入时已省略，不会因预算被丢 —— 预告里不列它们
+  const entries = splitMemoryEntries(body)
+    .map((entry, index) => ({ entry, index, date: entryDate(entry) }))
+    .filter((row) => !isRetiredEntry(row.entry))
+  const withDate = entries.filter((row) => row.date !== null)
+  const oldestDate = withDate.reduce((min, row) => (row.date! < min ? row.date! : min), '9999-99-99')
+  const sameDateCount = withDate.filter((row) => row.date === oldestDate).length
+
+  // 与 oldestIndex 同口径：有日期按最旧；同日期按位置靠后的先丢；没日期退回尾部（也是位置靠后先丢）
+  const order = [...entries].sort((a, b) => {
+    if (a.date && b.date) {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1
+      return b.index - a.index
+    }
+    if (a.date) return -1
+    if (b.date) return 1
+    return b.index - a.index
+  })
+  const dropCandidates: MemoryDropCandidate[] = order.slice(0, 5).map(({ entry, date }) => {
+    const one = String(entry.split('\n', 1)[0] ?? '').replace(/\s+/g, ' ').trim()
+    const title = one.length > TOC_TITLE_MAX ? one.slice(0, TOC_TITLE_MAX) + '…' : one
+    return {
+      title: title || '（无标题）',
+      date: date ?? '',
+      words: countWords(entry),
+      reason: !date ? 'undated' : sameDateCount > 1 && date === oldestDate ? 'same-date' : 'oldest',
+    }
+  })
+
+  const format: string[] = []
+  if (debt.undated > 0) format.push('undated')
+  if (debt.unlinked > 0) format.push('unlinked')
+  if (retired > 0) format.push('retired')
+
+  const parts: string[] = [extraWords > 0
+    ? (wouldTruncate
+      ? `再加 ${extraWords} 词会触发截断（余 ${usage.headroom} 词），先退役 / 精简 dropCandidates 里的条目`
+      : `还能放 ${usage.headroom - extraWords} 词`)
+    : (usage.headroom < 0 ? `已超预算 ${-usage.headroom} 词` : `余 ${usage.headroom} 词`)]
+  // G4：同日不是「按日期挑的」，明说是位置决胜，不假装有使用频率
+  if (sameDateCount > 1) parts.push(`${sameDateCount} 条同日，按位置决胜`)
+  if (format.length) parts.push(`格式债：${format.join(' / ')}`)
+
+  return {
+    words: payload.words,
+    totalWords: payload.totalWords,
+    budget: payload.budget,
+    headroom: usage.headroom,
+    extraWords,
+    wouldTruncate,
+    dropCandidates,
+    format,
+    sameDateCount,
+    suggestion: parts.join('；'),
   }
 }

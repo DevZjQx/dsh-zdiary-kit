@@ -57,7 +57,7 @@
   空块保持空 `<h3>`，不排序、不隐藏。普通笔记与没有问题的日记页逐字不变；不受 `zk_lint` 的 90 天窗口限制。
 - 记忆页（`?p=memory`）：分**人格 / 用户 / 工作约定 / 记忆 / 周审**五段 + 载荷预览，
   顶部一行 `记忆 N/预算 词（AGENTS … · MEMORY …（退役 N））`，下面可能还有一行格式债
-  `格式：9/9 条没日期 · 0 条没来源 · AGENTS 模板 v5（当前 v8）`（只读标记、不跑 lint；三处都干净时不出现）；
+  `格式：9/9 条没日期 · 0 条没来源 · AGENTS 模板 v5（当前 v9）`（只读标记、不跑 lint；三处都干净时不出现）；
   用量行复用 `buildMemoryPayload` / `formatFileShares`，格式行直接取载荷里的 `formatDebt` /
   `templateVersion`（与注入同一份计算，不重读文件、不跑 lint）—— 与 `zk_lint.memoryLinks` 的
   `undated` / `unlinked` 也是同一个 `memoryFormatDebt`，三处不会各报一个数；
