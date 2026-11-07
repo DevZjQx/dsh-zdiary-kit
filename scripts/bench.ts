@@ -122,6 +122,24 @@ interface Case {
 interface Ctx {
   cfg: Config
   sample: string
+  /** §0.5 成本表口径：库的篇数与链接数，读夹具的 .fixture.json（真实值，不是 CLI 参数） */
+  notes: number
+  links: number
+}
+
+/** 夹具清单是 fixture.ts 落的真实统计；没有清单时退回 CLI 参数，别让 bench 因此跑不起来 */
+function fixtureCounts(dir: string, fallbackNotes: number, fallbackLinksPerNote: number): { notes: number; links: number } {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, '.fixture.json'), 'utf8')) as {
+      notes?: number; links?: { valid?: number; broken?: number }
+    }
+    return {
+      notes: Number(m.notes ?? fallbackNotes),
+      links: Number(m.links?.valid ?? 0) + Number(m.links?.broken ?? 0),
+    }
+  } catch {
+    return { notes: fallbackNotes, links: Math.round(fallbackNotes * fallbackLinksPerNote) }
+  }
 }
 
 type CaseOutcome = { truncated?: boolean; count?: number } | void
@@ -148,6 +166,17 @@ const CASES: Case[] = [
     timeoutMs: 60_000,
     run: async ({ cfg }) => {
       const r = await searchNotesDetailed(cfg, { query: '记忆', limit: 10 })
+      return { count: r.notes.length, truncated: r.notes.length >= 10 }
+    },
+  },
+  {
+    // R3 gate：多词 alternation + coverage 排序，进程数不变，补一条 10k 实测
+    id: 'search.cjk.multi',
+    tool: 'zk_search',
+    what: '中文多词检索（FTS + alternation 正则，按覆盖度排序）',
+    timeoutMs: 60_000,
+    run: async ({ cfg }) => {
+      const r = await searchNotesDetailed(cfg, { query: '记忆 召回', limit: 10 })
       return { count: r.notes.length, truncated: r.notes.length >= 10 }
     },
   },
@@ -371,6 +400,9 @@ interface RowResult {
   id: string
   tool: string
   what: string
+  /** §0.5：本条用例跑在「多少篇 / 多少链」的库上 */
+  notes: number
+  links: number
   calls: number
   bytes: number
   p50Ms: number
@@ -416,6 +448,7 @@ async function runCase(c: Case, ctx: Ctx, iterations: number): Promise<RowResult
 
   return {
     id: c.id, tool: c.tool, what: c.what,
+    notes: ctx.notes, links: ctx.links,
     calls, bytes, peakRssKb: peakRss, timeoutMs: c.timeoutMs,
     p50Ms: Math.round(pct(runs, 0.5) * 10) / 10,
     p95Ms: Math.round(pct(runs, 0.95) * 10) / 10,
@@ -441,7 +474,8 @@ async function main(): Promise<void> {
     if (!opts.json) console.log('· 冷建索引 ' + (coldIndexMs / 1000).toFixed(1) + ' s')
   }
 
-  const ctx: Ctx = { cfg, sample: pickSample(opts.fixture) }
+  const counts = fixtureCounts(opts.fixture, opts.notes, opts.linksPerNote)
+  const ctx: Ctx = { cfg, sample: pickSample(opts.fixture), ...counts }
   const cases = opts.only.length > 0 ? CASES.filter((c) => opts.only.includes(c.id)) : CASES
   if (cases.length === 0) throw new Error('--cases 没有匹配：' + opts.only.join(','))
   const missing = opts.only.filter((id) => !CASES.some((c) => c.id === id))
@@ -455,7 +489,8 @@ async function main(): Promise<void> {
 
   const summary = {
     fixture: opts.fixture,
-    notes: opts.notes,
+    notes: ctx.notes,
+    links: ctx.links,
     linksPerNote: opts.linksPerNote,
     iterations: opts.iterations,
     zk: { bin: loc.bin, version: loc.version, source: loc.source },
@@ -468,7 +503,7 @@ async function main(): Promise<void> {
   if (opts.json) { process.stdout.write(text); return }
 
   console.log('')
-  console.log('夹具 ' + opts.fixture + '（' + opts.notes + ' 篇 / ' + opts.linksPerNote + ' 链/篇）· zk ' +
+  console.log('夹具 ' + opts.fixture + '（' + ctx.notes + ' 篇 / ' + ctx.links + ' 链，' + opts.linksPerNote + ' 链/篇）· zk ' +
     loc.version + ' · ' + opts.iterations + ' 轮' + (coldIndexMs !== null ? ' · 冷建 ' + (coldIndexMs / 1000).toFixed(1) + ' s' : ''))
   const head = ['用例', '工具', '子进程', '字节', 'p50', 'p95', '峰值RSS', '超时', '超限']
   const widths = [19, 20, 8, 10, 10, 10, 9, 7, 8]

@@ -24,3 +24,6 @@ Thumbs.db
 # 插件运行期数据：配置 / 内置 zk 在 ~/.dsh/zdiary，笔记本默认在工作区内（<工作区>/zdiary，
 # src/config/paths.ts）。在本仓库里跑插件会生成 ./zdiary —— 那是本地日记本，不入库。
 /zdiary/
+
+# 本地计划文档（评审草稿，不入库）
+/docs/plan.md

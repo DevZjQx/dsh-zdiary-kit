@@ -4409,7 +4409,7 @@ describe('v3.1: 时间轴 / archive / dream 日期', () => {
     const cfg = fresh('nb-v31-notedate', 'flat')
     const rec = (rel: string, created: string, metadata: Record<string, unknown> = {}) => ({
       title: '', path: rel, absPath: '', link: '', tags: [], created, modified: '',
-      lead: '', words: 0, metadata, status: '', type: '', authority: '',
+      lead: '', snippet: '', words: 0, metadata, status: '', type: '', authority: '',
     })
     const created = '2026-11-04T10:00:00.000Z'
     expect(dreamLib.noteDate(cfg, rec('journal/2026-10-01.md', created))).toBe('2026-10-01')
@@ -4832,6 +4832,7 @@ describe('M5.1：静默天花板三态化（§9.3 第 3 步）', () => {
       created: '2026-01-01T00:00:00Z',
       modified: '2026-01-01T00:00:00Z',
       lead: '',
+      snippet: '',
       words: 1,
       metadata: {},
       status: 'active',
@@ -5120,3 +5121,175 @@ describe('R6: 写后可读', () => {
   })
 })
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §10.4 第 4 项：R1 / R2 剩余 / R3 / R7
+// ─────────────────────────────────────────────────────────────────────────────
+describe('R1 / R2 / R3 / R7：检索召回质量（§10.4 第 4 项）', () => {
+  const originalConfig = {
+    notebooks: { default: { path: notebook, structure: 'flat' as const } },
+    active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+    defaultTags: ['default'], aliasTools: false,
+  }
+
+  /** 每个用例独占一本笔记本，别把笔记撒进共享库影响别的用例计数 */
+  const setup = async (name: string) => {
+    const dir = path.join(home, name)
+    store.writeConfig({
+      notebooks: { default: { path: dir, structure: 'flat' } },
+      active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+      defaultTags: [], aliasTools: false,
+    })
+    const c = store.config()
+    await notebookLib.ensureNotebook(c)
+    return { c, dir }
+  }
+  const restore = (): void => { store.writeConfig(originalConfig) }
+
+  const write = (c: ReturnType<typeof store.config>, file: string, date: string, body: string): void => {
+    const dir = path.join(c.notebook, c.notesDir)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, file),
+      `---\ndate: ${date}\ntitle: "${file.replace(/\.md$/, '')}"\ntype: concept\nstatus: active\n---\n\n${body}\n`, 'utf8')
+  }
+
+  it('R1：有 query 默认按 FTS 相关性；显式 sort 不被改写，无 query 仍 created-desc', async () => {
+    const { c, dir } = await setup('nb-r1-sort')
+    try {
+      // 旧笔记命中 5 次、新笔记 1 次：BM25 与 created- 给出的顺序相反
+      write(c, 'old.md', '2020-01-01', '# 旧高相关\n\n独有词 独有词 独有词 独有词 独有词\n')
+      write(c, 'new.md', '2025-01-01', '# 新低相关\n\n独有词\n')
+      await zk.indexNotebook(c)
+
+      const byDate = await zk.searchNotesDetailed(c, { query: '独有词', sort: 'created-desc', limit: 10 })
+      expect(byDate.notes[0]!.path).toContain('new.md')
+      const byRelevance = await zk.searchNotesDetailed(c, { query: '独有词', limit: 10 })
+      expect(byRelevance.notes[0]!.path).toContain('old.md')
+      const explicit = await zk.searchNotesDetailed(c, { query: '独有词', sort: 'relevance', limit: 10 })
+      expect(explicit.notes[0]!.path).toContain('old.md')
+      const noQuery = await zk.searchNotesDetailed(c, { sort: 'created-desc', limit: 10 })
+      expect(noQuery.notes[0]!.path).toContain('new.md')
+
+      // 工具层默认 relevance（不再硬塞 created-desc）
+      const search = toolsFeature.buildTools(() => dir).find((d) => d.name === 'zk_search')!
+      const out = await search.execute({ query: '独有词' }, { signal: AbortSignal.timeout(30_000) }) as {
+        notes: Array<{ path: string }>
+      }
+      expect(out.notes[0]!.path).toContain('old.md')
+    } finally {
+      restore()
+    }
+  })
+
+  it('R2：snippet 定位深处命中；total 只在 complete 时给；words 透出且不越 schema', async () => {
+    const { c, dir } = await setup('nb-r2-snippet')
+    try {
+      const filler = '甲'.repeat(300)
+      write(c, 'deep.md', '2024-01-01', `# 深命中\n\n${filler}\n\n这里才有庚辛壬癸独有词。\n`)
+      write(c, 'short.md', '2024-01-02', '# 短命中\n\n庚辛壬癸独有词 就在开头\n')
+      await zk.indexNotebook(c)
+
+      const all = await zk.searchNotesDetailed(c, { query: '庚辛壬癸独有词', limit: 10 })
+      expect(all.notes).toHaveLength(2)
+      expect(all.total).toBe(2)
+      const deep = all.notes.find((n) => n.path.includes('deep.md'))!
+      expect(deep.lead).not.toContain('庚辛壬癸')
+      expect(deep.snippet).toContain('庚辛壬癸')
+
+      // 触顶时拿不到精确总数，不能拿 count 冒充
+      const limited = await zk.searchNotesDetailed(c, { query: '庚辛壬癸独有词', limit: 1 })
+      expect(limited.hasMore).toBe(true)
+      expect(limited.total).toBeUndefined()
+
+      const defs = toolsFeature.buildTools(() => dir)
+      const search = defs.find((d) => d.name === 'zk_search')!
+      const out = await search.execute({ query: '庚辛壬癸独有词' }, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
+      expect(out.total).toBe(2)
+      const notes = out.notes as Array<Record<string, unknown>>
+      expect(notes.every((n) => typeof n.words === 'number')).toBe(true)
+      expect(notes.some((n) => String(n.snippet ?? '').includes('庚辛壬癸'))).toBe(true)
+      expect(undeclaredKeys(out, search.output.schema)).toEqual([])
+      expect(lossyPaths(out)).toEqual([])
+      expect(search.output.render({ query: '庚辛壬癸独有词' }, out)[0].text).toContain('庚辛壬癸')
+
+      // zk_query 走精简字段格式（有 status 过滤），snippet 也要接出来
+      const query = defs.find((d) => d.name === 'zk_query')!
+      const qout = await query.execute({ query: '庚辛壬癸独有词' }, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
+      const qnotes = qout.notes as Array<Record<string, unknown>>
+      expect(qnotes.some((n) => String(n.snippet ?? '').includes('庚辛壬癸'))).toBe(true)
+      expect(undeclaredKeys(qout, query.output.schema)).toEqual([])
+      expect(lossyPaths(qout)).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  it('R3：中文多词切词 + 覆盖度排序；正则元字符不报错；纯 ASCII 仍单进程', async () => {
+    const { c, dir } = await setup('nb-r3-multiterm')
+    try {
+      write(c, 'both.md', '2024-01-03', '# 两词都有\n\n记忆系统的召回怎么设计\n\n记忆 召回 两个词都出现\n')
+      write(c, 'one.md', '2024-01-04', '# 只有记忆\n\n记忆系统的其它内容\n')
+      write(c, 'ascii.md', '2024-01-05', '# ASCII\n\nASCIITOKEN 在这里\n')
+      await zk.indexNotebook(c)
+
+      expect(zk.splitCjkQuery('记忆 召回')).toEqual(['记忆', '召回'])
+      expect(zk.splitCjkQuery('记忆、召回')).toEqual(['记忆', '召回'])
+      expect(zk.splitCjkQuery('记忆系统的召回')).toEqual([]) // 单词 CJK 走原策略
+      expect(zk.splitCjkQuery('记忆 召回 预算 截断 第五个')).toEqual([]) // >4 退回整串
+      expect(zk.splitCjkQuery('foo bar')).toEqual([]) // 纯 ASCII 走原策略
+      expect(zk.cjkAlternation(['记忆', '召回'])).toBe('(?:记忆|召回)')
+
+      const r = await zk.searchNotesDetailed(c, { query: '记忆 召回', limit: 10 })
+      const paths = r.notes.map((n) => n.path)
+      expect(paths.some((p) => p.includes('both.md'))).toBe(true)
+      expect(paths.some((p) => p.includes('one.md'))).toBe(true)
+      expect(paths[0]).toContain('both.md') // 覆盖 2 词排在覆盖 1 词之前
+
+      // 精简格式路径（zk_query 带 status 过滤）也要能跑多词 alternation + {{snippets}}
+      const queryTool = toolsFeature.buildTools(() => dir).find((d) => d.name === 'zk_query')!
+      const qout = await queryTool.execute({ query: '记忆 召回' }, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
+      expect((qout.notes as unknown[]).length).toBeGreaterThan(0)
+      expect(undeclaredKeys(qout, queryTool.output.schema)).toEqual([])
+
+      await expect(zk.searchNotesDetailed(c, { query: '.*', limit: 5 })).resolves.toBeDefined()
+
+      await zk.resolveZk(c) // 预热 zk 定位，别把 --version 算进子进程数
+      execLib.execStats.calls = 0
+      await zk.searchNotesDetailed(c, { query: 'ASCIITOKEN', limit: 5 })
+      expect(execLib.execStats.calls).toBe(1)
+    } finally {
+      restore()
+    }
+  })
+
+  it('R7：中文 0 命中说清「为什么空」；ASCII 0 命中文案不变；不改 notes / count', async () => {
+    const { c, dir } = await setup('nb-r7-zero')
+    try {
+      write(c, 'seed.md', '2024-01-01', '# 种子\n\n普通内容\n')
+      await zk.indexNotebook(c)
+      const defs = toolsFeature.buildTools(() => dir)
+      const registry = new Map(defs.map((d) => [d.name, d]))
+      const zero = (name: string) => ({
+        notebook: c.notebook, count: 0, completeness: 'complete', hasMore: false, scanned: 0,
+        notes: [], ...(name === 'zk_search' ? { matchStrategy: 'fts' } : {}),
+      })
+      const renderZero = (name: string, query: string): string =>
+        registry.get(name)!.output.render({ query }, zero(name))[0].text
+
+      expect(renderZero('zk_search', '不存在的中文词')).toContain('换更短的词')
+      expect(renderZero('zk_search', '不存在的中文词')).toContain('tags 查')
+      expect(renderZero('zk_query', '不存在的中文词')).toContain('tags 参数')
+      const ascii = renderZero('zk_search', 'zzznotfound')
+      expect(ascii).not.toContain('换更短的词')
+      expect(ascii).not.toContain('tags')
+
+      const search = registry.get('zk_search')!
+      const out = await search.execute({ query: '不存在的中文词' }, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
+      expect(out.count).toBe(0)
+      expect(out.notes).toEqual([])
+      expect(search.output.render({ query: '不存在的中文词' }, out)[0].text).toContain('换更短的词')
+    } finally {
+      restore()
+    }
+  })
+})

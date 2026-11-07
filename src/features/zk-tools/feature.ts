@@ -21,7 +21,7 @@ import { ensureNotebook, newNoteDir } from '../../lib/notebook.ts'
 import {
   searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily,
   linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir,
-  localDate as dateOnly, runAlias, ZkError,
+  localDate as dateOnly, runAlias, hasCjk, ZkError,
 } from '../../lib/zk.ts'
 import type { NoteRecord, SupersedeResult, RenameResult } from '../../lib/zk.ts'
 import { configuredAliases, readAliases } from '../../lib/alias.ts'
@@ -35,6 +35,16 @@ import { dreamNotebook, STALE_DAYS } from '../../lib/dream.ts'
 import type { DreamResult } from '../../lib/dream.ts'
 
 const text = (value: string): ContentBlockLike[] => [{ type: 'text', text: value }]
+
+/** render 的 args 是 unknown：只取 query 判断要不要给中文 0 命中提示（R7） */
+const queryOf = (args: unknown): string => {
+  if (!args || typeof args !== 'object') return ''
+  return String((args as { query?: unknown }).query ?? '')
+}
+
+/** R7：中文 0 命中的「为什么空」提示；ASCII / 无 query 不加 */
+const zeroHitHint = (args: unknown, extra: string): string =>
+  hasCjk(queryOf(args)) ? `；中文全文不切词：换更短的词，${extra}` : ''
 
 const objSchema = (properties: Record<string, SchemaNode>, required: string[]): Record<string, unknown> => ({
   type: 'object',
@@ -317,10 +327,16 @@ function tagSuffix(record: { tags: string[] }): string {
   return record.tags.length ? ' · ' + record.tags.map((t) => '#' + t).join(' ') : ''
 }
 
+/** R2：snippet 比 lead 多带命中上下文时才替换它，否则维持原输出 */
+function detailOf(n: { lead?: string; snippet?: string }): string {
+  return n.snippet && n.snippet !== n.lead ? n.snippet : (n.lead ?? '')
+}
+
 function noteLine(n: NoteRecord, index: number): string {
   const head = `${index + 1}. ${n.title || n.path}`
   const meta = [n.absPath || n.path, dateOnly(n.created)].filter(Boolean).join(' · ')
-  const lead = n.lead ? `\n   ${n.lead}` : ''
+  const detail = detailOf(n)
+  const lead = detail ? `\n   ${detail}` : ''
   return `${head}\n   ${meta}${tagSuffix(n)}${lead}`
 }
 
@@ -441,20 +457,22 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_search',
       description:
-        '在 zk 知识库里搜索笔记（全文 / 标签 / 日期 / 断链 / 孤立笔记），返回标题、相对路径、绝对路径、标签、创建日与摘要。' +
+        '在 zk 知识库里搜索笔记（全文 / 标签 / 日期 / 断链 / 孤立笔记），返回标题、相对路径、绝对路径、标签、创建日、摘要与命中片段。' +
         '找到后用原生 read 读全文：notes[].absPath 可以直接传给 read。写笔记前先用它查重。' +
-        '中文查询会自动并用子串匹配（FTS 不切中文）：matchStrategy 说明这次用了 fts / regex / mixed，mixed 表示补到了全文索引漏掉的笔记。',
+        '中文会自动并用子串，多词按覆盖度合并（FTS 不切中文）：matchStrategy 说明这次用了 fts / regex / mixed，mixed 表示补到了全文索引漏掉的笔记。' +
+        '有 query 时默认按 FTS 相关性排序，显式给 sort 才改顺序。',
       parameters: {
         type: 'object',
         properties: {
-          query: S.str('全文检索词（FTS，支持 "短语" 与 AND / OR；含中文时自动并用子串匹配补漏）'),
+          query: S.str('全文检索词（FTS，支持 "短语" 与 AND / OR；中文会自动并用子串，多词按覆盖度合并）'),
           tags: S.arr('按标签过滤（AND：必须同时带这些标签）', S.str('标签名，不带 #')),
           since: S.str('只看这个日期之后创建的笔记，自然语言或 ISO 日期，如 2026-01-01 / "last week"'),
           until: S.str('只看这个日期之前创建的笔记'),
           orphan: S.bool('只看没有任何反链的孤立笔记'),
           brokenLinks: S.bool('只看含有断链的笔记'),
           limit: S.num('最多返回几条（1-200，默认 10）'),
-          sort: S.enum('排序方式', ['created-desc', 'created-asc', 'modified-desc', 'title-asc']),
+          sort: S.enum('排序方式；有 query 默认 relevance（按 FTS 相关性），无 query 回退 created-desc',
+            ['relevance', 'created-desc', 'created-asc', 'modified-desc', 'title-asc']),
         },
         additionalProperties: false,
       },
@@ -466,6 +484,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
           hasMore: { type: 'boolean' },
           scanned: { type: 'number' },
+          /** R2：只在能精确判定时给（completeness === complete） */
+          total: { type: 'number' },
           notes: {
             type: 'array',
             items: objSchema({
@@ -475,6 +495,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               tags: { type: 'array', items: { type: 'string' } },
               created: { type: 'string' },
               lead: { type: 'string' },
+              words: { type: 'number' },
+              /** 命中片段，没有时整个键不出现（避免 undefined 让宿主判 invalid output） */
+              snippet: { type: 'string' },
             }, ['title', 'path', 'absPath', 'tags', 'created', 'lead']),
           },
         }, ['notebook', 'count', 'matchStrategy', 'completeness', 'hasMore', 'scanned', 'notes']),
@@ -490,7 +513,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           orphan: args.orphan === true,
           brokenLinks: args.brokenLinks === true,
           limit: args.limit === undefined ? 10 : Number(args.limit),
-          sort: args.sort ? String(args.sort) : 'created-desc',
+          // R1：有 query 且没显式给 sort → relevance（不传 --sort，保住 FTS 相关性顺序）
+          sort: args.sort ? String(args.sort) : (args.query ? 'relevance' : 'created-desc'),
         })
         return {
           notebook: cfg.notebook,
@@ -499,17 +523,24 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           completeness: result.completeness,
           hasMore: result.hasMore,
           scanned: result.scanned,
-          notes: result.notes.map((n) => ({ title: n.title, path: n.path, absPath: n.absPath, tags: n.tags, created: dateOnly(n.created), lead: n.lead })),
+          ...(result.total === undefined ? {} : { total: result.total }),
+          notes: result.notes.map((n) => ({
+            title: n.title, path: n.path, absPath: n.absPath, tags: n.tags,
+            created: dateOnly(n.created), lead: n.lead, words: n.words,
+            ...(n.snippet ? { snippet: n.snippet } : {}),
+          })),
         }
       },
-      render(_args, value) {
+      render(args, value) {
         const v = value as {
           notebook: string; count: number; matchStrategy: string
           completeness: 'complete' | 'partial' | 'unknown'; hasMore: boolean; scanned: number
+          total?: number
           notes: NoteRecord[]
         }
         if (!v.count) {
           return text(`没有匹配的笔记（笔记本 ${v.notebook}）` +
+            zeroHitHint(args, '或按 tags 查') +
             (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「库里没有」' : ''))
         }
         const how = v.matchStrategy === 'mixed'
@@ -527,11 +558,12 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
       description:
         '结构化检索记忆：按 type（daily/source/concept/entity/pattern）、status（active/superseded）、标签、目录、日期、断链、孤立过滤。' +
         '默认只看 active 且不含归档；传 include_archived: true 会连归档一起查，此时未显式给 status 就不再默认过滤 active。' +
+        '中文会自动并用子串，多词按覆盖度合并；有 query 时默认按 FTS 相关性排序。' +
         '这是查「记忆里有什么」的主入口。',
       parameters: {
         type: 'object',
         properties: {
-          query: S.str('全文检索词（中文召回不完整，尽量配合 tags 使用）'),
+          query: S.str('全文检索词（中文会自动并用子串，多词按覆盖度合并）'),
           tags: S.arr('按标签过滤（AND）', S.str('标签名，不带 #')),
           dirs: S.arr('只看这些目录（相对笔记本，如 notes/concepts）', S.str('相对目录')),
           type: S.enum('只要这个类型的笔记', ['daily', 'source', 'concept', 'entity', 'pattern']),
@@ -541,7 +573,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           orphan: S.bool('只看没有反链的孤立笔记'),
           brokenLinks: S.bool('只看含断链的笔记'),
           include_archived: S.bool('连 archive/ 里的废弃笔记一起查（默认 false）'),
-          sort: S.enum('排序方式', ['created-desc', 'created-asc', 'modified-desc', 'title-asc']),
+          sort: S.enum('排序方式；有 query 默认 relevance（按 FTS 相关性），无 query 回退 created-desc',
+            ['relevance', 'created-desc', 'created-asc', 'modified-desc', 'title-asc']),
           limit: S.num('最多返回几条（1-200，默认 10）'),
         },
         additionalProperties: false,
@@ -553,6 +586,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
           hasMore: { type: 'boolean' },
           scanned: { type: 'number' },
+          /** R2：只在能精确判定时给（completeness === complete） */
+          total: { type: 'number' },
           notes: {
             type: 'array',
             items: objSchema({
@@ -565,6 +600,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               tags: { type: 'array', items: { type: 'string' } },
               created: { type: 'string' },
               lead: { type: 'string' },
+              words: { type: 'number' },
+              snippet: { type: 'string' },
               archived: { type: 'boolean' },
             }, ['title', 'path', 'absPath', 'type', 'status', 'authority', 'tags', 'created', 'lead', 'archived']),
           },
@@ -587,7 +624,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           brokenLinks: args.brokenLinks === true,
           includeArchived,
           limit: args.limit === undefined ? 10 : Number(args.limit),
-          sort: args.sort ? String(args.sort) : 'created-desc',
+          // R1：有 query 且没显式给 sort → relevance
+          sort: args.sort ? String(args.sort) : (args.query ? 'relevance' : 'created-desc'),
         }, env.signal)
         const notes = result.notes
         return {
@@ -596,6 +634,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           completeness: result.completeness,
           hasMore: result.hasMore,
           scanned: result.scanned,
+          ...(result.total === undefined ? {} : { total: result.total }),
           notes: notes.map((n) => ({
             title: n.title,
             path: n.path,
@@ -607,11 +646,13 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             tags: n.tags,
             created: dateOnly(n.created),
             lead: n.lead,
+            words: n.words,
+            ...(n.snippet ? { snippet: n.snippet } : {}),
             archived: n.path.startsWith(cfg.archiveDir + '/'),
           })),
         }
       },
-      render(_args, value) {
+      render(args, value) {
         const v = value as {
           notebook: string; count: number; completeness: 'complete' | 'partial' | 'unknown'
           hasMore: boolean; scanned: number
@@ -619,6 +660,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         }
         if (!v.count) {
           return text(`没有匹配的笔记（笔记本 ${v.notebook}）` +
+            zeroHitHint(args, '或给 tags 参数按标签查') +
             (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「记忆里没有」' : ''))
         }
         const tail = v.completeness === 'unknown'
@@ -626,7 +668,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           : v.hasMore ? `\n⚠️ 还有更多匹配没返回（已检查 ${v.scanned} 条候选）；要更全就提高 limit 或缩小过滤范围` : ''
         const lines = v.notes.map((n, i) => {
           const badges = [String(n.type || '—'), String(n.status || 'no-status'), n.archived ? '已归档' : ''].filter(Boolean)
-          return `${i + 1}. ${String(n.title)}  [${badges.join(' · ')}]\n   ${String(n.absPath || n.path)} · ${String(n.created)}${String(n.lead) ? '\n   ' + String(n.lead) : ''}`
+          const detail = detailOf({ lead: String(n.lead ?? ''), snippet: String(n.snippet ?? '') })
+          return `${i + 1}. ${String(n.title)}  [${badges.join(' · ')}]\n   ${String(n.absPath || n.path)} · ${String(n.created)}${detail ? '\n   ' + detail : ''}`
         })
         return text(`${v.count} 条（笔记本 ${v.notebook}）\n` + lines.join('\n') + tail)
       },

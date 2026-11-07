@@ -532,12 +532,14 @@ async function main() {
             return;
         }
         case 'search': {
+            const query = pos[0] || str(flags.query) || undefined;
             const result = await searchNotesDetailed(cfg, {
-                query: pos[0] || str(flags.query) || undefined,
+                query,
                 tags: list(flags.tags),
                 since: str(flags.since) || undefined,
                 limit: Number(str(flags.limit)) || 10,
-                sort: str(flags.sort) || 'created-desc',
+                // R1：有 query 且没给 --sort 时保住 FTS 相关性顺序
+                sort: str(flags.sort) || (query ? 'relevance' : 'created-desc'),
             });
             const how = result.matchStrategy === 'mixed'
                 ? '\n（中文查询：全文 + 子串合并，已补上全文索引漏掉的）'

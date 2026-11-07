@@ -46,6 +46,7 @@ stdout 原样返回（不做 JSON 解析），超过 `maxReadChars` 截断；exi
 且每个动作的 schema 不同（搜索有 tags/since/sort，写入有 path/text），分开才能让参数自解释。
 用 shell 拼字符串调 zk —— 拒绝：一律 `execFile` 数组参数，笔记标题里的引号/空格不会变成注入。
 在 `zk_query` 里加语义判断（"哪条更相关"）—— 拒绝：那是 agent 的活，插件只按字段过滤。
+（R1 / R3 加的是 zk 自带的 FTS 相关性与按词覆盖度的机械排序，不是让插件替模型判断语义。）
 保留 `zk_read` 做「按搜索词读最相关的一篇」—— 拒绝：`zk_search` + 原生 `read` 两步就够，
 而多一层包装会让模型在两条读取路径之间选，路径解析也多一套。
 
@@ -59,6 +60,8 @@ stdout 原样返回（不做 JSON 解析），超过 `maxReadChars` 截断；exi
 过滤后再按 `limit` 截断 —— 否则「前 200 条里没有 active、全库其实有 50 条」就是静默漏结果。
 结果带 `completeness`（`complete` / `partial` / `unknown`）、`hasMore` 与 `scanned`：
 `partial` 说明还有命中没返回（`limit` 或扫描上限），`unknown` 表示解析 / 补充检索失败、不能当作「没有」。
+`total` 是精确命中总数，只在 `complete` 时给（见下面 R2 的口径）。带 `query` 的过滤检索用
+`SEARCH_LEAN_TEMPLATE`，比全量扫描的精简格式多一列 `{{snippets}}`；无 `query` 时不加，避免全库多背正文。
 `status` 缺省按 `active` 算（`include_archived: true` 且未显式给 status 是例外）：0.1.0 的老笔记没有 frontmatter，不这样兜，flat vault 上一条都查不出来。
 `type: daily` 按 `cfg.dailyDir` 路径匹配：layered 日记模板没有 frontmatter，老日记也没有；只按 `metadata.type` 比对的话，枚举里的 `daily` 永远命中 0 条。
 `zk_new` 撞名直接报错（`zk new` 遇到同名文件是 exit 0 + 不写内容，Z8），不自动加后缀。
@@ -270,7 +273,14 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 两者按 `limit` 合并会把补的分片切掉，那时仍报 `fts`，界面文案不会谎称「已补上」。
 正则这一路单独兜错：子串匹配超时 / 报错时退回 FTS 的结果并按 `fts` 报，不让一次检索整体失败（FTS 0 命中时则返回空）。
 这种情况下 `completeness = unknown`：结果可能少了正则补的那部分，不能当成「全部命中」。
-`zk_query` 是 `zk list` 的透传接口，保持原语义。
+`zk_query` 与 `zk_search` 共用 `searchNotesDetailed`，中文同样双跑；差别只在结构化过滤（见上）。
+
+**召回质量四件套（§10.4 第 4 项：R1 / R2 剩余 / R3 / R7）。**
+- **R1 相关性排序**：有 `query` 且没显式给 `sort` 时不再传 `--sort created-`（zk 只有 `created / modified / path / title / random / word-count`，没有 relevance），保住 FTS 的 BM25 顺序；`sort` 枚举加 `relevance`，说明「只在有 query 时有效，无 query 回退 `created-desc`」。工具层 / `zk-kit search` 都按这个默认值；显式 `sort` 一律不改写。CLI 与 `zk_query` 同步。
+- **R2 `snippet` / `total`**：`NoteRecord` 加 `snippet`。zk 0.15.7 的 `snippets[0]` 实测**就是首段**（长笔记里与 `lead` 逐字相同），并不定位深处的命中句 —— 所以 `buildSnippet` 先看片段里有没有查询词，没有就从 `rawContent` 取「最早命中 ±80 字」的窗口，压空白截 240 字。带 `status` / `type` 过滤走精简字段格式，那里没有 `rawContent`，于是只在**有 query 时**多用一列 `{{snippets}}`（`SEARCH_LEAN_TEMPLATE`），无 query 的全库扫描不背这段正文。`zk_search` / `zk_query` 输出透出 `snippet`（空串时整个键不出现）与 `words`，render 在 `snippet` 比 `lead` 多信息时替换 `lead`。
+  `total` 是**精确命中总数（含结构化过滤后），只在 `completeness === 'complete'` 时给**：zk 的 `Found N notes` 会被 `--limit` 截断（实测 115 命中、`--limit 10` 时只报 `Found 10 notes`），拿不到 limit 之外的真实总数，额外起一个进程去数又违反「不新增子进程」。`partial` / `unknown` 时 `total` 缺失，`hasMore` / `completeness` 已经说明「还有多少不知道」，不拿 `count` 冒充。
+- **R3 中文多词**：`splitCjkQuery` 按空白 / 标点切词、去重、保留 ≥2 字、最多 4 个；少于 2 词、纯 ASCII 或超过 4 词都退回原来的「整串正则」两遍策略。多词时正则这一路换成转义后的 `(?:词1|词2|…)` **一次进程召回**（不逐词起进程），再用 `rawContent` 算每个命中覆盖了几个词，按 `coverage` 降序 → 原 FTS 顺序 → `created-desc` 排序；精简格式路径没有 `rawContent`，用 `title / lead / snippet` 算覆盖度（best effort）。`zk_query` 的旧描述「中文召回不完整，尽量配合 tags 使用」已改成与 `zk_search` 一致。
+- **R7 0 命中**：CJK 查询 0 命中时 render 追加「中文全文不切词：换更短的词，或按 tags 查」（`zk_query` 提示 `tags` 参数）；纯 ASCII 0 命中文案不变，提示不动 `notes` / `count`。
 
 **写后可读（R6，3.6.0）.** `zk_append` / `zk_link` / `zk_new` 的 `summary` 回填 / 改名 / 搬归档之后，
 插件在 `.zk/dsh-index-state.json` 记 `generation`（每次写入 +1）与 `indexedGeneration`（最近一次成功 `zk index` 覆盖到的快照）。

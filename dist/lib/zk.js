@@ -701,7 +701,38 @@ export function parseErrorWarnings(cfg, warnings) {
     }
     return out.sort((a, b) => a.path.localeCompare(b.path));
 }
-function toRecord(raw, cfg) {
+/** 压空白、去 zk 的 <zk:match> 高亮、截到 240 字 */
+function clipSnippet(value) {
+    const first = Array.isArray(value) ? value[0] : value;
+    if (typeof first !== 'string')
+        return '';
+    return first.replace(/<\/?zk:match>/g, '').replace(/\s+/g, ' ').trim().slice(0, 240);
+}
+/**
+ * R2：命中片段。
+ *
+ * zk 0.15.7 的 snippets[0] 实测**就是首段**（长笔记里与 lead 完全相同），
+ * 深处命中时它并不定位命中句。所以先看片段里有没有查询词，没有就从
+ * rawContent 里取「最早命中 ± 窗口」；两者都没有才退回 snippets[0]。
+ * 精简字段格式（LEAN）没有 rawContent，调用方只传 snippets[0]。
+ */
+function buildSnippet(raw, terms) {
+    const first = clipSnippet(raw.snippets);
+    if (terms.length === 0 || terms.some((t) => t && first.includes(t)))
+        return first;
+    const content = String(raw.rawContent ?? raw.body ?? '');
+    let at = -1;
+    for (const t of terms) {
+        const i = content.indexOf(t);
+        if (i >= 0 && (at < 0 || i < at))
+            at = i;
+    }
+    if (at < 0)
+        return first;
+    return content.slice(Math.max(0, at - 80), Math.max(0, at - 80) + 240)
+        .replace(/<\/?zk:match>/g, '').replace(/\s+/g, ' ').trim();
+}
+function toRecord(raw, cfg, terms = []) {
     const rawTags = Array.isArray(raw.tags) ? raw.tags : [];
     const absPath = String(raw.absPath ?? '');
     // ⚠️ zk 在 cwd 之外用 --notebook-dir 时，path 会变成相对 cwd 的 `../../…`；
@@ -725,6 +756,7 @@ function toRecord(raw, cfg) {
         created: String(raw.created ?? ''),
         modified: String(raw.modified ?? ''),
         lead: String(raw.lead ?? '').replace(/\s+/g, ' ').trim().slice(0, 200),
+        snippet: buildSnippet(raw, terms),
         words: Number(raw.wordCount ?? 0),
         metadata,
         status: meta('status'),
@@ -780,6 +812,31 @@ const HASHTAG = new RegExp(HASHTAG_SRC, 'u');
 export function hasCjk(text) {
     return CJK_TEXT.test(String(text ?? ''));
 }
+const REGEX_META = /[.*+?^${}()|[\]\\]/g;
+const escapeRegex = (s) => s.replace(REGEX_META, '\\$&');
+/**
+ * R3：把 CJK 多词查询切成词。按空白 / 标点切、去重、保留 ≥2 字、最多 4 个；
+ * 少于 2 个词、纯 ASCII 或超过 4 个词都返回 []，交给现有「整串正则」两遍策略。
+ */
+export function splitCjkQuery(query) {
+    const q = String(query ?? '').trim();
+    if (!hasCjk(q))
+        return [];
+    const words = [...new Set(q.split(/[\s\p{P}\p{S}]+/u).filter((w) => [...w].length >= 2))];
+    return words.length >= 2 && words.length <= 4 ? words : [];
+}
+/** 多词正则：转义后做 alternation，仍然一次进程召回（不做逐词 N 次进程） */
+export function cjkAlternation(words) {
+    return `(?:${words.map(escapeRegex).join('|')})`;
+}
+/** 命中覆盖了几个查询词（字面子串） */
+function coverageOf(text, words) {
+    let n = 0;
+    for (const w of words)
+        if (text.includes(w))
+            n += 1;
+    return n;
+}
 /**
  * 全量遍历用的字段格式（plan §0.5.1）：10k 实测 JSON 17.2 MB，
  * 这些字段只要约 2 MB，且省掉 body / rawContent / snippets。
@@ -790,7 +847,7 @@ export function hasCjk(text) {
 const LEAN_FIELD = '\u001f';
 const LEAN_RECORD = '\u001e';
 const LEAN_TAG = '\u001c';
-const LEAN_TEMPLATE = [
+const LEAN_FIELDS = [
     '{{absPath}}',
     '{{title}}',
     '{{wordCount}}',
@@ -802,34 +859,43 @@ const LEAN_TEMPLATE = [
     '{{metadata.authority}}',
     '{{metadata.date}}',
     '{{metadata.supersede-reason}}',
-    '{{lead}}',
-].join(LEAN_FIELD);
+];
+const LEAN_TEMPLATE = [...LEAN_FIELDS, '{{lead}}'].join(LEAN_FIELD);
+/**
+ * 带 query 的结构化检索额外取 snippets[0]（R2）。只在有 query 时用：
+ * 无 query 的 `zk_query` 会扫全库，加这一列等于给 10k 全量遍历多背一段正文。
+ * lead 仍放最后，解析时把剩余段拼回去。
+ */
+const SEARCH_LEAN_TEMPLATE = [...LEAN_FIELDS, '{{snippets}}', '{{lead}}'].join(LEAN_FIELD);
 /** zk 模板给的是 `2026-01-02 03:04:05 +0000 UTC`，转成 Date 能吃的 ISO（zk 存的是 UTC） */
 function leanIso(value) {
     const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/.exec(String(value).trim());
     return m ? `${m[1]}T${m[2]}Z` : String(value).trim();
 }
 /**
- * 解析 LEAN_TEMPLATE 的输出。字段顺序与模板一一对应；不足 11 段说明 zk 行为变了，
- * 记 malformed（调用方报 unknown，而不是把空数组当「没有笔记」）。
+ * 解析 LEAN_TEMPLATE / SEARCH_LEAN_TEMPLATE 的输出。字段顺序与模板一一对应；
+ * 不足定长字段数说明 zk 行为变了，记 malformed（调用方报 unknown，而不是把空数组当「没有笔记」）。
  */
-function parseLeanList(stdout, cfg) {
+function parseLeanList(stdout, cfg, withSnippet = false) {
     const text = String(stdout ?? '');
     if (!text.trim())
         return { notes: [], malformed: false };
     const notes = [];
     let malformed = false;
+    // 11 个定长字段 +（可选）snippet + lead；lead 放最后，多余的段拼回去
+    const leadAt = withSnippet ? 12 : 11;
     for (const chunk of text.split(LEAN_RECORD)) {
         const record = chunk.replace(/^[\r\n]+|[\r\n]+$/g, '');
         if (!record.trim())
             continue;
         const parts = record.split(LEAN_FIELD);
-        if (parts.length < 11) {
+        if (parts.length < leadAt) {
             malformed = true;
             continue;
         }
         const [absPath, title, words, created, modified, tags, status, type, authority, date, reason] = parts;
-        const lead = parts.slice(11).join(LEAN_FIELD).replace(/\s+/g, ' ').trim().slice(0, 200);
+        const snippet = withSnippet ? clipSnippet(parts[11]) : '';
+        const lead = parts.slice(leadAt).join(LEAN_FIELD).replace(/\s+/g, ' ').trim().slice(0, 200);
         const abs = absPath ?? '';
         if (!abs) {
             malformed = true;
@@ -856,6 +922,7 @@ function parseLeanList(stdout, cfg) {
             created: leanIso(created ?? ''),
             modified: leanIso(modified ?? ''),
             lead,
+            snippet,
             words: Number(words ?? 0),
             metadata,
             status: String(status ?? ''),
@@ -882,14 +949,21 @@ export async function searchNotesDetailed(cfg, opts = {}, signal) {
     // 改用只取必要字段的一次全量扫描（10k ≈ 2 MB / 2.6 s，JSON 是 17.2 MB），
     // 取到 MAX_SCAN + 1 条，超过 MAX_SCAN 才能确定「触顶」而不是刚好 10 000 条。
     const scanLimit = MAX_SCAN;
+    // R3：CJK 多词切词。整串查询仍走现有两遍策略；多词时正则这一路换成转义后的
+    // alternation（一次进程召回），再按 rawContent 的覆盖度排序（R3 第 2 条）。
+    const cjkWords = splitCjkQuery(opts.query ?? '');
+    const queryTerms = cjkWords.length > 0
+        ? cjkWords
+        : (String(opts.query ?? '').trim() ? [String(opts.query ?? '').trim()] : []);
+    const regexQuery = cjkWords.length > 0 ? cjkAlternation(cjkWords) : opts.query;
     const build = (strategy, format, fetchLimit) => {
         const args = ['list', '--quiet', '--no-pager', '--format', format, '--limit', String(fetchLimit)];
-        if (format === LEAN_TEMPLATE)
+        if (format === LEAN_TEMPLATE || format === SEARCH_LEAN_TEMPLATE)
             args.push('-d', LEAN_RECORD);
         for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived }))
             args.push('-x', name);
         if (opts.query)
-            args.push('-m', opts.query);
+            args.push('-m', strategy === 're' ? String(regexQuery) : opts.query);
         if (strategy)
             args.push('-M', strategy);
         for (const t of opts.tags ?? [])
@@ -902,8 +976,13 @@ export async function searchNotesDetailed(cfg, opts = {}, signal) {
             args.push('--orphan');
         if (opts.brokenLinks)
             args.push('--broken-links');
-        if (opts.sort && SORT_TERMS[opts.sort])
-            args.push('--sort', SORT_TERMS[opts.sort]);
+        // R1：有 query 且未显式给 sort（或显式 relevance）时不要传 --sort，
+        // 否则 zk 的 created- 会覆盖 FTS 的相关性顺序；无 query 的 relevance 回退 created-desc。
+        const sortTerm = opts.sort === 'relevance'
+            ? (opts.query ? undefined : SORT_TERMS['created-desc'])
+            : (opts.sort ? SORT_TERMS[opts.sort] : undefined);
+        if (sortTerm)
+            args.push('--sort', sortTerm);
         for (const p of opts.paths ?? [])
             args.push(p);
         return args;
@@ -916,26 +995,58 @@ export async function searchNotesDetailed(cfg, opts = {}, signal) {
         (types.length === 0 || types.includes(n.type) || (types.includes('daily') && isUnderDir(n.path, cfg.dailyDir)));
     /** 无 JS 过滤：limit + 1 就够判断 hasMore，继续走 JSON（小、字段全） */
     const plainStrategy = async (strategy) => {
-        const notes = parseList(await zk(cfg, build(strategy, 'json', limit + 1), { signal }))
-            .map((raw) => toRecord(raw, cfg));
-        return { notes, examined: notes.length };
+        const raws = parseList(await zk(cfg, build(strategy, 'json', limit + 1), { signal }));
+        const notes = raws.map((raw) => toRecord(raw, cfg, queryTerms));
+        const coverage = new Map();
+        if (cjkWords.length > 0) {
+            for (let i = 0; i < raws.length; i += 1) {
+                coverage.set(notes[i].path, coverageOf(`${String(raws[i].title ?? '')} ${String(raws[i].rawContent ?? '')}`, cjkWords));
+            }
+        }
+        return { notes, examined: notes.length, coverage };
     };
     /** 有 JS 过滤：扫到 MAX_SCAN + 1，过滤后再按 limit 截断；字段格式见 LEAN_TEMPLATE */
     const filteredStrategy = async (strategy) => {
-        const parsed = parseLeanList(await zk(cfg, build(strategy, LEAN_TEMPLATE, scanLimit + 1), { signal }), cfg);
+        // 有 query 才多取 snippets[0]（R2）：无 query 时这一列会给全库扫描多背一段正文。
+        const format = opts.query ? SEARCH_LEAN_TEMPLATE : LEAN_TEMPLATE;
+        const parsed = parseLeanList(await zk(cfg, build(strategy, format, scanLimit + 1), { signal }), cfg, !!opts.query);
+        const notes = parsed.notes.filter(keep);
+        const coverage = new Map();
+        if (cjkWords.length > 0) {
+            // LEAN 没有 rawContent：只能用标题 / lead / snippet 算覆盖度（best effort）。
+            for (const n of notes)
+                coverage.set(n.path, coverageOf(`${n.title} ${n.lead} ${n.snippet}`, cjkWords));
+        }
         return {
-            notes: parsed.notes.filter(keep),
+            notes,
             examined: parsed.notes.length,
             capped: parsed.notes.length > scanLimit,
             malformed: parsed.malformed,
+            coverage,
         };
+    };
+    /** 合并两路的覆盖度，按 coverage 降序 → 原顺序（FTS 在前）→ created-desc 排序 */
+    const rank = (notes, ...maps) => {
+        if (cjkWords.length === 0)
+            return notes;
+        const coverage = new Map();
+        for (const m of maps) {
+            for (const [p, c] of m ?? [])
+                coverage.set(p, Math.max(coverage.get(p) ?? 0, c));
+        }
+        const order = new Map(notes.map((n, i) => [n.path, i]));
+        return [...notes].sort((a, b) => (coverage.get(b.path) ?? 0) - (coverage.get(a.path) ?? 0)
+            || (order.get(a.path) ?? 0) - (order.get(b.path) ?? 0)
+            || String(b.created).localeCompare(String(a.created)));
     };
     const finish = (notes, examined, extra = {}) => {
         const more = notes.length > limit || extra.capped === true;
         const completeness = more
             ? 'partial'
             : extra.malformed || extra.strategyFailed ? 'unknown' : 'complete';
-        return { notes: notes.slice(0, limit), hasMore: more, completeness, scanned: examined, matchStrategy: 'fts' };
+        // R2：只有 complete 时 notes.length 才是精确总数；partial / unknown 不给 total。
+        const total = completeness === 'complete' ? { total: notes.length } : {};
+        return { notes: notes.slice(0, limit), hasMore: more, completeness, scanned: examined, ...total, matchStrategy: 'fts' };
     };
     /**
      * mixed 的判据必须看「截断后的可见结果」：FTS 已占满 limit 时，正则补的那条
@@ -977,15 +1088,16 @@ export async function searchNotesDetailed(cfg, opts = {}, signal) {
                 seen.add(n.path);
                 merged.push(n);
             }
+            const ranked = rank(merged, hits.coverage, regex?.coverage);
             return {
-                ...finish(merged, hits.examined + (regex?.examined ?? 0), { strategyFailed }),
-                matchStrategy: strategyOf(hits.notes, merged),
+                ...finish(ranked, hits.examined + (regex?.examined ?? 0), { strategyFailed }),
+                matchStrategy: strategyOf(hits.notes, ranked),
             };
         }
         catch (err) {
             if (opts.query && err instanceof ZkError) {
                 const retry = await plainStrategy('re');
-                return { ...finish(retry.notes, retry.examined), matchStrategy: 'regex' };
+                return { ...finish(rank(retry.notes, retry.coverage), retry.examined), matchStrategy: 'regex' };
             }
             throw err;
         }
@@ -1018,19 +1130,20 @@ export async function searchNotesDetailed(cfg, opts = {}, signal) {
             seen.add(n.path);
             merged.push(n);
         }
+        const ranked = rank(merged, hits.coverage, regex?.coverage);
         return {
-            ...finish(merged, hits.examined + (regex?.examined ?? 0), {
+            ...finish(ranked, hits.examined + (regex?.examined ?? 0), {
                 capped: hits.capped || regex?.capped === true,
                 malformed: hits.malformed || regex?.malformed === true,
                 strategyFailed,
             }),
-            matchStrategy: strategyOf(hits.notes, merged),
+            matchStrategy: strategyOf(hits.notes, ranked),
         };
     }
     catch (err) {
         if (opts.query && err instanceof ZkError) {
             const retry = await filteredStrategy('re');
-            return { ...finish(retry.notes, retry.examined, retry), matchStrategy: 'regex' };
+            return { ...finish(rank(retry.notes, retry.coverage), retry.examined, retry), matchStrategy: 'regex' };
         }
         throw err;
     }
@@ -1314,6 +1427,7 @@ function noteFromDisk(cfg, abs) {
         created: stat.birthtime.toISOString(),
         modified: stat.mtime.toISOString(),
         lead: '',
+        snippet: '',
         words: content.split(/\s+/).filter(Boolean).length,
         metadata: { ...fields },
         status: fields.status ?? '',
