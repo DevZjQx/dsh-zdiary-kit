@@ -42,6 +42,11 @@ export interface RecallResult {
   entryPoints: EntryPoint[]
   /** true = 命中的入口超过上限，只回了前几条（§0.5 第 3 条：上限不许静默） */
   entryPointsTruncated: boolean
+  /**
+   * true = `via: 'query'` 的入口已经写进 `text`（占同一份预算）；false = 预算放不下，还没写。
+   * 给 render 用：这是结构化状态，不要靠 `text.includes('入口…')` 反推 —— 笔记正文里也可能有那串字。
+   */
+  entryPointsInText: boolean
   /** 死胡同探针：归档里与本次候选同名的废弃结论（零子进程；没有就是空数组） */
   counterEntries: CounterEntry[]
   /** true = 归档扫描触到上限，只看了前 N 篇（没看全 ≠ 没有） */
@@ -110,12 +115,16 @@ export async function assembleRecall(cfg: Config, opts: RecallOptions = {}, sign
   // R9：入口卡排在装配正文之前。`via: 'query'` 的条目指向的笔记可以不在本次结果里 ——
   // 这是卢曼的索引方向（关键词 → 卡号），`via: 'result'` 那些已经在这段正文里，不重复占预算。
   const entryPoints = entryPointsOf(cfg, result.notes, { query: opts.query })
+  let entryPointsInText = false
   const entryLines = entryPoints.points.filter((p) => p.via === 'query')
     .map((p) => `· ${p.entry} → ${p.resolved ? p.absPath : `[[${p.title}]]（用 zk_walk 走进去）`}`)
   let text = ''
   if (entryLines.length) {
     const block = `入口（MEMORY 命中）：\n${entryLines.join('\n')}`
-    if (countWords(block) <= budget) text = block
+    if (countWords(block) <= budget) {
+      text = block
+      entryPointsInText = true
+    }
   }
   let used = text ? countWords(text) : 0
   let index = 0
@@ -167,6 +176,7 @@ export async function assembleRecall(cfg: Config, opts: RecallOptions = {}, sign
     notes: items,
     entryPoints: entryPoints.points,
     entryPointsTruncated: entryPoints.truncated,
+    entryPointsInText,
     counterEntries: counters.entries,
     counterEntriesTruncated: counters.truncated,
   }

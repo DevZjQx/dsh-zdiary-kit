@@ -12,7 +12,7 @@ import { installZk, sourceLabel } from './lib/install.js';
 import { resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, notebookStats, indexNotebook, indexPolicy, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError, allNotes, parseErrorWarnings, indexLagHint, walkFrom, } from './lib/zk.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook, personaStatus, timelineStatus } from './lib/lint.js';
 import { assembleRecall } from './lib/recall.js';
-import { entryPointsOf } from './lib/entry-points.js';
+import { entryPointLines, entryPointsOf } from './lib/entry-points.js';
 import { archivedCounterparts, describeCounterEntries } from './lib/archive-probe.js';
 import { dreamNotebook, STALE_DAYS } from './lib/dream.js';
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
@@ -553,11 +553,9 @@ async function main() {
             const how = result.matchStrategy === 'mixed'
                 ? '\n（中文查询：全文 + 子串合并，已补上全文索引漏掉的）'
                 : result.matchStrategy === 'regex' ? '\n（全文无结果，已退回子串匹配）' : '';
-            // 与 zk_search 同口径：MEMORY 入口 + 死胡同提醒（都是零子进程的本地读）
-            const points = entryPointsOf(cfg, result.notes, { query }).points;
-            const entryLines = points.length
-                ? '\n\nMEMORY 入口：\n' + points.map((p) => `· ${p.entry} → ${p.resolved ? p.path : `[[${p.title}]]（不在本批结果里）`}`).join('\n')
-                : '';
+            // 与 zk_search 同口径：MEMORY 入口 + 死胡同提醒（都是零子进程的本地读），措辞共用一份
+            const entryPoints = entryPointsOf(cfg, result.notes, { query });
+            const entryLines = entryPointLines(entryPoints.points, { truncated: entryPoints.truncated });
             const counters = describeCounterEntries(archivedCounterparts(cfg, result.notes, { query }), { zeroHit: !result.notes.length });
             const counterLines = counters ? '\n\n' + counters : '';
             print(json ? result.notes : noteList(result.notes) + how + entryLines + counterLines, json);
@@ -575,9 +573,15 @@ async function main() {
             });
             const kept = r.notes.filter((n) => n.included).length;
             const counters = describeCounterEntries({ entries: r.counterEntries, truncated: r.counterEntriesTruncated }, { zeroHit: !r.notes.length });
-            print(json ? r : (r.text || '没有匹配的笔记') +
+            // 入口块放不进预算时（entryPointsInText === false）在正文外补回来：与工具同口径，不静默丢
+            const entries = entryPointLines(r.entryPoints, { truncated: r.entryPointsTruncated, skipQuery: r.entryPointsInText });
+            // 命中却全被预算挡下 ≠ 没有匹配：别把「装不下」说成「库里没有」
+            const body = r.text || (r.notes.length
+                ? `命中 ${r.notes.length} 篇，但都放不进 ${r.budget} 词预算（--json 的 notes[].reason 说明每条为什么被挡）`
+                : '没有匹配的笔记');
+            print(json ? r : body +
                 `\n\n（${r.used}/${r.budget} 词 · 收录 ${kept}/${r.notes.length} 篇）` +
-                (counters ? '\n\n' + counters : ''), json);
+                entries + (counters ? '\n\n' + counters : ''), json);
             return;
         }
         case 'walk': {

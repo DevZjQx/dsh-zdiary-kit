@@ -103,6 +103,31 @@ export function liveMemoryEntries(cfg) {
     return out;
 }
 /**
+ * 人话版（工具 render 与 `zk-kit search` / `zk-kit recall` 共用一份措辞，免得三处写法分叉）。
+ * 没有入口就一个字都不加（老库输出与改动前一致）。
+ *
+ * `skipQuery`：`via: 'query'` 的入口已经写进召回正文时（`entryPointsInText`），只补另一种，别重复占版面。
+ */
+export function entryPointLines(points, opts = {}) {
+    if (!points?.length)
+        return '';
+    // 两种来源分开写：`query` 是「你的查询在 MEMORY 里有对应结论」，来源可能不在本批结果里；
+    // `result` 只是本批结果的注解。混在一起写，agent 会以为两件事一样。
+    const query = opts.skipQuery ? [] : points.filter((p) => p.via === 'query');
+    const result = points.filter((p) => p.via !== 'query');
+    if (!query.length && !result.length)
+        return '';
+    const where = (p) => p.resolved
+        ? p.path
+        : `[[${p.title}]]（不在本批结果里：用 zk_walk 走进去）`;
+    const block = (title, list) => title +
+        list.map((p) => `· ${p.entry} → ${where(p)}`).join('\n') + '\n';
+    return '\n\n' +
+        (query.length ? block('MEMORY 里与查询相关的入口（来源不必在本批结果里）：\n', query) : '') +
+        (result.length ? block('已晋升结论的入口（MEMORY.md 指向本批结果）：\n', result) : '') +
+        (opts.truncated ? '（只回前 5 条：还有更多入口没列）' : '');
+}
+/**
  * 本次检索的入口。两条来源（先查询命中，再结果命中），按 MEMORY 文件顺序，最多 MAX_ENTRY_POINTS 条：
  *   1. 条目本身命中 `query` → 目标不必在结果集里（路径式 `[[来源路径]]` 直接读盘；标题式仍要结果集里有）；
  *   2. 条目指向本次命中的笔记 → 结果集的注解。

@@ -5779,6 +5779,57 @@ describe('R8 / R9-v1 / R10：入口 + 一跳（§10.4 第 8–10 项）', () => 
     }
   })
 
+  it('R8 补：CLI zk-kit walk 与工具同口径（路径 / 标题种子、--json、非法方向、种子不存在）', async () => {
+    const { c } = await setup('nb-r8-cli')
+    try {
+      const seed = await zk.createNote(c, { title: 'CLI 种子', content: '种子正文' })
+      const out = await zk.createNote(c, { title: 'CLI 出链', content: '出链正文' })
+      const back = await zk.createNote(c, { title: 'CLI 入链', content: '入链正文' })
+      // 出链那一行带可辨认的字：CLI 要能把它（而不是只有标题）打出来
+      fs.appendFileSync(seed.absPath, '\n## 相关小节\n\n- 见 [[' + seedOf(out.path) + ']] 的算法\n', 'utf8')
+      await zk.linkNotes(c, back.path, seed.path)
+      await zk.indexNotebook(c)
+
+      const cli = path.resolve(import.meta.dir, '..', 'src', 'cli.ts')
+      const run = (...args: string[]) =>
+        spawnSync(process.execPath, [cli, ...args], { env: process.env, encoding: 'utf8', timeout: 60_000 })
+
+      const both = run('walk', seed.path, '--direction', 'both', '--limit', '5')
+      expect(both.status).toBe(0)
+      expect(both.stdout).toContain('1 跳邻居')
+      expect(both.stdout).toContain(out.path)
+      expect(both.stdout).toContain(back.path)
+      expect(both.stdout).toContain('的算法')
+      expect(both.stdout).toContain('〔相关小节〕')
+      expect(both.stdout).toContain('←')
+
+      // 标题种子：多一次 `-M exact` 解析，结果一致
+      const byTitle = run('walk', 'CLI 种子', '--direction', 'in')
+      expect(byTitle.status).toBe(0)
+      expect(byTitle.stdout).toContain(back.path)
+
+      const asJson = run('walk', seed.path, '--direction', 'out', '--json')
+      expect(asJson.status).toBe(0)
+      const parsed = JSON.parse(String(asJson.stdout)) as Record<string, unknown>
+      expect((parsed.seed as { path: string }).path).toBe(seed.path)
+      const notes = parsed.notes as Array<{ relation: string; linkLine?: string; path: string }>
+      expect(notes.map((n) => n.relation)).toEqual(['out'])
+      expect(notes[0]?.path).toBe(out.path)
+      expect(notes[0]?.linkLine).toContain('的算法')
+
+      const bad = run('walk', seed.path, '--direction', 'sideways')
+      expect(bad.status).not.toBe(0)
+      expect(String(bad.stderr)).toContain('方向只能是')
+
+      const missing = run('walk', '不存在的标题')
+      expect(missing.status).toBe(0)
+      expect(missing.stdout).toContain('没找到种子笔记')
+      expect(missing.stdout).toContain('不精确匹配时不猜')
+    } finally {
+      restore()
+    }
+  })
+
   it('R9-v1：MEMORY 活条目 → 本次结果集入口；search / query / recall 同口径；退役与归档不误报', async () => {
     const { c, dir } = await setup('nb-r9-entry')
     try {
@@ -6041,6 +6092,82 @@ describe('§14：边的语义、入口不再是注解、死胡同可见', () => 
       // 没有 query 时只剩「结果集注解」语义（老行为不变）
       const noQuery = entryPointsLib.entryPointsOf(c, [{ title: plain.title, path: plain.path, absPath: plain.absPath, id: '' }])
       expect(noQuery.points).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  it('R9 补：召回的入口状态走结构化字段 —— 正文含同名字符串不误判，预算放不下时仍列出', async () => {
+    const { c, dir } = await setup('nb-recall-entry-state')
+    try {
+      const source = await zk.createNote(c, { title: '入口指向的来源', content: '正文没有那个词' })
+      // 正文里故意写上 render 曾用来嗅探的字符串：它不能冒充「入口块已经在正文里」
+      await zk.createNote(c, { title: '正文含标记', content: '查询词 入口（MEMORY 命中）' })
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+        '# MEMORY', '',
+        `- 2026-01-01 关于查询词的结论甲 → [[${stem(source.path)}]]`,
+        '',
+      ].join('\n'), 'utf8')
+      await zk.indexNotebook(c)
+
+      const env = { signal: AbortSignal.timeout(30_000) }
+      const recall = tool(dir, 'zk_recall')
+      const loose = await recall.execute({ query: '查询词', budget: 500, limit: 5 }, env) as Record<string, unknown>
+      expect(loose.entryPointsInText).toBe(true)
+      const blockWords = memory.countWords(String(loose.text).split('\n\n')[0]!)
+      // 已经写进正文的入口，不在正文外重复一遍
+      const renderedLoose = recall.output.render({ query: '查询词', budget: 500 }, loose)[0]!.text
+      expect(renderedLoose.split('结论甲').length - 1).toBe(1)
+      expect(undeclaredKeys(loose, recall.output.schema)).toEqual([])
+      expect(lossyPaths(loose)).toEqual([])
+
+      // 预算刚好不够放入口块：块被挤出去，而正文里那篇笔记带着「嗅探字符串」
+      const tightBudget = blockWords - 1
+      const tight = await recall.execute({ query: '查询词', budget: tightBudget, limit: 5 }, env) as Record<string, unknown>
+      expect(tight.entryPointsInText).toBe(false)
+      expect((tight.notes as Array<{ included: boolean }>).some((n) => n.included)).toBe(true)
+      expect(String(tight.text)).toContain('入口（MEMORY 命中）')
+      // 关键回归：正文里有这串字 ≠ 入口块在正文里 —— 入口行必须补回来，且只出现一次
+      const renderedTight = recall.output.render({ query: '查询词', budget: tightBudget }, tight)[0]!.text
+      expect(renderedTight).toContain('结论甲')
+      expect(renderedTight.split('结论甲').length - 1).toBe(1)
+      expect(undeclaredKeys(tight, recall.output.schema)).toEqual([])
+      expect(lossyPaths(tight)).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  it('CLI zk-kit recall：入口放不进预算时照样列出来，也不把「装不下」说成「没有匹配」', async () => {
+    const { c, dir } = await setup('nb-recall-cli-entry')
+    try {
+      const source = await zk.createNote(c, { title: 'CLI 入口来源', content: '正文没有那个词' })
+      await zk.createNote(c, { title: 'CLI 命中', content: '查询词的正文 '.repeat(40) })
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+        '# MEMORY', '',
+        `- 2026-01-01 关于查询词的结论 → [[${stem(source.path)}]]`,
+        '',
+      ].join('\n'), 'utf8')
+      await zk.indexNotebook(c)
+
+      const cli = path.resolve(import.meta.dir, '..', 'src', 'cli.ts')
+      const run = (...args: string[]) =>
+        spawnSync(process.execPath, [cli, ...args], { env: process.env, encoding: 'utf8', timeout: 60_000 })
+
+      // 小预算：命中 1 篇但装不下，入口块也放不进正文
+      const tight = run('recall', '查询词', '--budget', '2', '--limit', '5')
+      expect(tight.status).toBe(0)
+      expect(tight.stdout).toContain('放不进')
+      expect(tight.stdout).not.toContain('没有匹配的笔记')
+      expect(tight.stdout).toContain('MEMORY 里与查询相关的入口')
+      expect(tight.stdout).toContain(source.path)
+
+      // 大预算：入口已经写进正文，不重复列
+      const loose = run('recall', '查询词', '--budget', '500', '--limit', '5')
+      expect(loose.status).toBe(0)
+      expect(loose.stdout).toContain('入口（MEMORY 命中）')
+      // 正文里已有一份；正文外不再补一份（入口行只出现一次）
+      expect(loose.stdout.split('关于查询词的结论').length - 1).toBe(1)
     } finally {
       restore()
     }

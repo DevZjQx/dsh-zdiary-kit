@@ -300,7 +300,12 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 - 分组轮转：按 `type` → 首个标签 → 「未分类」分组，各组轮流取一条，组内保持检索顺序；预算不会被排在最前的那一类全吃掉。
 - 每条取 `title` / `path` / `absPath` / `words` 与 `snippet`（比 `lead` 多信息时用它），`budget` / `used` 走 `countWords` 口径（中文 2 字 1 词）。放不下就**整条丢弃、不切半句**，`notes[].reason` 明写 `included` / `duplicate` / `empty` / `over-budget`；`used` 是对最终整段文本算的（分隔符也计入），所以一定 `<= budget`。
 - 0 命中返回空 `text` / 空 `notes` / `used = 0`，不编造；`completeness` / `hasMore` 沿用检索三态 —— 装配过的只是本次候选，不代表库里没有别的。需要全文仍由宿主原生 `read` 按 `absPath` 取。
-- 命令行 `zk-kit recall [词] [--budget 500] [--limit 30] [--json]`，与工具走同一份 `assembleRecall`。
+- 命令行 `zk-kit recall [词] [--budget 500] [--limit 30] [--json]`，与工具走同一份 `assembleRecall`；
+  入口块的落位也同口径（见下）。
+- 入口块（`via=query`）排在装配正文之前、占同一份预算。它进没进 `text` 是**结构化状态** `entryPointsInText`，
+  render 读这个字段（`lib/entry-points.ts` 的 `entryPointLines` 与 `zk-kit search` / `zk-kit recall` 共用一份措辞）：
+  `false` 时在正文外补列 —— 不从 `text` 里嗅字符串，笔记正文里也可能出现同样的字。
+  命中却全被预算挡下时，CLI 明说「放不进 N 词预算」，不再打印「没有匹配的笔记」。
 
 **一跳入口（R8，§10.4 第 8 项）.** 新增只读 `zk_walk`（`lib/zk.ts` 的 `walkFrom`）：从一篇种子出发走一跳，补上「沿链接走」的入口。
 - **种子解析**：路径（相对 / 绝对 / `[[路径]]`）只看磁盘，**0 个子进程**；标题 / `[[标题]]` / `[[id]]` 走一次

@@ -66,13 +66,16 @@ export async function assembleRecall(cfg, opts = {}, signal) {
     // R9：入口卡排在装配正文之前。`via: 'query'` 的条目指向的笔记可以不在本次结果里 ——
     // 这是卢曼的索引方向（关键词 → 卡号），`via: 'result'` 那些已经在这段正文里，不重复占预算。
     const entryPoints = entryPointsOf(cfg, result.notes, { query: opts.query });
+    let entryPointsInText = false;
     const entryLines = entryPoints.points.filter((p) => p.via === 'query')
         .map((p) => `· ${p.entry} → ${p.resolved ? p.absPath : `[[${p.title}]]（用 zk_walk 走进去）`}`);
     let text = '';
     if (entryLines.length) {
         const block = `入口（MEMORY 命中）：\n${entryLines.join('\n')}`;
-        if (countWords(block) <= budget)
+        if (countWords(block) <= budget) {
             text = block;
+            entryPointsInText = true;
+        }
     }
     let used = text ? countWords(text) : 0;
     let index = 0;
@@ -123,6 +126,7 @@ export async function assembleRecall(cfg, opts = {}, signal) {
         notes: items,
         entryPoints: entryPoints.points,
         entryPointsTruncated: entryPoints.truncated,
+        entryPointsInText,
         counterEntries: counters.entries,
         counterEntriesTruncated: counters.truncated,
     };

@@ -19,7 +19,7 @@ import { searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDaily
 import { configuredAliases, readAliases } from '../../lib/alias.js';
 import { buildMemoryPayload, memoryCapacity, META_FILES } from '../../lib/memory.js';
 import { assembleRecall } from '../../lib/recall.js';
-import { entryPointsOf } from '../../lib/entry-points.js';
+import { entryPointLines, entryPointsOf } from '../../lib/entry-points.js';
 import { archivedCounterparts, describeCounterEntries } from '../../lib/archive-probe.js';
 import { bumpUsage, readUsage } from '../../lib/usage.js';
 import { META_NAMES } from '../../lib/meta.js';
@@ -297,24 +297,6 @@ function tagSuffix(record) {
 function detailOf(n) {
     return n.snippet && n.snippet !== n.lead ? n.snippet : (n.lead ?? '');
 }
-/** R9：把 MEMORY 入口挂在检索结果末尾；没有就一个字都不加（老库输出与改动前一致） */
-function entryPointLines(points, truncated = false) {
-    if (!points?.length)
-        return '';
-    // 两种来源分开写：`query` 是「你的查询在 MEMORY 里有对应结论」，来源可能不在本批结果里；
-    // `result` 只是本批结果的注解。混在一起写，agent 会以为两件事一样。
-    const query = points.filter((p) => p.via === 'query');
-    const result = points.filter((p) => p.via !== 'query');
-    const where = (p) => p.resolved
-        ? p.path
-        : `[[${p.title}]]（不在本批结果里：用 zk_walk 走进去）`;
-    const block = (title, list) => title +
-        list.map((p) => `· ${p.entry} → ${where(p)}`).join('\n') + '\n';
-    return '\n\n' +
-        (query.length ? block('MEMORY 里与查询相关的入口（来源不必在本批结果里）：\n', query) : '') +
-        (result.length ? block('已晋升结论的入口（MEMORY.md 指向本批结果）：\n', result) : '') +
-        (truncated ? '（只回前 5 条：还有更多入口没列）' : '');
-}
 /** 死胡同提醒（措辞与 `zk-kit search` 共用一份）；没有就一个字都不加 */
 function counterBlockOf(entries, truncated, zeroHit) {
     const body = describeCounterEntries({ entries: entries ?? [], truncated: truncated === true }, { zeroHit });
@@ -522,7 +504,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 if (!v.count) {
                     return text(`没有匹配的笔记（笔记本 ${v.notebook}）` +
                         zeroHitHint(args, '或按 tags 查') +
-                        (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「库里没有」' : '') + entryPointLines(v.entryPoints, v.entryPointsTruncated) + counters);
+                        (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「库里没有」' : '') + entryPointLines(v.entryPoints, { truncated: v.entryPointsTruncated }) + counters);
                 }
                 const how = v.matchStrategy === 'mixed'
                     ? '（中文：全文 + 子串合并，已补上全文索引漏掉的）'
@@ -531,7 +513,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     ? '\n⚠️ 无法确认结果是否完整（解析失败 / 补充检索失败），先别把它当成全部命中'
                     : v.hasMore ? `\n⚠️ 还有更多匹配没返回（已检查 ${v.scanned} 条候选）；要更全就提高 limit 或加过滤条件` : '';
                 return text(`${v.count} 条（笔记本 ${v.notebook}）${how}\n` + v.notes.map(noteLine).join('\n') +
-                    entryPointLines(v.entryPoints, v.entryPointsTruncated) + tail + counters);
+                    entryPointLines(v.entryPoints, { truncated: v.entryPointsTruncated }) + tail + counters);
             },
         }),
         t({
@@ -659,7 +641,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 if (!v.count) {
                     return text(`没有匹配的笔记（笔记本 ${v.notebook}）` +
                         zeroHitHint(args, '或给 tags 参数按标签查') +
-                        (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「记忆里没有」' : '') + entryPointLines(v.entryPoints, v.entryPointsTruncated) + counters);
+                        (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「记忆里没有」' : '') + entryPointLines(v.entryPoints, { truncated: v.entryPointsTruncated }) + counters);
                 }
                 const tail = v.completeness === 'unknown'
                     ? '\n⚠️ 无法确认结果是否完整（解析失败 / 补充检索失败），先别把它当成全部命中'
@@ -670,7 +652,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     return `${i + 1}. ${String(n.title)}  [${badges.join(' · ')}]\n   ${String(n.absPath || n.path)} · ${String(n.created)}${detail ? '\n   ' + detail : ''}`;
                 });
                 return text(`${v.count} 条（笔记本 ${v.notebook}）\n` + lines.join('\n') +
-                    entryPointLines(v.entryPoints, v.entryPointsTruncated) + tail + counters);
+                    entryPointLines(v.entryPoints, { truncated: v.entryPointsTruncated }) + tail + counters);
             },
         }),
         t({
@@ -719,6 +701,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     entryPoints: { type: 'array', items: ENTRY_POINT },
                     /** 入口超过上限（true），不静默少列 */
                     entryPointsTruncated: { type: 'boolean' },
+                    /** true = via=query 的入口已写进 text（占同一份预算）；false 时正文里没有它们 */
+                    entryPointsInText: { type: 'boolean' },
                     /** 死胡同探针：归档里同名的废弃结论 */
                     counterEntries: { type: 'array', items: COUNTER_ENTRY },
                     counterEntriesTruncated: { type: 'boolean' },
@@ -754,16 +738,19 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 if (!v.notes.length) {
                     return text(`没有匹配的笔记（笔记本 ${v.notebook}）` +
                         zeroHitHint(args, '或按 tags 查') +
-                        (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「库里没有」' : '') + entryPointLines(v.entryPoints, v.entryPointsTruncated) + counters);
+                        (v.completeness === 'unknown' ? '；但这次检索结果无法完整解析，不能当作「库里没有」' : '') + entryPointLines(v.entryPoints, { truncated: v.entryPointsTruncated }) + counters);
                 }
                 const lines = [`召回装配：${v.used}/${v.budget} 词 · 收录 ${kept}/${v.notes.length} 篇（笔记本 ${v.notebook}）`];
                 if (v.text)
                     lines.push('', v.text);
                 if (dropped)
                     lines.push(`（${dropped} 篇没放进去：整条丢弃，没有切半句；原因见 notes[].reason）`);
-                // `via: 'query'` 的入口已经写进 text（排在装配正文之前）；只有预算放不下时才会在这里补回
-                const inText = v.text.includes('入口（MEMORY 命中）');
-                const points = entryPointLines(inText ? v.entryPoints.filter((p) => p.via !== 'query') : v.entryPoints, v.entryPointsTruncated);
+                // `via: 'query'` 的入口已经写进 text（排在装配正文之前）；只有预算放不下时才会在这里补回。
+                // 状态取自 assembleRecall 的 `entryPointsInText`，不从 text 里嗅字符串 —— 笔记正文也可能含那串字。
+                const points = entryPointLines(v.entryPoints, {
+                    truncated: v.entryPointsTruncated,
+                    skipQuery: v.entryPointsInText,
+                });
                 if (points)
                     lines.push(points.trimStart());
                 const tail = v.completeness === 'unknown'
