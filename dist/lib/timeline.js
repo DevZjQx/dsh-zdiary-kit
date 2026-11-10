@@ -1,3 +1,18 @@
+/**
+ * 日记时间轴校验（v3.1 M0）：只报告，不改文件（计划 §2 D1 / D2 / D5）。
+ *
+ * 为什么单独一层：日记的 `## HH:MM` / `### HH:MM` 是人的工作面，空块、倒序、层级混用
+ * 都不会让 zk 报错，也不会影响检索 —— 只会让时间轴慢慢读不出顺序。自动重排会改正文顺序，
+ * diff 不可审，所以这里只产出问题清单，修不修由人或 agent 决定。
+ *
+ * 两种结构分开判：
+ *   · layered（有 `## Events`，大小写不敏感）：时间条目必须是 `### HH:MM`，且落在 Events 与下一个 `##` 之间；
+ *   · flat（没有 `## Events`）：时间条目必须是 `## HH:MM`，按文件顺序追加。
+ * 统一要求 `## Events` 会让所有 flat 日记一次性全红，所以用第一个 `## Events` 决定结构。
+ * 大小写不敏感是为了跟 `appendDaily` 对齐：`sectionRange` 用 `/^##\s+Events\s*$/i` 找小节，
+ * 这里若区分大小写，`## EVENTS` 会被判成 flat、然后 `### HH:MM` 全报位置错。
+ */
+import { fenceMask } from './fence.js';
 /** 合法时间标题：00:00–23:59，可跟全角 / 半角括号标题 */
 const TIME_TITLE = /^(?:[01]\d|2[0-3]):[0-5]\d(?:\s*[（(].*[）)])?$/;
 /** 看起来像时间（用于抓 11:5x / 9:5 / 24:00 / 12:60 / 12:45 标题）：格式错也要报 */
@@ -6,7 +21,6 @@ const TIME_LIKE = /^\d{1,2}:\d{1,2}/;
 const HEADING = /^(#{1,6})[ \t]+(.*?)[ \t]*$/;
 /** ATX 收尾井号是装饰（`### 12:00 ##` 的标题仍是 `12:00`），与 zk 的 atxHeading 同口径 */
 const CLOSING_HASHES = /[ \t]+#+$/;
-const FENCE = /^\s{0,3}(?:```|~~~)/;
 /**
  * 按行遮掉 frontmatter 与围栏代码：内容换成空行，行号保持不变。
  * 不这样做，围栏里的示例 `## 12:00` 会被当成真的时间条目。
@@ -24,16 +38,10 @@ function maskLines(body) {
             }
         }
     }
-    let inFence = false;
-    for (let i = 0; i < masked.length; i++) {
-        if (FENCE.test(masked[i] ?? '')) {
+    const fenced = fenceMask(masked);
+    for (let i = 0; i < masked.length; i++)
+        if (fenced[i])
             masked[i] = '';
-            inFence = !inFence;
-            continue;
-        }
-        if (inFence)
-            masked[i] = '';
-    }
     return masked;
 }
 function parseHeadings(lines) {

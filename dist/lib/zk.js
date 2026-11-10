@@ -18,6 +18,7 @@ import { parseFrontmatter, setFrontmatter } from './frontmatter.js';
 import { isMetaPath, META_NAMES } from './meta.js';
 import { similarCandidates } from './similar.js';
 import { linkContextOf } from './edge-context.js';
+import { fenceMask } from './fence.js';
 import { normalizeTitle, noteKey } from './wikilink.js';
 export class ZkError extends Error {
     hint;
@@ -1856,25 +1857,6 @@ function atxHeading(line) {
     const title = m[2].replace(/[ \t]+#+$/, '').trim();
     return title ? { level: m[1].length, title } : null;
 }
-/** 围栏行标记（``` / ~~~）：代码块里的 `## x` 是代码，不是小节 */
-function fencedLines(lines) {
-    const mask = [];
-    let fence = null;
-    for (const line of lines) {
-        const m = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-        if (fence) {
-            mask.push(true);
-            if (m && m[1][0] === fence.char && m[1].length >= fence.len)
-                fence = null;
-        }
-        else {
-            mask.push(Boolean(m));
-            if (m)
-                fence = { char: m[1][0], len: m[1].length };
-        }
-    }
-    return mask;
-}
 /**
  * 把一句话摘要填进 `## Summary`。
  *
@@ -1892,7 +1874,7 @@ export function fillSummary(content, summary) {
     if (!body)
         return { text: content, applied: false };
     const lines = String(content ?? '').split('\n');
-    const fenced = fencedLines(lines);
+    const fenced = fenceMask(lines);
     const heads = lines.map((line, i) => (fenced[i] ? null : atxHeading(line)));
     const isSummary = (title) => /^(summary|摘要)$/i.test(title.trim());
     const target = heads.findIndex((h) => h !== null && isSummary(h.title));
@@ -2317,10 +2299,12 @@ function relativeLinkPath(outDir, targetAbs, keepExt) {
         rel = path.basename(targetAbs);
     return keepExt ? rel : rel.replace(NOTE_EXT, '');
 }
-/** 按计划重写一段 Markdown 里的链接；返回新文本与被改条数 */
+/** 按计划重写一段 Markdown 里的链接；返回新文本与被改条数。围栏里的示例链接不动 */
 function relinkText(cfg, text, plan) {
     let changed = 0;
-    const afterWiki = text.replace(WIKI_LINK, (whole, inner) => {
+    const lines = String(text).split('\n');
+    const masked = fenceMask(lines);
+    const wikiOf = (line) => line.replace(WIKI_LINK, (whole, inner) => {
         const bar = inner.indexOf('|');
         const head = bar >= 0 ? inner.slice(0, bar) : inner;
         const tail = bar >= 0 ? inner.slice(bar) : '';
@@ -2343,7 +2327,7 @@ function relinkText(cfg, text, plan) {
         changed++;
         return rebuilt;
     });
-    const afterMd = afterWiki.replace(MD_LINK, (whole, prefix, dest, tail) => {
+    const mdOf = (line) => line.replace(MD_LINK, (whole, prefix, dest, tail) => {
         const angled = dest.startsWith('<') && dest.endsWith('>');
         const raw = angled ? dest.slice(1, -1) : dest;
         if (!raw || raw.startsWith('#'))
@@ -2368,7 +2352,7 @@ function relinkText(cfg, text, plan) {
         changed++;
         return rebuilt;
     });
-    return { text: afterMd, changed };
+    return { text: lines.map((line, i) => (masked[i] ? line : mdOf(wikiOf(line)))).join('\n'), changed };
 }
 /** 新路径归一化：可只给文件名、可给目录（末尾 /），扩展名不变；跑出笔记本由 absPathOf 兜 */
 function renameTargetRel(cfg, oldAbs, to) {

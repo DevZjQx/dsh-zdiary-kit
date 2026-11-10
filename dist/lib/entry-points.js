@@ -20,6 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseFrontmatter } from './frontmatter.js';
+import { withoutFences } from './fence.js';
 import { isMetaPath } from './meta.js';
 import { isRetiredEntry, splitMemoryEntries } from './memory-format.js';
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
@@ -93,7 +94,8 @@ export function liveMemoryEntries(cfg) {
     for (const entry of splitMemoryEntries(body)) {
         if (isRetiredEntry(entry))
             continue;
-        const targets = [...entry.matchAll(WIKI_LINK)]
+        // 代码块里的 `[[…]]` 是示例，不是检索入口
+        const targets = [...withoutFences(entry).matchAll(WIKI_LINK)]
             .map((match) => String(match[1] ?? '').trim())
             .filter(Boolean);
         if (targets.length === 0)

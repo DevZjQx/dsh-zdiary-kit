@@ -20,6 +20,7 @@ import { isMetaPath, META_NAMES } from './meta.ts'
 import { similarCandidates } from './similar.ts'
 import type { SimilarCandidate } from './similar.ts'
 import { linkContextOf } from './edge-context.ts'
+import { fenceMask } from './fence.ts'
 import { normalizeTitle, noteKey } from './wikilink.ts'
 
 export class ZkError extends Error {
@@ -2187,23 +2188,6 @@ function atxHeading(line: string): { level: number; title: string } | null {
   return title ? { level: m[1].length, title } : null
 }
 
-/** 围栏行标记（``` / ~~~）：代码块里的 `## x` 是代码，不是小节 */
-function fencedLines(lines: string[]): boolean[] {
-  const mask: boolean[] = []
-  let fence: { char: string; len: number } | null = null
-  for (const line of lines) {
-    const m = /^ {0,3}(`{3,}|~{3,})/.exec(line)
-    if (fence) {
-      mask.push(true)
-      if (m && m[1][0] === fence.char && m[1].length >= fence.len) fence = null
-    } else {
-      mask.push(Boolean(m))
-      if (m) fence = { char: m[1][0], len: m[1].length }
-    }
-  }
-  return mask
-}
-
 /**
  * 把一句话摘要填进 `## Summary`。
  *
@@ -2220,7 +2204,7 @@ export function fillSummary(content: string, summary: string): { text: string; a
   const body = String(summary ?? '').replace(/\s+/g, ' ').trim()
   if (!body) return { text: content, applied: false }
   const lines = String(content ?? '').split('\n')
-  const fenced = fencedLines(lines)
+  const fenced = fenceMask(lines)
   const heads = lines.map((line, i) => (fenced[i] ? null : atxHeading(line)))
   const isSummary = (title: string): boolean => /^(summary|摘要)$/i.test(title.trim())
 
@@ -2792,11 +2776,14 @@ interface RelinkPlan {
   stems: StemIndex
 }
 
-/** 按计划重写一段 Markdown 里的链接；返回新文本与被改条数 */
+/** 按计划重写一段 Markdown 里的链接；返回新文本与被改条数。围栏里的示例链接不动 */
 function relinkText(cfg: Config, text: string, plan: RelinkPlan): { text: string; changed: number } {
   let changed = 0
 
-  const afterWiki = text.replace(WIKI_LINK, (whole: string, inner: string) => {
+  const lines = String(text).split('\n')
+  const masked = fenceMask(lines)
+
+  const wikiOf = (line: string): string => line.replace(WIKI_LINK, (whole: string, inner: string) => {
     const bar = inner.indexOf('|')
     const head = bar >= 0 ? inner.slice(0, bar) : inner
     const tail = bar >= 0 ? inner.slice(bar) : ''
@@ -2816,7 +2803,7 @@ function relinkText(cfg: Config, text: string, plan: RelinkPlan): { text: string
     return rebuilt
   })
 
-  const afterMd = afterWiki.replace(MD_LINK, (whole: string, prefix: string, dest: string, tail: string) => {
+  const mdOf = (line: string): string => line.replace(MD_LINK, (whole: string, prefix: string, dest: string, tail: string) => {
     const angled = dest.startsWith('<') && dest.endsWith('>')
     const raw = angled ? dest.slice(1, -1) : dest
     if (!raw || raw.startsWith('#')) return whole
@@ -2837,7 +2824,7 @@ function relinkText(cfg: Config, text: string, plan: RelinkPlan): { text: string
     return rebuilt
   })
 
-  return { text: afterMd, changed }
+  return { text: lines.map((line, i) => (masked[i] ? line : mdOf(wikiOf(line)))).join('\n'), changed }
 }
 
 /** 新路径归一化：可只给文件名、可给目录（末尾 /），扩展名不变；跑出笔记本由 absPathOf 兜 */

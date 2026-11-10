@@ -24,6 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DREAM_INTERVAL_DAYS, daysSinceDream, lastDreamDate } from './dream.js';
+import { fenceMask } from './fence.js';
 import { fileStamp } from './file-stamp.js';
 import { entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries, stripRetiredEntries } from './memory-format.js';
 import { templateVersionOf } from './agents-template.js';
@@ -61,8 +62,6 @@ const TOC_MAX = 5;
 const TOC_TITLE_MAX = 40;
 /** 到预算的这个比例就回显用量：等到截断才说，已经是最坏的时刻 */
 const MEMORY_NEAR_RATIO = 0.8;
-/** 围栏代码块：里面的 `- ` 与空行都不是条目 / 段落边界 */
-const FENCED = /^\s*(?:```|~~~)/;
 /** 二级小节（原有切分口径） */
 const SECTION = /^##\s+/;
 /** 顶层列表项；缩进的子项算续行，不另起一条 */
@@ -79,11 +78,10 @@ function splitItems(lines) {
     const head = [];
     const items = [];
     let current = null;
-    let fenced = false;
-    for (const line of lines) {
-        if (FENCED.test(line))
-            fenced = !fenced;
-        if (!fenced && LIST_ITEM.test(line)) {
+    const fenced = fenceMask(lines);
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? '';
+        if (!fenced[i] && LIST_ITEM.test(line)) {
             if (current)
                 items.push(current);
             current = [line];
@@ -124,14 +122,13 @@ function degradeSingleSection(split) {
  */
 function splitSections(body) {
     const lines = String(body ?? '').split('\n');
-    let fenced = false;
+    const fenced = fenceMask(lines);
     // 1a) `##` 小节
     const head = [];
     const sections = [];
-    for (const line of lines) {
-        if (FENCED.test(line))
-            fenced = !fenced;
-        if (!fenced && SECTION.test(line))
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? '';
+        if (!fenced[i] && SECTION.test(line))
             sections.push([line]);
         else if (sections.length > 0)
             sections[sections.length - 1].push(line);
@@ -152,11 +149,9 @@ function splitSections(body) {
     // 1c) 空行段落：整篇散文也能按段丢。首段作为 head（通常是标题 / 开场），永远保留。
     const paragraphs = [];
     let para = null;
-    fenced = false;
-    for (const line of lines) {
-        if (FENCED.test(line))
-            fenced = !fenced;
-        if (!fenced && !line.trim()) {
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? '';
+        if (!fenced[i] && !line.trim()) {
             if (para)
                 paragraphs.push(para);
             para = null;

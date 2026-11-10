@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { GRAPH_BUDGET_NOTES, graphEdges, localDate, scanNotes } from './zk.js';
 import { parseFrontmatter } from './frontmatter.js';
+import { withoutFences } from './fence.js';
 // memory.ts 也 import 本模块（DREAM_INTERVAL_DAYS / daysSinceDream）：这里是运行期才取用，
 // 循环引用在 ESM 下安全 —— 不要在模块顶层调用 memoryUsage。
 import { memoryUsage } from './memory.js';
@@ -212,14 +213,16 @@ function promotionsOf(cfg, notes) {
         return out;
     const index = wikiIndex(notes);
     const byPath = new Map(notes.map((n) => [n.path, n]));
-    for (const match of body.matchAll(WIKI_LINK)) {
+    // 代码块里的 `[[…]]` 是示例，不算「已经晋升过」
+    const clean = withoutFences(body);
+    for (const match of clean.matchAll(WIKI_LINK)) {
         const hit = resolveWikiTarget(cfg, String(match[1] ?? '').trim(), index);
         // 解析结果是路径，按身份键记账（§9.2）：有 id 的笔记改名后仍是同一篇，不会重复晋升。
         const note = byPath.get(hit.path);
         if (hit.status === 'live' && note)
             out.set(noteKey(note), 'link');
     }
-    const lines = stripRetiredEntries(body).body.split('\n').map((line) => normalizeTitle(line)).filter(Boolean);
+    const lines = withoutFences(stripRetiredEntries(body).body).split('\n').map((line) => normalizeTitle(line)).filter(Boolean);
     for (const note of notes) {
         const key = noteKey(note);
         if (out.has(key))
@@ -256,7 +259,7 @@ function retireCandidatesOf(cfg, notes, now) {
         const date = entryDate(entry) ?? '';
         const age = date ? (daysSinceDate(date, now) ?? -1) : -1;
         let reason = null;
-        for (const match of entry.matchAll(WIKI_LINK)) {
+        for (const match of withoutFences(entry).matchAll(WIKI_LINK)) {
             const target = String(match[1] ?? '').trim();
             if (!target)
                 continue;

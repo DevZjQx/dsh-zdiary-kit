@@ -13,6 +13,7 @@
  * 口径：只认 wiki 双链与 Markdown 行内链接；找不到就不给这一栏（不猜、不拿「提到了标题」冒充链接）。
  */
 import path from 'node:path';
+import { fenceMask } from './fence.js';
 import { normalizeTitle } from './wikilink.js';
 /** 一行的回显上限（码点）：超了截断并留省略号，不把整段正文塞进工具输出 */
 const MAX_LINE = 160;
@@ -58,16 +59,14 @@ export function linkContextOf(markdown, target, sourcePath) {
     const content = String(markdown ?? '');
     if (!content.trim())
         return null;
+    const lines = content.split('\n');
+    const fenced = fenceMask(lines);
     let section = '';
-    let fence = false;
-    for (const line of content.split('\n')) {
+    for (let i = 0; i < lines.length; i++) {
         // 代码块里的 `[[...]]` 是例子，不是链接
-        if (/^\s*(```|~~~)/.test(line)) {
-            fence = !fence;
+        if (fenced[i])
             continue;
-        }
-        if (fence)
-            continue;
+        const line = lines[i] ?? '';
         const heading = line.match(HEADING);
         if (heading) {
             section = heading[2].trim();

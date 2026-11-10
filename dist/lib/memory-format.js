@@ -5,8 +5,10 @@
  * 只做机械解析，不做语义判断：
  *   · 条目 = 顶层列表项 + 它的缩进续行（与 MEMORY.md 的书写约定一致）；
  *   · 退役 = 首行 `- [superseded …]`（大小写不敏感）；
- *   · 日期 = 首行里的 `YYYY-MM-DD`，且必须是真实存在的日期（`2026-99-99` 不算）。
+ *   · 日期 = 首行里的 `YYYY-MM-DD`，且必须是真实存在的日期（`2026-99-99` 不算）；
+ *   · 围栏代码块整块算它所属条目的续行：块里的 `- ` / `[[…]]` 是示例，不是条目或来源。
  */
+import { fenceMask, withoutFences } from './fence.js';
 /** 顶层列表项；缩进的子项算续行，不另起一条 */
 const LIST_ITEM = /^(?:[-*+]|\d+[.)])\s+/;
 /** 退役条目：`- [superseded 2026-01-01] 旧结论 → [[新结论]]`。必须带 `i`，与 lint 同口径 */
@@ -34,7 +36,16 @@ export function splitMemoryEntries(body) {
             out.push(current.join('\n'));
         current = null;
     };
-    for (const line of String(body ?? '').split('\n')) {
+    const lines = String(body ?? '').split('\n');
+    const fenced = fenceMask(lines);
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? '';
+        // 围栏整块跟着当前条目走：既不另起条目，也不把它后面的行误判成新条目
+        if (fenced[i]) {
+            if (current)
+                current.push(line);
+            continue;
+        }
         if (LIST_ITEM.test(line)) {
             flush();
             current = [line];
@@ -78,7 +89,7 @@ export function memoryFormatDebt(body) {
     for (const entry of entries) {
         if (!entryDate(entry))
             undated += 1;
-        if (!LINK.test(entry))
+        if (!LINK.test(withoutFences(entry)))
             unlinked += 1;
     }
     return { total: entries.length, undated, unlinked };
@@ -91,7 +102,15 @@ export function stripRetiredEntries(body) {
     const out = [];
     let count = 0;
     let skipping = false;
-    for (const line of String(body ?? '').split('\n')) {
+    const lines = String(body ?? '').split('\n');
+    const fenced = fenceMask(lines);
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? '';
+        // 围栏里的 `- [superseded …]` 是示例，不参与退役判断
+        if (fenced[i]) {
+            out.push(line);
+            continue;
+        }
         if (LIST_ITEM.test(line)) {
             skipping = RETIRED.test(line);
             if (skipping) {

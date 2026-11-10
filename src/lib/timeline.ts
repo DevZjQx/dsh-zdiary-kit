@@ -12,6 +12,8 @@
  * 大小写不敏感是为了跟 `appendDaily` 对齐：`sectionRange` 用 `/^##\s+Events\s*$/i` 找小节，
  * 这里若区分大小写，`## EVENTS` 会被判成 flat、然后 `### HH:MM` 全报位置错。
  */
+import { fenceMask } from './fence.ts'
+
 export type TimelineIssueKind = 'empty' | 'order' | 'format' | 'placement'
 
 export interface TimelineIssue {
@@ -34,7 +36,6 @@ const TIME_LIKE = /^\d{1,2}:\d{1,2}/
 const HEADING = /^(#{1,6})[ \t]+(.*?)[ \t]*$/
 /** ATX 收尾井号是装饰（`### 12:00 ##` 的标题仍是 `12:00`），与 zk 的 atxHeading 同口径 */
 const CLOSING_HASHES = /[ \t]+#+$/
-const FENCE = /^\s{0,3}(?:```|~~~)/
 
 /**
  * 按行遮掉 frontmatter 与围栏代码：内容换成空行，行号保持不变。
@@ -54,15 +55,8 @@ function maskLines(body: string): string[] {
     }
   }
 
-  let inFence = false
-  for (let i = 0; i < masked.length; i++) {
-    if (FENCE.test(masked[i] ?? '')) {
-      masked[i] = ''
-      inFence = !inFence
-      continue
-    }
-    if (inFence) masked[i] = ''
-  }
+  const fenced = fenceMask(masked)
+  for (let i = 0; i < masked.length; i++) if (fenced[i]) masked[i] = ''
   return masked
 }
 

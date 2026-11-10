@@ -11,6 +11,7 @@
  */
 
 import { ROUTE_BASE } from '../../lib/http.ts'
+import { fenceMarker } from '../../lib/fence.ts'
 
 const ESCAPES: Record<string, string> = {
   '&': '&amp;',
@@ -167,7 +168,6 @@ const UL = /^\s*[-*+]\s+(.*)$/
 const OL = /^\s*\d+[.)]\s+(.*)$/
 const QUOTE = /^\s*>\s?(.*)$/
 const HEADING = /^(#{1,6})\s+(.*)$/
-const FENCE = /^\s*```/
 /** 独占一行的 HTML 注释：不渲染。模板首行就是 `<!-- zdiary-template: vN -->`（lint 的版本标记），
  * 转义后当段落显示等于把内部约定摆到页面最上面 */
 const HTML_COMMENT = /^\s*<!--[\s\S]*?-->\s*$/
@@ -193,14 +193,19 @@ export function renderMarkdown(source: string, opts: RenderOptions = {}): string
   while (i < lines.length) {
     const line = lines[i] ?? ''
 
-    if (FENCE.test(line)) {
+    const open = fenceMarker(line)
+    if (open) {
       flush()
-      const lang = line.trim().slice(3).trim()
       i += 1
       const code: string[] = []
-      while (i < lines.length && !FENCE.test(lines[i] ?? '')) code.push(lines[i++] ?? '')
+      while (i < lines.length) {
+        const close = fenceMarker(lines[i] ?? '')
+        // 闭合必须同字符、长度 ≥ 开启行且不带语言标记：块里的 ```js 只是代码
+        if (close && close.char === open.char && close.len >= open.len && !close.info) break
+        code.push(lines[i++] ?? '')
+      }
       i += 1
-      out.push(`<pre><code${lang ? ` class="language-${esc(lang)}"` : ''}>${esc(code.join('\n'))}</code></pre>`)
+      out.push(`<pre><code${open.info ? ` class="language-${esc(open.info)}"` : ''}>${esc(code.join('\n'))}</code></pre>`)
       continue
     }
 

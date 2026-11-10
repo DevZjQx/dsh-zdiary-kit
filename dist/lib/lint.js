@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { backlinksOf, GRAPH_BUDGET_NOTES, graphEdges, indexLagHint, localDate, MAX_SCAN, scanNotes, scanNotesWithFlag, outlinksOf, parseErrorWarnings, } from './zk.js';
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
+import { fenceMask } from './fence.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { daysSinceDate, entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries } from './memory-format.js';
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION, templateVersionOf } from './agents-template.js';
@@ -164,7 +165,13 @@ export function memoryLinkIssues(cfg, notes, opts = {}) {
             continue;
         }
         files += 1;
-        for (const line of body.split('\n')) {
+        const lines = body.split('\n');
+        const fenced = fenceMask(lines);
+        for (let i = 0; i < lines.length; i++) {
+            // 代码块里的 `[[…]]` 是示例，不是来源链接
+            if (fenced[i])
+                continue;
+            const line = lines[i] ?? '';
             for (const match of line.matchAll(WIKI_LINK)) {
                 links += 1;
                 const target = String(match[1] ?? '').trim();

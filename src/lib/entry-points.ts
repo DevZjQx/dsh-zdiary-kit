@@ -22,6 +22,7 @@ import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import type { NoteRecord } from './zk.ts'
 import { parseFrontmatter } from './frontmatter.ts'
+import { withoutFences } from './fence.ts'
 import { isMetaPath } from './meta.ts'
 import { isRetiredEntry, splitMemoryEntries } from './memory-format.ts'
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
@@ -126,7 +127,8 @@ export function liveMemoryEntries(cfg: Config): MemoryEntry[] {
   const out: MemoryEntry[] = []
   for (const entry of splitMemoryEntries(body)) {
     if (isRetiredEntry(entry)) continue
-    const targets = [...entry.matchAll(WIKI_LINK)]
+    // 代码块里的 `[[…]]` 是示例，不是检索入口
+    const targets = [...withoutFences(entry).matchAll(WIKI_LINK)]
       .map((match) => String(match[1] ?? '').trim())
       .filter(Boolean)
     if (targets.length === 0) continue

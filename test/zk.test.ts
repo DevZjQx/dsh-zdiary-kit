@@ -47,6 +47,7 @@ const archiveProbe = await import('../src/lib/archive-probe.ts')
 const usageLib = await import('../src/lib/usage.ts')
 const edgeContext = await import('../src/lib/edge-context.ts')
 const wikilinkLib = await import('../src/lib/wikilink.ts')
+const fenceLib = await import('../src/lib/fence.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
@@ -6269,5 +6270,112 @@ describe('§14：边的语义、入口不再是注解、死胡同可见', () => 
     } finally {
       restore()
     }
+  })
+})
+
+describe('围栏代码块：全项目统一口径', () => {
+  test('fenceMarker / fenceMask：认 ``` 与 ~~~、长度与闭合都要对，块里带 info 的 ```js 不闭合', () => {
+    expect(fenceLib.fenceMarker('```ts')).toEqual({ char: '`', len: 3, info: 'ts' })
+    expect(fenceLib.fenceMarker('~~~~ python')).toEqual({ char: '~', len: 4, info: 'python' })
+    expect(fenceLib.fenceMarker('    ```')).toBeNull() // 4 空格缩进不是围栏
+    expect(fenceLib.fenceMarker('普通文本 `x`')).toBeNull()
+    const lines = ['正文', '```js', 'const x = 1', '```js', '```', '收尾']
+    expect(fenceLib.fenceMask(lines)).toEqual([false, true, true, true, true, false])
+    expect(fenceLib.withoutFences(lines.join('\n'))).toBe('正文\n收尾')
+  })
+
+  test('只读视图：~~~ 与 4 反引号也渲染成代码块，块内标记不生效', () => {
+    const tilde = readonlyHtml.renderMarkdown('前\n\n~~~\n[[x]] **y**\n~~~\n\n后')
+    expect(tilde).toContain('<pre><code>[[x]] **y**</code></pre>')
+    expect(tilde).not.toContain('wikilink')
+    expect(tilde).not.toContain('<strong>')
+    expect(tilde).toContain('<p>后</p>')
+
+    // 4 反引号用来包住含 ``` 的代码：语言标记按围栏长度取，块里的 ``` 不提前闭合
+    const quad = readonlyHtml.renderMarkdown('````js\n```\nconst x = [[n]]\n````\n尾巴')
+    expect(quad).toContain('<pre><code class="language-js">```\nconst x = [[n]]</code></pre>')
+    expect(quad).toContain('<p>尾巴</p>')
+    expect(quad).not.toContain('<strong>')
+
+    // 不同字符的围栏不能互相闭合
+    const mixed = readonlyHtml.renderMarkdown('~~~\n```\n~~~\n尾')
+    expect(mixed).toContain('<pre><code>```</code></pre>')
+    expect(mixed).toContain('<p>尾</p>')
+  })
+
+  test('时间轴 / 双链上下文 / 记忆切分：~~~ 围栏同样遮住', () => {
+    expect(timelineLib.timelineIssues('## Events\n~~~\n## 12:00\n### 13:00\n~~~\n### 09:00\n正文', 'auto')).toEqual([])
+
+    const md = ['## 甲', '~~~', '[[notes/x]]', '~~~', '## 乙', '- 见 [[notes/x]] 因为预算按词算'].join('\n')
+    expect(edgeContext.linkContextOf(md, { title: 'X', path: 'notes/x.md' }, 'seed.md')?.section).toBe('乙')
+
+    const entries = memoryFormat.splitMemoryEntries('# 记忆\n\n- 真条目\n~~~\n- 代码里的假条目 [[notes/x]]\n~~~\n- 另一条真条目\n')
+    expect(entries).toHaveLength(2)
+    const debt = memoryFormat.memoryFormatDebt('# 记忆\n\n- 有来源 [[notes/a]]\n- 没来源\n~~~\n[[notes/b]] 是示例\n~~~\n')
+    expect(debt.total).toBe(2)
+    expect(debt.unlinked).toBe(1) // 示例链接不算「有来源」
+    const stripped = memoryFormat.stripRetiredEntries('# 记忆\n\n~~~\n- [superseded 2026-01-01] 示例\n~~~\n- 活条目\n')
+    expect(stripped.count).toBe(0) // 围栏里的退役标记是示例，不删
+    expect(stripped.body).toContain('- [superseded 2026-01-01] 示例')
+  })
+
+  test('记忆层体检：代码块里的 [[…]] 不算来源链接', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-fence-lint-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+        '# 记忆', '', '- 真的缺失 [[notes/a]]', '~~~', '- 示例 [[notes/b]]', '~~~', '',
+      ].join('\n'))
+      const c = store.normalizeConfig({ notebook: dir })
+      const bucket = lintLib.memoryLinkIssues(c, [])
+      expect(bucket.links).toBe(1)
+      expect(bucket.items.map((i) => i.link)).toEqual(['notes/a'])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('检索入口：代码块里的 [[…]] 不产生入口', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-fence-entry-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+        '# 记忆', '', '- 真入口 [[notes/a]]', '~~~', '- 示例 [[notes/b]]', '~~~', '',
+      ].join('\n'))
+      const c = store.normalizeConfig({ notebook: dir })
+      const entries = entryPointsLib.liveMemoryEntries(c)
+      expect(entries).toHaveLength(1)
+      expect(entries[0]?.targets).toEqual(['notes/a'])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('dream：代码块里的 [[…]] 不算已晋升、也不触发退役候选', async () => {
+    const dir = path.join(home, 'nb-fence-dream')
+    const c = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(c)
+    const a = await zk.createNote(c, { title: '围栏测试结论', dir: 'notes/concepts', content: '正文 #fence' })
+    fs.writeFileSync(path.join(dir, 'MEMORY.md'), [
+      '# 记忆', '',
+      `- 结论（2026-01-01）[[${a.path}]]`,
+      '~~~', '- 示例 [[notes/根本没有]]', '~~~', '',
+    ].join('\n'))
+    const dream = await dreamLib.dreamNotebook(c, { days: 7 })
+    expect(dream.alreadyPromoted.map((n) => n.path)).toContain(a.path) // 真链接照旧算已晋升
+    expect(dream.retireCandidates.map((r) => r.entry).some((e) => e.includes('根本没有'))).toBe(false)
+  })
+
+  it('改名重写链接：代码块里的示例链接不动', async () => {
+    const dir = path.join(home, 'nb-fence-rename')
+    const c = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(c)
+    const target = await zk.createNote(c, { title: '围栏改名目标', dir: 'notes/concepts', content: '目标正文' })
+    const stem = path.basename(target.path, '.md')
+    const source = await zk.createNote(c, { title: '围栏引用来源', dir: 'notes/concepts', content: '来源正文' })
+    fs.appendFileSync(source.absPath, `\n见 [[${stem}]]\n\n~~~\n示例 [[${stem}]] 不该被重写\n~~~\n`)
+    const done = await zk.renameNote(c, { path: target.path, to: 'notes/patterns/围栏改名之后.md', dryRun: false })
+    expect(done.performed).toBe(true)
+    const text = fs.readFileSync(source.absPath, 'utf8')
+    expect(text).toContain('[[notes/patterns/围栏改名之后]]')
+    expect(text).toContain(`示例 [[${stem}]] 不该被重写`)
   })
 })

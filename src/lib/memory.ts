@@ -25,6 +25,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Config } from '../config/store.ts'
 import { DREAM_INTERVAL_DAYS, daysSinceDream, lastDreamDate } from './dream.ts'
+import { fenceMask } from './fence.ts'
 import { fileStamp } from './file-stamp.ts'
 import { entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
 import type { MemoryFormatDebt } from './memory-format.ts'
@@ -145,8 +146,6 @@ interface Split {
   mode: SplitMode
 }
 
-/** 围栏代码块：里面的 `- ` 与空行都不是条目 / 段落边界 */
-const FENCED = /^\s*(?:```|~~~)/
 /** 二级小节（原有切分口径） */
 const SECTION = /^##\s+/
 /** 顶层列表项；缩进的子项算续行，不另起一条 */
@@ -165,10 +164,10 @@ function splitItems(lines: string[]): { head: string[]; items: string[][] } {
   const head: string[] = []
   const items: string[][] = []
   let current: string[] | null = null
-  let fenced = false
-  for (const line of lines) {
-    if (FENCED.test(line)) fenced = !fenced
-    if (!fenced && LIST_ITEM.test(line)) {
+  const fenced = fenceMask(lines)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    if (!fenced[i] && LIST_ITEM.test(line)) {
       if (current) items.push(current)
       current = [line]
     } else if (current) {
@@ -205,14 +204,14 @@ function degradeSingleSection(split: Split): Split | null {
  */
 function splitSections(body: string): Split {
   const lines = String(body ?? '').split('\n')
-  let fenced = false
+  const fenced = fenceMask(lines)
 
   // 1a) `##` 小节
   const head: string[] = []
   const sections: string[][] = []
-  for (const line of lines) {
-    if (FENCED.test(line)) fenced = !fenced
-    if (!fenced && SECTION.test(line)) sections.push([line])
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    if (!fenced[i] && SECTION.test(line)) sections.push([line])
     else if (sections.length > 0) sections[sections.length - 1].push(line)
     else head.push(line)
   }
@@ -231,10 +230,9 @@ function splitSections(body: string): Split {
   // 1c) 空行段落：整篇散文也能按段丢。首段作为 head（通常是标题 / 开场），永远保留。
   const paragraphs: string[][] = []
   let para: string[] | null = null
-  fenced = false
-  for (const line of lines) {
-    if (FENCED.test(line)) fenced = !fenced
-    if (!fenced && !line.trim()) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    if (!fenced[i] && !line.trim()) {
       if (para) paragraphs.push(para)
       para = null
       continue

@@ -31,6 +31,7 @@ import {
   outlinksOf, parseErrorWarnings,
 } from './zk.ts'
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
+import { fenceMask } from './fence.ts'
 import { parseFrontmatter } from './frontmatter.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries } from './memory-format.ts'
 import type { FrontmatterFields } from './frontmatter.ts'
@@ -480,7 +481,12 @@ export function memoryLinkIssues(cfg: Config, notes: NoteRecord[], opts: MemoryI
     try { body = fs.readFileSync(path.join(cfg.notebook, name), 'utf8') } catch { continue }
     files += 1
 
-    for (const line of body.split('\n')) {
+    const lines = body.split('\n')
+    const fenced = fenceMask(lines)
+    for (let i = 0; i < lines.length; i++) {
+      // 代码块里的 `[[…]]` 是示例，不是来源链接
+      if (fenced[i]) continue
+      const line = lines[i] ?? ''
       for (const match of line.matchAll(WIKI_LINK)) {
         links += 1
         const target = String(match[1] ?? '').trim()
