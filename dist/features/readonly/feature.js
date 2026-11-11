@@ -350,7 +350,7 @@ async function handleMemory(res, cfg) {
         `<p class="meta">${esc(personaSummary)}</p>`,
         ...personaSections,
         '<h2>用户</h2>',
-        fileArticle('USER.md', '用户偏好；可以跨库共享。'),
+        fileArticle('USER.md', '用户偏好。'),
         '<h2>工作约定</h2>',
         fileArticle('AGENTS.md', '硬规则，永不截断；属于记忆预算。'),
         '<h2>记忆</h2>',

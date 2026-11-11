@@ -1,5 +1,5 @@
 /**
- * zk 工具（feature 的公共入口）：15 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
+ * zk 工具（feature 的公共入口）：16 个内置工具 + `[alias]` 别名工具，全部经 lib/zk.ts。
  *
  * 设计要点：
  *   · 除 zk_context（只读 meta 文件，不依赖 zk）外，每个工具进来先 ensureNotebook —— 第一次调用就自动建好笔记本，用户不用先点设置页；
@@ -15,13 +15,15 @@ import { configFor, pinSession, sessionNotebook, sessionState } from '../../conf
 import { defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from '../../config/paths.js';
 import { S, validateArgs } from '../../lib/tool.js';
 import { ensureNotebook, newNoteDir } from '../../lib/notebook.js';
-import { searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, runAlias, hasCjk, walkFrom, ZkError, } from '../../lib/zk.js';
+import { searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, runAlias, hasCjk, walkFrom, scanNotes, ZkError, } from '../../lib/zk.js';
 import { configuredAliases, readAliases } from '../../lib/alias.js';
 import { buildMemoryPayload, memoryCapacity, META_FILES } from '../../lib/memory.js';
 import { assembleRecall } from '../../lib/recall.js';
 import { entryPointLines, entryPointsOf } from '../../lib/entry-points.js';
 import { archivedCounterparts, describeCounterEntries } from '../../lib/archive-probe.js';
 import { bumpUsage, readUsage } from '../../lib/usage.js';
+import { wikiIndex } from '../../lib/wikilink.js';
+import { writeMemory } from '../../lib/memory-write.js';
 import { META_NAMES } from '../../lib/meta.js';
 import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from '../../lib/dream.js';
@@ -1405,6 +1407,122 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     : '\n\n人格：未启用（根目录没有 PERSONA.md）';
                 const totals = `\n\n用量：记忆载荷 ${v.totalWords} 词（预算 ${v.budget}）`;
                 return text(drift + head + persona + totals + capacity + (v.text ? '\n\n' + v.text : ''));
+            },
+        }),
+        t({
+            name: 'zk_memory_write',
+            description: '写记忆的第一个工具：往 MEMORY.md / USER.md 末尾追加一条结论。默认 dry_run: true，只预演、不动盘；' +
+                '确认后传 dry_run: false 才真写（可把预演返回的 stamp 放进 expect_stamp，挡住「预演之后有人改过」）。' +
+                '调用方给完整条目正文，插件只做机械门：必须是一条带 YYYY-MM-DD 与 [[来源]] 的顶层列表项、来源要解析到活笔记、' +
+                '新增不能让注入载荷超预算（超了给结构化错误 + dropCandidates，绝不静默截断）。' +
+                'action: retire 追加 `- [superseded …]` 标记（退役条目不进注入，不做容量门）。' +
+                '不替换、不合并、不自动补日期 / 来源、不提议退役哪条 —— 语义判断全归调用方；' +
+                '每次真实写入把 pre-image 摘要与一行 diff 追加到 DREAMS.md 供周审复核。' +
+                '想改已有条目仍用原生 edit；本工具只往末尾追加。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    target: S.enum('写哪份：MEMORY 或 USER（根目录 MEMORY.md / USER.md）', ['MEMORY', 'USER']),
+                    action: S.enum('add（默认）= 追加一条现行结论；retire = 追加一条退役标记', ['add', 'retire']),
+                    entry: S.str('完整条目正文，例：`- **结论。** 2026-11-12（来源：[[笔记标题]]）`；插件不改一个字'),
+                    dry_run: S.bool('true（默认）= 只预演、不改盘；false = 真的写'),
+                    expect_stamp: S.str('可选：预演返回的 stamp，带回来挡并发改动'),
+                },
+                required: ['entry'],
+                additionalProperties: false,
+            },
+            output: {
+                schema: objSchema({
+                    notebook: { type: 'string' },
+                    accepted: { type: 'boolean' },
+                    rejection: { type: 'string' },
+                    detail: { type: 'string' },
+                    target: { type: 'string' },
+                    action: { type: 'string', enum: ['add', 'retire'] },
+                    dryRun: { type: 'boolean' },
+                    performed: { type: 'boolean' },
+                    source: { type: 'string' },
+                    sourceTarget: { type: 'string' },
+                    stamp: { type: 'string' },
+                    words: { type: 'number' },
+                    budget: { type: 'number' },
+                    headroom: { type: 'number' },
+                    extraWords: { type: 'number' },
+                    wouldTruncate: { type: 'boolean' },
+                    needToFree: { type: 'number' },
+                    dropCandidates: {
+                        type: 'array',
+                        items: objSchema({
+                            title: { type: 'string' },
+                            date: { type: 'string' },
+                            words: { type: 'number' },
+                            reason: { type: 'string', enum: ['oldest', 'same-date', 'undated'] },
+                        }, ['title', 'date', 'words', 'reason']),
+                    },
+                    beforeWords: { type: 'number' },
+                    afterWords: { type: 'number' },
+                    diff: { type: 'string' },
+                    indexComplete: { type: 'boolean' },
+                }, ['notebook', 'accepted', 'rejection', 'detail', 'target', 'action', 'dryRun', 'performed',
+                    'source', 'sourceTarget', 'stamp', 'words', 'budget', 'headroom', 'extraWords', 'wouldTruncate',
+                    'needToFree', 'dropCandidates', 'beforeWords', 'afterWords', 'diff', 'indexComplete']),
+            },
+            async run(args, env) {
+                const cfg = configFor(env.workspace, env.sessionId);
+                // 不 ensureNotebook：预演不该顺手建库。索引只为核实 [[来源]]，扫不全就只放路径式来源过。
+                let index = { byTitle: new Map(), byId: new Map() };
+                let indexComplete = false;
+                if (hasNotebook(cfg)) {
+                    try {
+                        const scan = await scanNotes(cfg, {}, env.signal);
+                        index = wikiIndex(scan.notes);
+                        indexComplete = scan.completeness === 'complete';
+                    }
+                    catch { /* 索引不可用时退化为「只有路径式来源能过」，不装作全库可解析 */ }
+                }
+                const r = writeMemory(cfg, {
+                    target: (args.target ? String(args.target) : 'MEMORY'),
+                    action: (args.action ? String(args.action) : 'add'),
+                    entry: String(args.entry ?? ''),
+                    dryRun: args.dry_run !== false,
+                    expectStamp: args.expect_stamp ? String(args.expect_stamp) : undefined,
+                    index,
+                    indexComplete,
+                });
+                return { notebook: cfg.notebook, ...r };
+            },
+            render(_args, value) {
+                const v = value;
+                const lines = [];
+                if (!v.accepted) {
+                    lines.push(`已拒绝（${v.rejection}）：${v.detail}`);
+                    if (v.rejection === 'over-budget') {
+                        lines.push(`当前记忆 ${v.words}/${v.budget} 词，余 ${v.headroom} 词；拟新增 ${v.extraWords} 词，需先腾出 ${v.needToFree} 词。`);
+                        if (v.dropCandidates.length) {
+                            lines.push('会让位的条目（插件不替你退役）：');
+                            for (const c of v.dropCandidates)
+                                lines.push(`  · ${c.title}（${c.words} 词 · ${c.reason}${c.date ? ' · ' + c.date : ''}）`);
+                        }
+                    }
+                    return text(lines.join('\n'));
+                }
+                if (v.dryRun) {
+                    lines.push(`预演通过（没有动任何文件）：将往 ${v.target} 追加一条。`);
+                    lines.push(v.diff);
+                }
+                else {
+                    lines.push(`已写入 ${v.target}：${v.diff}`);
+                    lines.push('pre-image 摘要与这行 diff 已追加到 DREAMS.md，供周审复核。');
+                }
+                lines.push(`来源：[[${v.sourceTarget}]] → ${v.source || '（未解析）'}`);
+                lines.push(`容量：记忆 ${v.words}/${v.budget} 词，余 ${v.headroom} 词` +
+                    (v.action === 'add' ? ` · 本次新增 ${v.extraWords} 词` : ' · 退役标记不占注入预算') +
+                    ` · 文件词数 ${v.beforeWords} → ${v.afterWords}`);
+                if (!v.indexComplete)
+                    lines.push('⚠️ 活笔记索引没扫全，本次只核实了路径式来源。');
+                if (v.dryRun)
+                    lines.push(`确认后传 dry_run: false 执行；建议带上 expect_stamp: "${v.stamp}"。`);
+                return text(lines.join('\n'));
             },
         }),
         t({

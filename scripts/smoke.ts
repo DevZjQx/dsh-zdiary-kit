@@ -4,7 +4,7 @@
  *
  * 这不是单元测试（见 test/），而是「装进 DSH 之前最后一道门」：
  *   · dist 里的插件能被 apply；
- *   · 15 个内置工具能注册、能执行、能渲染（zk_context 也执行一次；`[alias]` 别名工具按配置另行追加）；
+ *   · 16 个内置工具能注册、能执行、能渲染（zk_context 也执行一次；`[alias]` 别名工具按配置另行追加）；
  *   · 8 条设置路由 + 4 条只读路由能工作（走真实的 http 请求；/install 只验非法版本，不联网下载）。
  *
  *   ZK_BIN=/path/to/zk bun run smoke
@@ -94,7 +94,7 @@ for (const tool of tools) checkSchema(tool.output.schema, `${tool.name}.output.s
 
 console.log('工具：' + tools.map((t) => t.name).join(', '))
 console.log('路由：' + [...routes.keys()].join(', '))
-if (tools.length !== 15) throw new Error('工具数量不对：' + tools.length)
+if (tools.length !== 16) throw new Error('工具数量不对：' + tools.length)
 // 8 条设置页路由 + 4 条只读路由（view / feed.xml / api/notes / api/note）
 if (routes.size !== 12) throw new Error('路由数量不对：' + routes.size)
 
@@ -110,6 +110,15 @@ const call = async (name: string, args: unknown) => {
 const created = await call('zk_new', { title: '冒烟测试笔记', body: '这是冒烟测试写进去的正文。', tags: ['smoke'] })
 if (!fs.existsSync(String(created.absPath))) throw new Error('笔记没落盘：' + created.absPath)
 if (String(created.absPath) !== path.join(notebook, String(created.path))) throw new Error('zk_new 的 absPath 与 notebook + path 对不上')
+// §15.1：记忆写工具默认预演，且预演绝不改盘
+const memFile = path.join(notebook, 'MEMORY.md')
+const memBefore = fs.existsSync(memFile) ? fs.readFileSync(memFile, 'utf8') : null
+const memWrite = await call('zk_memory_write', {
+  target: 'MEMORY', action: 'add', dry_run: true,
+  entry: `- **冒烟结论。** 2026-11-12（来源：[[${String(created.path)}]]）`,
+})
+if (memWrite.accepted !== true || memWrite.performed !== false) throw new Error('zk_memory_write 预演没通过或不该写盘')
+if ((fs.existsSync(memFile) ? fs.readFileSync(memFile, 'utf8') : null) !== memBefore) throw new Error('zk_memory_write 预演改了盘')
 const searched = await call('zk_search', { query: '冒烟', limit: 5 })
 const hit = (searched.notes as Array<{ absPath?: string }>)[0]
 if (!hit?.absPath || !fs.existsSync(hit.absPath)) throw new Error('zk_search 没返回可用的 absPath')

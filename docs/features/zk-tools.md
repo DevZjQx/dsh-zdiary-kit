@@ -2,8 +2,8 @@
 
 **Purpose.** 让模型用 zk 思维工作：先查重、再写原子笔记、用双链连起来、每天记一段。
 
-**Owns.** 15 个内置工具定义（`zk_search` / `zk_query` / `zk_recall` / `zk_walk` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
-`zk_supersede` / `zk_rename` / `zk_context` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
+**Owns.** 16 个内置工具定义（`zk_search` / `zk_query` / `zk_recall` / `zk_walk` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
+`zk_supersede` / `zk_rename` / `zk_context` / `zk_memory_write` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
 `.zk/config.toml` 的 `[alias]` 派生的 `zk_<别名>` 工具：
 参数 schema、输出 schema、render、每个工具自己的 `ensureNotebook` 与参数校验。
 `zk_context` 例外：它只读根目录三份 meta 文件与角色人格（`PERSONA.md`），并列出已配置笔记本（另读 `DREAMS.md` 的「上次做梦」一行用于周节奏提醒），**不** `ensureNotebook`（读记忆不该依赖 zk）。
@@ -36,7 +36,7 @@ LEAN 模板加一列 `{{metadata.id}}`，`parseLeanList` 的定长字段从 11 �
 相似标题继续只作 warning，不升级为去重方案。
 
 **Alias tools（`zk_<别名>`）.** 默认**不注册**：`aliasTools` 为 false 时 `buildTools` 连 `.zk/config.toml` 都不读，
-内置工具固定 15 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
+内置工具固定 16 个。别名是 `$SHELL -c` 的任意命令，注册成工具等于把它交到模型手里，所以要人显式打开
 （设置页「工具」组的复选框，或 `zk-kit config set aliasTools=true`，只认 `true`；拼错的值归一化成 false 并在 `config set` 时回显）。
 打开后，插件加载时读所有已配置笔记本的 `.zk/config.toml`，把 `[alias]` 表里未注释的键注册成工具；
 同名只取第一本。工具名用下划线而不是点号：DSH 的 function-name 契约是 `[A-Za-z0-9_-]`（`zk.lucky` 会被 provider 拒绝）。
@@ -382,3 +382,25 @@ dirty 留到下次读。**回退只允许落在完整 db 上**：db 不完整（
 `zk_new` 本身不需要标脏：`zk new` 自己会把新文件写进索引；只有摘要回填（`fs.writeFileSync` 绕过了 zk）才补标。
 外部编辑不被感知：`indexLagHint`（doctor / `zk_lint` 的 `indexLag`）只比 `notebook.db` 与笔记本**顶层**条目的 mtime，
 约十次 stat 而不是 10⁴ 次；目录 mtime 只在新增 / 删除 / 改名时变，**改已有笔记的正文一定漏报**（不是「可能漏报」）。
+
+**记忆写路径（§15.1 / §10.4 第 16 项）.** `zk_memory_write` 是第一个写根目录 meta 的工具；
+所有 `zk_append` / `zk_new` / `zk_link` / `zk_supersede` 仍一律拒写 meta（`isMetaPath`）。
+入参 `target: MEMORY|USER`、`entry`（调用方给全文）、`action: add|retire`、`dry_run`（默认 true）、
+`expect_stamp`（可选，预演返回的 `fileStamp`）。机械门全在 `lib/memory-write.ts`：
+
+1. 形状：`splitMemoryEntries(entry)` 必须恰好一条顶层列表项，不带额外段落；
+2. 日期：`entryDate()` 要能解析出合法 `YYYY-MM-DD`（与 `memoryFormatDebt` 同一份口径）；
+3. 来源：`WIKI_LINK` 取第一个 `[[…]]`，`resolveWikiTarget(cfg, target, wikiIndex(scanNotes))` 必须是 `live`；
+   索引没扫全（`completeness !== 'complete'`）或 zk 起不来时，只放**路径式**来源过（`index-incomplete` 拒绝码），
+   不拿前 10k 篇里碰巧的标题命中冒充核实过；
+4. 容量：`memoryCapacity({ proposedEntry })`，`add` 且 `wouldTruncate` 时返回 `over-budget` +
+   `needToFree` + `dropCandidates`，绝不静默截断；`retire` 不做容量门（退役条目在注入里被 strip）；
+5. 并发：`fileStamp` 在预演与落盘前各核一次，`expect_stamp` 不符返回 `stale-stamp`（与设置页 409 同语义）；
+6. 落盘：`tmp + rename` 原子写，只往文件末尾追加；每次真写把 pre-image 摘要（前 40 行 / 4000 字）与一行 diff
+   追加到 `DREAMS.md`。
+
+**边界**：不替换 / 合并现有条目、不自动补日期 / 来源、不提议退役哪条；`retire` 追加的是调用方给的
+`- [superseded …]` 标记，真正让某条现行结论退役仍需原生 edit 改写那一行（语义判断）。
+`WORKFLOW_TEMPLATE` 的「改 MEMORY.md 之前」补一行「先 `zk_memory_write` 预演」；`zk_context` 保持只读预览。
+**成本**：格式门要核实标题式来源，走一次 `scanNotes`（**1 个 zk 子进程**，与 `zk_lint` 同口径）；
+容量 / 日期 / 并发门都是纯 JS。详见 `docs/plan.md` §16 的实施记录。

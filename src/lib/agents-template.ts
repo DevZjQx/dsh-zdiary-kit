@@ -125,7 +125,8 @@ export const WORKFLOW_TEMPLATE = `${TEMPLATE_MARK}
 
 ## 改 MEMORY.md 之前
 
-先看 zk_context 的 headroom 与 dropCandidates：余量不够就先退役 / 精简旧条目，别让新结论把最旧的挤掉。
+先用 zk_memory_write 预演（默认 dry_run）：它会按同一份口径挡容量、日期与 [[来源]]，不静默截断。
+再看 zk_context 的 headroom 与 dropCandidates：余量不够就先退役 / 精简旧条目，别让新结论把最旧的挤掉。
 给 proposed_entry 能预估会不会触发截断；同日条目按位置决胜（sameDateCount），插件不猜谁更常用。
 
 ## 动笔前必须出清单

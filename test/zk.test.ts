@@ -5,7 +5,7 @@
  *
  * 没装 zk 时自动跳过（配置归一化不依赖 zk，照常跑）。
  */
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -48,6 +48,7 @@ const usageLib = await import('../src/lib/usage.ts')
 const edgeContext = await import('../src/lib/edge-context.ts')
 const wikilinkLib = await import('../src/lib/wikilink.ts')
 const fenceLib = await import('../src/lib/fence.ts')
+const memoryWriteLib = await import('../src/lib/memory-write.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
@@ -2356,12 +2357,12 @@ describe('daily', () => {
 })
 
 describe('tools', () => {
-  it('15 个工具，参数校验拒绝坏输入', () => {
+  it('16 个工具，参数校验拒绝坏输入', () => {
     const defs = toolsFeature.buildTools()
     expect(defs.map((d) => d.name)).toEqual([
       'zk_search', 'zk_query', 'zk_recall', 'zk_walk', 'zk_new', 'zk_daily', 'zk_append', 'zk_link', 'zk_supersede',
       'zk_rename',
-      'zk_context', 'zk_lint', 'zk_dream', 'zk_stats', 'zk_use',
+      'zk_context', 'zk_memory_write', 'zk_lint', 'zk_dream', 'zk_stats', 'zk_use',
     ])
     const zkNew = defs.find((d) => d.name === 'zk_new')!
     expect(toolLib.validateArgs(zkNew.parameters, { body: 'x' }).some((i) => i.includes('title'))).toBe(true)
@@ -2720,7 +2721,7 @@ describe('alias tools', () => {
     }
   })
 
-  it('开关默认关：[alias] 里有条目也不注册成工具，内置工具仍是 15 个', async () => {
+  it('开关默认关：[alias] 里有条目也不注册成工具，内置工具仍是 16 个', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-alias-off-'))
     try {
       store.writeConfig({
@@ -2745,7 +2746,7 @@ describe('alias tools', () => {
 
       const defs = toolsFeature.buildTools(() => dir)
       expect(defs.map((d) => d.name)).not.toContain('zk_lucky')
-      expect(defs).toHaveLength(15)
+      expect(defs).toHaveLength(16)
     } finally {
       store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'], aliasTools: false })
       fs.rmSync(dir, { recursive: true, force: true })
@@ -6377,5 +6378,130 @@ describe('围栏代码块：全项目统一口径', () => {
     const text = fs.readFileSync(source.absPath, 'utf8')
     expect(text).toContain('[[notes/patterns/围栏改名之后]]')
     expect(text).toContain(`示例 [[${stem}]] 不该被重写`)
+  })
+})
+
+describe('zk_memory_write（§15.1 / §10.4 第 16 项）', () => {
+  const dir = path.join(home, 'nb-memory-write')
+  const memFile = path.join(dir, 'MEMORY.md')
+  const userFile = path.join(dir, 'USER.md')
+  const dreamsFile = path.join(dir, 'DREAMS.md')
+  const sourcePath = 'notes/来源笔记.md'
+  const entry = '- **先量后改。** 2026-11-12（来源：[[来源笔记]]）'
+  const memBody = '# MEMORY\n\n## 结论\n\n- **旧结论。** 2026-10-01（来源：[[来源笔记]]）\n'
+  const index = () => wikilinkLib.wikiIndex([{ title: '来源笔记', path: sourcePath }])
+  const c = (budget = 300) => store.normalizeConfig({ notebook: dir, archiveDir: 'archive', memoryBudgetWords: budget })
+  const call = (over: Partial<Parameters<typeof memoryWriteLib.writeMemory>[1]> = {}) =>
+    memoryWriteLib.writeMemory(c(), {
+      target: 'MEMORY', action: 'add', entry, dryRun: true, index: index(), indexComplete: true, ...over,
+    })
+
+  beforeEach(() => {
+    fs.mkdirSync(path.join(dir, 'notes'), { recursive: true })
+    fs.writeFileSync(path.join(dir, sourcePath), '# 来源笔记\n\n正文\n', 'utf8')
+    fs.writeFileSync(memFile, memBody, 'utf8')
+    for (const f of [userFile, dreamsFile]) { try { fs.rmSync(f) } catch { /* 不存在 */ } }
+  })
+
+  it('默认预演：机械门都过，但一个文件都不动', () => {
+    const r = call()
+    expect(r.accepted).toBe(true)
+    expect(r.performed).toBe(false)
+    expect(r.source).toBe(sourcePath)
+    expect(r.diff).toContain('先量后改')
+    expect(fs.readFileSync(memFile, 'utf8')).toBe(memBody)
+    expect(fs.existsSync(dreamsFile)).toBe(false)
+  })
+
+  it('格式硬门：没日期 / 没来源 / 不是列表项都拒，且不写盘', () => {
+    const bad = [
+      '- 没有日期也没有来源',
+      '- 2026-11-12 没有来源',
+      '一句话不是列表项 2026-11-12（来源：[[来源笔记]]）',
+    ]
+    const codes = ['missing-date', 'missing-source', 'invalid-entry']
+    for (let i = 0; i < bad.length; i++) {
+      const r = call({ entry: bad[i] })
+      expect(r.accepted).toBe(false)
+      expect(r.rejection).toBe(codes[i])
+      expect(r.performed).toBe(false)
+    }
+    expect(fs.readFileSync(memFile, 'utf8')).toBe(memBody)
+  })
+
+  it('[[来源]] 不是活笔记时拒绝；索引没扫全只放路径式来源过', () => {
+    const missing = call({ entry: '- **结论。** 2026-11-12（来源：[[根本没有]]）' })
+    expect(missing.rejection).toBe('source-not-live')
+
+    const titleOnly = call({ indexComplete: false })
+    expect(titleOnly.rejection).toBe('index-incomplete')
+
+    const pathStyle = call({
+      entry: `- **结论。** 2026-11-12（来源：[[${sourcePath}]]）`,
+      indexComplete: false,
+    })
+    expect(pathStyle.accepted).toBe(true)
+    expect(pathStyle.source).toBe(sourcePath)
+  })
+
+  it('超预算返回结构化错误 + dropCandidates，不静默截断', () => {
+    const long = '- ' + '很长的新结论 '.repeat(20) + '2026-11-12（来源：[[来源笔记]]）'
+    const r = memoryWriteLib.writeMemory(c(20), {
+      target: 'MEMORY', action: 'add', entry: long, dryRun: true, index: index(), indexComplete: true,
+    })
+    expect(r.rejection).toBe('over-budget')
+    expect(r.wouldTruncate).toBe(true)
+    expect(r.needToFree).toBeGreaterThan(0)
+    expect(r.dropCandidates.length).toBeGreaterThan(0)
+    expect(r.performed).toBe(false)
+    expect(fs.readFileSync(memFile, 'utf8')).toBe(memBody)
+  })
+
+  it('真写：追加到末尾、pre-image 与 diff 进 DREAMS.md', () => {
+    const r = call({ dryRun: false })
+    expect(r.performed).toBe(true)
+    expect(r.afterWords).toBeGreaterThan(r.beforeWords)
+    expect(fs.readFileSync(memFile, 'utf8')).toContain('先量后改')
+    const dreams = fs.readFileSync(dreamsFile, 'utf8')
+    expect(dreams).toContain('pre-image')
+    expect(dreams).toContain(r.diff)
+    expect(dreams).toContain('旧结论')
+  })
+
+  it('并发：expect_stamp 不符放弃，带对的 stamp 才写', () => {
+    const preview = call()
+    expect(call({ dryRun: false, expectStamp: 'bogus' }).rejection).toBe('stale-stamp')
+    expect(fs.readFileSync(memFile, 'utf8')).toBe(memBody)
+    const ok = call({ dryRun: false, expectStamp: preview.stamp })
+    expect(ok.performed).toBe(true)
+  })
+
+  it('retire 不做容量门；add 收退役标记被拒', () => {
+    const retire = '- [superseded 2026-11-12] 旧结论 → [[来源笔记]]'
+    const low = memoryWriteLib.writeMemory(c(1), {
+      target: 'MEMORY', action: 'retire', entry: retire, dryRun: true, index: index(), indexComplete: true,
+    })
+    expect(low.accepted).toBe(true)
+    expect(low.extraWords).toBe(0)
+    expect(call({ action: 'add', entry: retire }).rejection).toBe('invalid-add')
+    expect(call({ action: 'retire', entry }).rejection).toBe('invalid-retire')
+  })
+
+  it('USER.md 也能写；target 落在正确的文件上', () => {
+    const r = call({ target: 'USER', dryRun: false })
+    expect(r.performed).toBe(true)
+    expect(r.target).toBe('USER.md')
+    expect(fs.readFileSync(userFile, 'utf8')).toContain('先量后改')
+    expect(fs.readFileSync(memFile, 'utf8')).toBe(memBody)
+  })
+
+  it('工具注册：第 16 个内置工具，参数枚举拒坏输入', () => {
+    const defs = toolsFeature.buildTools()
+    const tool = defs.find((d) => d.name === 'zk_memory_write')!
+    expect(tool).toBeTruthy()
+    expect(toolLib.validateArgs(tool.parameters, { entry, target: 'AGENTS' }).length).toBe(1)
+    expect(toolLib.validateArgs(tool.parameters, { entry, action: 'replace' }).length).toBe(1)
+    const rendered = tool.output.render({ entry }, call() as unknown as Record<string, unknown>)
+    expect(rendered.map((b) => b.text).join('\n')).toContain('预演通过')
   })
 })
