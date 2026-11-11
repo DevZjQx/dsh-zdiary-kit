@@ -22,6 +22,7 @@ import { memoryUsage } from './memory.js';
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.js';
 import { isDayString } from './dates.js';
 import { normalizeTitle, noteKey, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
+import { AUDIT_RATE, hasRecallSignal, lastRecallOf, readRecallSignal, RECALL_PROTECT_DAYS } from './recall-signal.js';
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
 export const MAX_ITEMS = 50;
 /** topCited 只取前几名：给 agent 一个「本周被反复引用」的提示，不是排行榜 */
@@ -242,7 +243,7 @@ function promotionsOf(cfg, notes) {
  *   · 显式写 `archive/` 的链接是有意引用旧结论（与 lint 同口径），不算来源断了；
  *   · 无日期、无链接的不算候选（它们已经由 lint 的 undated / unlinked 报告）。
  */
-function retireCandidatesOf(cfg, notes, now) {
+function retireCandidatesOf(cfg, notes, now, signal) {
     let body = '';
     try {
         body = fs.readFileSync(path.join(cfg.notebook, 'MEMORY.md'), 'utf8');
@@ -255,6 +256,10 @@ function retireCandidatesOf(cfg, notes, now) {
     const seen = new Set();
     for (const entry of splitMemoryEntries(body)) {
         if (isRetiredEntry(entry))
+            continue;
+        // 15.2：近期被召回过的条目不算退役候选 —— 门控要看得见「其实一直被用到」
+        const last = lastRecallOf(signal, entry);
+        if (last && (daysSinceDate(last, now) ?? Infinity) <= RECALL_PROTECT_DAYS)
             continue;
         const date = entryDate(entry) ?? '';
         const age = date ? (daysSinceDate(date, now) ?? -1) : -1;
@@ -290,6 +295,9 @@ function retireCandidatesOf(cfg, notes, now) {
 }
 export async function dreamNotebook(cfg, opts = {}, signal) {
     const now = opts.now ?? new Date();
+    // 15.2：默认关 / sidecar 为空时 signalActive=false，下面所有信号相关分支都不生效，输出逐字节不变
+    const recallSignal = readRecallSignal(cfg);
+    const signalActive = hasRecallSignal(recallSignal);
     const windowDays = windowDaysOf(cfg, now, opts.days);
     const sinceMs = now.getTime() - windowDays * 86_400_000;
     // 顺序跑：两个 zk 进程同时补索引会撞 SQLite 写锁（lint 里同样处理）
@@ -415,14 +423,31 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
     // 排序说明（P2-12）：先看「被日记提过几天」—— 跨天复现比同一天多次更强；同一天多篇日记
     // 再按 dailyMentions 排，入链数只是最后的次序。没有日记的库两项都是 0，
     // 排序自动退回原来的 cited 降序（行为兼容）。
+    // 15.2：信号生效时先按「召回跨天数 → 查询多样性」；全 0 时下面的次序与原排序完全一致。
     const topCited = notes
-        .map((n) => ({ title: n.title, path: n.path, cited: citedOf(n), ...usageOf(n.path) }))
+        .map((n) => {
+        const r = recallSignal.byPath[n.path];
+        return {
+            title: n.title, path: n.path, cited: citedOf(n), ...usageOf(n.path),
+            ...(r ? { recallDays: r.days.length, recallKinds: r.queryKinds.length } : {}),
+        };
+    })
         .filter((x) => x.cited > 0)
-        .sort((a, b) => b.daysMentioned - a.daysMentioned ||
+        .sort((a, b) => (signalActive ? (b.recallDays ?? 0) - (a.recallDays ?? 0) || (b.recallKinds ?? 0) - (a.recallKinds ?? 0) : 0) ||
+        b.daysMentioned - a.daysMentioned ||
         b.dailyMentions - a.dailyMentions ||
         b.cited - a.cited ||
         a.title.localeCompare(b.title))
         .slice(0, TOP_CITED);
+    // 15.2 审计流：固定比例、与分数无关、确定性（不看 cited / 日期，只按 path 字母序等距取样）。
+    // 仅信号生效时出现，且从窗口外积压里抽 —— 没被召回过的笔记否则永远拿不到「其实有用」的证据。
+    const auditSamples = [];
+    if (signalActive) {
+        const pool = [...backlogNotes].sort((a, b) => a.path.localeCompare(b.path));
+        const step = Math.max(1, Math.round(1 / AUDIT_RATE));
+        for (let i = 0; i < pool.length; i += step)
+            auditSamples.push(candidateOf(pool[i], ''));
+    }
     return {
         notebook: cfg.notebook,
         windowDays,
@@ -450,6 +475,7 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         topCited,
         dailyLooseEnds,
         memory: memoryUsage(cfg),
-        retireCandidates: retireCandidatesOf(cfg, notes, now),
+        retireCandidates: retireCandidatesOf(cfg, notes, now, recallSignal),
+        ...(signalActive ? { auditSamples } : {}),
     };
 }

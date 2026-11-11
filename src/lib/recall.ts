@@ -12,6 +12,7 @@ import type { EntryPoint } from './entry-points.ts'
 import { archivedCounterparts } from './archive-probe.ts'
 import type { CounterEntry } from './archive-probe.ts'
 import { bumpUsage } from './usage.ts'
+import { bumpRecall } from './recall-signal.ts'
 import { searchNotesDetailed } from './zk.ts'
 import type { Completeness, NoteRecord, SearchOptions } from './zk.ts'
 
@@ -26,6 +27,8 @@ export interface RecallNote {
   title: string
   path: string
   absPath: string
+  /** 15.6：`## Summary` 首段 / frontmatter summary；老笔记为空串 */
+  summary: string
   included: boolean
   reason: RecallReason
 }
@@ -85,9 +88,9 @@ function roundRobin(notes: NoteRecord[]): NoteRecord[] {
   return out
 }
 
-/** 与 feature.ts 的 detailOf 同口径：snippet 比 lead 多带命中上下文时优先用它 */
+/** 与 feature.ts 的 detailOf 同口径：15.6 先用 summary，空串再退回 snippet / lead（lead 实测就是 H1） */
 function detailOf(n: NoteRecord): string {
-  return n.snippet && n.snippet !== n.lead ? n.snippet : (n.lead ?? '')
+  return n.summary || (n.snippet && n.snippet !== n.lead ? n.snippet : (n.lead ?? ''))
 }
 
 function entryText(n: NoteRecord, index: number): string {
@@ -130,7 +133,7 @@ export async function assembleRecall(cfg: Config, opts: RecallOptions = {}, sign
   let index = 0
   for (const n of roundRobin(result.notes)) {
     const note: RecallNote = {
-      title: n.title, path: n.path, absPath: n.absPath, included: false, reason: 'over-budget',
+      title: n.title, path: n.path, absPath: n.absPath, summary: n.summary, included: false, reason: 'over-budget',
     }
     if (seen.has(n.path)) {
       note.reason = 'duplicate'
@@ -169,6 +172,7 @@ export async function assembleRecall(cfg: Config, opts: RecallOptions = {}, sign
     ...(entryPoints.points.length ? ['entryPoints' as const] : []),
     ...(counters.entries.length ? ['counterEntries' as const] : []),
   ])
+  bumpRecall(cfg, result.notes.map((n) => ({ path: n.path, title: n.title })), 'recall')
   return {
     text, used, budget,
     completeness: result.completeness,

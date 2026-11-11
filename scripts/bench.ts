@@ -101,6 +101,7 @@ function makeConfig(dir: string): Config {
     defaultTags: [],
     maxReadChars: 20_000,
     aliasTools: false,
+    recallSignal: false,
     memoryBudgetWords: 500,
     personaBudgetWords: 240,
     graphBudgetNotes: 2_000,

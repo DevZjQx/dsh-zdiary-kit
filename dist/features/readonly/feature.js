@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isLoopback, json, ROUTE_BASE } from '../../lib/http.js';
 import { config } from '../../config/store.js';
-import { absPathOf, backlinksOf, hasNotebook, isUnderDir, localDate, readNote, scanNotes, searchNotes, ZkError } from '../../lib/zk.js';
+import { absPathOf, attachSummaries, backlinksOf, hasNotebook, isUnderDir, localDate, readNote, scanNotes, searchNotes, ZkError } from '../../lib/zk.js';
 import { isMetaPath } from '../../lib/meta.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
 import { RETIRED_ENTRY_RE } from '../../lib/memory-format.js';
@@ -162,14 +162,16 @@ function tagCounts(notes) {
 function tagLinks(tags) {
     return tags.map((tag) => `<a href="${esc(viewHref({ p: 'tag', tag }))}">#${esc(tag)}</a>`).join(' ');
 }
-function noteTable(notes) {
+function noteTable(cfg, notes) {
     if (!notes.length)
         return '<p class="meta">没有笔记。</p>';
-    const rows = notes.map((note) => {
+    // 15.6：scanNotes 来的结果没读过正文，只对这一批（recent / journal / 搜索 / 标签，都有界）补摘要
+    const rows = attachSummaries(cfg, notes).map((note) => {
         const date = localDate(note.modified || note.created) || '—';
-        return `<tr><td class="meta">${esc(date)}</td><td><a href="${esc(noteHref(note.path))}">${esc(note.title || note.path)}</a></td><td class="meta">${tagLinks(note.tags)}</td></tr>`;
+        const brief = note.summary.length > 80 ? note.summary.slice(0, 80) + '…' : note.summary;
+        return `<tr><td class="meta">${esc(date)}</td><td><a href="${esc(noteHref(note.path))}">${esc(note.title || note.path)}</a></td><td class="meta">${esc(brief || '—')}</td><td class="meta">${tagLinks(note.tags)}</td></tr>`;
     }).join('');
-    return `<table><tr><th>日期</th><th>标题</th><th>标签</th></tr>${rows}</table>`;
+    return `<table><tr><th>日期</th><th>标题</th><th>摘要</th><th>标签</th></tr>${rows}</table>`;
 }
 function searchForm(value = '') {
     return `<form class="search" method="get" action="${VIEW}"><input type="search" name="q" value="${esc(value)}" placeholder="搜索标题、正文…" aria-label="搜索"><button type="submit">搜索</button></form>`;
@@ -202,9 +204,9 @@ async function handleHome(res, cfg) {
         searchForm(),
         `<p class="meta">${atLeast}${all.length} 篇笔记 · ${atLeast}${tags.length} 个标签 · 只读</p>`,
         '<h2>最近更新</h2>',
-        noteTable(recent),
+        noteTable(cfg, recent),
         '<h2>日记</h2>',
-        noteTable(journal),
+        noteTable(cfg, journal),
         '<h2>标签</h2>',
         tags.length
             ? `<p class="tags">${tags.slice(0, 80).map(([tag, count]) => `<a href="${esc(viewHref({ p: 'tag', tag }))}">#${esc(tag)}</a><span class="count">${count}</span>`).join(' · ')}</p>`
@@ -222,7 +224,7 @@ async function handleSearch(res, cfg, q) {
         `<h1>搜索：${esc(q)}</h1>`,
         searchForm(q),
         `<p class="meta">${notes.length} 条结果（最多 100 条）</p>`,
-        noteTable(notes),
+        noteTable(cfg, notes),
     ].join('\n');
     sendHtml(res, 200, shell(cfg, `搜索 ${q}`, body));
 }
@@ -396,7 +398,7 @@ async function handleTag(res, cfg, tag) {
         `<p class="crumb"><a href="${VIEW}">首页</a> / <a href="${esc(viewHref({ p: 'tags' }))}">标签</a></p>`,
         `<h1>#${esc(tag)}</h1>`,
         `<p class="meta">${notes.length} 篇（最多 200 篇）</p>`,
-        noteTable(notes),
+        noteTable(cfg, notes),
     ].join('\n');
     sendHtml(res, 200, shell(cfg, `#${tag}`, body));
 }

@@ -22,6 +22,7 @@ import { assembleRecall } from '../../lib/recall.js';
 import { entryPointLines, entryPointsOf } from '../../lib/entry-points.js';
 import { archivedCounterparts, describeCounterEntries } from '../../lib/archive-probe.js';
 import { bumpUsage, readUsage } from '../../lib/usage.js';
+import { bumpRecall } from '../../lib/recall-signal.js';
 import { wikiIndex } from '../../lib/wikilink.js';
 import { writeMemory } from '../../lib/memory-write.js';
 import { META_NAMES } from '../../lib/meta.js';
@@ -295,9 +296,9 @@ function withElsewhere(err, cfg, workspace, rel) {
 function tagSuffix(record) {
     return record.tags.length ? ' · ' + record.tags.map((t) => '#' + t).join(' ') : '';
 }
-/** R2：snippet 比 lead 多带命中上下文时才替换它，否则维持原输出 */
+/** 15.6：先用 summary（## Summary 首段），空串再按 R2 口径退回 snippet / lead */
 function detailOf(n) {
-    return n.snippet && n.snippet !== n.lead ? n.snippet : (n.lead ?? '');
+    return n.summary || (n.snippet && n.snippet !== n.lead ? n.snippet : (n.lead ?? ''));
 }
 /** 死胡同提醒（措辞与 `zk-kit search` 共用一份）；没有就一个字都不加 */
 function counterBlockOf(entries, truncated, zeroHit) {
@@ -445,6 +446,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             created: { type: 'string' },
                             lead: { type: 'string' },
                             words: { type: 'number' },
+                            /** 15.6：`## Summary` 首段 / frontmatter summary；老笔记为空串 */
+                            summary: { type: 'string' },
                             /** 命中片段，没有时整个键不出现（避免 undefined 让宿主判 invalid output） */
                             snippet: { type: 'string' },
                         }, ['title', 'path', 'absPath', 'tags', 'created', 'lead']),
@@ -481,6 +484,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     ...(entryPoints.length ? ['entryPoints'] : []),
                     ...(counters.entries.length ? ['counterEntries'] : []),
                 ]);
+                // 15.2：只记 path / 日期 / 检索种类，不记查询词；默认关时零写入
+                bumpRecall(cfg, result.notes.map((n) => ({ path: n.path, title: n.title })), 'search');
                 return {
                     notebook: cfg.notebook,
                     count: result.notes.length,
@@ -491,7 +496,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     ...(result.total === undefined ? {} : { total: result.total }),
                     notes: result.notes.map((n) => ({
                         title: n.title, path: n.path, absPath: n.absPath, tags: n.tags,
-                        created: dateOnly(n.created), lead: n.lead, words: n.words,
+                        created: dateOnly(n.created), lead: n.lead, words: n.words, summary: n.summary,
                         ...(n.snippet ? { snippet: n.snippet } : {}),
                     })),
                     ...(entryPoints.length ? { entryPoints } : {}),
@@ -564,6 +569,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             created: { type: 'string' },
                             lead: { type: 'string' },
                             words: { type: 'number' },
+                            /** 15.6：`## Summary` 首段 / frontmatter summary；老笔记为空串 */
+                            summary: { type: 'string' },
                             snippet: { type: 'string' },
                             archived: { type: 'boolean' },
                         }, ['title', 'path', 'absPath', 'type', 'status', 'authority', 'tags', 'created', 'lead', 'archived']),
@@ -609,6 +616,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     ...(entryPoints.length ? ['entryPoints'] : []),
                     ...(counters.entries.length ? ['counterEntries'] : []),
                 ]);
+                bumpRecall(cfg, notes.map((n) => ({ path: n.path, title: n.title })), 'query');
                 return {
                     notebook: cfg.notebook,
                     count: notes.length,
@@ -628,6 +636,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                         created: dateOnly(n.created),
                         lead: n.lead,
                         words: n.words,
+                        summary: n.summary,
                         ...(n.snippet ? { snippet: n.snippet } : {}),
                         archived: n.path.startsWith(cfg.archiveDir + '/'),
                     })),
@@ -650,7 +659,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     : v.hasMore ? `\n⚠️ 还有更多匹配没返回（已检查 ${v.scanned} 条候选）；要更全就提高 limit 或缩小过滤范围` : '';
                 const lines = v.notes.map((n, i) => {
                     const badges = [String(n.type || '—'), String(n.status || 'no-status'), n.archived ? '已归档' : ''].filter(Boolean);
-                    const detail = detailOf({ lead: String(n.lead ?? ''), snippet: String(n.snippet ?? '') });
+                    const detail = detailOf({ summary: String(n.summary ?? ''), lead: String(n.lead ?? ''), snippet: String(n.snippet ?? '') });
                     return `${i + 1}. ${String(n.title)}  [${badges.join(' · ')}]\n   ${String(n.absPath || n.path)} · ${String(n.created)}${detail ? '\n   ' + detail : ''}`;
                 });
                 return text(`${v.count} 条（笔记本 ${v.notebook}）\n` + lines.join('\n') +
@@ -695,6 +704,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             title: { type: 'string' },
                             path: { type: 'string' },
                             absPath: { type: 'string' },
+                            /** 15.6：`## Summary` 首段 / frontmatter summary；老笔记为空串 */
+                            summary: { type: 'string' },
                             included: { type: 'boolean' },
                             reason: { type: 'string', enum: ['included', 'duplicate', 'empty', 'over-budget'] },
                         }, ['title', 'path', 'absPath', 'included', 'reason']),
@@ -1734,6 +1745,9 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             dailyMentions: { type: 'number' },
                             daysMentioned: { type: 'number' },
                             lastMentioned: { type: 'string' },
+                            /** 15.2：仅在召回信号生效时出现（可选，默认关时输出逐字节不变） */
+                            recallDays: { type: 'number' },
+                            recallKinds: { type: 'number' },
                         }, ['title', 'path', 'cited', 'dailyMentions', 'daysMentioned', 'lastMentioned']),
                     },
                     dailyLooseEnds: {
@@ -1753,6 +1767,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             reason: { type: 'string', enum: ['stale', 'source-missing', 'source-superseded'] },
                         }, ['entry', 'date', 'age', 'reason']),
                     },
+                    /** 15.2：仅在召回信号生效时出现；固定比例、与分数无关的窗口外抽样 */
+                    auditSamples: { type: 'array', items: DREAM_CANDIDATE },
                 }, ['notebook', 'windowDays', 'since', 'truncated', 'completeness', 'scanLimit', 'graphSkipped', 'graphBudget', 'missingId', 'memory', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds', 'retireCandidates']),
             },
             async run(args, env) {
@@ -1834,7 +1850,12 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                             (c.daysMentioned > 0 ? ' · 日记 ' + c.daysMentioned + ' 天（最近 ' + c.lastMentioned + '）' : ''));
                     }
                 }
-                if (!v.newNotes.length && !v.dailyLooseEnds.length && !v.topCited.length)
+                if (v.auditSamples?.length) {
+                    lines.push('审计抽样（与分数无关，固定比例）：');
+                    for (const n of v.auditSamples.slice(0, 10))
+                        lines.push('  · ' + (n.title || n.path) + '（' + n.path + '）');
+                }
+                if (!v.newNotes.length && !v.dailyLooseEnds.length && !v.topCited.length && !v.auditSamples?.length)
                     lines.push('这个窗口里没有新材料。');
                 if (v.completeness === 'partial')
                     lines.push('⚠️ 笔记数触到扫描上限（' + v.scanLimit + ' 篇）：窗口与排名都不完整');

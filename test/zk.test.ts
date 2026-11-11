@@ -49,6 +49,7 @@ const edgeContext = await import('../src/lib/edge-context.ts')
 const wikilinkLib = await import('../src/lib/wikilink.ts')
 const fenceLib = await import('../src/lib/fence.ts')
 const memoryWriteLib = await import('../src/lib/memory-write.ts')
+const recallSignalLib = await import('../src/lib/recall-signal.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
@@ -2832,7 +2833,7 @@ describe('M4: 结构设置与记忆预算', () => {
     const first = await notebookLib.ensureNotebook(m4)
     expect(first.agentsWritten).toBe(true)
     const body = fs.readFileSync(agentsFile, 'utf8')
-    // 计划 §4 M4 的两件事：检索词归宿、中文必打 tags
+    // 计划 §4 M4 的两件事：检索词归宿、中文检索口径
     expect(body).toContain('值得检索')
     expect(body).toContain('tags')
     expect(body).toMatch(/中文.*tags|tags.*中文/)
@@ -5517,8 +5518,8 @@ describe('G1 / G4：写 MEMORY 前的容量可见（§10.4 第 6 项）', () => 
     }
   })
 
-  it('模板升到 v10：两份 AGENTS 都把 zk_walk 一跳写进查重那一步，且都守住词数预算', () => {
-    expect(agentsTpl.TEMPLATE_VERSION).toBe(10)
+  it('模板升到 v11：两份 AGENTS 都把 zk_walk 一跳写进查重那一步，且都守住词数预算', () => {
+    expect(agentsTpl.TEMPLATE_VERSION).toBe(11)
     expect(agentsTpl.TEMPLATE_SENTINELS[agentsTpl.TEMPLATE_VERSION]).toBeDefined()
     expect(agentsTpl.TEMPLATE_SENTINELS[agentsTpl.TEMPLATE_VERSION]!.required).toContain('zk_walk')
     expect(notebookLib.AGENTS_TEMPLATE).toContain('改 MEMORY 前看 zk_context')
@@ -5916,29 +5917,48 @@ describe('R8 / R9-v1 / R10：入口 + 一跳（§10.4 第 8–10 项）', () => 
     }
   })
 
-  test('R10：模板 v10 把 zk_walk 一并写进查重那一步，词数 190 / 88（不提高预算）', () => {
-    expect(agentsTpl.TEMPLATE_VERSION).toBe(10)
-    expect(memory.countWords(agentsTpl.AGENTS_TEMPLATE)).toBe(190)
-    expect(memory.countWords(agentsTpl.AGENTS_TEMPLATE_FLAT)).toBe(88)
-    expect(agentsTpl.AGENTS_TEMPLATE).toContain('1. zk_query / zk_search 查重，zk_walk 一跳（中文查 tags）。')
-    expect(agentsTpl.AGENTS_TEMPLATE_FLAT).toContain('1. zk_search 查重，zk_walk 一跳；中文必打 tags（FTS 不切中文）。')
-    expect(agentsTpl.TEMPLATE_SENTINELS[10]!.required).toContain('zk_walk')
+  test('R11：模板 v11 修过时中文检索口径，词数 187 / 89（不提高预算）', () => {
+    expect(agentsTpl.TEMPLATE_VERSION).toBe(11)
+    expect(memory.countWords(agentsTpl.AGENTS_TEMPLATE)).toBe(187)
+    expect(memory.countWords(agentsTpl.AGENTS_TEMPLATE_FLAT)).toBe(89)
+    expect(agentsTpl.AGENTS_TEMPLATE).toContain('1. zk_query / zk_search 查重，zk_walk 一跳（中文查正文或 tags）。')
+    expect(agentsTpl.AGENTS_TEMPLATE_FLAT).toContain('1. zk_search 查重，zk_walk 一跳；中文查正文已并用子串检索。')
+    expect(agentsTpl.TEMPLATE_SENTINELS[11]!.required).toContain('中文查正文已并用子串检索')
+    expect(agentsTpl.TEMPLATE_SENTINELS[11]!.forbidden).toContain('全文索引不切中文')
+    expect(agentsTpl.TEMPLATE_SENTINELS[11]!.forbidden).toContain('FTS 不切中文')
   })
 
-  it('R10：只把首行数字改成 v10、正文没加 zk_walk 的老库被报「标记与内容不符」', async () => {
+  it('R11：只把首行数字改成 v11、正文没加 zk_walk 的老库被报「标记与内容不符」', async () => {
     const { c, dir } = await setup('nb-r10-sentinel')
     try {
       const faked = notebookLib.AGENTS_TEMPLATE.replace('，zk_walk 一跳', '')
       fs.writeFileSync(path.join(dir, 'AGENTS.md'), faked, 'utf8')
       const st = lintLib.templateStatus(c)
-      expect(st.version).toBe(10)
+      expect(st.version).toBe(11)
       expect(st.mismatch).toBe(true)
       expect(st.mismatchDetail).toContain('zk_walk')
 
       fs.writeFileSync(path.join(dir, 'AGENTS.md'), notebookLib.AGENTS_TEMPLATE, 'utf8')
       const clean = lintLib.templateStatus(c)
-      expect(clean.version).toBe(10)
+      expect(clean.version).toBe(11)
       expect(clean.stale).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('R11：只把首行数字改成 v11、正文仍留过时中文口径的库被报「标记与内容不符」', async () => {
+    const { c, dir } = await setup('nb-r11-sentinel')
+    try {
+      const faked = notebookLib.AGENTS_TEMPLATE
+        .replace('中文查正文已并用子串检索；tags 用于组织与中文查重。', '中文必打 tags：全文索引不切中文，只查正文会静默查空、建重复笔记。')
+        .replace('中文查正文或 tags', '中文查 tags')
+      fs.writeFileSync(path.join(dir, 'AGENTS.md'), faked, 'utf8')
+      const st = lintLib.templateStatus(c)
+      expect(st.version).toBe(11)
+      expect(st.mismatch).toBe(true)
+      expect(st.mismatchDetail).toContain('全文索引不切中文')
+      expect(st.mismatchDetail).toContain('中文查正文已并用子串检索')
     } finally {
       restore()
     }
@@ -6503,5 +6523,249 @@ describe('zk_memory_write（§15.1 / §10.4 第 16 项）', () => {
     expect(toolLib.validateArgs(tool.parameters, { entry, action: 'replace' }).length).toBe(1)
     const rendered = tool.output.render({ entry }, call() as unknown as Record<string, unknown>)
     expect(rendered.map((b) => b.text).join('\n')).toContain('预演通过')
+  })
+})
+
+describe('§15.6：`## Summary` 读回成字段（§10.4 第 17 项）', () => {
+  const originalConfig = {
+    notebooks: { default: { path: notebook, structure: 'flat' as const } },
+    active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+    defaultTags: ['default'], aliasTools: false,
+  }
+  const setup = async (name: string) => {
+    const dir = path.join(home, name)
+    store.writeConfig({
+      notebooks: { default: { path: dir, structure: 'flat' } },
+      active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+      defaultTags: [], aliasTools: false,
+    })
+    const c = store.config()
+    await notebookLib.ensureNotebook(c)
+    return { c, dir }
+  }
+  const restore = (): void => { store.writeConfig(originalConfig) }
+  const write = (c: ReturnType<typeof store.config>, file: string, body: string): void => {
+    const dir = path.join(c.notebook, c.notesDir)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, file), body, 'utf8')
+  }
+  const head = '---\ntitle: 有摘要的笔记\nstatus: active\ntype: concept\n---\n\n'
+  const withSummary = head + '# 有摘要的笔记\n\n## Summary\n\n这是给它的一句话摘要。\n\n## Content\n\n独有关键词 记忆预算。\n'
+  const noSummary = head.replace('有摘要的笔记', '老笔记没有摘要') + '# 老笔记没有摘要\n\n独有关键词 记忆预算。\n'
+
+  test('summarizeContent：frontmatter 优先 / ## Summary 首段 / 中文标题 / 无则空串 / 代码块不算 / ≤240 字', () => {
+    expect(zk.summarizeContent('---\nsummary: 元信息摘要\n---\n\n# T\n\n## Summary\n\n不该用这节。\n')).toBe('元信息摘要')
+    expect(zk.summarizeContent('# T\n\n## Summary\n\n一句话。\n第二句。\n\n## Content\n\n正文。\n')).toBe('一句话。 第二句。')
+    expect(zk.summarizeContent('# T\n\n## 摘要\n\n中文标题也认。\n')).toBe('中文标题也认。')
+    expect(zk.summarizeContent('# T\n\n只有正文。\n')).toBe('')
+    expect(zk.summarizeContent('# T\n\n```\n## Summary\n\n代码块里的假节。\n```\n')).toBe('')
+    expect(zk.summarizeContent('# T\n\n## Summary\n\n' + '很'.repeat(300) + '\n').length).toBe(240)
+  })
+
+  it('检索结果带非空 summary；无 Summary 的老笔记为空串且其余字段不变；lead 仍是 H1', async () => {
+    const { c } = await setup('nb-156-summary')
+    try {
+      write(c, 'with-summary.md', withSummary)
+      write(c, 'no-summary.md', noSummary)
+      await zk.indexNotebook(c)
+      const r = await zk.searchNotesDetailed(c, { query: '独有关键词', limit: 10 })
+      const a = r.notes.find((n) => n.path.includes('with-summary.md'))
+      const b = r.notes.find((n) => n.path.includes('no-summary.md'))
+      expect(a?.summary).toBe('这是给它的一句话摘要。')
+      expect(b?.summary).toBe('')
+      expect(a?.lead).toContain('有摘要的笔记')
+      expect(b?.lead).toContain('老笔记没有摘要')
+      expect(a?.title).toBeTruthy()
+      expect(a?.words).toBeGreaterThan(0)
+    } finally {
+      restore()
+    }
+  })
+
+  it('attachSummaries 跳过已带 summary 的行（不重复读盘）', async () => {
+    const { c } = await setup('nb-156-attach')
+    try {
+      write(c, 'a.md', withSummary)
+      await zk.indexNotebook(c)
+      const r = await zk.searchNotesDetailed(c, { query: '独有关键词', limit: 10 })
+      const first = r.notes[0]!
+      expect(first.summary).toBe('这是给它的一句话摘要。')
+      // 改盘上的摘要：若 attachSummaries 重复读盘就会拿到「摘要 B」
+      write(c, 'a.md', withSummary.replace('这是给它的一句话摘要。', '摘要 B。'))
+      const again = zk.attachSummaries(c, [first])
+      expect(again[0]!.summary).toBe('这是给它的一句话摘要。')
+    } finally {
+      restore()
+    }
+  })
+
+  it('三工具 notes[].summary 进 schema；zk_recall 的装配文本用摘要而不是只有标题', async () => {
+    const { c, dir } = await setup('nb-156-tools')
+    try {
+      write(c, 'a.md', withSummary)
+      await zk.indexNotebook(c)
+      const env = { signal: AbortSignal.timeout(30_000) }
+      const defs = toolsFeature.buildTools(() => dir)
+      for (const name of ['zk_search', 'zk_query', 'zk_recall'] as const) {
+        const tool = defs.find((d) => d.name === name)!
+        const out = await tool.execute({ query: '独有关键词' }, env) as Record<string, unknown>
+        expect(undeclaredKeys(out, tool.output.schema)).toEqual([])
+        const notes = out.notes as Array<Record<string, unknown>>
+        expect(notes[0]!.summary).toBe('这是给它的一句话摘要。')
+      }
+      const r = await recallLib.assembleRecall(c, { query: '独有关键词', budget: 500 })
+      expect(r.text).toContain('这是给它的一句话摘要。')
+      expect(r.notes[0]!.summary).toBe('这是给它的一句话摘要。')
+      expect(r.notes[0]!.included).toBe(true)
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('§15.2：召回信号 sidecar（§10.4 第 18 项）', () => {
+  const originalConfig = {
+    notebooks: { default: { path: notebook, structure: 'flat' as const } },
+    active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+    defaultTags: ['default'], aliasTools: false, recallSignal: false,
+  }
+  const setup = async (name: string, recallSignal = false) => {
+    const dir = path.join(home, name)
+    store.writeConfig({
+      notebooks: { default: { path: dir, structure: 'flat' } },
+      active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+      defaultTags: [], aliasTools: false, recallSignal,
+    })
+    const c = store.config()
+    await notebookLib.ensureNotebook(c)
+    return { c, dir }
+  }
+  const restore = (): void => { store.writeConfig(originalConfig) }
+  const write = (c: ReturnType<typeof store.config>, file: string, body: string): void => {
+    const dir = path.join(c.notebook, c.notesDir)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, file), body, 'utf8')
+  }
+  const note = (title: string, date: string, body = '独有关键词 记忆预算。\n') =>
+    `---\ntitle: ${title}\ndate: ${date}\ntype: concept\nstatus: active\n---\n\n# ${title}\n\n${body}`
+  const writeSignal = (c: ReturnType<typeof store.config>, byPath: Record<string, unknown>): void => {
+    const dir = path.join(c.notebook, '.zk')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'dsh-recall.json'),
+      JSON.stringify({ version: 1, since: '2026-11-01T00:00:00.000Z', byPath }), 'utf8')
+  }
+
+  it('默认关：bumpRecall 零写入，readRecallSignal 返回空信号', async () => {
+    const { c, dir } = await setup('nb-152-off')
+    try {
+      recallSignalLib.bumpRecall(c, [{ path: 'notes/a.md', title: '甲' }], 'search')
+      expect(fs.existsSync(path.join(dir, '.zk', 'dsh-recall.json'))).toBe(false)
+      expect(recallSignalLib.hasRecallSignal(recallSignalLib.readRecallSignal(c))).toBe(false)
+    } finally { restore() }
+  })
+
+  it('打开后落盘：不含查询词 / 正文，按 path 去重，日期与 queryKinds 累积', async () => {
+    const { c, dir } = await setup('nb-152-write', true)
+    try {
+      recallSignalLib.bumpRecall(c, [
+        { path: 'notes/a.md', title: '甲' }, { path: 'notes/a.md', title: '甲' },
+      ], 'search')
+      recallSignalLib.bumpRecall(c, [{ path: 'notes/a.md', title: '甲' }], 'query')
+      const raw = fs.readFileSync(path.join(dir, '.zk', 'dsh-recall.json'), 'utf8')
+      expect(raw).not.toContain('独有关键词')
+      expect(raw).not.toContain('这是正文')
+      const s = recallSignalLib.readRecallSignal(c)
+      expect(s.byPath['notes/a.md']?.count).toBe(2)
+      expect([...(s.byPath['notes/a.md']?.queryKinds ?? [])].sort()).toEqual(['query', 'search'])
+      expect(s.byPath['notes/a.md']?.days.length).toBe(1)
+      expect(s.byPath['notes/a.md']?.title).toBe('甲')
+    } finally { restore() }
+  })
+
+  it('sidecar 坏了静默降级为空信号，不抛错', async () => {
+    const { c, dir } = await setup('nb-152-broken', true)
+    try {
+      fs.mkdirSync(path.join(dir, '.zk'), { recursive: true })
+      fs.writeFileSync(path.join(dir, '.zk', 'dsh-recall.json'), '{ broken', 'utf8')
+      expect(recallSignalLib.hasRecallSignal(recallSignalLib.readRecallSignal(c))).toBe(false)
+      expect(() => recallSignalLib.bumpRecall(c, [{ path: 'notes/a.md' }], 'search')).not.toThrow()
+    } finally { restore() }
+  })
+
+  it('默认关 / 开关打开但空 sidecar：zk_dream 不出现任何 15.2 新键', async () => {
+    const { c, dir } = await setup('nb-152-baseline')
+    try {
+      write(c, 'a.md', note('甲', '2026-11-01'))
+      await zk.indexNotebook(c)
+      const now = new Date('2026-11-12T00:00:00Z')
+      const off = await dreamLib.dreamNotebook(c, { now })
+      expect('auditSamples' in off).toBe(false)
+      expect(off.topCited.every((x) => !('recallDays' in x))).toBe(true)
+      // 打开开关但不写 sidecar：仍是空信号，输出结构逐字节不变
+      store.writeConfig({
+        notebooks: { default: { path: dir, structure: 'flat' } },
+        active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+        defaultTags: [], aliasTools: false, recallSignal: true,
+      })
+      const on = await dreamLib.dreamNotebook(store.config(), { now })
+      expect('auditSamples' in on).toBe(false)
+      expect(on.topCited.every((x) => !('recallDays' in x))).toBe(true)
+      expect(JSON.stringify(on)).toBe(JSON.stringify(off))
+    } finally { restore() }
+  })
+
+  it('信号生效：召回过的笔记进 topCited、其 MEMORY 条目受退役保护、出现审计抽样', async () => {
+    const { c } = await setup('nb-152-signal', true)
+    try {
+      const now = new Date('2026-11-12T00:00:00Z')
+      write(c, 'a.md', note('甲', '2020-01-01'))
+      write(c, 'b.md', note('乙', '2020-01-01', '独有关键词 记忆预算。\n\n参见 [[a]]\n'))
+      fs.writeFileSync(path.join(c.notebook, 'MEMORY.md'),
+        '# 记忆\n\n- 2026-01-01 旧结论甲 [[甲]]\n- 2026-01-01 旧结论乙 [[乙]]\n')
+      await zk.indexNotebook(c)
+      const before = await dreamLib.dreamNotebook(c, { now })
+      expect(before.retireCandidates.length).toBeGreaterThanOrEqual(1)
+      writeSignal(c, {
+        'notes/a.md': { count: 5, last: '2026-11-11', days: ['2026-11-10', '2026-11-11'], queryKinds: ['search', 'recall'], title: '甲' },
+      })
+      const after = await dreamLib.dreamNotebook(c, { now })
+      expect(after.auditSamples).toBeDefined()
+      expect(after.topCited.some((x) => x.path.includes('a.md') && x.recallDays === 2 && x.recallKinds === 2)).toBe(true)
+      expect(after.retireCandidates.some((r) => r.entry.includes('[[甲]]'))).toBe(false)
+    } finally { restore() }
+  })
+
+  it('同日 MEMORY 条目按最后召回时间决胜；无信号仍是「按位置决胜」', async () => {
+    const { c } = await setup('nb-152-tie', true)
+    try {
+      fs.writeFileSync(path.join(c.notebook, 'MEMORY.md'),
+        '# 记忆\n\n- 2026-01-01 甲结论 [[甲]]\n- 2026-01-01 乙结论 [[乙]]\n')
+      expect(memory.memoryCapacity(c).suggestion).toContain('按位置决胜')
+      writeSignal(c, {
+        'notes/a.md': { count: 1, last: '2026-02-01', days: ['2026-02-01'], queryKinds: ['search'], title: '甲' },
+        'notes/b.md': { count: 1, last: '2026-11-11', days: ['2026-11-11'], queryKinds: ['search'], title: '乙' },
+      })
+      const after = memory.memoryCapacity(c)
+      expect(after.suggestion).toContain('按最后召回时间决胜')
+      expect(after.dropCandidates[0]?.title).toContain('甲结论')
+    } finally { restore() }
+  })
+
+  it('默认关 / 打开开关但空 sidecar：注入载荷与 zk_context 的 suggestion 逐字节一致', async () => {
+    const { c, dir } = await setup('nb-152-byte')
+    try {
+      fs.writeFileSync(path.join(c.notebook, 'MEMORY.md'),
+        '# 记忆\n\n- 2026-01-01 甲结论 [[甲]]\n- 2026-01-01 乙结论 [[乙]]\n')
+      const payloadBefore = memory.buildMemoryPayload(c)
+      const suggestionBefore = memory.memoryCapacity(c).suggestion
+      store.writeConfig({
+        notebooks: { default: { path: dir, structure: 'flat' } },
+        active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+        defaultTags: [], aliasTools: false, recallSignal: true,
+      })
+      const on = store.config()
+      expect(JSON.stringify(memory.buildMemoryPayload(on))).toBe(JSON.stringify(payloadBefore))
+      expect(memory.memoryCapacity(on).suggestion).toBe(suggestionBefore)
+    } finally { restore() }
   })
 })

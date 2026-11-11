@@ -42,6 +42,7 @@ export const DEFAULTS = {
     defaultTags: [],
     maxReadChars: 20_000,
     aliasTools: false,
+    recallSignal: false,
     memoryBudgetWords: 500,
     personaBudgetWords: 240,
     graphBudgetNotes: 2_000,
@@ -148,6 +149,8 @@ export function normalizeConfig(raw, workspace = processWorkspace()) {
         // 只认 true / "true"（设置页与 CLI 传字符串）：1 / "yes" / "false" 一律当未启用，
         // 免得拼错一个值就静默把别名注册成工具
         aliasTools: src.aliasTools === true || src.aliasTools === 'true',
+        // 同一个口径：只认 true / "true"，拼错的值静默当未启用（sidecar 默认绝不落盘）
+        recallSignal: src.recallSignal === true || src.recallSignal === 'true',
         memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
         personaBudgetWords: clamp(Number(src.personaBudgetWords), 50, 800, DEFAULTS.personaBudgetWords),
         graphBudgetNotes,

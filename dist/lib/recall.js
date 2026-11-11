@@ -2,6 +2,7 @@ import { countWords } from './memory.js';
 import { entryPointsOf } from './entry-points.js';
 import { archivedCounterparts } from './archive-probe.js';
 import { bumpUsage } from './usage.js';
+import { bumpRecall } from './recall-signal.js';
 import { searchNotesDetailed } from './zk.js';
 export const DEFAULT_RECALL_BUDGET = 500;
 export const MAX_RECALL_BUDGET = 5_000;
@@ -39,9 +40,9 @@ function roundRobin(notes) {
     }
     return out;
 }
-/** 与 feature.ts 的 detailOf 同口径：snippet 比 lead 多带命中上下文时优先用它 */
+/** 与 feature.ts 的 detailOf 同口径：15.6 先用 summary，空串再退回 snippet / lead（lead 实测就是 H1） */
 function detailOf(n) {
-    return n.snippet && n.snippet !== n.lead ? n.snippet : (n.lead ?? '');
+    return n.summary || (n.snippet && n.snippet !== n.lead ? n.snippet : (n.lead ?? ''));
 }
 function entryText(n, index) {
     const badges = [n.type, ...n.tags.map((t) => '#' + t)].filter(Boolean);
@@ -81,7 +82,7 @@ export async function assembleRecall(cfg, opts = {}, signal) {
     let index = 0;
     for (const n of roundRobin(result.notes)) {
         const note = {
-            title: n.title, path: n.path, absPath: n.absPath, included: false, reason: 'over-budget',
+            title: n.title, path: n.path, absPath: n.absPath, summary: n.summary, included: false, reason: 'over-budget',
         };
         if (seen.has(n.path)) {
             note.reason = 'duplicate';
@@ -119,6 +120,7 @@ export async function assembleRecall(cfg, opts = {}, signal) {
         ...(entryPoints.points.length ? ['entryPoints'] : []),
         ...(counters.entries.length ? ['counterEntries'] : []),
     ]);
+    bumpRecall(cfg, result.notes.map((n) => ({ path: n.path, title: n.title })), 'recall');
     return {
         text, used, budget,
         completeness: result.completeness,

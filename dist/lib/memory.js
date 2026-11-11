@@ -28,6 +28,7 @@ import { fenceMask } from './fence.js';
 import { fileStamp } from './file-stamp.js';
 import { entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries, stripRetiredEntries } from './memory-format.js';
 import { templateVersionOf } from './agents-template.js';
+import { hasRecallSignal, lastRecallOf, readRecallSignal } from './recall-signal.js';
 import { PERSONA_META_FILES, MEMORY_META_FILES } from './meta.js';
 /** vault 根目录下、按优先级排列的三份 meta 文件（定义在 lib/meta.ts，这里只挂个本地名） */
 export const META_FILES = MEMORY_META_FILES;
@@ -601,6 +602,8 @@ export function memoryUsage(cfg) {
  * 纯读：不跑 zk、不写文件。同日 tie 只做可见化（G4），不改变 `oldestIndex` 的淘汰行为。
  */
 export function memoryCapacity(cfg, opts = {}) {
+    // 15.2：默认关 / 没有召回记录时不改变任何口径（suggestion 文本也保持「按位置决胜」）
+    const signal = readRecallSignal(cfg);
     const payload = buildMemoryPayload(cfg);
     const usage = memoryUsage(cfg);
     const extraWords = typeof opts.extraWords === 'number' && Number.isFinite(opts.extraWords)
@@ -621,11 +624,20 @@ export function memoryCapacity(cfg, opts = {}) {
     const withDate = entries.filter((row) => row.date !== null);
     const oldestDate = withDate.reduce((min, row) => (row.date < min ? row.date : min), '9999-99-99');
     const sameDateCount = withDate.filter((row) => row.date === oldestDate).length;
+    // 15.2：只有确实有条目带召回信号时才启用「最后召回时间」次级键，否则连文案都不变
+    const recallTie = hasRecallSignal(signal) && entries.some((row) => lastRecallOf(signal, row.entry) !== '');
+    const recallOf = (row) => recallTie ? lastRecallOf(signal, row.entry) : '';
     // 与 oldestIndex 同口径：有日期按最旧；同日期按位置靠后的先丢；没日期退回尾部（也是位置靠后先丢）
     const order = [...entries].sort((a, b) => {
         if (a.date && b.date) {
             if (a.date !== b.date)
                 return a.date < b.date ? -1 : 1;
+            // 越久没被召回的越先丢；两边都没信号时仍是原来的位置决胜
+            if (recallTie) {
+                const la = recallOf(a), lb = recallOf(b);
+                if (la !== lb)
+                    return la < lb ? -1 : 1;
+            }
             return b.index - a.index;
         }
         if (a.date)
@@ -656,9 +668,9 @@ export function memoryCapacity(cfg, opts = {}) {
                 ? `再加 ${extraWords} 词会触发截断（余 ${usage.headroom} 词），先退役 / 精简 dropCandidates 里的条目`
                 : `还能放 ${usage.headroom - extraWords} 词`)
             : (usage.headroom < 0 ? `已超预算 ${-usage.headroom} 词` : `余 ${usage.headroom} 词`)];
-    // G4：同日不是「按日期挑的」，明说是位置决胜，不假装有使用频率
+    // G4：同日不是「按日期挑的」；15.2 有召回信号时明说改用了最后召回时间，不假装有使用频率
     if (sameDateCount > 1)
-        parts.push(`${sameDateCount} 条同日，按位置决胜`);
+        parts.push(`${sameDateCount} 条同日，${recallTie ? '按最后召回时间决胜（无信号回退位置）' : '按位置决胜'}`);
     if (format.length)
         parts.push(`格式债：${format.join(' / ')}`);
     return {

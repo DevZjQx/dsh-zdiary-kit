@@ -25,6 +25,8 @@ import type { MemoryUsage } from './memory.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
 import { isDayString } from './dates.ts'
 import { normalizeTitle, noteKey, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
+import { AUDIT_RATE, hasRecallSignal, lastRecallOf, readRecallSignal, RECALL_PROTECT_DAYS } from './recall-signal.ts'
+import type { RecallSignal } from './recall-signal.ts'
 
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
 export const MAX_ITEMS = 50
@@ -123,6 +125,9 @@ export interface DreamCited {
   dailyMentions: number
   daysMentioned: number
   lastMentioned: string
+  /** 15.2：仅在召回信号生效时出现 —— 被召回过几天 / 被几种检索命中 */
+  recallDays?: number
+  recallKinds?: number
 }
 
 /** 超过多少天没复核算「可考虑退役」（只做机械年龄判断） */
@@ -185,6 +190,8 @@ export interface DreamResult {
   dailyLooseEnds: DreamLooseEnds[]
   /** 机械规则筛出的「可考虑退役」条目（只给材料，不写 MEMORY.md） */
   retireCandidates: DreamRetireCandidate[]
+  /** 15.2：仅在召回信号生效时出现 —— 固定比例、与分数无关的窗口外抽样，补门控正性 */
+  auditSamples?: DreamCandidate[]
 }
 
 /**
@@ -344,7 +351,7 @@ function promotionsOf(cfg: Config, notes: NoteRecord[]): Map<string, 'link' | 't
  *   · 显式写 `archive/` 的链接是有意引用旧结论（与 lint 同口径），不算来源断了；
  *   · 无日期、无链接的不算候选（它们已经由 lint 的 undated / unlinked 报告）。
  */
-function retireCandidatesOf(cfg: Config, notes: NoteRecord[], now: Date): DreamRetireCandidate[] {
+function retireCandidatesOf(cfg: Config, notes: NoteRecord[], now: Date, signal: RecallSignal): DreamRetireCandidate[] {
   let body = ''
   try { body = fs.readFileSync(path.join(cfg.notebook, 'MEMORY.md'), 'utf8') } catch { return [] }
   const index = wikiIndex(notes)
@@ -353,6 +360,9 @@ function retireCandidatesOf(cfg: Config, notes: NoteRecord[], now: Date): DreamR
 
   for (const entry of splitMemoryEntries(body)) {
     if (isRetiredEntry(entry)) continue
+    // 15.2：近期被召回过的条目不算退役候选 —— 门控要看得见「其实一直被用到」
+    const last = lastRecallOf(signal, entry)
+    if (last && (daysSinceDate(last, now) ?? Infinity) <= RECALL_PROTECT_DAYS) continue
     const date = entryDate(entry) ?? ''
     const age = date ? (daysSinceDate(date, now) ?? -1) : -1
 
@@ -390,6 +400,9 @@ export async function dreamNotebook(
   signal?: AbortSignal,
 ): Promise<DreamResult> {
   const now = opts.now ?? new Date()
+  // 15.2：默认关 / sidecar 为空时 signalActive=false，下面所有信号相关分支都不生效，输出逐字节不变
+  const recallSignal = readRecallSignal(cfg)
+  const signalActive = hasRecallSignal(recallSignal)
   const windowDays = windowDaysOf(cfg, now, opts.days)
   const sinceMs = now.getTime() - windowDays * 86_400_000
 
@@ -510,16 +523,33 @@ export async function dreamNotebook(
   // 排序说明（P2-12）：先看「被日记提过几天」—— 跨天复现比同一天多次更强；同一天多篇日记
   // 再按 dailyMentions 排，入链数只是最后的次序。没有日记的库两项都是 0，
   // 排序自动退回原来的 cited 降序（行为兼容）。
+  // 15.2：信号生效时先按「召回跨天数 → 查询多样性」；全 0 时下面的次序与原排序完全一致。
   const topCited: DreamCited[] = notes
-    .map((n) => ({ title: n.title, path: n.path, cited: citedOf(n), ...usageOf(n.path) }))
+    .map((n) => {
+      const r = recallSignal.byPath[n.path]
+      return {
+        title: n.title, path: n.path, cited: citedOf(n), ...usageOf(n.path),
+        ...(r ? { recallDays: r.days.length, recallKinds: r.queryKinds.length } : {}),
+      }
+    })
     .filter((x) => x.cited > 0)
     .sort((a, b) =>
+      (signalActive ? (b.recallDays ?? 0) - (a.recallDays ?? 0) || (b.recallKinds ?? 0) - (a.recallKinds ?? 0) : 0) ||
       b.daysMentioned - a.daysMentioned ||
       b.dailyMentions - a.dailyMentions ||
       b.cited - a.cited ||
       a.title.localeCompare(b.title),
     )
     .slice(0, TOP_CITED)
+
+  // 15.2 审计流：固定比例、与分数无关、确定性（不看 cited / 日期，只按 path 字母序等距取样）。
+  // 仅信号生效时出现，且从窗口外积压里抽 —— 没被召回过的笔记否则永远拿不到「其实有用」的证据。
+  const auditSamples: DreamCandidate[] = []
+  if (signalActive) {
+    const pool = [...backlogNotes].sort((a, b) => a.path.localeCompare(b.path))
+    const step = Math.max(1, Math.round(1 / AUDIT_RATE))
+    for (let i = 0; i < pool.length; i += step) auditSamples.push(candidateOf(pool[i]!, ''))
+  }
 
   return {
     notebook: cfg.notebook,
@@ -548,6 +578,7 @@ export async function dreamNotebook(
     topCited,
     dailyLooseEnds,
     memory: memoryUsage(cfg),
-    retireCandidates: retireCandidatesOf(cfg, notes, now),
+    retireCandidates: retireCandidatesOf(cfg, notes, now, recallSignal),
+    ...(signalActive ? { auditSamples } : {}),
   }
 }

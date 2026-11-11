@@ -120,8 +120,10 @@ const memWrite = await call('zk_memory_write', {
 if (memWrite.accepted !== true || memWrite.performed !== false) throw new Error('zk_memory_write 预演没通过或不该写盘')
 if ((fs.existsSync(memFile) ? fs.readFileSync(memFile, 'utf8') : null) !== memBefore) throw new Error('zk_memory_write 预演改了盘')
 const searched = await call('zk_search', { query: '冒烟', limit: 5 })
-const hit = (searched.notes as Array<{ absPath?: string }>)[0]
-if (!hit?.absPath || !fs.existsSync(hit.absPath)) throw new Error('zk_search 没返回可用的 absPath')
+const hit = (searched.notes as Array<Record<string, unknown>>)[0]
+if (!hit?.absPath || !fs.existsSync(String(hit.absPath))) throw new Error('zk_search 没返回可用的 absPath')
+// §15.6：检索结果带 summary 字段（老笔记 / 空 Summary 为空串，不假装有摘要）
+if (typeof hit.summary !== 'string') throw new Error('zk_search 没返回 notes[].summary（§15.6）')
 const recalled = await call('zk_recall', { query: '冒烟', budget: 200, limit: 5 })
 if (Number(recalled.used) > Number(recalled.budget)) throw new Error('zk_recall 超预算')
 if (!Array.isArray(recalled.notes) || !(recalled.notes as unknown[]).length) throw new Error('zk_recall 没有装配出笔记')

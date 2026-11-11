@@ -55,6 +55,12 @@ export interface Config {
    * 要显式打开（`zk-kit config set aliasTools=true`），不是默认生效。
    */
   aliasTools: boolean
+  /**
+   * 是否记录召回信号 sidecar（§15.2）：`.zk/dsh-recall.json` 只按 path 聚合「哪篇 / 哪天 / 哪类检索命中」，
+   * 不记查询词、不记正文、不上报。默认关：关掉时不读不写，`zk_dream` / `zk_context` 输出与老版一致；
+   * 打开后这份信号才用于 topCited 排序、退役保护、同日淘汰与周审审计流。
+   */
+  recallSignal: boolean
   /** 注入预算（词）：AGENTS.md + USER.md + MEMORY.md 的总载荷，中文按 2 字 1 词 */
   memoryBudgetWords: number
   /** 人格上限（词）：PERSONA.md 上限；超了只告警，不截断 */
@@ -98,6 +104,7 @@ export const DEFAULTS: Config = {
   defaultTags: [],
   maxReadChars: 20_000,
   aliasTools: false,
+  recallSignal: false,
   memoryBudgetWords: 500,
   personaBudgetWords: 240,
   graphBudgetNotes: 2_000,
@@ -207,6 +214,8 @@ export function normalizeConfig(raw: unknown, workspace: string = processWorkspa
     // 只认 true / "true"（设置页与 CLI 传字符串）：1 / "yes" / "false" 一律当未启用，
     // 免得拼错一个值就静默把别名注册成工具
     aliasTools: src.aliasTools === true || src.aliasTools === 'true',
+    // 同一个口径：只认 true / "true"，拼错的值静默当未启用（sidecar 默认绝不落盘）
+    recallSignal: src.recallSignal === true || src.recallSignal === 'true',
     memoryBudgetWords: clamp(Number(src.memoryBudgetWords), 50, 2000, DEFAULTS.memoryBudgetWords),
     personaBudgetWords: clamp(Number(src.personaBudgetWords), 50, 800, DEFAULTS.personaBudgetWords),
     graphBudgetNotes,

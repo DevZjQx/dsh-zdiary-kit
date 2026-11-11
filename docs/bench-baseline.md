@@ -335,3 +335,77 @@ ZK_BIN=/path/to/zk bun run bench                                      # 1k 复�
   本库真实条目（样本 MEMORY.md 全用 `[[标题]]`），所以必须建全库索引。
 - dry-run 不改 `MEMORY.md` / `USER.md` / `DREAMS.md`；真实写入多一次 tmp+rename 与一次
   `DREAMS.md` 追加，都是本地文件 IO、不起子进程。
+
+---
+
+## §10.4 第 17–19 项（15.6 / 15.2 / 15.3）闸门与实测（2026-11-12）
+
+本节按 `docs/plan.md` §16.3「每项落地前补成本表 / 验收闸门，未补不得开工」建表。
+三项都不新增工具、不改 zk 索引格式、子进程数不变；15.6 / 15.2 的本地 IO 不进 `bench.ts`
+（它只记子进程 / 传输字节），另用一次性 `.tmp` 探针取 p50 / p95，与 §14 本地读路径实测同做法。
+
+### 15.3 模板 v11（第 19 项）
+
+**无成本表新增行（§16.3 注明）**：纯模板文本 + 哨兵，零子进程、零传输字节变化、不跑 bench。
+
+| 闸门 | 口径 |
+|---|---|
+| 词数 | `countWords` AGENTS ≤190 / flat ≤90，不删行不增行 |
+| 哨兵 | `TEMPLATE_SENTINELS[11]` 的 required 承 v10 累加新口径、forbidden 加入两句旧中文 |
+| 旧版识别 | 含旧句的 v11 AGENTS 被 `templateStatus` 报 `mismatch` |
+| 回归 | 注入载荷除模板改动外逐字节一致 |
+
+### 15.6 `## Summary` 读回（第 17 项，P0）
+
+| 夹具 | 子进程 | 字节 | 本地读盘 p50 | p95 | 说明 |
+|---|---|---|---|---|---|
+| 10k / limit 10 | **不变** | **不变** | **2.53 ms** | **16.53 ms** | `attachSummaries` 只读可见命中，`readFileSync` 非子进程 |
+| 10k / limit 200 | **不变** | **不变** | **18.35 ms** | **145.33 ms** | 上界 200 次本地读，验证不随库规模增长 |
+
+探针 `.tmp/probe-1516.ts`（可删），10k 夹具 5 轮，p95 = 第 ⌈0.95n⌉ 轮（5 轮即最大，与 §14 / 本文 §0.5 同口径）；
+p95 明显高于 p50 是首轮冷文件缓存，稳态看 p50。10k 库上 limit 10 只读 10 个文件，与库规模无关。
+
+闸门：150 篇带 `## Summary` 的命中结果有非空 summary；无 Summary 老笔记为空串且其余字段不变；
+`lead` 仍是 H1；`detailOf` 用 `summary || snippet || lead`（空串回退）；只读视图加列单独回归。
+
+### 15.2 召回 sidecar（第 18 项，P1）
+
+| 夹具 | 子进程 | 字节 | sidecar 写 p50 | p95 | 说明 |
+|---|---|---|---|---|---|
+| 10k / 命中 10 篇 | **不变** | **不变** | **0.46 ms** | **1.20 ms** | `bumpRecall` 原子写一次（tmp + rename），默认关时零写入 |
+
+同一探针 `.tmp/probe-1516.ts`，5 轮；写的是 `.zk/dsh-recall.json` 聚合计数，不含查询词 / 正文。
+耗时与库规模无关（只写一份 sidecar），10k 只是场景口径；默认关闭时三个挂点都不落盘。
+
+闸门：sidecar 不含查询词 / 正文 / 不上报；坏文件静默降级；开关关闭与空信号时输出与改动前一致；
+连续多天召回同一篇后进 `topCited` 且不进 `retireCandidates`；`dropCandidates` 同日按最后召回时间排序；
+审计抽样比例与分数独立；无日记 / 无召回历史的库输出与改动前一致。
+
+### 全表复核（2026-11-12 实跑）
+
+`ZK_BIN=/home/glm-agent/.dsh/zdiary/bin/zk bun run bench --fixture .tmp/fixture/10k-1 --iterations 3 --json --out .tmp/bench-1516.json`
+（18 条用例 / 3 轮，4m19s，EXIT=0）。**改动影响到的检索 / 装配 / 注入路径，子进程数与传输字节与全表基线一致**：
+
+| 用例 | 本次 calls / bytes | 全表基线 |
+|---|---|---|
+| `search.cjk` | 2 / 29.4 KB | 2 / 30 KB |
+| `search.cjk.multi` | 2 / 13.8 KB | 2 / 15 KB |
+| `search.filtered` | 1 / 2.0 MB | 1 / 2.0 MB |
+| `scan.10k` | 1 / 2.0 MB | 1 / 2.0 MB |
+| `list.10k` | 1 / 15.1 MB | 1 / 15.1 MB |
+| `dream` | 1 / 2.0 MB | 1 / 2.0 MB |
+| `context` | 0 / 0 KB | 0 / 0 KB |
+
+- **15.3 无成本表新增行**：纯模板文本，上面每一行的 calls / bytes 都没变。
+- **旧表数字的差异不是本轮引入**：`lint` 65 calls / 3.0 MB（旧表 5）、`graph.full` 17.0 MB（旧表 13.9 MB）、
+  `stats` 2.4 MB（旧表 3.0 MB），都来自夹具重建后的链接规模 / 机器波动（本文 `:224` / `:265` 已记过同类差异）。
+  用 `git stash -u` 暂存本轮三项改动后单跑 `lint,search.cjk` 对照：改动前后同为 **65 calls / 3097.7 KB**、同为 2 calls / 29.4 KB，
+  证明确实与 15.3 / 15.6 / 15.2 无关。
+- 15.6 / 15.2 的本地 IO 不进 `bench.ts`（它只记子进程 / 传输字节），数字来自上面两节的一次性探针。
+
+### 公共验收
+
+`bun run check` **276 pass / 0 fail / 1885 expect**（基线 264 → +12 条新用例）；
+`ZK_BIN=/home/glm-agent/.dsh/zdiary/bin/zk bun run smoke` **16 工具 / 12 路由 / 25 文档命令全过**；
+只读视图与注入载荷逐字节回归沿用 §10.6 / §14.7：15.6 / 15.2 不碰 `buildMemoryPayload`，
+15.2 默认关 + 空信号时 `zk_dream` / `zk_context` 输出与改动前逐字节一致（有对应用例）。

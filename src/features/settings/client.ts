@@ -40,6 +40,8 @@ interface ZkConfig {
   maxReadChars: number
   /** 是否把 .zk/config.toml 的 [alias] 注册成 zk_<名> 工具（默认 false） */
   aliasTools: boolean
+  /** 是否记录召回信号 sidecar（§15.2，默认 false；不记查询词 / 正文 / 不上报） */
+  recallSignal: boolean
   memoryBudgetWords: number
   personaBudgetWords: number
   /** 全图统计上限（篇）：0 = 永不建全图 */
@@ -157,6 +159,7 @@ interface Field {
       { group: '目录与 group', key: 'archiveDir', label: '归档目录', hint: 'supersede 之后笔记搬到这里（保留原相对路径，不删除），默认 archive；所有笔记本共用。旧归档目录非空时拒绝改动 —— 插件不会自动迁移文件' },
       { group: '记忆', key: 'memoryBudgetWords', label: '注入预算（词）', hint: 'AGENTS.md + USER.md + MEMORY.md 的合计上限，默认 500（中文按 2 字 1 词）。超了先丢 MEMORY 里日期最旧的条目（一条日期都没有才退回从尾部丢），并回显截断了多少' },
       { group: '记忆', key: 'personaBudgetWords', label: '人格上限（词）', hint: 'PERSONA.md 的上限，默认 240（50-800）。人格永远注入、不参与截断；超了只告警' },
+      { group: '记忆', key: 'recallSignal', label: '记录召回信号', hint: '默认关闭。打开后把 zk_search / zk_query / zk_recall 命中的笔记按 path 聚合进 .zk/dsh-recall.json（哪篇 / 哪天 / 哪类检索），供 topCited 排序、退役保护、同日淘汰与周审审计抽样使用。只存聚合计数，不记查询词、不记正文、不上报；关掉时不读不写，输出与老版一致', type: 'bool' },
       { group: '写入', key: 'defaultTagsText', label: '默认标签', hint: '新笔记自动追加的标签，逗号分隔，不带 #（可空）' },
       { group: '写入', key: 'maxReadChars', label: '单次读取上限（字符）', hint: '默认 20000；zk-kit read 与别名工具的输出超了会截断并明确告知模型' },
       { group: '工具', key: 'graphBudgetNotes', label: '全图统计上限（篇）', hint: '库超过这个篇数时不再建全图统计入链：zk_dream 跳过入链统计（graphSkipped），zk_lint 的单向链接改按篇反查。默认 2000（0-10000，0 = 永不建全图）；上限 = 单次扫描上限，再高等于总是建全图。全图在 10k 上要 26–31 秒，调高前先确认等得起' },

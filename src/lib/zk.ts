@@ -57,6 +57,8 @@ export interface NoteRecord {
   lead: string
   /** 命中片段（R2）：优先 zk 的 snippets[0]，深处命中时从 rawContent 取窗口；精简格式路径没有就空串 */
   snippet: string
+  /** 15.6：frontmatter summary 优先，否则 `## Summary` 首段（≤240 字）；只在读盘路径取，老笔记为空串 */
+  summary: string
   words: number
   /** zk 原样给出的 frontmatter（Z6）；没写 frontmatter 就是空对象 */
   metadata: Record<string, unknown>
@@ -867,6 +869,7 @@ function toRecord(raw: Record<string, unknown>, cfg: Config, terms: string[] = [
     modified: String(raw.modified ?? ''),
     lead: String(raw.lead ?? '').replace(/\s+/g, ' ').trim().slice(0, 200),
     snippet: buildSnippet(raw, terms),
+    summary: '',
     words: Number(raw.wordCount ?? 0),
     metadata,
     id: meta('id'),
@@ -1061,6 +1064,7 @@ function parseLeanList(stdout: string, cfg: Config, withSnippet = false): { note
       modified: leanIso(modified ?? ''),
       lead,
       snippet,
+      summary: '',
       words: Number(words ?? 0),
       metadata,
       id: String(id ?? ''),
@@ -1205,7 +1209,8 @@ export async function searchNotesDetailed(
       : extra.malformed || extra.strategyFailed ? 'unknown' : 'complete'
     // R2：只有 complete 时 notes.length 才是精确总数；partial / unknown 不给 total。
     const total = completeness === 'complete' ? { total: notes.length } : {}
-    return { notes: notes.slice(0, limit), hasMore: more, completeness, scanned: examined, ...total, matchStrategy: 'fts' }
+    // 15.6：只对可见命中读盘补 summary（O(limit) 本地 IO，零子进程）；scanNotes 全库路径不经过这里
+    return { notes: attachSummaries(cfg, notes.slice(0, limit)), hasMore: more, completeness, scanned: examined, ...total, matchStrategy: 'fts' }
   }
 
   /**
@@ -1851,6 +1856,7 @@ function noteFromDisk(cfg: Config, abs: string): NoteDoc {
     modified: stat.mtime.toISOString(),
     lead: '',
     snippet: '',
+    summary: summarizeContent(content),
     words: content.split(/\s+/).filter(Boolean).length,
     metadata: { ...fields },
     id: fields.id ?? '',
@@ -2188,6 +2194,51 @@ function atxHeading(line: string): { level: number; title: string } | null {
   return title ? { level: m[1].length, title } : null
 }
 
+/** `## Summary` / `## 摘要` 都算摘要节：写入（fillSummary）与读回（summarizeContent）共用同一口径 */
+function isSummaryTitle(title: string): boolean {
+  return /^(summary|摘要)$/i.test(title.trim())
+}
+
+/**
+ * 15.6：从正文取一句话摘要，只读不改。
+ * frontmatter 的 `summary` 标量优先；否则读 `## Summary` 一节，取到下一个同级 / 更高级标题之前，
+ * 首段压空白、截到 240 字。没有这一节 / 读不到就返回空串（老笔记不假装有摘要）。
+ */
+export function summarizeContent(content: string): string {
+  const fromMeta = String(parseFrontmatter(content).fields.summary ?? '').replace(/\s+/g, ' ').trim()
+  if (fromMeta) return fromMeta.slice(0, 240)
+  const lines = String(content ?? '').split('\n')
+  const fenced = fenceMask(lines)
+  const heads = lines.map((line, i) => (fenced[i] ? null : atxHeading(line)))
+  const target = heads.findIndex((h) => h !== null && isSummaryTitle(h.title))
+  if (target < 0) return ''
+  const head = heads[target]!
+  let end = lines.length
+  for (let i = target + 1; i < lines.length; i += 1) {
+    const next = heads[i]
+    if (next && next.level <= head.level) { end = i; break }
+  }
+  return lines.slice(target + 1, end).join('\n').replace(/\s+/g, ' ').trim().slice(0, 240)
+}
+
+/**
+ * 15.6：给一批**已可见**的命中补 `summary`。逐条 `readFileSync` 是本地文件 IO、不是子进程，
+ * 不改 LEAN 模板、不落索引、不给全库扫描用 —— 只挂在检索结果的出口（O(limit)）。
+ * 已有非空 summary 的行直接跳过，避免只读视图对同一批结果重复读盘。
+ */
+export function attachSummaries(cfg: Config, notes: NoteRecord[]): NoteRecord[] {
+  return notes.map((n) => {
+    if (n.summary) return n
+    const abs = n.absPath || (n.path ? path.resolve(cfg.notebook, n.path) : '')
+    if (!abs) return n
+    try {
+      return { ...n, summary: summarizeContent(fs.readFileSync(abs, 'utf8')) }
+    } catch {
+      return n
+    }
+  })
+}
+
 /**
  * 把一句话摘要填进 `## Summary`。
  *
@@ -2206,9 +2257,7 @@ export function fillSummary(content: string, summary: string): { text: string; a
   const lines = String(content ?? '').split('\n')
   const fenced = fenceMask(lines)
   const heads = lines.map((line, i) => (fenced[i] ? null : atxHeading(line)))
-  const isSummary = (title: string): boolean => /^(summary|摘要)$/i.test(title.trim())
-
-  const target = heads.findIndex((h) => h !== null && isSummary(h.title))
+  const target = heads.findIndex((h) => h !== null && isSummaryTitle(h.title))
   if (target >= 0) {
     const head = heads[target]!
     let end = lines.length
@@ -2218,7 +2267,7 @@ export function fillSummary(content: string, summary: string): { text: string; a
     }
     if (lines.slice(target + 1, end).some((line) => line.trim() !== '')) return { text: content, applied: false }
     // 正文自己又写了一份 Summary（模板那一节只是空壳）：那一节已经有主，不覆盖、也不在旁边再长一节
-    const writtenByContent = heads.some((h, k) => k >= end && h !== null && h.level === head.level && isSummary(h.title))
+    const writtenByContent = heads.some((h, k) => k >= end && h !== null && h.level === head.level && isSummaryTitle(h.title))
     if (writtenByContent) return { text: content, applied: false }
     const out = [...lines.slice(0, target + 1), '', body, '', ...lines.slice(end)]
     return { text: endDoc(out), applied: true }
