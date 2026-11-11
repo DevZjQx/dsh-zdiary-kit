@@ -6524,6 +6524,45 @@ describe('zk_memory_write（§15.1 / §10.4 第 16 项）', () => {
     const rendered = tool.output.render({ entry }, call() as unknown as Record<string, unknown>)
     expect(rendered.map((b) => b.text).join('\n')).toContain('预演通过')
   })
+
+  it('非法 target / action 给结构化拒绝，不抛也不写盘', () => {
+    const badTarget = call({ target: 'AGENTS' as never })
+    expect(badTarget.rejection).toBe('invalid-target')
+    expect(badTarget.performed).toBe(false)
+    expect(badTarget.target).toBe('MEMORY.md') // 兜底，不让输出 schema 拿到脏值
+    const badAction = call({ action: 'replace' as never })
+    expect(badAction.rejection).toBe('invalid-action')
+    expect(badAction.action).toBe('add')
+    expect(badAction.performed).toBe(false)
+    expect(fs.readFileSync(memFile, 'utf8')).toBe(memBody)
+  })
+
+  it('真写时笔记本目录不存在 → 结构化拒绝，不裸抛 ENOENT、也不顺手建库', () => {
+    const missingDir = path.join(home, 'nb-memory-write-missing')
+    fs.rmSync(missingDir, { recursive: true, force: true })
+    const cfg = store.normalizeConfig({ notebook: missingDir, archiveDir: 'archive', memoryBudgetWords: 300 })
+    const r = memoryWriteLib.writeMemory(cfg, {
+      target: 'MEMORY', action: 'add', entry, dryRun: false, index: index(), indexComplete: true,
+    })
+    expect(r.rejection).toBe('no-notebook')
+    expect(r.performed).toBe(false)
+    expect(fs.existsSync(missingDir)).toBe(false)
+  })
+
+  it('DREAMS.md 审计行不被 [[来源]] 里的换行注入', () => {
+    // WIKI_LINK 的 [^\]|#]+ 允许换行；造一个「标题式来源含换行但仍解析到活笔记」的索引，
+    // 让真写走到 appendDreams，验证审计流不会多出一行调用方给的 Markdown。
+    const injected = '来源笔记\n  - 伪装行'
+    const idx = wikilinkLib.wikiIndex([{ title: injected, path: sourcePath }])
+    const r = memoryWriteLib.writeMemory(c(), {
+      target: 'MEMORY', action: 'add', dryRun: false, indexComplete: true, index: idx,
+      entry: `- **注入测试。** 2026-11-12（来源：[[${injected}]]）`,
+    })
+    expect(r.performed).toBe(true)
+    const dreams = fs.readFileSync(dreamsFile, 'utf8')
+    expect(dreams).toContain('伪装行') // 信息仍在，只是不能另起一行
+    expect(dreams).not.toMatch(/^\s*- 伪装行/m)
+  })
 })
 
 describe('§15.6：`## Summary` 读回成字段（§10.4 第 17 项）', () => {
@@ -6766,6 +6805,34 @@ describe('§15.2：召回信号 sidecar（§10.4 第 18 项）', () => {
       const on = store.config()
       expect(JSON.stringify(memory.buildMemoryPayload(on))).toBe(JSON.stringify(payloadBefore))
       expect(memory.memoryCapacity(on).suggestion).toBe(suggestionBefore)
+    } finally { restore() }
+  })
+
+  it('稳态缓存：2k 篇 sidecar 下 lastRecallOf 结果确定、重复调用一致，空信号仍为空', async () => {
+    const { c } = await setup('nb-152-cache', true)
+    try {
+      const byPath: Record<string, unknown> = {}
+      for (let i = 0; i < 2000; i++) {
+        byPath[`notes/n${i}.md`] = {
+          count: 1, last: `2026-11-${String((i % 12) + 1).padStart(2, '0')}`,
+          days: ['2026-11-10'], queryKinds: ['search'], title: `笔记 ${i}`,
+        }
+      }
+      writeSignal(c, byPath)
+      const s = recallSignalLib.readRecallSignal(c)
+      expect(recallSignalLib.hasRecallSignal(s)).toBe(true)
+      const entry = '- 2026-11-12 结论（来源：[[notes/n0.md]]）'
+      const first = recallSignalLib.lastRecallOf(s, entry)
+      expect(first).toBe('2026-11-01')
+      // lookup / 结果缓存命中后不能改变结果（排序比较器会反复调同一个 entry）
+      for (let i = 0; i < 50; i++) expect(recallSignalLib.lastRecallOf(s, entry)).toBe(first)
+      // 标题式来源靠 lookup 里的 title 键关联
+      expect(recallSignalLib.lastRecallOf(s, '- 2026-11-12（来源：[[笔记 5]]）')).toBe('2026-11-06')
+      // 空信号：hasRecallSignal 与 lastRecallOf 都保持老口径
+      const off = store.normalizeConfig({ notebook: path.join(home, 'nb-152-cache-off'), recallSignal: false })
+      const emptySignal = recallSignalLib.readRecallSignal(off)
+      expect(recallSignalLib.hasRecallSignal(emptySignal)).toBe(false)
+      expect(recallSignalLib.lastRecallOf(emptySignal, entry)).toBe('')
     } finally { restore() }
   })
 })

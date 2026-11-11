@@ -46,6 +46,10 @@ export interface RecallSignal {
 
 const empty = (): RecallSignal => ({ version: 1, since: '', byPath: {} })
 
+/** 「这份信号非空」按 signal 对象缓存：10k 篇时 for...in / Object.keys 每次都要 O(n) 枚举，
+ *  而排序比较器一条路径就会调上百次。readRecallSignal 构建时算一次，之后全是 O(1)。 */
+const activeCache = new WeakMap<RecallSignal, boolean>()
+
 /** 开关关闭 / 没有笔记本 / 文件坏了：一律空信号，调用方行为与改动前完全一致 */
 export function readRecallSignal(cfg: Config): RecallSignal {
   if (cfg.recallSignal !== true || !cfg.notebook) return empty()
@@ -54,10 +58,12 @@ export function readRecallSignal(cfg: Config): RecallSignal {
       { since?: unknown; byPath?: unknown }
     const out = empty()
     if (typeof raw?.since === 'string') out.since = raw.since
+    let count = 0
     if (raw && typeof raw.byPath === 'object' && raw.byPath) {
       for (const [p, value] of Object.entries(raw.byPath as Record<string, unknown>)) {
         const e = value as Partial<RecallSignalEntry> | null
         if (!e || typeof e !== 'object') continue
+        count += 1
         out.byPath[p] = {
           count: Number.isFinite(Number(e.count)) ? Math.max(0, Math.trunc(Number(e.count))) : 0,
           last: typeof e.last === 'string' ? e.last : '',
@@ -71,15 +77,24 @@ export function readRecallSignal(cfg: Config): RecallSignal {
         }
       }
     }
+    activeCache.set(out, count > 0)
     return out
   } catch {
     return empty()
   }
 }
 
-/** 有实际召回记录才算「信号生效」；开关打开但空文件仍按老口径走 */
+/** 有实际召回记录才算「信号生效」；开关打开但空文件仍按老口径走。
+ *  readRecallSignal 已按对象算好；未经它构造的手工对象（测试 / 外部）才 fallback 一次短路判断。 */
 export function hasRecallSignal(signal: RecallSignal): boolean {
-  return Object.keys(signal.byPath).length > 0
+  const known = activeCache.get(signal)
+  if (known !== undefined) return known
+  let active = false
+  for (const key in signal.byPath) {
+    if (key) { active = true; break }
+  }
+  activeCache.set(signal, active)
+  return active
 }
 
 /** 命中时记一笔：同一批里的同 path 只记一次；失败静默（计数器，不是账本） */
@@ -114,11 +129,17 @@ export function bumpRecall(cfg: Config, hits: Array<{ path: string; title?: stri
 }
 
 /**
- * MEMORY 条目 → 最近召回日期。sidecar 的 path / stem / title 都建成键，
- * 所以标题式 `[[标题]]` 与路径式 `[[notes/x]]` 都能关联上（纯 JS、不跑 zk）。
+ * 一次工具调用内复用同一份索引：`memoryCapacity` 的排序比较器会反复调 `lastRecallOf`，
+ * 每次重建全量 lookup 会让 10k sidecar 退化到秒级。signal 只读不写（写只在 bumpRecall 的独立副本里），
+ * 所以用 WeakMap 按对象缓存，readRecallSignal 每次返回新对象，不会跨调用拿到过期索引。
  */
-export function lastRecallOf(signal: RecallSignal, entry: string): string {
-  if (!hasRecallSignal(signal)) return ''
+const lookupCache = new WeakMap<RecallSignal, Map<string, string>>()
+/** 同一次调用里排序比较器会把同一条目反复比较，结果按 (signal, entry) 缓存 */
+const resultCache = new WeakMap<RecallSignal, Map<string, string>>()
+
+function recallLookup(signal: RecallSignal): Map<string, string> {
+  const cached = lookupCache.get(signal)
+  if (cached) return cached
   const lookup = new Map<string, string>()
   for (const [p, e] of Object.entries(signal.byPath)) {
     const stem = p.replace(/\.[^./]+$/, '')
@@ -126,11 +147,31 @@ export function lastRecallOf(signal: RecallSignal, entry: string): string {
       if (key && e.last > (lookup.get(key) ?? '')) lookup.set(key, e.last)
     }
   }
+  lookupCache.set(signal, lookup)
+  return lookup
+}
+
+/**
+ * MEMORY 条目 → 最近召回日期。sidecar 的 path / stem / title 都建成键，
+ * 所以标题式 `[[标题]]` 与路径式 `[[notes/x]]` 都能关联上（纯 JS、不跑 zk）。
+ * signal 只读、entry 是字符串，结果确定 —— 一次调用内按 entry 缓存，避免排序比较器重复解析。
+ */
+export function lastRecallOf(signal: RecallSignal, entry: string): string {
+  if (!hasRecallSignal(signal)) return ''
+  let results = resultCache.get(signal)
+  if (!results) {
+    results = new Map<string, string>()
+    resultCache.set(signal, results)
+  }
+  const cached = results.get(entry)
+  if (cached !== undefined) return cached
+  const lookup = recallLookup(signal)
   let best = ''
   for (const m of String(entry).matchAll(WIKI_LINK)) {
     const target = String(m[1] ?? '').trim()
     const hit = lookup.get(target) ?? lookup.get(target.replace(/\.[^./]+$/, ''))
     if (hit && hit > best) best = hit
   }
+  results.set(entry, best)
   return best
 }

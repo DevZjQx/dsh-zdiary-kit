@@ -35,6 +35,8 @@
 **Does not own.** MEMORY.md 写什么（agent 按 AGENTS.md 直接改文件，git diff 可审）；
 哪些记忆该晋升（语义判断是 agent 的活，插件只做机械截断）；`MEMORY.md` 的写入路径 ——
 它由人和 agent 直接编辑，`zk_append` / `zk_link` / `zk_supersede` 都会拒绝（追加会把记忆变成流水账，也丢掉「谁改的」这条审计线；后者还会把文件搬进 archive/）。
+唯一的例外是 `zk_memory_write`（§15.1）：它按机械门只往末尾追加一条调用方给的结论，并往 `DREAMS.md` 追加改前摘要与 diff；
+不替换 / 合并 / 改写已有条目，也不自动判断该写什么，语义判断仍在调用方。
 
 **人格层（0.10 M1）。** `PERSONA.md` 与 `MEMORY.md` 同级：根目录 meta，人类所有，
 `zk_append` / `zk_new` / `zk_link` / `zk_supersede` 一律拒绝写入或搬移。

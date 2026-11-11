@@ -47,13 +47,15 @@ function atomicWrite(file, text) {
 /** 周审复核材料：pre-image 摘要 + 一行 diff，只追加、不回改结论 */
 function appendDreams(cfg, r, preImage) {
     const at = new Date().toISOString();
+    // 审计流不能被 [[来源]] 里的换行注入任意行
+    const safeTarget = r.sourceTarget.replace(/[\r\n]+/g, ' ').trim();
     const capped = preImage.length > PRE_IMAGE_CHARS ? preImage.slice(0, PRE_IMAGE_CHARS) + '\n…（pre-image 已截断）' : preImage;
     const quoted = capped.split('\n').slice(0, PRE_IMAGE_LINES).map((line) => `> ${line}`).join('\n');
     const block = [
         '',
         `## 记忆写入 ${at}（zk_memory_write）`,
         '',
-        `- target: ${r.target} · action: ${r.action} · source: [[${r.sourceTarget}]] → ${r.source || '（未解析）'}`,
+        `- target: ${r.target} · action: ${r.action} · source: [[${safeTarget}]] → ${r.source || '（未解析）'}`,
         `- pre-image stamp: ${r.stamp} · 词数 ${r.beforeWords} → ${r.afterWords}`,
         `- diff: ${r.diff}`,
         '',
@@ -65,7 +67,7 @@ function appendDreams(cfg, r, preImage) {
     fs.appendFileSync(path.join(cfg.notebook, 'DREAMS.md'), block, 'utf8');
 }
 export function writeMemory(cfg, input) {
-    const file = path.join(cfg.notebook, TARGET_FILE[input.target]);
+    const file = path.join(cfg.notebook, TARGET_FILE[input.target] ?? TARGET_FILE.MEMORY);
     const entry = String(input.entry ?? '').trim();
     let body = '';
     try {
@@ -78,8 +80,8 @@ export function writeMemory(cfg, input) {
         accepted: true,
         rejection: '',
         detail: '',
-        target: TARGET_FILE[input.target],
-        action: input.action,
+        target: TARGET_FILE[input.target] ?? TARGET_FILE.MEMORY,
+        action: input.action === 'add' || input.action === 'retire' ? input.action : 'add',
         dryRun: input.dryRun,
         performed: false,
         source: '',
@@ -97,6 +99,13 @@ export function writeMemory(cfg, input) {
         diff: '',
         indexComplete: input.indexComplete,
     };
+    // 0. 枚举：宿主没拦住时也不能把脏值交给 path.join / 容量门，一律给结构化拒绝而不是抛
+    if (input.target !== 'MEMORY' && input.target !== 'USER') {
+        return reject(base, 'invalid-target', 'target 只能是 MEMORY 或 USER');
+    }
+    if (input.action !== 'add' && input.action !== 'retire') {
+        return reject(base, 'invalid-action', 'action 只能是 add 或 retire');
+    }
     // 1. 形状：只能是单独一条顶层列表项，不带额外段落
     const pieces = splitMemoryEntries(entry);
     const firstLine = entry.split('\n', 1)[0] ?? '';
@@ -163,6 +172,10 @@ export function writeMemory(cfg, input) {
     // 8. 真写：落盘前再核一次指纹，期间有人改过就放弃
     if (fileStamp(file) !== stamp) {
         return reject(base, 'concurrent-change', '落盘前发现文件被改过（stamp 变了），本次放弃');
+    }
+    // 预演不建库，真写也不替调用方建库：目录不存在时给结构化拒绝，别让 atomicWrite 裸抛 ENOENT
+    if (!fs.existsSync(path.dirname(file))) {
+        return reject(base, 'no-notebook', '笔记本目录还不存在；先用别的工具或 zk-kit init 建好库再写');
     }
     const next = appendEntry(body, entry);
     atomicWrite(file, next);

@@ -370,16 +370,38 @@ p95 明显高于 p50 是首轮冷文件缓存，稳态看 p50。10k 库上 limit
 
 ### 15.2 召回 sidecar（第 18 项，P1）
 
-| 夹具 | 子进程 | 字节 | sidecar 写 p50 | p95 | 说明 |
+| 场景 | 子进程 | 字节 | sidecar 写 p50 | p95 | 说明 |
 |---|---|---|---|---|---|
-| 10k / 命中 10 篇 | **不变** | **不变** | **0.46 ms** | **1.20 ms** | `bumpRecall` 原子写一次（tmp + rename），默认关时零写入 |
+| 刚打开开关 / 空 sidecar，10k 库命中 10 篇 | **不变** | **不变** | **0.46 ms** | **1.20 ms** | `.tmp/probe-1516.ts` 5 轮，`bumpRecall` 原子写一次（tmp + rename），默认关时零写入 |
 
-同一探针 `.tmp/probe-1516.ts`，5 轮；写的是 `.zk/dsh-recall.json` 聚合计数，不含查询词 / 正文。
-耗时与库规模无关（只写一份 sidecar），10k 只是场景口径；默认关闭时三个挂点都不落盘。
+上表只覆盖「sidecar 还很小」的起步状态。`bumpRecall` 每次命中都是 **read → 改 → 整份 stringify → tmp+rename**，
+sidecar 会随累计被召回过的 path 增长，所以发版前补了一组 **装满 10k 篇（1.32 MB）** 的稳态探针
+`.tmp/probe-recall-steady.ts`（5 轮，p95 = 第 ⌈0.95n⌉ 轮；IO 组与 lookup 组隔离测，避免 GC 噪声串扰）：
+
+| 路径（10k 稳态） | p50 | p95 | 说明 |
+|---|---|---|---|
+| `readRecallSignal`（解析 1.32 MB） | 34 ms | 75–87 ms | 每次 `zk_context` / `zk_dream` 的读盘入口 |
+| `bumpRecall`（重写整份 + 10 命中） | 47–51 ms | 53–74 ms | 每次命中 `zk_search` / `zk_query` / `zk_recall` |
+| `lastRecallOf` 首次（建 10k lookup） | 25 ms | 28–31 ms | 一次 `memoryCapacity` 只建一次 |
+| `lastRecallOf` 后续 × 299（同 signal） | 0.03–0.05 ms | 0.5–0.7 ms | 排序比较器重复比较，全命中缓存 |
+| `hasRecallSignal` × 299 | 0.01 ms | 0.04–0.05 ms | O(1) 判断 |
+| 对照：299 个**不同** entry | 0.7 ms | 1.5–8 ms | 绕过结果缓存的上界 |
+
+**稳态实测暴露并修掉两处 O(n²)**：`lastRecallOf` 原先每次都重建全量 lookup，
+`hasRecallSignal` 用 `Object.keys().length`（10k 键对象每次枚举约 0.7 ms）——
+`memoryCapacity` 的排序比较器一条路径就会调上百次，修复前 `lastRecallOf × 300` 实测 **7 418 ms**。
+改为按 signal 对象缓存 lookup 与结果、并用 `readRecallSignal` 解析时算好的非空标记后，
+同一次调用降到 **约 25 ms（首次建索引）+ 0.05 ms（299 次命中）**，约 300×；输出与默认关时逐字节不变。
+
+**已知成本（默认关，打开才付）**：10k 稳态下每次命中检索约 +50 ms（整份重写），
+每次 `zk_context` 约 +34 ms（解析）。这与「不新增 zk 子进程」不矛盾 —— 是纯本地 IO。
+`byPath` 只按「每篇 days ≤30」封顶、**没有按 path 总数封顶**：改名 / 换库会留下旧 path，长期会超过 10k；
+是否加 path 数上限 / 定期清理留待 15.5 或后续评审，本版不改数据语义。
 
 闸门：sidecar 不含查询词 / 正文 / 不上报；坏文件静默降级；开关关闭与空信号时输出与改动前一致；
 连续多天召回同一篇后进 `topCited` 且不进 `retireCandidates`；`dropCandidates` 同日按最后召回时间排序；
-审计抽样比例与分数独立；无日记 / 无召回历史的库输出与改动前一致。
+审计抽样比例与分数独立；无日记 / 无召回历史的库输出与改动前一致；
+10k 稳态下 `lastRecallOf` 不再随调用次数线性增长（探针 + 同 signal 反复调用结果一致的单测）。
 
 ### 全表复核（2026-11-12 实跑）
 
@@ -405,7 +427,7 @@ p95 明显高于 p50 是首轮冷文件缓存，稳态看 p50。10k 库上 limit
 
 ### 公共验收
 
-`bun run check` **276 pass / 0 fail / 1885 expect**（基线 264 → +12 条新用例）；
+`bun run check` **280 pass / 0 fail / 1953 expect**（基线 276 → +4 条发版前修订用例：3 条 `zk_memory_write` 健壮性 + 1 条 sidecar 稳态缓存）；
 `ZK_BIN=/home/glm-agent/.dsh/zdiary/bin/zk bun run smoke` **16 工具 / 12 路由 / 25 文档命令全过**；
 只读视图与注入载荷逐字节回归沿用 §10.6 / §14.7：15.6 / 15.2 不碰 `buildMemoryPayload`，
 15.2 默认关 + 空信号时 `zk_dream` / `zk_context` 输出与改动前逐字节一致（有对应用例）。
