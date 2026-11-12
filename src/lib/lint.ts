@@ -32,6 +32,7 @@ import {
 } from './zk.ts'
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
 import { fenceMask } from './fence.ts'
+import { emptyTemplateSlots } from './sections.ts'
 import { parseFrontmatter } from './frontmatter.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries } from './memory-format.ts'
 import type { FrontmatterFields } from './frontmatter.ts'
@@ -282,6 +283,38 @@ export interface LintTimelineBucket {
 /** 时间轴只扫最近多少天（计划 §2 D4）：一年日记会报几百条旧问题，把今天的问题挤出 50 条上限 */
 export const TIMELINE_WINDOW_DAYS = 90
 
+/** 空模板小节：模板的内容槽空着，而正文写在了别的二级小节里（只报告，不改写） */
+export interface LintEmptySectionIssue {
+  /** 空着的模板小节标题（Content / Key claims / Quotes） */
+  heading: string
+  /** 原文行号（1 起） */
+  line: number
+}
+
+export interface LintEmptySectionEntry {
+  /** 笔记（笔记本相对路径） */
+  path: string
+  title: string
+  empty: LintEmptySectionIssue[]
+}
+
+export interface LintEmptySectionBucket {
+  /** 实际读到并检查的非日记篇数 */
+  scanned: number
+  /** 没读到的篇数（文件过大 / 读不出来）：不静默，文案里点名 */
+  skipped: number
+  /** 有空内容槽的篇数 */
+  notes: number
+  /** 空内容槽总数（全量累计；items 的截断不影响这里） */
+  total: number
+  /** items 是否被截断（前 MAX_ITEMS 篇） */
+  truncated: boolean
+  items: LintEmptySectionEntry[]
+}
+
+/** 超过这个大小不读（同 TIMELINE_MAX_BYTES：巡检不该把一个大文件拉进内存） */
+export const EMPTY_SECTION_MAX_BYTES = 1024 * 1024
+
 /** 超过这个大小的日记不读（doctor / lint 不该把 2 GiB 的日志拉进内存）：跳过并计入 skipped */
 export const TIMELINE_MAX_BYTES = 2 * 1024 * 1024
 
@@ -338,6 +371,11 @@ export interface LintResult {
   persona: LintPersonaBucket
   /** 日记时间轴：最近 90 天的空块 / 倒序 / 格式 / 位置问题（只报告，页面警告不受此窗口限制） */
   timeline: LintTimelineBucket
+  /**
+   * 空模板小节：`## Content` / `## Key claims` / `## Quotes` 空着，正文写在了别的 `##` 小节里。
+   * 日记不查（`## Observations` / `## Loose ends` 空着是 layered 版式）。只报告，不改写。
+   */
+  emptySections: LintEmptySectionBucket
   /**
    * 非日记笔记已到 150 篇、根目录却没有 INDEX.md（P2-11）：只是提示，不生成静态索引。
    * 实时分布看 zk_stats（byDir / byTag），静态索引会过期、还要决定谁负责更新。
@@ -599,11 +637,26 @@ export function formatTimeline(bucket: LintTimelineBucket): string {
  * `zk-kit lint` 与 `zk_lint` 各写一遍就会改到一半。返回空数组 = 这一库三项都没问题，不占行。
  */
 export function formatLintExtras(
-  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'persona' | 'similarTitles' | 'timeline' | 'indexHint' | 'missingId'>,
+  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'persona' | 'similarTitles' | 'timeline' | 'indexHint' | 'missingId'> & { emptySections?: LintEmptySectionBucket },
 ): string[] {
   const lines: string[] = []
   const timeline = formatTimeline(r.timeline)
   if (timeline) lines.push(timeline)
+  const emptySections = r.emptySections
+  if (emptySections && emptySections.total > 0) {
+    // 文案只回显几篇：篇数按 notes 报全量，多出来的用省略号，不假装列全
+    const listed = emptySections.items.slice(0, 5)
+    const shown = listed
+      .map((i) => `${i.path}（${i.empty.map((e) => e.heading).join('、')}）`)
+      .join('、')
+    lines.push(
+      `⚠️ 空模板小节：${emptySections.total} 处 / ${emptySections.notes} 篇 — ${shown}` +
+      (emptySections.notes > listed.length ? ' …' : '') +
+      '｜正文自己起了 ## 小节，模板的内容槽（Content / Key claims / Quotes）空着；删掉那行空标题，或把正文并进那一节' +
+      (emptySections.skipped > 0 ? `（另有 ${emptySections.skipped} 篇没读：文件过大或读不出来）` : '') +
+      '（只报告，不改写）',
+    )
+  }
   if (r.missingId > 0) {
     lines.push(`· 稳定 ID：${r.missingId} 篇没有 id — 新建的笔记已自动写入，老笔记只提示、不回填（§9.2）`)
   }
@@ -923,6 +976,42 @@ export function templateStatus(cfg: Config): LintTemplateBucket {
   // 版本比插件新时也不给：那是插件该升级，不是用户该回退
   if (mismatchDetail !== null) return { ...base, mismatch: true, mismatchDetail, currentText }
   return version < TEMPLATE_VERSION ? { ...base, currentText } : base
+}
+
+/**
+ * 空模板小节：`## Content` / `## Key claims` / `## Quotes` 空着，而正文写在了别的 `##` 小节里。
+ *
+ * 判定在 `lib/sections.ts`（`zk_new` 建完收尾共用同一份），这里只负责读盘与计数。
+ * 日记不查：layered 的 `## Observations` / `## Loose ends` 空着是版式。
+ * 超过 `EMPTY_SECTION_MAX_BYTES` 或读不出来的文件不计入 `scanned` 而计入 `skipped` ——
+ * 不把「没读」当成「没有」。
+ */
+export function emptySectionStatus(
+  cfg: Config,
+  notes: NoteRecord[],
+  isDaily: (abs: string) => boolean,
+  max = MAX_ITEMS,
+): LintEmptySectionBucket {
+  let scanned = 0
+  let skipped = 0
+  let total = 0
+  const items: LintEmptySectionEntry[] = []
+  for (const note of notes) {
+    const abs = note.absPath ? path.resolve(note.absPath) : path.resolve(cfg.notebook, note.path)
+    // 日记不查：layered 模板的 Observations / Loose ends 空着是版式（每天新建都如此），不是噪声
+    if (isDaily(abs)) continue
+    let body = ''
+    try {
+      if (fs.statSync(abs).size > EMPTY_SECTION_MAX_BYTES) { skipped += 1; continue }
+      body = fs.readFileSync(abs, 'utf8')
+    } catch { skipped += 1; continue }
+    scanned += 1
+    const empty = emptyTemplateSlots(body)
+    if (empty.length === 0) continue
+    total += empty.length
+    items.push({ path: note.path, title: note.title, empty })
+  }
+  return { scanned, skipped, notes: items.length, total, truncated: items.length > max, items: items.slice(0, max) }
 }
 
 /**
@@ -1267,6 +1356,9 @@ export async function lintNotebook(
     template: templateStatus(cfg),
     persona: personaStatus(cfg),
     timeline: timelineStatus(cfg, now),
+    // 模板空壳（`## Content` 空着、正文写在别的 `##` 下）：读正文的桶，只对非日记笔记；
+    // 上限 / 跳过的计数照实给出，别把「没读」当成「没有」
+    emptySections: emptySectionStatus(cfg, notes, isDaily),
     // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
     indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
     // 放在最后算：前面的读命令已经把 pending 的 dirty 补掉了，剩下的是「补不上 / 外部编辑」

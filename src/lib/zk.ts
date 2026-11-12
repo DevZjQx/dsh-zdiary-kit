@@ -21,6 +21,7 @@ import { similarCandidates } from './similar.ts'
 import type { SimilarCandidate } from './similar.ts'
 import { linkContextOf } from './edge-context.ts'
 import { fenceMask } from './fence.ts'
+import { emptyTemplateSlots } from './sections.ts'
 import { normalizeTitle, noteKey } from './wikilink.ts'
 
 export class ZkError extends Error {
@@ -1924,6 +1925,11 @@ export interface NewNoteResult {
   summaryApplied: boolean
   /** 给了 summary 却没写进去的原因；笔记本身已经建好，不影响调用方继续用 */
   summaryWarning?: string
+  /**
+   * 模板内容槽空着的标题（Content / Key claims / Quotes）：正文以 `##` 开头时，
+   * `{{content}}` 落在这些槽后面，它们就成了空壳。只提示、不改正文。
+   */
+  emptyTemplateSections: string[]
 }
 
 /** 文件名里不收的字符：路径分隔符 + Windows 非法字符（库会被同步到 Windows / 塞进 zip） */
@@ -2128,7 +2134,22 @@ export async function createNote(
       markIndexDirty(cfg)
     }
   } catch { /* 收尾失败：文件已落盘，不回滚、不误导 */ }
-  return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived, similar, summaryApplied, summaryWarning }
+  // 模板内容槽空着（正文自己起了 `##`）：这是 `{{content}}` 落在 `## Content` 下面的必然形状。
+  // 只报告、不改正文 —— 与 fillSummary 的「只填不删」同一原则；判定在 lib/sections.ts，lint 共用。
+  let emptyTemplateSections: string[] = []
+  try {
+    emptyTemplateSections = emptyTemplateSlots(fs.readFileSync(finalAbs, 'utf8')).map((slot) => slot.heading)
+  } catch { /* 收尾失败：文件已落盘，不回滚 */ }
+  return {
+    path: relPathOf(cfg, finalAbs),
+    absPath: finalAbs,
+    title,
+    archived,
+    similar,
+    summaryApplied,
+    summaryWarning,
+    emptyTemplateSections,
+  }
 }
 
 export interface ArchivedTitleHit {

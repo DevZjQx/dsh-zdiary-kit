@@ -19,6 +19,7 @@ import { isMetaPath, META_NAMES } from './meta.js';
 import { similarCandidates } from './similar.js';
 import { linkContextOf } from './edge-context.js';
 import { fenceMask } from './fence.js';
+import { emptyTemplateSlots } from './sections.js';
 import { normalizeTitle, noteKey } from './wikilink.js';
 export class ZkError extends Error {
     hint;
@@ -1807,7 +1808,23 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
         }
     }
     catch { /* 收尾失败：文件已落盘，不回滚、不误导 */ }
-    return { path: relPathOf(cfg, finalAbs), absPath: finalAbs, title, archived, similar, summaryApplied, summaryWarning };
+    // 模板内容槽空着（正文自己起了 `##`）：这是 `{{content}}` 落在 `## Content` 下面的必然形状。
+    // 只报告、不改正文 —— 与 fillSummary 的「只填不删」同一原则；判定在 lib/sections.ts，lint 共用。
+    let emptyTemplateSections = [];
+    try {
+        emptyTemplateSections = emptyTemplateSlots(fs.readFileSync(finalAbs, 'utf8')).map((slot) => slot.heading);
+    }
+    catch { /* 收尾失败：文件已落盘，不回滚 */ }
+    return {
+        path: relPathOf(cfg, finalAbs),
+        absPath: finalAbs,
+        title,
+        archived,
+        similar,
+        summaryApplied,
+        summaryWarning,
+        emptyTemplateSections,
+    };
 }
 /** 笔记本相对路径是否在归档目录下（supersede 会把文件搬进去，路径保持不变） */
 function inArchive(cfg, rel) {

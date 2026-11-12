@@ -222,6 +222,31 @@ const LINT_TIMELINE = objSchema(
   },
   ['scanned', 'skipped', 'notes', 'total', 'counts', 'items'],
 )
+/** 空模板小节：内容槽空着、正文写在了别的 `##` 小节里（只报告） */
+const LINT_EMPTY_SECTIONS = objSchema(
+  {
+    scanned: { type: 'number' },
+    skipped: { type: 'number' },
+    notes: { type: 'number' },
+    total: { type: 'number' },
+    truncated: { type: 'boolean' },
+    items: {
+      type: 'array',
+      items: objSchema({
+        path: { type: 'string' },
+        title: { type: 'string' },
+        empty: {
+          type: 'array',
+          items: objSchema({
+            heading: { type: 'string' },
+            line: { type: 'number' },
+          }, ['heading', 'line']),
+        },
+      }, ['path', 'title', 'empty']),
+    },
+  },
+  ['scanned', 'skipped', 'notes', 'total', 'truncated', 'items'],
+)
 /** frontmatter 缺字段（P2-13） */
 const LINT_INCOMPLETE = objSchema(
   {
@@ -1016,6 +1041,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'type / authority 只有 layered 模板会写进 frontmatter。tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。' +
         '中文笔记如果没有任何标签（入参 / 默认值 / 正文 hashtag 都没有），会在 tagWarning 里提示 —— 只提示，不阻断。' +
         '同目录里有「改一两个字」的相似标题时会放进 similar（带分数）：只提示，不阻断，也不自动建链接。' +
+        '正文以 ## 开头时，模板的 ## Content 会变成空壳（内容落在它后面）：返回值 emptyTemplateSections 会点名，' +
+        '只提示、不改正文 —— 把正文并进那一节，或删掉那行空标题。' +
         '根目录 meta 文件（AGENTS / USER / MEMORY 等）与 raw/ 、inbox/ 不能写：前者会被当成人写的工作面，后两者会被排除出索引。',
       parameters: {
         type: 'object',
@@ -1044,6 +1071,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           links: { type: 'array', items: { type: 'string' } },
           summaryApplied: { type: 'boolean' },
           summaryWarning: { type: 'string' },
+          emptyTemplateSections: { type: 'array', items: { type: 'string' } },
           tagWarning: { type: 'string' },
           archived: {
             type: 'array',
@@ -1105,6 +1133,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           summaryApplied: created.summaryApplied, archived, warnings,
           ...(created.similar.length ? { similar: created.similar } : {}),
           ...(created.summaryWarning ? { summaryWarning: created.summaryWarning } : {}),
+          ...(created.emptyTemplateSections.length ? { emptyTemplateSections: created.emptyTemplateSections } : {}),
           ...(tagWarning ? { tagWarning } : {}),
         }
       },
@@ -1112,6 +1141,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         const v = value as {
           notebook: string; path: string; absPath: string; title: string; tags: string[]; links: string[]
           summaryApplied: boolean; summaryWarning?: string; tagWarning?: string
+          emptyTemplateSections?: string[]
           archived: Array<{ path: string; title: string; reason: string }>
           similar?: Array<{ title: string; path: string; score: number }>
           warnings: string[]
@@ -1120,6 +1150,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         if (v.tags.length) lines.push('标签：' + v.tags.map((t) => '#' + t).join(' '))
         if (v.links.length) lines.push('双链：' + v.links.join(' '))
         if (v.summaryWarning) lines.push('⚠️ ' + v.summaryWarning)
+        if (v.emptyTemplateSections?.length) {
+          lines.push('⚠️ 模板小节空着：' + v.emptyTemplateSections.join('、') +
+            ' —— 正文以 ## 开头，内容落在了它后面；把正文并进那一节，或删掉那行空标题（zk_lint 的「空模板小节」会复查）')
+        }
         if (v.tagWarning) lines.push('⚠️ ' + v.tagWarning)
         if (v.similar?.length) {
           lines.push('⚠️ 疑似已有：' + v.similar.map((s) => `${s.title}（${s.path}，${s.score.toFixed(2)}）`).join('、') +
@@ -1731,9 +1765,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           template: LINT_TEMPLATE,
           persona: LINT_PERSONA,
           timeline: LINT_TIMELINE,
+          emptySections: LINT_EMPTY_SECTIONS,
           indexHint: { type: 'boolean' },
           indexLag: { type: 'string' },
-        }, ['notebook', 'notes', 'missingId', 'truncated', 'completeness', 'scanLimit', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'indexHint', 'indexLag']),
+        }, ['notebook', 'notes', 'missingId', 'truncated', 'completeness', 'scanLimit', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'emptySections', 'indexHint', 'indexLag']),
       },
       async run(args, env) {
         const cfg = configFor(env.workspace, env.sessionId)

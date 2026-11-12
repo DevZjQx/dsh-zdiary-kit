@@ -427,7 +427,8 @@ sidecar 会随累计被召回过的 path 增长，所以发版前补了一组 **
 
 ### 公共验收
 
-`bun run check` **280 pass / 0 fail / 1953 expect**（基线 276 → +4 条发版前修订用例：3 条 `zk_memory_write` 健壮性 + 1 条 sidecar 稳态缓存）；
+`bun run check` **282 pass / 0 fail / 1966 expect**（基线 276 → 280：+4 条发版前修订用例 —— 3 条 `zk_memory_write` 健壮性 + 1 条 sidecar 稳态缓存；
+3.11.0 再 +2 条空模板小节用例 —— `zk_new.emptyTemplateSections` 的槽位判定与 `zk_lint.emptySections` 的整桶回归）；
 `ZK_BIN=/home/glm-agent/.dsh/zdiary/bin/zk bun run smoke` **16 工具 / 12 路由 / 25 文档命令全过**；
 只读视图与注入载荷逐字节回归沿用 §10.6 / §14.7：15.6 / 15.2 不碰 `buildMemoryPayload`，
 15.2 默认关 + 空信号时 `zk_dream` / `zk_context` 输出与改动前逐字节一致（有对应用例）。

@@ -1391,6 +1391,32 @@ describe('建完收尾：摘要', () => {
     expect(raw).toContain('正文一句')
   })
 
+  it('P2：正文以 ## 开头时点出空着的模板内容槽，正文一个字不改', async () => {
+    await notebookLib.ensureNotebook(collide)
+    const created = await zk.createNote(collide, {
+      title: '空壳小节',
+      dir: 'notes/concepts',
+      content: '## 一句话\n\n正文一句',
+    })
+    expect(created.emptyTemplateSections).toEqual(['Content'])
+    // 只提示、不静默折叠：模板那一节还在（删不删由调用方决定）
+    const raw = fs.readFileSync(created.absPath, 'utf8')
+    expect(raw).toContain('## Summary\n\n## Content\n\n## 一句话')
+
+    // 正文写在 Content 下面：没有空壳，不误报
+    const plain = await zk.createNote(collide, { title: '正常小节', dir: 'notes/concepts', content: '正文一句' })
+    expect(plain.emptyTemplateSections).toEqual([])
+
+    // 来源模板的两个内容槽都在 {{content}} 之前：正文一开头就是 ## 就都空着
+    const source = await zk.createNote(collide, {
+      title: '空壳来源',
+      dir: 'notes/sources',
+      type: 'source',
+      content: '## 核心做法\n\n做法一句',
+    })
+    expect(source.emptyTemplateSections).toEqual(['Key claims', 'Quotes'])
+  })
+
   it('summary 填进模板里空着的 ## Summary', async () => {
     await notebookLib.ensureNotebook(collide)
     const created = await zk.createNote(collide, {
@@ -3640,6 +3666,40 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
 
     // layered 的分层目录本来就在配置里，不算多余
     expect(notebookLib.structureStatus(store.normalizeConfig({ notebook: dir, structure: 'layered' })).extra).toEqual([])
+  })
+
+  it('P1：空模板小节单列一桶；日记版式的空节与正常笔记不报', async () => {
+    const cfg = fresh('nb-empty-sections', 'layered')
+    await notebookLib.ensureNotebook(cfg)
+    const shell = await zk.createNote(cfg, { title: '空壳概念', dir: 'notes/concepts', content: '## 一句话\n\n正文 #x' })
+    await zk.createNote(cfg, { title: '正常概念', dir: 'notes/concepts', content: '正文 #x' })
+    const source = await zk.createNote(cfg, {
+      title: '空壳来源',
+      dir: 'notes/sources',
+      type: 'source',
+      content: '## 核心做法\n\n做法 #x',
+    })
+    await zk.ensureDailyNote(cfg)
+    await zk.indexNotebook(cfg)
+
+    const lint = await lintLib.lintNotebook(cfg)
+    // 概念 1 处 + 来源 2 处；日记的 Observations / Loose ends 空着是版式，不进这一桶
+    expect(lint.emptySections.total).toBe(3)
+    expect(lint.emptySections.notes).toBe(2)
+    expect(lint.emptySections.skipped).toBe(0)
+    const byPath = new Map(lint.emptySections.items.map((i) => [i.path, i.empty.map((e) => e.heading)]))
+    expect(byPath.get(shell.path)).toEqual(['Content'])
+    expect(byPath.get(source.path)).toEqual(['Key claims', 'Quotes'])
+    expect(lint.emptySections.items.some((i) => i.path.startsWith('journal/'))).toBe(false)
+    expect(lintLib.formatLintExtras(lint).join('\n')).toContain('空模板小节')
+
+    // 围栏代码里的 `## 示例` 不是标题；小节里只装一个代码块也不是「空」—— 两种都不能误报
+    const fenced = path.join(cfg.notebook, 'notes/concepts/fenced.md')
+    fs.writeFileSync(fenced, '---\ntype: concept\ntitle: 围栏\n---\n\n# 围栏\n\n## Content\n\n```md\n## 示例\n```\n\n## 我的理解\n\n真内容\n')
+    await zk.indexNotebook(cfg)
+    const again = await lintLib.lintNotebook(cfg)
+    expect(again.emptySections.items.some((i) => i.path === 'notes/concepts/fenced.md')).toBe(false)
+    expect(again.emptySections.total).toBe(3)
   })
 
   it('P2-13：frontmatter 缺 type / status / authority 单列一桶，日记跳过；flat 不查', async () => {

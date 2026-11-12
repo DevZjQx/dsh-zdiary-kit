@@ -27,6 +27,7 @@ import path from 'node:path';
 import { backlinksOf, GRAPH_BUDGET_NOTES, graphEdges, indexLagHint, localDate, MAX_SCAN, scanNotes, scanNotesWithFlag, outlinksOf, parseErrorWarnings, } from './zk.js';
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 import { fenceMask } from './fence.js';
+import { emptyTemplateSlots } from './sections.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { daysSinceDate, entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries } from './memory-format.js';
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION, templateVersionOf } from './agents-template.js';
@@ -44,6 +45,8 @@ const MAX_ONE_WAY_TARGETS = 50;
 const MAX_ONE_WAY_QUERIES = 60;
 /** 时间轴只扫最近多少天（计划 §2 D4）：一年日记会报几百条旧问题，把今天的问题挤出 50 条上限 */
 export const TIMELINE_WINDOW_DAYS = 90;
+/** 超过这个大小不读（同 TIMELINE_MAX_BYTES：巡检不该把一个大文件拉进内存） */
+export const EMPTY_SECTION_MAX_BYTES = 1024 * 1024;
 /** 超过这个大小的日记不读（doctor / lint 不该把 2 GiB 的日志拉进内存）：跳过并计入 skipped */
 export const TIMELINE_MAX_BYTES = 2 * 1024 * 1024;
 /** 标题归一化与链接解析在 `lib/wikilink.ts`（dream 也用同一套）；这里保留导出，免得调用方跟着搬 */
@@ -294,6 +297,19 @@ export function formatLintExtras(r) {
     const timeline = formatTimeline(r.timeline);
     if (timeline)
         lines.push(timeline);
+    const emptySections = r.emptySections;
+    if (emptySections && emptySections.total > 0) {
+        // 文案只回显几篇：篇数按 notes 报全量，多出来的用省略号，不假装列全
+        const listed = emptySections.items.slice(0, 5);
+        const shown = listed
+            .map((i) => `${i.path}（${i.empty.map((e) => e.heading).join('、')}）`)
+            .join('、');
+        lines.push(`⚠️ 空模板小节：${emptySections.total} 处 / ${emptySections.notes} 篇 — ${shown}` +
+            (emptySections.notes > listed.length ? ' …' : '') +
+            '｜正文自己起了 ## 小节，模板的内容槽（Content / Key claims / Quotes）空着；删掉那行空标题，或把正文并进那一节' +
+            (emptySections.skipped > 0 ? `（另有 ${emptySections.skipped} 篇没读：文件过大或读不出来）` : '') +
+            '（只报告，不改写）');
+    }
     if (r.missingId > 0) {
         lines.push(`· 稳定 ID：${r.missingId} 篇没有 id — 新建的笔记已自动写入，老笔记只提示、不回填（§9.2）`);
     }
@@ -590,6 +606,45 @@ export function templateStatus(cfg) {
     if (mismatchDetail !== null)
         return { ...base, mismatch: true, mismatchDetail, currentText };
     return version < TEMPLATE_VERSION ? { ...base, currentText } : base;
+}
+/**
+ * 空模板小节：`## Content` / `## Key claims` / `## Quotes` 空着，而正文写在了别的 `##` 小节里。
+ *
+ * 判定在 `lib/sections.ts`（`zk_new` 建完收尾共用同一份），这里只负责读盘与计数。
+ * 日记不查：layered 的 `## Observations` / `## Loose ends` 空着是版式。
+ * 超过 `EMPTY_SECTION_MAX_BYTES` 或读不出来的文件不计入 `scanned` 而计入 `skipped` ——
+ * 不把「没读」当成「没有」。
+ */
+export function emptySectionStatus(cfg, notes, isDaily, max = MAX_ITEMS) {
+    let scanned = 0;
+    let skipped = 0;
+    let total = 0;
+    const items = [];
+    for (const note of notes) {
+        const abs = note.absPath ? path.resolve(note.absPath) : path.resolve(cfg.notebook, note.path);
+        // 日记不查：layered 模板的 Observations / Loose ends 空着是版式（每天新建都如此），不是噪声
+        if (isDaily(abs))
+            continue;
+        let body = '';
+        try {
+            if (fs.statSync(abs).size > EMPTY_SECTION_MAX_BYTES) {
+                skipped += 1;
+                continue;
+            }
+            body = fs.readFileSync(abs, 'utf8');
+        }
+        catch {
+            skipped += 1;
+            continue;
+        }
+        scanned += 1;
+        const empty = emptyTemplateSlots(body);
+        if (empty.length === 0)
+            continue;
+        total += empty.length;
+        items.push({ path: note.path, title: note.title, empty });
+    }
+    return { scanned, skipped, notes: items.length, total, truncated: items.length > max, items: items.slice(0, max) };
 }
 /**
  * 最近 `TIMELINE_WINDOW_DAYS` 天的日记时间轴（计划 §2 D4）。
@@ -958,6 +1013,9 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         template: templateStatus(cfg),
         persona: personaStatus(cfg),
         timeline: timelineStatus(cfg, now),
+        // 模板空壳（`## Content` 空着、正文写在别的 `##` 下）：读正文的桶，只对非日记笔记；
+        // 上限 / 跳过的计数照实给出，别把「没读」当成「没有」
+        emptySections: emptySectionStatus(cfg, notes, isDaily),
         // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
         indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
         // 放在最后算：前面的读命令已经把 pending 的 dirty 补掉了，剩下的是「补不上 / 外部编辑」

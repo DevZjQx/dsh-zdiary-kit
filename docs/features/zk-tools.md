@@ -97,6 +97,10 @@ group 的子目录照旧放行（zk 按路径前缀归组）。理由：`notes/`
 没有告警时输出里不带 `summaryWarning` 这个键：宿主按无损 JSON 校验工具输出，值为 `undefined` 的字段会让整次调用报
 `invalid output` —— 文件已经建好，模型却拿不到 `path`。
 只填不删：正文里多写一节 `## Content` 之类属于排版噪音，靠 `body` 的入参说明去避免，不在建完收尾时静默改正文。
+`emptyTemplateSections`（P2）：正文第一行就是 `##` 时，模板的内容槽（`Content` / `Key claims` / `Quotes`）会被挤成空壳 ——
+`{{content}}` 落在它们后面，内容其实没缺。建完收尾时按 `lib/sections.ts` 的同一份判定把空着的槽列出来（只提示，不改正文）：
+判定要求「槽空着」且「另有一个有内容的 `##` 小节」，所以新建的空笔记、只含代码块的小节、`## Summary` / `## Links` 都不会误报。
+修法是把正文并进那一节，或删掉那行空标题；`zk_lint` 的 `emptySections` 会复查存量。
 `tagWarning`（P2-9）：标题或正文含 CJK、而最终标签为空（入参 / 默认标签 / 正文 hashtag 都没有）时给一句提示 ——
 写路径是唯一便宜的修复点；一周后才在 `zk_dream` 里被「无标签」拒绝时，那篇已经进不了晋升候选，只能靠全文检索找回来。
 代价不在搜索：P2-7 之后中文查询会并上子串匹配，正文照样搜得到；问题在标签是唯一能确定性筛选的维度（`zk_query -t`、
@@ -205,6 +209,12 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 `total` / `counts` 按全量算、`items` 里每篇最多 50 条明细（整个桶最多 50 篇），所以四项分类相加始终等于 `total`；
 超过 2 MiB 或读不到的文件不会静默略过：计入 `skipped`，输出里点名「跳过 N 篇」。
 笔记页的时间轴警告不受这个窗口限制 —— 打开哪篇查哪篇。自动重排会改正文顺序、diff 不可审，所以不给自动修复开关。
+`emptySections`（P1）查**模板空壳**：`## Content` / `## Key claims` / `## Quotes` 空着，而同一篇里另有一个有内容的 `##` 小节 ——
+正文写到了别处，模板槽只剩标题（`{{content}}` 落在槽后面的必然形状）。判定在 `lib/sections.ts`，与 `zk_new` 的
+`emptyTemplateSections` 共用；**日记不查**（layered 的 `## Observations` / `## Loose ends` 空着是版式，每天新建都如此），
+`## Summary`（选填）与 `## Links`（常年为空）也不算；围栏代码里的 `##` 不算标题、但「只含一个代码块」的小节也不算空。
+和别的桶一样只报告、不改写：删掉那行空标题或把正文并进那一节，由人或 agent 决定；`total` 是空节数、`notes` 是有问题的篇数，
+`items` 截到 50 篇，读不出来的文件（> 1 MiB 或 IO 错误）计入 `skipped` 并在文案里点名。
 「单向链接」（`oneWayLinks`）按边算：存在 S→X、X 没回链 S，且 **S、X 都不是日记**。
 不用 zk 的 `--missing-backlink`：它的原义是「至少有一条单向链接」，日记天然是一串出边，
 日记提过的每篇笔记都会常年挂在桶里 —— 那不是「没接上」，是正常的引用方向，桶就再也清零不了。
@@ -235,7 +245,7 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 同一份条目解析还数 `undated`（首行没有真校验过的 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）
 与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记），以及 `stale`（有日期且超过 `stale_days`，默认 90 天未复核）——
 都只报告；注入从 0.9 起省略退役条目（notice 说明省略数），文件本身不动。条目切分与日期解析统一走 `lib/memory-format`。
-文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / 时间轴 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
+文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / 时间轴 / 空模板小节 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
 `incomplete`（P2-13）：`type` / `status` / `authority` 缺任一的笔记（**只在 layered 下查**：flat 的笔记
 本来就不写这三个字段，整库标红不是「可发现的状态」而是噪音）。索引把缺失落成空串，
 于是「没写 authority」=「authority 正常」，dream 的 informal 门对它们静默失效。
