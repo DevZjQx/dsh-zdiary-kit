@@ -683,7 +683,7 @@ const PARSE_WARNING = /^zk: warning: error parsing note content (.+?): (.+)$/;
 /**
  * 从收集到的 warning 里挑出 frontmatter 解析失败的笔记。
  *
- * 归档 / raw / inbox / meta 文件即使写坏也不影响检索口径（它们本来就不进索引查询），
+ * 归档 / raw / meta 文件即使写坏也不影响检索口径（它们本来就不进索引查询），
  * 报出来只会把真问题淹掉 —— 所以按 `excludedNames` 同一套口径过滤。
  */
 export function parseErrorWarnings(cfg, warnings) {
@@ -798,7 +798,7 @@ function parseList(stdout) {
  *     所以一律拼成绝对路径，否则换台机器/换个工作目录排除就静默失效。
  */
 export function excludedNames(cfg, opts = {}) {
-    const rels = ['raw', 'inbox'];
+    const rels = ['raw'];
     if (!opts.includeArchived)
         rels.push(cfg.archiveDir);
     rels.push(...META_NAMES);
@@ -1329,12 +1329,12 @@ function seedAt(cfg, rel, opts = {}) {
     const abs = path.resolve(cfg.notebook, rel);
     if (abs !== root && !abs.startsWith(root + path.sep))
         return null;
-    // 种子也是「进入网络的入口」：meta / raw / inbox 不是可导航的笔记，归档要先显式允许。
+    // 种子也是「进入网络的入口」：meta / raw 不是可导航的笔记，归档要先显式允许。
     // 与邻居侧的 `excludedNames` 同口径 —— 不能只有邻居过滤、种子随便进（plan §14.5）。
     const norm = rel.replace(/\\/g, '/').replace(/^\.\//, '');
     if (isMetaPath(norm))
         return null;
-    if (norm === 'raw' || norm.startsWith('raw/') || norm === 'inbox' || norm.startsWith('inbox/'))
+    if (norm === 'raw' || norm.startsWith('raw/'))
         return null;
     if (!opts.includeArchived && inArchive(cfg, norm))
         return null;
@@ -1524,18 +1524,14 @@ export function relPathOf(cfg, abs) {
     return path.relative(cfg.notebook, abs).split(path.sep).join('/');
 }
 /**
- * raw/ 是只读的原始材料，inbox/ 是被放弃的「待归类区」（P2-8）。
- * 两者都在 excludedNames 里，写进去不会报错、但会被排除出索引 —— 结果是
+ * raw/ 是只读的原始材料，在 excludedNames 里，写进去不会报错、但会被排除出索引 —— 结果是
  * 「写了、没报错、但搜不到」，比直接失败更难查。所以在写入口就拦住。
- * 读不受影响：raw 里的材料照常 read；盘上已有的 inbox/ 原样保留。
+ * 读不受影响：raw 里的材料照常 read。
  */
 function assertWritablePath(cfg, abs) {
     const rel = relPathOf(cfg, abs);
     if (rel === 'raw' || rel.startsWith('raw/')) {
         throw new ZkError(`raw/ 是只读的原始材料，不能写：${rel}`, '结论写到 notes/，观察写进 daily；原始材料只在原位读，不改不搬');
-    }
-    if (rel === 'inbox' || rel.startsWith('inbox/')) {
-        throw new ZkError(`inbox/ 是已停用的待归类区，写进去会被排除出索引：${rel}`, '直接写到目标目录（layered 下是 notes/sources 等 group）；盘上已有的 inbox/ 只读保留');
     }
 }
 /**
@@ -2108,7 +2104,7 @@ export async function notebookStats(cfg, signal) {
     const scan = await scanNotes(cfg, { includeArchived: true }, signal);
     const all = scan.notes;
     const live = all.filter((n) => !inArchive(cfg, n.path));
-    // 标签数只从可见笔记汇总：zk tag list 没有 -x，直接用它会把 raw/inbox/archive/meta 的标签也算进来。
+    // 标签数只从可见笔记汇总：zk tag list 没有 -x，直接用它会把 raw/archive/meta 的标签也算进来。
     return {
         notes: live.length,
         tags: new Set(live.flatMap((n) => n.tags)).size,

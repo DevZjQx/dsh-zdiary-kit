@@ -2,7 +2,7 @@
  * 根目录 AGENTS.md 模板：初始化时写进 vault，已存在就不碰。
  *
  * 两份模板：layered 用 AGENTS_TEMPLATE（目录 / group / WORKFLOW 那些路径都存在），
- * flat 用 AGENTS_TEMPLATE_FLAT（只有 notes/ + 日记，不出现 raw / inbox / archive / WORKFLOW）。
+ * flat 用 AGENTS_TEMPLATE_FLAT（只有 notes/ + 日记，不出现 raw / archive / WORKFLOW）。
  * flat 默认不写（0.1.0 的 vault 升级过来必须一个文件都不多），要的人显式 `zk-kit init --with-agents`
  * 或在设置页点「写入 AGENTS.md 模板」—— 否则默认安装既没有约定、也没有周节奏提醒。
  *
@@ -74,7 +74,7 @@ MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]，先 read 核对来�
 改 MEMORY 前看 zk_context 余量（WORKFLOW.md 有做法）。
 `;
 /**
- * flat 结构用的模板：不出现 raw / inbox / archive / WORKFLOW.md 这些 flat 没有的路径。
+ * flat 结构用的模板：不出现 raw / archive / WORKFLOW.md 这些 flat 没有的路径。
  * 目标 ≤90 词 —— 它和服务端那份共用同一笔预算，而 flat 用户往往只是想要「有一个约定」。
  */
 export const AGENTS_TEMPLATE_FLAT = `${TEMPLATE_MARK}

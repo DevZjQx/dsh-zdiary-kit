@@ -55,11 +55,11 @@ function matchesQuery(text, terms) {
     const hay = normalizeTitle(text);
     return terms.some((term) => hay.includes(term));
 }
-/** raw / inbox / 根目录 meta 都不是可导航的笔记：入口指过去也没用 */
+/** raw / 根目录 meta 都不是可导航的笔记：入口指过去也没用 */
 function isNonNotePath(cfg, rel) {
     if (isMetaPath(rel))
         return true;
-    return ['raw', 'inbox'].some((dir) => rel === dir || rel.startsWith(dir + '/'));
+    return rel === 'raw' || rel.startsWith('raw/');
 }
 /** 结果集之外的目标：只读这一篇的 frontmatter（0 子进程），读不到就不算入口 */
 function liveNoteAt(cfg, rel) {

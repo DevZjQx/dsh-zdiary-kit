@@ -24,6 +24,11 @@ import { memoryUsage } from './memory.ts'
 import type { MemoryUsage } from './memory.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
 import { isDayString } from './dates.ts'
+import { isMetaPath } from './meta.ts'
+import {
+  MAX_EVIDENCE_ENTRIES, MAX_EVIDENCE_SOURCES, MAX_EVIDENCE_TARGETS, noteEvidenceOf,
+} from './evidence.ts'
+import type { NoteEvidence } from './evidence.ts'
 import { normalizeTitle, noteKey, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
 import { AUDIT_RATE, hasRecallSignal, lastRecallOf, readRecallSignal, RECALL_PROTECT_DAYS } from './recall-signal.ts'
 import type { RecallSignal } from './recall-signal.ts'
@@ -146,6 +151,39 @@ export interface DreamRetireCandidate {
   reason: 'stale' | 'source-missing' | 'source-superseded'
 }
 
+/** 一条结论的「可回对依据」：来源笔记的出处材料，只报告不判断对错 */
+export interface DreamEvidenceSource extends NoteEvidence {
+  /** 来源笔记相对路径 */
+  path: string
+  /** 1 = MEMORY 条目里的 `[[来源]]` 直接指向；2 = 出处小节里再走一跳 */
+  hop: 1 | 2
+}
+
+export interface DreamEvidenceEntry {
+  /** 结论首行摘要（最多 100 字，与 retireCandidates 同一口径） */
+  entry: string
+  /** YYYY-MM-DD；没有可解析的日期时为空串 */
+  date: string
+  /** true = 来源链里没有任何原话行或外部地址 —— 缺口，显式报出来 */
+  unverified: boolean
+  sources: DreamEvidenceSource[]
+}
+
+/**
+ * MEMORY.md 现行结论 → 来源笔记 → 出处原话 / 外部地址的并排材料。
+ *
+ * 笔记是有损压缩的判断，真值在笔记之外；这里不替模型裁决，只把「拿什么回去对」摆到眼前，
+ * 并把没有材料的结论数记下来（缺口要记账）。只在有活条目时出现，绝不进注入载荷。
+ */
+export interface DreamEvidence {
+  /** 活结论总数 */
+  total: number
+  /** 没有可回对依据的结论数 */
+  unverified: number
+  /** 每条结论一行（含无依据的），最多 MAX_EVIDENCE_ENTRIES 条 */
+  entries: DreamEvidenceEntry[]
+}
+
 export interface DreamResult {
   notebook: string
   windowDays: number
@@ -190,6 +228,8 @@ export interface DreamResult {
   dailyLooseEnds: DreamLooseEnds[]
   /** 机械规则筛出的「可考虑退役」条目（只给材料，不写 MEMORY.md） */
   retireCandidates: DreamRetireCandidate[]
+  /** 有活 MEMORY 条目时才出现：结论 → 来源笔记 → 出处原话 / 外部地址的并排材料（只读，绝不进注入） */
+  evidence?: DreamEvidence
   /** 15.2：仅在召回信号生效时出现 —— 固定比例、与分数无关的窗口外抽样，补门控正性 */
   auditSamples?: DreamCandidate[]
 }
@@ -345,6 +385,20 @@ function promotionsOf(cfg: Config, notes: NoteRecord[]): Map<string, 'link' | 't
 }
 
 /**
+ * 条目里的 `[[来源]]` 目标（去围栏、去空目标、去重）。
+ * MEMORY 条目切分与链接解析只在这里一份口径 —— 退役候选与依据回对共用，
+ * 免得同一份 MEMORY 在两处解出不同的来源集合。
+ */
+function sourceTargetsOf(entry: string): string[] {
+  const out: string[] = []
+  for (const match of withoutFences(entry).matchAll(WIKI_LINK)) {
+    const target = String(match[1] ?? '').trim()
+    if (target && !out.includes(target)) out.push(target)
+  }
+  return out
+}
+
+/**
  * 退役候选（D4.3）：只做机械规则，不判断「这条还有没有用」。
  *   · 有日期且超过 STALE_DAYS → stale；
  *   · 条目里的 `[[来源]]` 指向归档 / 不存在 → source-superseded / source-missing；
@@ -367,9 +421,7 @@ function retireCandidatesOf(cfg: Config, notes: NoteRecord[], now: Date, signal:
     const age = date ? (daysSinceDate(date, now) ?? -1) : -1
 
     let reason: DreamRetireCandidate['reason'] | null = null
-    for (const match of withoutFences(entry).matchAll(WIKI_LINK)) {
-      const target = String(match[1] ?? '').trim()
-      if (!target) continue
+    for (const target of sourceTargetsOf(entry)) {
       const hit = resolveWikiTarget(cfg, target, index)
       // 显式写 archive/ 的链接是有意引用（supersede 就是这样重写入链的）：与 lint 一个口径，不算来源断了
       if (hit.status === 'live' || hit.explicit) continue
@@ -392,6 +444,65 @@ function retireCandidatesOf(cfg: Config, notes: NoteRecord[], now: Date, signal:
   // 越旧越靠前；无日期（-1）的排在最后（不假装它们更旧）
   out.sort((a, b) => b.age - a.age || a.entry.localeCompare(b.entry))
   return out.slice(0, MAX_RETIRE)
+}
+
+/**
+ * 依据回对（只读）：把每条现行 MEMORY 结论的 `[[来源]]` 链与出处原话 / 外部地址并排摆出来。
+ *
+ * 两跳封顶，不做全图游走（§5）：第一跳是条目里的 `[[来源]]`，第二跳只走这些笔记
+ * 「出处 / 引文」小节里的 `[[链接]]`。全部本地读盘、零 zk 子进程；`raw/` 里的原始材料
+ * 虽然不进索引，路径式链接照样能读（那正是「拿原话回来对」要的东西）。
+ * 解析不到 / meta 文件 / 越界一律跳过，不猜、不补、不写。
+ *
+ * 只在有活条目时返回；没有 MEMORY.md 或全是退役行时整个键不出现，老库输出逐字节不变。
+ */
+function evidenceOfMemory(cfg: Config, notes: NoteRecord[]): DreamEvidence | null {
+  let body = ''
+  try { body = fs.readFileSync(path.join(cfg.notebook, 'MEMORY.md'), 'utf8') } catch { return null }
+  const live = splitMemoryEntries(body).filter((entry) => !isRetiredEntry(entry))
+  if (!live.length) return null
+
+  const index = wikiIndex(notes)
+  const entries: DreamEvidenceEntry[] = []
+  let unverified = 0
+
+  for (const entry of live.slice(0, MAX_EVIDENCE_ENTRIES)) {
+    const summary = (entry.split('\n', 1)[0] ?? '')
+      .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    const one = summary.length > 100 ? summary.slice(0, 100) + '…' : summary
+    const sources: DreamEvidenceSource[] = []
+    const seen = new Set<string>()
+    let hasTruth = false
+
+    const collect = (targets: string[], hop: 1 | 2, cap: number): string[] => {
+      const next: string[] = []
+      for (const target of targets.slice(0, MAX_EVIDENCE_TARGETS)) {
+        if (sources.length >= cap) break
+        const hit = resolveWikiTarget(cfg, target, index)
+        if (hit.status === 'missing' || !hit.path || isMetaPath(hit.path) || seen.has(hit.path)) continue
+        seen.add(hit.path)
+        let content = ''
+        try { content = fs.readFileSync(path.join(cfg.notebook, hit.path), 'utf8') } catch { continue }
+        const ev = noteEvidenceOf(content)
+        if (ev.quotes.length || ev.urls.length) hasTruth = true
+        sources.push({ path: hit.path, hop, ...ev })
+        next.push(...ev.links)
+      }
+      return next
+    }
+    const firstTargets = sourceTargetsOf(entry)
+    // 给第二跳预留一个名额：出处里的下一跳往往才是真值所在，不能被第一跳挤光。
+    // 第二跳没吃满时把名额还给第一跳，seen 保证不重复收；总数始终 ≤ MAX_EVIDENCE_SOURCES。
+    const second = collect(firstTargets, 1, MAX_EVIDENCE_SOURCES - 1)
+    if (second.length) collect(second, 2, MAX_EVIDENCE_SOURCES)
+    if (sources.length < MAX_EVIDENCE_SOURCES) collect(firstTargets, 1, MAX_EVIDENCE_SOURCES)
+
+    if (!hasTruth) unverified += 1
+    entries.push({ entry: one, date: entryDate(entry) ?? '', unverified: !hasTruth, sources })
+  }
+  return { total: live.length, unverified, entries }
 }
 
 export async function dreamNotebook(
@@ -551,6 +662,9 @@ export async function dreamNotebook(
     for (let i = 0; i < pool.length; i += step) auditSamples.push(candidateOf(pool[i]!, ''))
   }
 
+  // 依据回对：没有活 MEMORY 条目时返回 null，下面整键不出现
+  const evidence = evidenceOfMemory(cfg, notes)
+
   return {
     notebook: cfg.notebook,
     windowDays,
@@ -579,6 +693,8 @@ export async function dreamNotebook(
     dailyLooseEnds,
     memory: memoryUsage(cfg),
     retireCandidates: retireCandidatesOf(cfg, notes, now, recallSignal),
+    // 依据回对：条件出现（没有活 MEMORY 条目时整键不出现），只给材料，绝不进注入载荷
+    ...(evidence ? { evidence } : {}),
     ...(signalActive ? { auditSamples } : {}),
   }
 }

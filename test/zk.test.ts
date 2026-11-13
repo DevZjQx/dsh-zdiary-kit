@@ -50,6 +50,7 @@ const wikilinkLib = await import('../src/lib/wikilink.ts')
 const fenceLib = await import('../src/lib/fence.ts')
 const memoryWriteLib = await import('../src/lib/memory-write.ts')
 const recallSignalLib = await import('../src/lib/recall-signal.ts')
+const evidenceLib = await import('../src/lib/evidence.ts')
 
 store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
 const cfg = store.config()
@@ -1303,8 +1304,6 @@ describe('structure: layered', () => {
     for (const dir of ['raw', 'notes/sources', 'notes/concepts', 'notes/entities', 'notes/patterns', 'archive']) {
       expect(fs.existsSync(path.join(layeredDir, dir))).toBe(true)
     }
-    // inbox/ 是已停用的入口（P2-8）：新建库不再建它，盘上已有的老目录原样保留
-    expect(fs.existsSync(path.join(layeredDir, 'inbox'))).toBe(false)
     const toml = fs.readFileSync(path.join(layeredDir, '.zk', 'config.toml'), 'utf8')
     for (const group of ['daily', 'source', 'concept', 'entity', 'pattern']) expect(toml).toContain(`[group."${group}"]`)
     // group 的 paths 必须跟实际建的目录逐字对上（entity → entities，不是 entitys）
@@ -1336,7 +1335,7 @@ describe('structure: layered', () => {
     expect(raw).toContain('这条正文必须落进')
   })
 
-  it('meta 文件与 raw/inbox/archive 不进入检索与统计', async () => {
+  it('meta 文件与 raw/archive 不进入检索与统计', async () => {
     fs.writeFileSync(path.join(layeredDir, 'AGENTS.md'), '# 约定\n\nUNIQUE-META-TOKEN #metaonly\n')
     fs.writeFileSync(path.join(layeredDir, 'raw', 'clip.md'), '# 素材\n\nUNIQUE-RAW-TOKEN #rawtag\n')
     fs.writeFileSync(path.join(layeredDir, 'archive', 'old.md'), '# 旧结论\n\n#archivetag\n')
@@ -1776,7 +1775,7 @@ describe('M2: 结构化检索与废弃', () => {
     await expect(zk.linkNotes(m2, 'MEMORY.md', linked.path)).rejects.toThrow(/meta/)
   })
 
-  it('meta 文件与 raw/inbox 不进检索；归档默认不进、include_archived 才进', async () => {
+  it('meta 文件与 raw 不进检索；归档默认不进、include_archived 才进', async () => {
     fs.writeFileSync(path.join(dir, 'MEMORY.md'), '## 记忆\n\nM2-META-TOKEN\n')
     fs.writeFileSync(path.join(dir, 'raw', 'clip.md'), '# 素材\n\nM2-RAW-TOKEN\n')
     await zk.indexNotebook(m2)
@@ -3919,7 +3918,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
   })
 })
 
-describe('0.8.2：检索 / inbox / 标签提示 / 相似标题 / 分布 / 使用信号（P2-7 – P2-12）', () => {
+describe('0.8.2：检索 / 标签提示 / 相似标题 / 分布 / 使用信号（P2-7 – P2-12）', () => {
   const fresh = (name: string, structure: 'flat' | 'layered' = 'flat') =>
     store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure })
 
@@ -3944,24 +3943,6 @@ describe('0.8.2：检索 / inbox / 标签提示 / 相似标题 / 分布 / 使用
     const ascii = await zk.searchNotesDetailed(cfg, { query: 'xyzzynotfound', limit: 10 })
     expect(ascii.notes).toEqual([])
     expect(ascii.matchStrategy).toBe('regex')
-  })
-
-  it('P2-8：inbox 不再建、不接受写入；盘上已有的仍不进检索', async () => {
-    const flat = fresh('nb-p28-flat')
-    await notebookLib.ensureNotebook(flat)
-    fs.mkdirSync(path.join(flat.notebook, 'inbox'), { recursive: true })
-    await expect(zk.createNote(flat, { title: '不该进收件箱', dir: 'inbox', content: 'x' }))
-      .rejects.toThrow(/inbox/)
-    expect(fs.readdirSync(path.join(flat.notebook, 'inbox'))).toEqual([])
-
-    const layered = fresh('nb-p28-layered', 'layered')
-    await notebookLib.ensureNotebook(layered)
-    expect(fs.existsSync(path.join(layered.notebook, 'inbox'))).toBe(false)
-    // 老库盘上留着的 inbox/：不删，但仍是隔离区
-    fs.mkdirSync(path.join(layered.notebook, 'inbox'), { recursive: true })
-    fs.writeFileSync(path.join(layered.notebook, 'inbox', 'frag.md'), '# 碎片\n\nINBOX-TOKEN #x\n')
-    await zk.indexNotebook(layered)
-    expect((await zk.searchNotes(layered, { query: 'INBOX-TOKEN' })).length).toBe(0)
   })
 
   test('P2-9：中文没标签才提示，标签 / 正文 hashtag / 英文都不提示', () => {
@@ -6893,6 +6874,220 @@ describe('§15.2：召回信号 sidecar（§10.4 第 18 项）', () => {
       const emptySignal = recallSignalLib.readRecallSignal(off)
       expect(recallSignalLib.hasRecallSignal(emptySignal)).toBe(false)
       expect(recallSignalLib.lastRecallOf(emptySignal, entry)).toBe('')
+    } finally { restore() }
+  })
+})
+
+describe('依据回对（evidence）：把真值地址摆到结论旁边', () => {
+  const originalConfig = {
+    notebooks: { default: { path: notebook, structure: 'flat' as const } },
+    active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+    defaultTags: ['default'], aliasTools: false, recallSignal: false,
+  }
+  const setup = async (name: string) => {
+    const dir = path.join(home, name)
+    store.writeConfig({
+      notebooks: { default: { path: dir, structure: 'flat' } },
+      active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
+      defaultTags: [], aliasTools: false, recallSignal: false,
+    })
+    const c = store.config()
+    await notebookLib.ensureNotebook(c)
+    return { c, dir }
+  }
+  const restore = (): void => { store.writeConfig(originalConfig) }
+  const put = (c: ReturnType<typeof store.config>, rel: string, body: string): void => {
+    const abs = path.join(c.notebook, rel)
+    fs.mkdirSync(path.dirname(abs), { recursive: true })
+    fs.writeFileSync(abs, body, 'utf8')
+  }
+  const note = (title: string, body: string): string =>
+    `---\ntitle: ${title}\ndate: 2026-11-13\ntype: concept\nstatus: active\n---\n\n# ${title}\n\n${body}`
+
+  // 纯解析，不需要 zk：围栏 / frontmatter / 别名小节 / 有界截断都在这一层锁住
+  test('noteEvidenceOf：只认出处小节，frontmatter 与围栏代码块都不算', () => {
+    const content = [
+      '---', 'title: 甲', 'date: 2026-11-13', '---', '', '# 甲', '',
+      '## Summary', '这是压缩后的判断，不是出处。', '',
+      '## 出处',
+      '- 原文：https://example.com/a （2026-11-06）',
+      '- [[notes/sources/原始材料]]——第 7 页的图',
+      '- 「月见山在我后面」这句是当时的原话', '',
+      '```', '- 围栏里的假出处：https://example.com/fake [[notes/假]]', '```', '',
+      '## Links', '- [[notes/别的小节]]',
+    ].join('\n')
+    const ev = evidenceLib.noteEvidenceOf(content)
+    expect(ev.urls).toEqual(['https://example.com/a'])
+    expect(ev.links).toContain('notes/sources/原始材料')
+    expect(ev.quotes.some((q) => q.includes('月见山在我后面'))).toBe(true)
+    expect(ev.quotes.some((q) => q.includes('fake'))).toBe(false)
+    expect(ev.quotes.some((q) => q.includes('压缩后的判断'))).toBe(false)
+    expect(ev.links.some((l) => l.includes('别的小节'))).toBe(false)
+  })
+
+  test('noteEvidenceOf：紧贴的左括号不吞进 URL', () => {
+    const content = [
+      '## 出处',
+      '- https://example.com/a（2026-11-07）',
+      '- https://example.com/b【2026】',
+      '- 另一处：https://example.com/c（补充说明）',
+    ].join('\n')
+    const ev = evidenceLib.noteEvidenceOf(content)
+    expect(ev.urls).toEqual([
+      'https://example.com/a',
+      'https://example.com/b',
+      'https://example.com/c',
+    ])
+  })
+
+  test('noteEvidenceOf：无出处小节返回空；Quotes / References 别名同样认；三项都有界', () => {
+    expect(evidenceLib.noteEvidenceOf('# 甲\n\n正文一段。')).toEqual({ quotes: [], urls: [], links: [] })
+    const many = [
+      '## Quotes',
+      ...Array.from({ length: 20 }, (_, i) => `- 引文 ${i} https://e.com/${i} [[notes/s${i}]]`),
+      '## References',
+      '- 另一处 https://e.com/ref',
+    ].join('\n')
+    const ev = evidenceLib.noteEvidenceOf(many)
+    expect(ev.quotes.length).toBe(evidenceLib.MAX_EVIDENCE_QUOTES)
+    expect(ev.urls.length).toBe(evidenceLib.MAX_EVIDENCE_URLS)
+    expect(ev.links.length).toBe(evidenceLib.MAX_EVIDENCE_LINKS)
+  })
+
+  it('dream：结论 → 来源 → 出处的出处（两跳）、raw/ 原话、缺口显式记账', async () => {
+    const { c } = await setup('nb-evidence-chain')
+    try {
+      put(c, 'notes/concepts/甲.md', note('结论甲', [
+        '## Summary', '压缩后的判断。', '',
+        '## 出处',
+        '- 原文：https://example.com/source-a （2026-11-06）',
+        '- [[notes/sources/原始材料]]——第 7 页的图', '',
+        '## Links', '- [[notes/concepts/乙]]',
+      ].join('\n')))
+      put(c, 'notes/sources/原始材料.md', note('原始材料', [
+        '## Summary', '来源笔记。', '',
+        '## 出处',
+        '- 原文：https://example.com/original',
+        '- 「月见山在我后面」这句是当时的原话',
+      ].join('\n')))
+      put(c, 'notes/concepts/乙.md', note('结论乙', [
+        '## Summary', '没有出处小节的结论。', '',
+        '## Links', '- [[notes/concepts/甲]]',
+      ].join('\n')))
+      put(c, 'raw/原始记录.md', '# 原始记录\n\n## Quotes\n- 当时的原话：月见山在我后面\n')
+      put(c, 'MEMORY.md', [
+        '# 记忆', '',
+        '- **结论甲。**（2026-11-13）[[notes/concepts/甲]]',
+        '- **结论乙。**（2026-11-13）[[notes/concepts/乙]]',
+        '- **结论丙。**（2026-11-13）[[notes/不存在]]',
+        '- **结论丁（原始记录）。**（2026-11-13）[[raw/原始记录]]',
+        '- [superseded 2026-01-01] 旧结论 → [[notes/concepts/甲]]', '',
+      ].join('\n'))
+      await zk.indexNotebook(c)
+
+      const before = ['MEMORY.md', 'notes/concepts/甲.md', 'notes/concepts/乙.md',
+        'notes/sources/原始材料.md', 'raw/原始记录.md']
+        .map((rel) => fs.readFileSync(path.join(c.notebook, rel), 'utf8'))
+      const dream = await dreamLib.dreamNotebook(c, { days: 365 })
+
+      expect(dream.evidence).toBeDefined()
+      const e = dream.evidence!
+      // 退役行不算活条目
+      expect(e.total).toBe(4)
+      // 结论乙（来源无出处）+ 结论丙（来源解析不到）= 两条缺口
+      expect(e.unverified).toBe(2)
+      expect(e.entries).toHaveLength(4)
+
+      const a = e.entries.find((x) => x.entry.includes('结论甲'))!
+      expect(a.unverified).toBe(false)
+      expect(a.date).toBe('2026-11-13')
+      // 第一跳：概念笔记自己的出处（URL）；第二跳：出处里的 [[链接]] → 来源笔记的 URL
+      expect(a.sources.map((s) => s.hop)).toEqual([1, 2])
+      expect(a.sources[0]?.path).toBe('notes/concepts/甲.md')
+      expect(a.sources[0]?.urls).toContain('https://example.com/source-a')
+      expect(a.sources[1]?.path).toBe('notes/sources/原始材料.md')
+      expect(a.sources[1]?.urls).toContain('https://example.com/original')
+      expect(a.sources[1]?.quotes.some((q) => q.includes('月见山在我后面'))).toBe(true)
+
+      const b = e.entries.find((x) => x.entry.includes('结论乙'))!
+      expect(b.unverified).toBe(true)
+      const c3 = e.entries.find((x) => x.entry.includes('结论丙'))!
+      expect(c3.unverified).toBe(true)
+      expect(c3.sources).toHaveLength(0)
+
+      // raw/ 不进索引，但路径式来源照样读得到 —— 这正是「拿原话回来对」的材料
+      const d = e.entries.find((x) => x.entry.includes('结论丁'))!
+      expect(d.unverified).toBe(false)
+      expect(d.sources[0]?.path).toBe('raw/原始记录.md')
+      expect(d.sources[0]?.quotes.some((q) => q.includes('月见山在我后面'))).toBe(true)
+
+      // 全程只读：一个字节都不改
+      const after = ['MEMORY.md', 'notes/concepts/甲.md', 'notes/concepts/乙.md',
+        'notes/sources/原始材料.md', 'raw/原始记录.md']
+        .map((rel) => fs.readFileSync(path.join(c.notebook, rel), 'utf8'))
+      expect(after).toEqual(before)
+    } finally { restore() }
+  })
+
+  it('dream：没有 MEMORY.md / 全是退役行时 evidence 整键不出现（老库逐字节不变）', async () => {
+    const { c } = await setup('nb-evidence-absent')
+    try {
+      put(c, 'notes/a.md', note('甲', '正文'))
+      await zk.indexNotebook(c)
+      const none = await dreamLib.dreamNotebook(c, { days: 365 })
+      expect('evidence' in none).toBe(false)
+
+      put(c, 'MEMORY.md', '# 记忆\n\n- [superseded 2026-01-01] 旧结论 → [[notes/a]]\n')
+      const retired = await dreamLib.dreamNotebook(c, { days: 365 })
+      expect('evidence' in retired).toBe(false)
+    } finally { restore() }
+  })
+
+  it('zk_dream 的 output schema 声明了 evidence（宿主按无损 JSON 校验，多一个键就是 invalid output）', () => {
+    const def = toolsFeature.buildTools().find((d) => d.name === 'zk_dream')!
+    const props = (def.output.schema as { properties?: Record<string, unknown> }).properties ?? {}
+    expect('evidence' in props).toBe(true)
+  })
+
+  it('evidence 不进注入：MEMORY 载荷文本里没有依据材料的任何字', async () => {
+    const { c } = await setup('nb-evidence-injection')
+    try {
+      put(c, 'notes/concepts/甲.md', note('结论甲', '## 出处\n- 原文：https://example.com/a\n'))
+      put(c, 'AGENTS.md', '# 规则\n先查重再写。\n')
+      put(c, 'MEMORY.md', '# 记忆\n\n- 结论甲（2026-11-13）[[notes/concepts/甲]]\n')
+      await zk.indexNotebook(c)
+      const payload = memory.buildMemoryPayload(c)
+      expect(payload.text).not.toContain('https://example.com/a')
+      expect(payload.text).not.toContain('依据回对')
+      const dream = await dreamLib.dreamNotebook(c, { days: 365 })
+      expect(dream.evidence?.entries[0]?.sources[0]?.urls).toContain('https://example.com/a')
+    } finally { restore() }
+  })
+
+  it('dream：第一跳来源吃满时仍给第二跳留一跳（真值在出处的下一跳）', async () => {
+    const { c } = await setup('nb-evidence-hop2-budget')
+    try {
+      for (let i = 1; i <= evidenceLib.MAX_EVIDENCE_SOURCES; i++) {
+        put(c, `notes/c${i}.md`, note(`来源${i}`, [
+          '## 出处',
+          i === 1
+            ? '- [[notes/sources/原始材料]]——第 7 页'
+            : `- 原文：https://example.com/c${i}`,
+        ].join('\n')))
+      }
+      put(c, 'notes/sources/原始材料.md', note('原始材料', [
+        '## 出处', '- 「月见山在我后面」这句是当时的原话',
+      ].join('\n')))
+      put(c, 'MEMORY.md', [
+        '# 记忆', '',
+        '- **多来源结论。**（2026-11-13）[[notes/c1]] [[notes/c2]] [[notes/c3]] [[notes/c4]]', '',
+      ].join('\n'))
+      await zk.indexNotebook(c)
+      const dream = await dreamLib.dreamNotebook(c, { days: 365 })
+      const x = dream.evidence!.entries[0]!
+      expect(x.unverified).toBe(false)
+      expect(x.sources).toHaveLength(evidenceLib.MAX_EVIDENCE_SOURCES)
+      expect(x.sources.some((s) => s.hop === 2 && s.path === 'notes/sources/原始材料.md')).toBe(true)
     } finally { restore() }
   })
 })

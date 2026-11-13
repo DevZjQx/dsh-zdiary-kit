@@ -65,7 +65,7 @@ stdout 原样返回（不做 JSON 解析），超过 `maxReadChars` 截断；exi
 
 **Exceptions.** 输入校验自己写：DSH 只对 `defineTool` 注册的工具做输入校验，
 裸 JSON Schema 注册的工具要自己兜（`lib/tool.ts`），换来运行时零依赖。
-所有查询都带 `excludedNames(cfg)` 的**绝对路径**排除（`raw` / `inbox` / `archive` + 七个 meta 文件）：
+所有查询都带 `excludedNames(cfg)` 的**绝对路径**排除（`raw` / `archive` + 七个 meta 文件）：
 `-x` 是相对 cwd 解析的，传相对名在换工作目录后会静默失效。`zk_query` 的 `include_archived: true` 会去掉 archive 排除；
 如果没显式给 `status`，此时也不再默认卡 `active`（否则归档里的 `superseded` 永远查不出来）。
 `status` / `type` 只能靠 `metadata` 在 JS 层过滤（zk 的 `--match` 不索引 frontmatter）。
@@ -109,10 +109,8 @@ group 的子目录照旧放行（zk 按路径前缀归组）。理由：`notes/`
 `zk_append` 拒写根目录的 meta 文件（AGENTS / USER / MEMORY / DREAMS / INDEX / WORKFLOW，清单来自 `lib/meta.ts`）：追加会把记忆变成流水账，
 也让「这条记忆是谁改的」失去审计线索；子目录里的同名文件是普通笔记，照常可写。
 同一道守卫也覆盖 `zk_new`（不能新建根目录 meta）、`zk_link`（meta 不能作为来源或目标）与 `zk_supersede`（不能废弃 meta，否则会把它搬进 archive/）。
-`raw/` 与 `inbox/` 是只读目录：`zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 的写入入口都走 `assertWritablePath`，
-往里写会直接报错 —— 两者都被排除出索引，写进去的笔记不会报错、只是永远搜不到，那比失败更难查。
-`inbox/` 从 0.8.2 起不再创建、也不再宣传（P2-8）：layered 下它不属于任何 group，flat 下能写进去但从索引里消失；
-盘上已有的 `inbox/` 不删，继续当隔离区（读得到、搜不到、写不进）。
+`raw/` 是只读目录：`zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 的写入入口都走 `assertWritablePath`，
+往里写会直接报错 —— 它被排除出索引，写进去的笔记不会报错、只是永远搜不到，那比失败更难查。
 `archive/` 同理只放 `zk_supersede` 搬进去的旧结论：`zk_new` 建在 `archive/`（或它的子目录）下会直接报错，
 flat 在 `newNoteDir` 就拦、layered / 直接调用 `createNote` 在 `mkdir` 前拦；`zk_rename` 把笔记改名进归档一律拒绝
 （归档只由 `zk_supersede` 写入，它是重写入链的目标，搬动会让历史链接再断一次）。
@@ -155,7 +153,7 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 
 **为什么删 `zk_read`、却留着 `zk_append`.** 读文件是宿主的事；追加不是：原生 `edit` 没有 append，而且要求
 先整篇 `read`、`old_string` 唯一匹配 —— 追加一行会变成「读全篇 + 找锚点」。`zk_append` 保留一次调用完成
-「补空行 / 二级标题 / 写入指定小节」的语义，守卫（meta / `raw/` / `inbox/`）也仍然在。
+「补空行 / 二级标题 / 写入指定小节」的语义，守卫（meta / `raw/`）也仍然在。
 `zk_context` 的 `files[].originalWords`（截断前词数）、`files[].retiredWords`（退役条目占的词数，只算在 `MEMORY.md` 上）、
 `tocWords`（目录占的词数）与 `ratio`（用量 = `words / budget`，两位小数，> 1 表示超预算）只用于解释预算，不改变注入内容。
 `formatDebt`（`total / undated / unlinked`，与记忆页、`zk_lint.memoryLinks` 同一个 `memoryFormatDebt`）
@@ -226,7 +224,7 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 `parseErrors` 单列一类：frontmatter 写坏（典型是 `tags: [#你好世界]` —— YAML 里 `#` 不是 tag 前缀，要写 `tags: ["你好世界"]`）
 时 zk 以 exit 0 跳过那篇、只往 stderr 打一行 `error parsing note content`，于是它不在索引里 ——
 搜不到，也不会出现在上面任何一个桶里（表现成邻居突然孤儿 / 断链）。`zk()` 收 exit 0 的 stderr warning，
-按 `excludedNames` 同一套口径过滤（归档 / raw / inbox / meta 的坏文件本来就不参与检索，报了只会淹掉真问题），
+按 `excludedNames` 同一套口径过滤（归档 / raw / meta 的坏文件本来就不参与检索，报了只会淹掉真问题），
 `zk_lint` 与 `zk-kit doctor` 各回一行；`doctor` 用 ⚠️ 标，不影响它的退出码。
 一次最多扫 10000 篇，到顶时两个工具都返回 `truncated: true`、`completeness: partial`（带 `scanLimit`）并在文本里告警：
 笔记扫描少一篇只会漏报。三态是新字段，旧客户端可忽略 `completeness`，但不能再把「返回条数」当「结果数」。
@@ -256,8 +254,8 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 与 `TEMPLATE_VERSION` 不等时提示，并把当前结构对应的模板全文放进 `currentText`。只报告，不覆盖（模板允许用户改）。
 `version < current` 才给全文；`version > current`（插件被降级过）只报「模板比插件新」，不给旧模板 —— 否则 agent 会照旧版合并、把标记改回去。
 `version === current` 时再查正文哨兵（`TEMPLATE_SENTINELS`）：正文还留着当前版本删掉的句子 → `mismatch`，仍给全文，提示「疑似只改了版本号」。
-v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版模板」+ 新模板全文 —— 这是有意的：
-它每轮注入，停旧版本等于按旧路径写；而插件安装后 docs 在包内、工作区外读不到，不能只给相对路径。
+老库的 `AGENTS.md` 停在旧版本时，下次 `zk_lint` 会给出「旧版模板」+ 新模板全文 —— 这是有意的：
+它每轮注入，停在旧规则上就会一直按旧约定落笔；而插件安装后 docs 在包内、工作区外读不到，不能只给相对路径。
 `zk_dream` 的拒绝规则只有两条（`authority=informal`、无标签），日记不进候选/拒绝（它的未完成项单独一栏）：
 再加第三条就是语义判断，违反 D5。`topCited` 用一次 `zk graph` 数入链，不按笔记逐条跑。
 **使用信号（P2-12）**：入链数衡量的是作者写笔记时的中心性，不是「后来被用到」。日记是这个插件里唯一
@@ -288,7 +286,17 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
 「还有 15 词」，而框和提示早就把它吃完了；人格是独立层，不占记忆预算。`retireCandidates` 是机械规则给的「可考虑退役」：有日期且 > 90 天（`stale`）、
 `[[来源]]` 指向归档 / 不存在（`source-superseded` / `source-missing`）；显式写 `archive/` 的链接是有意引用旧结论，
 不算来源断了（与 `memoryLinks` 同口径），无日期无链接的不算候选。
-`zk_dream` 只输出这两栏，不写任何文件。
+**依据回对（第 22 项，3.12.0）。** 笔记是有损压缩的判断，真值常在笔记之外：`[[来源路径]]` 单值指向一篇已压缩的笔记，
+`raw/` 不进索引，而这个库的真值大量落在 `## 出处` 里的外部 URL 上。`evidence` 把每条现行 MEMORY 结论与它的
+`[[来源]]` 笔记、那些笔记「出处 / 引文」小节里的原话行、http(s) 地址与 `[[链接]]` 并排列出；第二跳只走出处小节里的
+`[[链接]]`（两跳封顶，不做全图游走；单结论最多 4 篇来源，第一跳给第二跳预留一个名额，
+第二跳没吃满时归还，来源多时也不会把真值那一跳挤掉）；`raw/` 里的原始材料虽然不进索引，路径式链接照样读得到。
+`unverified` 是机械缺口计数（来源解析不到，或来源链里没有原话行 / 外部地址），不是「这条结论错了」——
+只给材料，结论对不对由人写进 `DREAMS.md` 裁决。
+口径集中在 `lib/evidence.ts`（小节别名、围栏、有界截断）与 `lib/dream.ts` 的 `sourceTargetsOf()`（与退役候选共用
+同一份 `[[链接]]` 解析）。**硬约束**：条件出现（没有活 MEMORY 条目时整键不出现，老库逐字节不变）、绝不进注入载荷、
+不改 `formatDebt` 形状（预算放不下且逐字节稳定是硬约束）、零 zk 子进程、只读不写、不抓库外 URL、不递归。
+`zk_dream` 只输出这些材料栏，不写任何文件。
 `zk-kit query` 的透传在 0 命中且给了 `-m` 时退回 `-M re`：FTS5 不切中文，不兜底会静默返回空（Z12）。
 `zk_search`（P2-7）更进一步：**查询含 CJK 时 FTS 与 `-M re` 各跑一次**，按路径去重合并，`matchStrategy` 返回
 `fts` / `regex` / `mixed`。只兜 0 命中是不够的 —— FTS 命中 1–2 条时模型会以为「库里只有这些」，然后建重复笔记；
@@ -346,7 +354,7 @@ v2 去掉了 `inbox/`（P2-8），老库会在下次 `zk_lint` 看到「旧版�
   渲染成「用 zk_walk 走进去」。不为了补一次路径再起一个 zk 进程（10k 上 `zk list -M re` 实测 0.7–1.0 s）。
 - 口径在 `lib/entry-points.ts`：条目切分 / 退役判断复用 `splitMemoryEntries` / `isRetiredEntry`，
   链接解析复用 `WIKI_LINK` / `resolveWikiTarget`；退役行不计（D3），归档目标归死胡同探针、不当活入口，
-  `raw/` / `inbox/` / 根目录 meta 一律不算入口。
+  `raw/` / 根目录 meta 一律不算入口。
 - 查询比对是**机械的**：ASCII 按空格分词、CJK 长串补二元组，`entry` 文本包含任一比对项即命中；
   不排序（按 MEMORY 文件顺序）、不做语义判断（「哪条更相关」仍是 agent 的活）；最多 5 条（`MAX_ENTRY_POINTS`），
   超出置 `entryPointsTruncated`。

@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 3.11.0
+# dsh-zdiary-kit 3.12.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -14,7 +14,7 @@
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active，也不再重复报死胡同 —— 归档已经在结果里）；中文多词同样按覆盖度合并、`snippet` 与 `total` 口径同 `zk_search`；`entryPoints` / `counterEntries` 与 `zk_search` 同口径 |
 | `zk_recall` | 召回装配：先按 query / 过滤条件检索（与 `zk_search` 同一套 R1–R3），再按词数预算 `budget`（默认 500）把命中笔记拼成一段可直接读的上下文；每条带标题、路径、`absPath` 与全文词数，放不下就整条丢弃、不切半句，被挡下的原因在 `notes[].reason`；`used` 一定不超过 `budget`（中文 2 字 1 词）；不读全文、不新增 zk 进程、不做重排 / 跨回合去重；`completeness` 沿用检索三态，装配过的 ≠ 全部命中；`entryPoints` / `counterEntries` 与 `zk_search` 共用同一份计算，`via=query` 的入口卡会排在装配正文之前（占同一份预算），放不下就置 `entryPointsInText=false` 并在正文外单列（不静默丢）。命令行对应 `zk-kit recall` |
 | `zk_walk` | 从一篇笔记出发走一跳邻居（只读）：`direction=both` 看反链 + 出链，`in` 只看谁链到它，`out` 只看它链到谁；种子写相对 / 绝对路径或精确标题 / 稳定 id（`[[标题]]` / `[[id]]` 也认），不精确命中就返回空、不会退回全库；按篇反查、不建全图（路径种子 2 个子进程），`limit` 硬顶 200，触顶 `completeness=partial`（邻居没列全，不代表没有）；每条邻居带 `section` / `linkLine`（那条边所在的小节与那一行 —— 没有它，同一篇种子的出链只有一串标题），只回标题 / 路径 / `absPath` / 摘要 / 那一行，全文仍用原生 read，**0 个额外子进程**。命令行对应 `zk-kit walk` |
-| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/`、`inbox/`、`archive/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面；归档只放 `zk_supersede` 搬进去的旧结论）；同目录里有「改一两个字」的相似标题时在 `similar` 里提示（带分数，只提示、不阻断）；中文笔记没有任何标签时在 `tagWarning` 里提示（只提示，不阻断）；正文第一行就是 `##` 时，模板的内容槽会被挤成空壳，`emptyTemplateSections` 点名（只提示，不改正文） |
+| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/`、`archive/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面；归档只放 `zk_supersede` 搬进去的旧结论）；同目录里有「改一两个字」的相似标题时在 `similar` 里提示（带分数，只提示、不阻断）；中文笔记没有任何标签时在 `tagWarning` 里提示（只提示，不阻断）；正文第一行就是 `##` 时，模板的内容槽会被挤成空壳，`emptyTemplateSections` 点名（只提示，不改正文） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题）；根目录 meta 文件拒写 |
 | `zk_daily` | 打开/创建某天的日记，并追加一条带时间的记录（layered 模板写进 `## Events` 的 `### HH:MM`，flat 追加到文件末尾的 `## HH:MM`） |
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题）；meta 文件不作为来源或目标 |
@@ -23,7 +23,7 @@
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）与角色人格 `PERSONA.md`（单独成段、不截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时这些内容每轮已自动带进系统提示。改 MEMORY 前用它看余量：`headroom` / `wouldTruncate` / `dropCandidates` 说明「再加一条会丢谁」，给 `proposed_entry` 或 `extra_words` 就能预估；同日条目按位置决胜（`sameDateCount`），不假装有使用频率 |
 | `zk_memory_write` | 往 `MEMORY.md` / `USER.md` 末尾追加一条结论的**第一个 meta 写工具**；默认 `dry_run: true` 只预演、不动盘，`dry_run: false` 才真写（可带 `expect_stamp` 挡并发改动）。插件只做机械门：条目须是带 `YYYY-MM-DD` 与 `[[来源]]` 的顶层列表项、`[[来源]]` 要解析到活笔记、`add` 不能让注入载荷超预算（超了返回 `over-budget` + `dropCandidates`，**不静默截断**）；`action: retire` 追加 `- [superseded …]` 标记（退役条目不进注入，不做容量门）。不改一个字、不合并 / 替换、不自动补日期 / 来源、不提议退役哪条；每次真实写入把 pre-image 摘要与一行 diff 追加到 `DREAMS.md` 供周审复核。改已有条目仍用原生 edit；`WORKFLOW.md` 里写了「改 MEMORY 先预演」 |
 | `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本 / 人格（缺失·旧版·比插件新·标记与内容不符·未填占位符）/ 日记时间轴（最近 90 天的空块·倒序·格式·位置）/ 空模板小节（`Content` / `Key claims` / `Quotes` 空着、正文写在了别的 `##` 下；日记不查），每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；另给 `missingId`（缺稳定 id 的非日记笔记数，只提示不回填）；只报告不改写 |
-| `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、已在 MEMORY 的、窗口外积压、daily 未完成项、被引最多（先按「被日记提到几天」排）；带 `missingId`（缺稳定 id 的非日记笔记数）；只报告 |
+| `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、已在 MEMORY 的、窗口外积压、daily 未完成项、被引最多（先按「被日记提到几天」排）；带 `missingId`（缺稳定 id 的非日记笔记数）；`evidence` 把每条现行 MEMORY 结论与来源笔记的出处原话 / 外部地址并排回显（两跳封顶、零 zk 进程、绝不进注入），`unverified` 数出「没有可回对原话」的结论 —— 只给材料，不判断结论对错；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded），顶层目录与前 10 个标签的实时分布；外加 `usage`：本地聚合计数（`walk` / `recall` / `entryPoints` / `counterEntries` 各用了几次，自某天起）—— 用来看「入口 + 一跳」这条路到底有没有被用上。只存计数，不记查询词、不记路径 |
 | `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |
 | `zk_<别名>` | 笔记本 `.zk/config.toml` 的 `[alias]` 里定义的自定义命令（例如 `lucky = "zk list --quiet --format full --sort random --limit 1"`）注册成工具：调用等于 `zk <别名> [args]`，`args` 追加到命令里的 `$@`；输出按原样返回。紧邻别名上方的注释（或行尾注释）作为工具说明；改完 config.toml 要重载插件才会出现新工具。**默认关闭**，见下 |
@@ -92,6 +92,10 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 日记是这个插件里唯一按时间记录真实工作的层，空信号只说明日记里没写过，不等于没被用过。
 `zk_dream` 还会回一行**记忆余量**（内容词 + 提示 = 总量，余量按总量算，可以为负）和「可考虑退役」的条目
 （来源已归档 / 不存在、或超过 90 天没复核）—— 只给材料，不写任何文件。
+带上 `evidence` 后，每条现行结论会与它的 `[[来源]]` 笔记、以及那些笔记「出处 / 引文」小节里的原话和外部地址并排列出
+（第二跳只走出处里的 `[[链接]]`，两跳封顶；`raw/` 不进索引但路径式来源照样读得到）。`unverified` 数出
+「没有可回对原话」的结论 —— 笔记是有损压缩的判断，真值常在笔记之外，拿原话回来对才看得见错判断；
+插件只把材料摆出来，结论对不对仍由人写进 `DREAMS.md` 裁决，材料绝不进每轮注入。
 库超过全图统计上限时不再建全图统计入链（默认 2000 篇，设置页「工具 → 全图统计上限」可调；
 0 = 永不建全图）：结果带 `graphSkipped: true` 与生效的 `graphBudget`，
 被引数与 `topCited` 为空 —— 那是「没算」，不是「没人引」。
@@ -294,17 +298,15 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 与 **`WORKFLOW.md`**（改已有笔记前先列受影响清单等确认，再按 temporal / context variant / contradiction 三分类动手）。
 `WORKFLOW.md` 不进每轮注入 —— 它低频但重要，塞进 `AGENTS.md` 会把 500 词预算挤到 MEMORY 没位置。
 **只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` / `WORKFLOW.md` 一律不覆盖。
-`inbox/`（0.8.2 起）不再创建，也不再接受写入：layered 下它不属于任何 group，flat 下能写进去却会被排除出索引（写进去就消失）。
-盘上已有的 `inbox/` 不删，继续当隔离区 —— 读得到、搜不到，`zk_new` / `zk_append` 会直接拒绝。
 `flat` 也可以有工作约定：`zk-kit init --with-agents`（或设置页「写入 AGENTS.md 模板」）写一份精简版
-（≤90 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`），已存在不覆盖；不想要就一个字节都不多。
+（≤90 词，不出现 `raw` / `archive` / `WORKFLOW.md`），已存在不覆盖；不想要就一个字节都不多。
 反过来，配置是 `flat` 但盘上留着 `notes/concepts` 之类的分层目录时，`doctor` / 设置页 / 每轮注入都会提示
 「新建笔记会落在 `notes/` 根」—— 只报告，不搬文件、不改配置（`archive/` 不算漂移：跑过一次 supersede 就会自建）。
 切回 `flat` 同理：只改配置，已建出来的 `raw/` `archive/` 不会被删 —— 所以切换是「随时可逆」的，代价只是目录留在那里。
 `zk-kit config set` 会把被归一化改掉的值回显出来（例如 `structure=xyz` → 实际 `flat`），不会"命令成功但没生效"。
 注意：从 flat 升级时旧的 `daily.md` 已存在，因此不会自动换成带 Events / Observations / Loose ends 的 layered 日记模板；
 想要三节模板，先备份并删掉 `<notebook>/.zk/templates/daily.md`，再点「初始化 / 补建」。
-设置页的结构**以配置为准**：配置是 `layered` 但磁盘缺目录时只显示告警（底部按钮会变成「补建 *名* 的目录」），不自动建、不自动删。`raw/` `inbox/` `archive/`
+设置页的结构**以配置为准**：配置是 `layered` 但磁盘缺目录时只显示告警（底部按钮会变成「补建 *名* 的目录」），不自动建、不自动删。`raw/` `archive/`
 与根目录的 `AGENTS.md` / `MEMORY.md` / `USER.md` / `DREAMS.md` / `INDEX.md` / `WORKFLOW.md` 不进检索与笔记 / 标签 / 断链 / 孤立统计；
 `archive/` 的归档数由 `zk_stats` 单独统计（`archived` / `superseded`）。`-x` 传绝对路径：它是相对 cwd 解析的，传相对名在换工作目录后会静默失效。
 
@@ -454,7 +456,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 设置页出现「结构是 layered，但缺目录」 | 配置与磁盘不一致（换过机器 / 手动删过目录）：点「补建 *名* 的目录」，别手改配置去将就磁盘 |
 | 切了笔记本，笔记数对不上 | 每个笔记本各自一份 `.zk/` 索引与笔记：切换是换库，不是合并；`zk-kit notebooks` 看当前是哪个 |
 | 新建时提示「归档里有同名旧结论」 | 允许复用标题，但先 `read` 归档那篇，确认不是同一个错误；插件只警告、不拦 |
-| 往 `raw/` 或 `inbox/` 写笔记报「只读」 | 两者都被排除出索引，写进去的笔记不会报错、只是永远搜不到；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 直接拒绝。结论写到 `notes/`；原文留在原位，用原生 `read` 读 `raw/xxx.md` 或直接读文件对照。`inbox/` 是停用入口，老目录只读保留 |
+| 往 `raw/` 写笔记报「只读」 | `raw/` 被排除出索引，写进去的笔记不会报错、只是永远搜不到；所以 `zk_new` / `zk_append` / `zk_link` / `zk_supersede` / `zk_rename` 直接拒绝。结论写到 `notes/`；原文留在原位，用原生 `read` 读 `raw/xxx.md` 或直接读文件对照 |
 | `config set notebook=…` 报「派生值」 | `notebook` 是 `notebooks[active]` 解析后的派生值、不落盘也不可写：改路径用 `zk-kit notebooks add 名 路径`，切换用 `use` |
 
 ## 开发
@@ -469,13 +471,15 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   `--links-per-note` 决定链接密度 —— 建索引成本主要花在链接上，产出目录自带 `.zk/config.toml`，进去 `zk index` 即可）·
   `bun run bench`（成本表：逐用例真起 zk，记子进程数 / 回传字节 / 峰值 RSS / p50 / p95 与库的篇数 / 链接数；默认 1k、3 轮；
   全量 10k 实测与复跑方法见 `docs/bench-baseline.md`）
-- **耗时差两个数量级**：`bun run test` 约 2 min（282 个用例，真起 zk；机器快慢能差一倍）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
+- **耗时差两个数量级**：`bun run test` 约 2 min（289 个用例，真起 zk；机器快慢能差一倍）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
   10k 上光一条 `graph.full` 就是 30 s、冷建索引几分钟。所以 `bench` **不在** `check` / CI 里，跟测试完全分开，不会因为你跑测试而变慢。
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
 - `dist/` 随仓库提交：`dsh plugin add github:…` 不会触发安装时构建（pnpm 默认禁止 git 依赖跑构建脚本）。
   所以 `bun run check` 里串了一道 **dist 漂移闸**（`bun run check:dist`）：dist 有未提交改动、而 src 已经干净时报错
   （源码提交了、dist 没跟上）；src 也还脏时跳过 —— 本地改源码时 dist 本来就是脏的，那不是漂移。
+  **发版前**：release commit 之后 src 已干净，再单独跑一次 `bun run check:dist`；开发期这道闸一直跳过，
+  不能把 `bun run check` 全绿当成「dist 已核对」。
 - CI（`.github/workflows/ci.yml`）在 ubuntu 上装 zk 后跑 `check` + `smoke`，和本地两条命令完全一样。
   它兑现的是那两个安全网：测试 **skip = 0**、README 里的命令**真跑** —— 靠人记得跑是不够的。
 

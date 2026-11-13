@@ -226,6 +226,21 @@ function dreamReport(r: DreamResult): string {
       lines.push(`  · ${c.entry} — ${when} · ${why}`)
     }
   }
+  if (r.evidence) {
+    const e = r.evidence
+    lines.push(`依据回对：${e.total} 条现行结论 · ${e.unverified} 条没有可回对原话（缺口，写 DREAMS.md 时裁决）`)
+    for (const x of e.entries.slice(0, 10)) {
+      lines.push(`  · ${x.entry}${x.unverified ? '  ⚠ 无原话可回对' : ''}`)
+      for (const s of x.sources.slice(0, 3)) {
+        const bits: string[] = []
+        if (s.urls.length) bits.push('原文 ' + s.urls.join('、'))
+        if (s.quotes.length) bits.push('出处 ' + s.quotes.join(' / '))
+        if (s.links.length) bits.push('再走一跳 ' + s.links.join('、'))
+        lines.push(`      ${s.hop === 2 ? '↳ ' : ''}${s.path}${bits.length ? '：' + bits.join(' · ') : ''}`)
+      }
+    }
+    lines.push('  （只给材料：结论对不对由你对原话裁决，插件不改 MEMORY.md）')
+  }
   if (r.newNotes.length) {
     lines.push('晋升候选：')
     for (const [i, n] of r.newNotes.slice(0, 10).entries()) {

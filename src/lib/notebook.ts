@@ -283,7 +283,7 @@ export interface StructureStatus {
   missing: string[]
   /**
    * 盘上存在、但不属于当前结构的目录（只报告，不影响 ready）。
-   * 候选是 raw / inbox / notes/{四类}；`archive/` 不算 —— flat 库做过一次 supersede 就会自建它，
+   * 候选是 raw / notes/{四类}；`archive/` 不算 —— flat 库做过一次 supersede 就会自建它，
    * 放进来会让每本用过 supersede 的 flat 库都被误报成「盘上有分层目录」。
    */
   extra: string[]
@@ -385,10 +385,10 @@ export function structureStatus(cfg: Config): StructureStatus {
   const missing = dirs.filter((rel) => !fs.existsSync(path.join(cfg.notebook, rel)))
   const agentsPath = path.join(cfg.notebook, 'AGENTS.md')
   const required = cfg.structure === 'layered'
-  // 只看「会改变新建笔记落点」的目录：分层笔记目录与 raw/inbox。
+  // 只看「会改变新建笔记落点」的目录：分层笔记目录与 raw。
   // archive 对两种结构都合法，不参与漂移判断。
   const drift = cfg.structure === 'flat'
-    ? ['raw', 'inbox', ...Object.values(PLURAL_DIR).map((dir) => `${cfg.notesDir}/${dir}`)]
+    ? ['raw', ...Object.values(PLURAL_DIR).map((dir) => `${cfg.notesDir}/${dir}`)]
     : []
   const extra = [...new Set(drift)]
     .map(normDir)
@@ -449,7 +449,7 @@ function ensureTemplates(cfg: Config, files: Record<string, string>): string[] {
 
 /**
  * 写根目录 AGENTS.md（缺了才写，已存在一律不覆盖 —— 模板允许用户改）。
- * layered 用完整版；flat 用精简版（不出现 raw / inbox / archive / WORKFLOW 这些 flat 没有的路径）。
+ * layered 用完整版；flat 用精简版（不出现 raw / archive / WORKFLOW 这些 flat 没有的路径）。
  * 返回 true = 本次真的写了。
  */
 export function writeAgentsTemplate(cfg: Config): boolean {

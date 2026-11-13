@@ -14,12 +14,15 @@
   memory、dream、lint 共用，禁止各写一套
 - `lib/entry-points.ts`：MEMORY 当检索入口（R9）—— `liveMemoryEntries` / `entryPointsOf`（`via: query` 的来源可以不在结果集里），
   把「命中笔记 ← 已在 MEMORY 的哪条结论」接出来；索引只用本次结果笔记建、路径式来源直接读盘，零子进程（见下）
-- `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）；`dreamNotebook` 用它算默认窗口
+- `lib/evidence.ts`：结论的「可回对依据」唯一解析口径 —— 从笔记 `## 出处` / `## Quotes` / `## References` 等小节
+  机械抽出原话行 / http(s) 地址 / `[[链接]]`，跳过 frontmatter 与围栏，有界截断；`zk_dream.evidence` 与 CLI 共用
+- `lib/dream.ts`：`lastDreamDate` / `daysSinceDream`（只认整齐的一行，按本地日历天算）；`dreamNotebook` 用它算默认窗口；
+  `evidenceOfMemory` 把 MEMORY 结论 → 来源笔记 → 出处原话并排回显（条件出现、绝不进注入，见下）
 - `lib/wikilink.ts`：`[[链接]]` 的解析口径（路径 → `.md` → `archive/` → 活笔记标题），lint 与 dream 共用一份
 - `lib/persona-template.ts`：`PERSONA_TEMPLATE` 与独立版本标记（`<!-- zdiary-persona: vN -->`，
   不复用 `zdiary-template` —— AGENTS 改版不该让人格文件误报旧版）；只走 opt-in 写入，已存在不覆盖
 - `lib/agents-template.ts`：`AGENTS.md` 模板两份 —— layered 用完整版（当前 190 词），flat 用精简版
-  （88 词，不出现 `raw` / `inbox` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
+  （88 词，不出现 `raw` / `archive` / `WORKFLOW.md`）；两份首行都是 `<!-- zdiary-template: vN -->`。
   layered 初始化自动写，flat 只有 `ensureNotebook(cfg, signal, { withAgents: true })` / `zk-kit init --with-agents` /
   设置页「写入 AGENTS.md 模板」才写；已存在一律不覆盖。
   `WORKFLOW.md` 模板（改已有笔记的清单确认 + 三分类；不注入、不计预算，AGENTS 只留一行指针）
@@ -110,7 +113,7 @@ P1-3 再加三项，都只报告：`undated`（条目首行没有 `YYYY-MM-DD`�
 **Exceptions.** 中文按 2 字 1 词计（空白切分在中文上严重低估，预算会变成装饰）；
 `AGENTS.md` 模板自己也得守这条预算：初版 310 词，`bun run docs` 里 `zk-kit doctor` 直接报
 `✗ 记忆：310/300 词` —— 模板吃掉整个预算，MEMORY.md 就永远被截光，所以先压到 160 词（195 词的版本把 USER + MEMORY 压到只剩 105 词），后续补 `name` / `WORKFLOW` / `rename` 规则后为 175 词，加「截断从底部往前丢」后为 187 词，
-P1-3 的日期 / 退役格式 + P2-15 的版本标记后为 189 词；P2-8 去掉 `inbox/` 后实测 186 词；
+P1-3 的日期 / 退役格式 + P2-15 的版本标记后为 189 词；
 0.9 把「超预算从底部往前丢」改成「按日期丢最旧的一条」（截断语义变了，模板必须跟着改）后为 187 词，`TEMPLATE_VERSION` 升到 3；
 v4 去掉「宿主不会自动加载本文件」一句后为 175 词（单测锁 `≤190`；flat 精简版锁 `≤90`，v4 起实测 76）；
 v5 在 MEMORY 条目约定后补「先 zk_read 核对来源」后为 180 词（flat 80）；v7 精简模板后仍为 180 词（flat 80）；
@@ -215,7 +218,7 @@ dream 的判重分两步（顺序不能反）：`[[链接]]` 匹配用**原文**
 于是默认安装既没有约定、也没有周提醒（提醒只在根目录有 AGENTS 时出现）。改成 opt-in：
 `zk-kit init --with-agents`、设置页「写入 AGENTS.md 模板」、`ensureNotebook(..., { withAgents: true })`；
 `doctor` 在「有 MEMORY.md 但没有 AGENTS.md」时给一条 ⚠️（不是错误、不翻退出码）。
-精简版只保留 flat 下成立的四条规则，路径里不出现 `raw/` / `inbox/` / `archive/` / `WORKFLOW.md`。
+精简版只保留 flat 下成立的四条规则，路径里不出现 `raw/` / `archive/` / `WORKFLOW.md`。
 
 **模板版本（P2-15）。** 模板是行为约定，每轮注入；老库的 `AGENTS.md` 停在旧版本时，agent 会一直按旧规则写。
 但模板允许用户改，不能自动覆盖 —— 两份模板首行写死 `<!-- zdiary-template: vN -->`，`zk_lint` 读它：
@@ -228,3 +231,13 @@ dream 的判重分两步（顺序不能反）：`[[链接]]` 匹配用**原文**
 还留着旧句 = 只把首行数字改成了 vN，报「标记与内容不符」并把当前模板全文给出。哨兵只查当前版本；
 用户合法改模板被误报也只是提示，不覆盖。
 标记固定 4 词、不带日期（带日期实测 6 词，白花 2 词）；改模板时 `TEMPLATE_VERSION + 1`。
+
+**依据回对不进注入（第 22 项，3.12.0）。** MEMORY 每条结论附 `[[来源]]`，`zk_lint` 核对的是「链接还指向活笔记吗」，
+从来不是「结论跟原文对不对」。笔记是有损压缩的判断，真值常在笔记之外（本库 `## 出处` 里的外部 URL、`raw/` 里的原始材料），
+而写入时模型看不到后面会发生什么，所以判断可能一开始就错。`zk_dream.evidence` 因此把每条现行结论与
+`[[来源]]` 笔记、以及那些笔记出处小节里的原话 / 地址并排回显（两跳封顶、零 zk 进程；第一跳给第二跳预留名额），并用 `unverified`
+数出「没有可回对原话」的结论 —— 缺口要记账，但**不判断结论对错**，裁决写进 `DREAMS.md` 由人做。
+这些材料**绝不进注入**：MEMORY 已 455/500、含开销 497/500、余量 3，多一个词就会开丢；`DREAMS.md` 本来就
+「从不注入上下文，也不进检索」，是它们的落点。同理不改 `memoryFormatDebt()` 的形状（`formatDebt` 在注入载荷里，
+加字段会打破逐字节稳定）——`unverified` 与它共用 `splitMemoryEntries` / `isRetiredEntry` / `entryDate` 口径，
+但只报在周审里。`evidence` 条件出现：没有活 MEMORY 条目时整键不出现，老库 `zk_dream` 输出逐字节不变。

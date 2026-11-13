@@ -334,7 +334,7 @@ export interface LintOptions {
 
 export interface LintResult {
   notebook: string
-  /** 参与巡检的笔记数（已排除 raw / inbox / archive / meta 文件） */
+  /** 参与巡检的笔记数（已排除 raw / archive / meta 文件） */
   notes: number
   /** 稳定 ID（§9.2）：缺 `id` 的非日记笔记数，只读计数，不回填 */
   missingId: number

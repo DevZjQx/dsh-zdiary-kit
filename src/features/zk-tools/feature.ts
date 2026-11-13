@@ -1043,7 +1043,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         '同目录里有「改一两个字」的相似标题时会放进 similar（带分数）：只提示，不阻断，也不自动建链接。' +
         '正文以 ## 开头时，模板的 ## Content 会变成空壳（内容落在它后面）：返回值 emptyTemplateSections 会点名，' +
         '只提示、不改正文 —— 把正文并进那一节，或删掉那行空标题。' +
-        '根目录 meta 文件（AGENTS / USER / MEMORY 等）与 raw/ 、inbox/ 不能写：前者会被当成人写的工作面，后两者会被排除出索引。',
+        '根目录 meta 文件（AGENTS / USER / MEMORY 等）与 raw/ 不能写：前者会被当成人写的工作面，后者会被排除出索引。',
       parameters: {
         type: 'object',
         properties: {
@@ -1862,6 +1862,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'missingId 是缺稳定 id 的非日记笔记数（只提示、不回填）；MEMORY 里可以用 [[<id>]] 当来源，改名后仍指向同一篇。' +
         'memory 给记忆余量（内容词 + 提示 = 总词，余量按总词算，可以为负）；retireCandidates 给「可考虑退役」的条目' +
         '（来源归档 / 不存在、超过 ' + STALE_DAYS + ' 天未复核；显式写 archive/ 的有意引用不算）。' +
+        'evidence 把每条现行 MEMORY 结论与它的来源笔记、出处原话 / 外部地址并排摆出来（两跳封顶、零 zk 进程、绝不进注入），' +
+        'unverified 数出「没有可回对原话」的结论 —— 笔记是有损压缩的判断，真值在笔记之外，拿原话回来对才看得见错判断；' +
+        '只给材料，不判断结论对不对、不改 MEMORY.md。' +
         'days 省略时窗口 = 距 DREAMS.md「上次做梦」的天数（没有则 7 天）。' +
         '只返回材料：写 MEMORY.md / DREAMS.md 由你按 AGENTS.md 决定，这个工具不写任何文件。',
       parameters: {
@@ -1950,6 +1953,29 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               reason: { type: 'string', enum: ['stale', 'source-missing', 'source-superseded'] },
             }, ['entry', 'date', 'age', 'reason']),
           },
+          /** 有活 MEMORY 条目时才出现：结论 → 来源笔记 → 出处原话 / 外部地址（只读，绝不进注入） */
+          evidence: objSchema({
+            total: { type: 'number' },
+            unverified: { type: 'number' },
+            entries: {
+              type: 'array',
+              items: objSchema({
+                entry: { type: 'string' },
+                date: { type: 'string' },
+                unverified: { type: 'boolean' },
+                sources: {
+                  type: 'array',
+                  items: objSchema({
+                    path: { type: 'string' },
+                    hop: { type: 'number' },
+                    quotes: { type: 'array', items: { type: 'string' } },
+                    urls: { type: 'array', items: { type: 'string' } },
+                    links: { type: 'array', items: { type: 'string' } },
+                  }, ['path', 'hop', 'quotes', 'urls', 'links']),
+                },
+              }, ['entry', 'date', 'unverified', 'sources']),
+            },
+          }, ['total', 'unverified', 'entries']),
           /** 15.2：仅在召回信号生效时出现；固定比例、与分数无关的窗口外抽样 */
           auditSamples: { type: 'array', items: DREAM_CANDIDATE },
         }, ['notebook', 'windowDays', 'since', 'truncated', 'completeness', 'scanLimit', 'graphSkipped', 'graphBudget', 'missingId', 'memory', 'counts', 'newNotes', 'alreadyPromoted', 'backlog', 'rejected', 'topCited', 'dailyLooseEnds', 'retireCandidates']),
@@ -1983,6 +2009,21 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               : c.reason === 'source-superseded' ? '来源已归档' : '来源不存在'
             lines.push('  · ' + c.entry + ' — ' + when + ' · ' + why)
           }
+        }
+        if (v.evidence) {
+          const e = v.evidence
+          lines.push('依据回对：' + e.total + ' 条现行结论 · ' + e.unverified + ' 条没有可回对原话（缺口，写 DREAMS.md 时裁决）')
+          for (const x of e.entries.slice(0, 10)) {
+            lines.push('  · ' + x.entry + (x.unverified ? '  ⚠ 无原话可回对' : ''))
+            for (const s of x.sources.slice(0, 3)) {
+              const bits: string[] = []
+              if (s.urls.length) bits.push('原文 ' + s.urls.join('、'))
+              if (s.quotes.length) bits.push('出处 ' + s.quotes.join(' / '))
+              if (s.links.length) bits.push('再走一跳 ' + s.links.join('、'))
+              lines.push('      ' + (s.hop === 2 ? '↳ ' : '') + s.path + (bits.length ? '：' + bits.join(' · ') : ''))
+            }
+          }
+          lines.push('  （只给材料：结论对不对由你对原话裁决，插件不改 MEMORY.md）')
         }
         if (v.newNotes.length) {
           lines.push('晋升候选：')

@@ -21,6 +21,8 @@ import { withoutFences } from './fence.js';
 import { memoryUsage } from './memory.js';
 import { daysSinceDate, entryDate, isRetiredEntry, splitMemoryEntries, stripRetiredEntries } from './memory-format.js';
 import { isDayString } from './dates.js';
+import { isMetaPath } from './meta.js';
+import { MAX_EVIDENCE_ENTRIES, MAX_EVIDENCE_SOURCES, MAX_EVIDENCE_TARGETS, noteEvidenceOf, } from './evidence.js';
 import { normalizeTitle, noteKey, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 import { AUDIT_RATE, hasRecallSignal, lastRecallOf, readRecallSignal, RECALL_PROTECT_DAYS } from './recall-signal.js';
 /** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
@@ -237,6 +239,20 @@ function promotionsOf(cfg, notes) {
     return out;
 }
 /**
+ * 条目里的 `[[来源]]` 目标（去围栏、去空目标、去重）。
+ * MEMORY 条目切分与链接解析只在这里一份口径 —— 退役候选与依据回对共用，
+ * 免得同一份 MEMORY 在两处解出不同的来源集合。
+ */
+function sourceTargetsOf(entry) {
+    const out = [];
+    for (const match of withoutFences(entry).matchAll(WIKI_LINK)) {
+        const target = String(match[1] ?? '').trim();
+        if (target && !out.includes(target))
+            out.push(target);
+    }
+    return out;
+}
+/**
  * 退役候选（D4.3）：只做机械规则，不判断「这条还有没有用」。
  *   · 有日期且超过 STALE_DAYS → stale；
  *   · 条目里的 `[[来源]]` 指向归档 / 不存在 → source-superseded / source-missing；
@@ -264,10 +280,7 @@ function retireCandidatesOf(cfg, notes, now, signal) {
         const date = entryDate(entry) ?? '';
         const age = date ? (daysSinceDate(date, now) ?? -1) : -1;
         let reason = null;
-        for (const match of withoutFences(entry).matchAll(WIKI_LINK)) {
-            const target = String(match[1] ?? '').trim();
-            if (!target)
-                continue;
+        for (const target of sourceTargetsOf(entry)) {
             const hit = resolveWikiTarget(cfg, target, index);
             // 显式写 archive/ 的链接是有意引用（supersede 就是这样重写入链的）：与 lint 一个口径，不算来源断了
             if (hit.status === 'live' || hit.explicit)
@@ -292,6 +305,77 @@ function retireCandidatesOf(cfg, notes, now, signal) {
     // 越旧越靠前；无日期（-1）的排在最后（不假装它们更旧）
     out.sort((a, b) => b.age - a.age || a.entry.localeCompare(b.entry));
     return out.slice(0, MAX_RETIRE);
+}
+/**
+ * 依据回对（只读）：把每条现行 MEMORY 结论的 `[[来源]]` 链与出处原话 / 外部地址并排摆出来。
+ *
+ * 两跳封顶，不做全图游走（§5）：第一跳是条目里的 `[[来源]]`，第二跳只走这些笔记
+ * 「出处 / 引文」小节里的 `[[链接]]`。全部本地读盘、零 zk 子进程；`raw/` 里的原始材料
+ * 虽然不进索引，路径式链接照样能读（那正是「拿原话回来对」要的东西）。
+ * 解析不到 / meta 文件 / 越界一律跳过，不猜、不补、不写。
+ *
+ * 只在有活条目时返回；没有 MEMORY.md 或全是退役行时整个键不出现，老库输出逐字节不变。
+ */
+function evidenceOfMemory(cfg, notes) {
+    let body = '';
+    try {
+        body = fs.readFileSync(path.join(cfg.notebook, 'MEMORY.md'), 'utf8');
+    }
+    catch {
+        return null;
+    }
+    const live = splitMemoryEntries(body).filter((entry) => !isRetiredEntry(entry));
+    if (!live.length)
+        return null;
+    const index = wikiIndex(notes);
+    const entries = [];
+    let unverified = 0;
+    for (const entry of live.slice(0, MAX_EVIDENCE_ENTRIES)) {
+        const summary = (entry.split('\n', 1)[0] ?? '')
+            .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        const one = summary.length > 100 ? summary.slice(0, 100) + '…' : summary;
+        const sources = [];
+        const seen = new Set();
+        let hasTruth = false;
+        const collect = (targets, hop, cap) => {
+            const next = [];
+            for (const target of targets.slice(0, MAX_EVIDENCE_TARGETS)) {
+                if (sources.length >= cap)
+                    break;
+                const hit = resolveWikiTarget(cfg, target, index);
+                if (hit.status === 'missing' || !hit.path || isMetaPath(hit.path) || seen.has(hit.path))
+                    continue;
+                seen.add(hit.path);
+                let content = '';
+                try {
+                    content = fs.readFileSync(path.join(cfg.notebook, hit.path), 'utf8');
+                }
+                catch {
+                    continue;
+                }
+                const ev = noteEvidenceOf(content);
+                if (ev.quotes.length || ev.urls.length)
+                    hasTruth = true;
+                sources.push({ path: hit.path, hop, ...ev });
+                next.push(...ev.links);
+            }
+            return next;
+        };
+        const firstTargets = sourceTargetsOf(entry);
+        // 给第二跳预留一个名额：出处里的下一跳往往才是真值所在，不能被第一跳挤光。
+        // 第二跳没吃满时把名额还给第一跳，seen 保证不重复收；总数始终 ≤ MAX_EVIDENCE_SOURCES。
+        const second = collect(firstTargets, 1, MAX_EVIDENCE_SOURCES - 1);
+        if (second.length)
+            collect(second, 2, MAX_EVIDENCE_SOURCES);
+        if (sources.length < MAX_EVIDENCE_SOURCES)
+            collect(firstTargets, 1, MAX_EVIDENCE_SOURCES);
+        if (!hasTruth)
+            unverified += 1;
+        entries.push({ entry: one, date: entryDate(entry) ?? '', unverified: !hasTruth, sources });
+    }
+    return { total: live.length, unverified, entries };
 }
 export async function dreamNotebook(cfg, opts = {}, signal) {
     const now = opts.now ?? new Date();
@@ -448,6 +532,8 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         for (let i = 0; i < pool.length; i += step)
             auditSamples.push(candidateOf(pool[i], ''));
     }
+    // 依据回对：没有活 MEMORY 条目时返回 null，下面整键不出现
+    const evidence = evidenceOfMemory(cfg, notes);
     return {
         notebook: cfg.notebook,
         windowDays,
@@ -476,6 +562,8 @@ export async function dreamNotebook(cfg, opts = {}, signal) {
         dailyLooseEnds,
         memory: memoryUsage(cfg),
         retireCandidates: retireCandidatesOf(cfg, notes, now, recallSignal),
+        // 依据回对：条件出现（没有活 MEMORY 条目时整键不出现），只给材料，绝不进注入载荷
+        ...(evidence ? { evidence } : {}),
         ...(signalActive ? { auditSamples } : {}),
     };
 }

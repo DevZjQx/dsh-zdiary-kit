@@ -267,10 +267,10 @@ export function structureStatus(cfg) {
     const missing = dirs.filter((rel) => !fs.existsSync(path.join(cfg.notebook, rel)));
     const agentsPath = path.join(cfg.notebook, 'AGENTS.md');
     const required = cfg.structure === 'layered';
-    // 只看「会改变新建笔记落点」的目录：分层笔记目录与 raw/inbox。
+    // 只看「会改变新建笔记落点」的目录：分层笔记目录与 raw。
     // archive 对两种结构都合法，不参与漂移判断。
     const drift = cfg.structure === 'flat'
-        ? ['raw', 'inbox', ...Object.values(PLURAL_DIR).map((dir) => `${cfg.notesDir}/${dir}`)]
+        ? ['raw', ...Object.values(PLURAL_DIR).map((dir) => `${cfg.notesDir}/${dir}`)]
         : [];
     const extra = [...new Set(drift)]
         .map(normDir)
@@ -333,7 +333,7 @@ function ensureTemplates(cfg, files) {
 }
 /**
  * 写根目录 AGENTS.md（缺了才写，已存在一律不覆盖 —— 模板允许用户改）。
- * layered 用完整版；flat 用精简版（不出现 raw / inbox / archive / WORKFLOW 这些 flat 没有的路径）。
+ * layered 用完整版；flat 用精简版（不出现 raw / archive / WORKFLOW 这些 flat 没有的路径）。
  * 返回 true = 本次真的写了。
  */
 export function writeAgentsTemplate(cfg) {
