@@ -537,12 +537,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_search',
       description:
-        '在 zk 知识库里搜索笔记（全文 / 标签 / 日期 / 断链 / 孤立笔记），返回标题、相对路径、绝对路径、标签、创建日、摘要与命中片段。' +
+        '在 zk 知识库里搜索笔记（全文 / 标签 / 日期 / 断链 / 孤立笔记），返回标题、路径、absPath、摘要与命中片段。' +
         '找到后用原生 read 读全文：notes[].absPath 可以直接传给 read。写笔记前先用它查重。' +
-        '中文会自动并用子串，多词按覆盖度合并（FTS 不切中文）：matchStrategy 说明这次用了 fts / regex / mixed，mixed 表示补到了全文索引漏掉的笔记。' +
-        '有 query 时默认按 FTS 相关性排序，显式给 sort 才改顺序。' +
-        '结果还带 entryPoints（MEMORY 的活条目：via=query 表示这条结论跟查询有关，来源可以不在本次结果里）' +
-        '与 counterEntries（归档里同名旧结论 + 废弃原因，先看它别把废掉的结论重新提出来）。',
+        '归档里同名旧结论会一并返回，先看它，别把废掉的结论重新提出来。',
       parameters: {
         type: 'object',
         properties: {
@@ -668,10 +665,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_query',
       description:
-        '结构化检索记忆：按 type（daily/source/concept/entity/pattern）、status（active/superseded）、标签、目录、日期、断链、孤立过滤。' +
-        '默认只看 active 且不含归档；传 include_archived: true 会连归档一起查，此时未显式给 status 就不再默认过滤 active。' +
-        '中文会自动并用子串，多词按覆盖度合并；有 query 时默认按 FTS 相关性排序。' +
-        '这是查「记忆里有什么」的主入口。entryPoints / counterEntries 与 zk_search 同口径。',
+        '结构化检索记忆：按 type / status / 标签 / 目录 / 日期 / 断链 / 孤立过滤。' +
+        '默认只看 active 且不含归档；传 include_archived: true 会连归档一起查，此时未显式给 status 就不再默认过滤 active。',
       parameters: {
         type: 'object',
         properties: {
@@ -822,10 +817,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_recall',
       description:
-        '召回装配：先按 query / 过滤条件检索（与 zk_search 同一套 R1–R3），再按词数预算把命中笔记拼成一段可直接读的上下文。' +
-        '每条带标题、路径、absPath 与全文词数，放不下就整条丢弃、不切半句；需要全文仍用原生 read 读 absPath。' +
-        'budget 按 countWords 口径（中文 2 字 1 词），used 一定不超过 budget。' +
-        '不做语义判断 / 重排 / 跨回合去重；completeness 沿用检索三态，装配过的 ≠ 全部命中。',
+        '召回装配：先按 query / 过滤条件检索，再按词数预算把命中笔记拼成一段可直接读的上下文。' +
+        '放不下就整条丢弃、不切半句；需要全文仍用原生 read 读 absPath。',
       parameters: {
         type: 'object',
         properties: {
@@ -930,11 +923,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_walk',
       description:
-        '从一篇笔记出发走一跳邻居（只读）：direction=both 同时看反链与出链，in=谁链到它，out=它链到谁。' +
-        '种子写相对笔记本的路径、绝对路径，或精确标题 / 稳定 id（[[标题]] / [[id]] 也认）；不精确命中就返回空，不会退回全库。' +
-        '按篇反查、不建全图，成本与库规模基本无关；limit 硬顶 200，触顶 completeness=partial（邻居没列全，不代表没有）。' +
-        '每条邻居带 section / linkLine：那条边所在的小节与那一行 —— 没有它，同一篇种子的出链只有一串标题。' +
-        '只回标题 / 路径 / absPath / 摘要 / 那一行，全文仍用原生 read 读 absPath；不改标题、不自动 link、不写任何文件。',
+        '从一篇笔记出发走一跳邻居（只读）：direction 选反链 / 出链 / 双向。' +
+        '种子不精确命中就返回空，不会退回全库；全文仍用原生 read 读 absPath。',
       parameters: {
         type: 'object',
         properties: {
@@ -1035,19 +1025,12 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_new',
       description:
-        '新建一篇笔记（zk 负责生成文件名、套用模板、写入索引）。适合记下一个概念、决定、来源或想法；' +
-        '写前先 zk_search 查重。标题重复会直接报错（flat 按标题查重，layered 同目录同名 slug 也会被 zk 拒绝）。' +
-        'layered 的文件名默认来自标题（{{slug title}}）：中文标题会生成很长的拼音文件名。' +
-        'layered 不给 dir 就按 type 落到 notes/sources 之类；两者都没有、或给的 dir 不在任何 group 里都会报错，' +
-        '不会默默建到 notes/ 根（那里不套模板，没有 frontmatter，文件名是随机 id）。' +
-        '要短文件名就传 name（8–14 字中文短语 / 英文小写短横线名）：只换文件名，标题和正文一个字不动。' +
-        '归档里有同名旧结论不会拦，但会放进 archived（带 supersede-reason）：先读它，别把同一个错误结论重新提出来。' +
-        'type / authority 只有 layered 模板会写进 frontmatter。tags 会写成 #hashtag；links 里的目标会被追加成 wiki 双链。' +
-        '中文笔记如果没有任何标签（入参 / 默认值 / 正文 hashtag 都没有），会在 tagWarning 里提示 —— 只提示，不阻断。' +
-        '同目录里有「改一两个字」的相似标题时会放进 similar（带分数）：只提示，不阻断，也不自动建链接。' +
-        '正文以 ## 开头时，模板的 ## Content 会变成空壳（内容落在它后面）：返回值 emptyTemplateSections 会点名，' +
-        '只提示、不改正文 —— 把正文并进那一节，或删掉那行空标题。' +
-        '根目录 meta 文件（AGENTS / USER / MEMORY 等）与 raw/ 不能写：前者会被当成人写的工作面，后者会被排除出索引。',
+        '新建一篇笔记（zk 生成文件名、套模板、写索引）。写前先 zk_search 查重，标题重复会直接报错。' +
+        'layered 不给 dir 就按 type 落到 notes/sources 之类；两者都没有、或 dir 不在任何 group 里都会报错，不会默默建到 notes/ 根。' +
+        '中文标题默认生成很长的拼音文件名；要短文件名传 name（8–14 字中文短语 / 英文小写短横线名），只换文件名、不动标题正文。' +
+        'tags 写成 #hashtag；links 里的目标追加成 wiki 双链。' +
+        '归档里有同名旧结论不会拦但会一并返回：先读它，别把同一个错误结论重新提出来。' +
+        '根目录 meta 文件与 raw/ 不能写。',
       parameters: {
         type: 'object',
         properties: {
@@ -1256,7 +1239,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_link',
       description:
-        '在两篇笔记之间建立 wiki 双链：把 [[目标]] 追加到来源笔记末尾（已有「Links」或「链接」小节就不再重复起标题；不保证插进该小节内部），已存在不重复添加。' +
+        '在两篇笔记之间建立 wiki 双链：把 [[目标]] 追加到来源笔记末尾，已存在不重复添加。' +
         '目标可以给相对路径，也可以给标题；根目录 meta 文件不作为来源或目标。',
       parameters: {
         type: 'object',
@@ -1291,10 +1274,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_supersede',
       description:
-        '废弃一篇笔记：frontmatter 标 superseded、写入替代它的笔记、把能精确匹配的 [[旧路径]] 入链改到归档路径、再把文件搬进 archive/（保留原相对路径；其它写法的入链列进 missingLinks）。' +
-        '默认 dry_run: true，只返回受影响清单；确认后传 dry_run: false 才真改。结论变了（不是删掉，是过时）时用它。' +
-        'reason 会写进归档 frontmatter 的 supersede-reason：下次有人建同名笔记时会被带出来，防止同一个错误结论被重新提出。' +
-        '根目录 meta 文件不能废弃（否则会把 MEMORY.md 之类搬进 archive/）。',
+        '废弃一篇笔记：标 superseded、写入替代它的笔记、把入链改到归档路径、搬进 archive/。' +
+        '默认 dry_run: true，只返回受影响清单；确认后传 dry_run: false 才真改。' +
+        'reason 会写进归档 frontmatter：下次建同名笔记时会被带出来，防止同一个错误结论被重新提出。' +
+        '根目录 meta 文件不能废弃。',
       parameters: {
         type: 'object',
         properties: {
@@ -1377,9 +1360,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_rename',
       description:
-        '给笔记改名 / 换目录，并修好改名带来的断链：入链（[[…]] 与 Markdown 链接，保留 #锚点 与 |别名）按实际解析结果改到新路径，' +
-        '根目录 meta 文件与归档笔记里的 [[来源]] 一起改；被搬走那篇自己的相对链接也会按新位置重算。认不出的写法列进 missingLinks，不猜。' +
-        '默认 dry_run: true，只返回受影响清单；确认后传 dry_run: false 才真改。改名后 zk_daily 的日记、archive/ 里的笔记、raw/ 与 meta 文件都不许动。',
+        '给笔记改名 / 换目录，并修好改名带来的断链（入链、根目录 meta 文件与归档笔记里的来源）。' +
+        '默认 dry_run: true，只返回受影响清单；确认后传 dry_run: false 才真改。' +
+        '改名后 zk_daily 的日记、archive/ 里的笔记、raw/ 与 meta 文件都不许动。',
       parameters: {
         type: 'object',
         properties: {
@@ -1451,12 +1434,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_context',
       description:
-        '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回；' +
-        '角色人格（PERSONA.md）单独成段、在记忆段之前、不参与截断。' +
-        '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前）。' +
-        '改 MEMORY.md 之前用它看余量：headroom / wouldTruncate / dropCandidates 说明「再加一条会丢谁」，' +
-        '给 proposed_entry 或 extra_words 就能预估；同日条目按位置决胜（sameDateCount）。' +
-        'orderDebt 报「新条目没写顶部 / 最旧并列」的位置债，只报告不改条目。' +
+        '读知识库根目录的长期约定与记忆（AGENTS.md / USER.md / MEMORY.md），按注入预算截断后返回，并列出已配置的笔记本。' +
+        '改 MEMORY.md 之前用它看余量；给 proposed_entry 或 extra_words 就能预估。' +
         '宿主支持注入时这些内容每轮已自动进入系统提示；宿主不支持、或想核对「被截断了多少」时用它。',
       parameters: {
         type: 'object',
@@ -1611,13 +1590,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_memory_write',
       description:
-        '写记忆的第一个工具：往 MEMORY.md / USER.md 末尾追加一条结论。默认 dry_run: true，只预演、不动盘；' +
-        '确认后传 dry_run: false 才真写（可把预演返回的 stamp 放进 expect_stamp，挡住「预演之后有人改过」）。' +
-        '调用方给完整条目正文，插件只做机械门：必须是一条带 YYYY-MM-DD 与 [[来源]] 的顶层列表项、来源要解析到活笔记、' +
-        '新增不能让注入载荷超预算（超了给结构化错误 + dropCandidates，绝不静默截断）。' +
-        'action: retire 追加 `- [superseded …]` 标记（退役条目不进注入，不做容量门）。' +
-        '不替换、不合并、不自动补日期 / 来源、不提议退役哪条 —— 语义判断全归调用方；' +
-        '每次真实写入把 pre-image 摘要与一行 diff 追加到 DREAMS.md 供周审复核。' +
+        '往 MEMORY.md / USER.md 末尾追加一条结论。默认 dry_run: true，只预演、不动盘；确认后传 dry_run: false 才真写。' +
+        '调用方给完整条目正文，插件只做机械门：必须是一条带 YYYY-MM-DD 与 [[来源]] 的顶层列表项、来源要解析到活笔记、新增不能让注入载荷超预算。' +
+        'action: retire 追加退役标记，不做容量门；语义判断全归调用方。' +
         '想改已有条目仍用原生 edit；本工具只往末尾追加。',
       parameters: {
         type: 'object',
@@ -1726,28 +1701,8 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_lint',
       description:
-        '给知识库做体检：断链 / 孤儿 / 无标签 / 单向链接 / 陈旧（N 天没改）/ 重名标题，每类最多 50 条并给总数。' +
-        'frontmatter 解析失败的笔记单列一类：它们进不了索引，别的项统计不到，先修它们再看其余。' +
-        'memoryLinks 查 MEMORY.md / USER.md 里的 [[来源链接]] 是否还指向活笔记（已废弃 / 不存在）—— ' +
-        'supersede 不会重写 meta 文件里的链接，这类漂移 broken-links 看不见；另数没附链接（unlinked）、' +
-        '没写日期（undated）、新条目没写顶部（outOfOrder / newestAt）、最旧日期并列（oldestTies / oldestDate）、' +
-        '已退役（retired）、退役后新结论失效（retiredBroken）与超过 90 天没复核（stale）的条目。' +
-        '位置债只报告，不改条目：写工具固定追加末尾，同日并列时按位置决胜。' +
-        'incomplete 是 frontmatter 缺 type / status / authority 的笔记：缺失被索引落成空串，机械门会静默失效。' +
-        'tags 查标签卫生（大小写变体 / 单例，标签总数 ≥ 30 才报）；template 说根目录 AGENTS.md 是不是当前版本。' +
-        'similarTitles 是「改一两个字」的疑似重复（同目录、二元组相似度 ≥ 0.6）：与全等重名分开，只报告。' +
-        'missingId 是缺稳定 id 的非日记笔记数：zk_new 新建的笔记自动写 id，老笔记只提示、不回填。' +
-        'timeline 是日记时间轴：最近 90 天的空块 / 倒序 / 格式（11:5x）/ 位置（layered 用 ##、或在 ## Events 外）问题，只报告不改文件。' +
-        'total / counts 按全量算，items 里每篇最多 50 条明细，整个桶最多 50 篇；skipped 是过大或读不到而没检查的篇数。' +
-        'indexHint=true 表示笔记（不含日记）已到 150 篇而根目录还没有 INDEX.md（只是提示，不生成静态索引）。' +
-        '孤儿与无标签不含日记（按天写的日记天然如此，报出来只会淹没真问题）。' +
-        'oneWayLinks.items 是缺回链的目标 X（不是来源），from 是没被 X 回链的来源 S；' +
-        'edges 是全部单向边数（items 截到 50 条时仍计全量），bodyOnly 是正文引用（不在 ## Links / ## 链接 小节）的单向边数。' +
-        'links_only=true 时只列 Links 小节的单向链接，正文引用只进 bodyOnly，适合把桶当可修清单。' +
-        'S 或 X 是日记的边不算 —— 日记天然是出边，回链它没有意义。' +
-        '笔记数触到扫描上限只会漏报；但 oneWayLinks.edgesTruncated=true 表示边集可能不完整（小库建图触顶，' +
-        '或大库按篇反查触到 50 目标 / 60 子进程的上限）—— 缺掉的回链边会把双向误判成单向，' +
-        '这是唯一可能误报的截断，看到它先缩小排查范围再重跑。' +
+        '给知识库做体检：断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题，每类最多 50 条并给总数。' +
+        'frontmatter 解析失败的笔记单列一类：它们进不了索引，先修它们再看其余。' +
         '只读：不改任何笔记。拿到清单后自己判断先修哪个，再用 zk_link / zk_append / zk_supersede 动手。',
       parameters: {
         type: 'object',
@@ -1866,22 +1821,10 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_dream',
       description:
-        '整理晋升材料：最近 N 天新增的笔记（机械筛掉 authority=informal 与无标签的，其余作为候选）、' +
-        'daily 里没划掉的 Loose ends、被引用最多的笔记。候选带正文摘要（lead）与入链来源（citedBy），方便重放上下文。' +
-        'topCited 先按「被日记提到几天」排（使用信号），入链数只作并列次序；没有日记时退化为原排序。' +
-        '会读 MEMORY.md：已经晋升过的（`[[链接]]` 命中或条目里写了标题）移出候选、进 alreadyPromoted —— 不会每周原样重复。' +
-        '退役行里的旧标题不再算已晋升，但 `→ [[新结论]]` 仍算。' +
-        'backlog 是窗口外仍未晋升的笔记（按被引数），漏做一次不会永久掉队。' +
-        '库超过全图统计上限时不再建全图统计入链（默认 2000 篇，设置页可调；graphBudget 给出生效值）：' +
-        'graphSkipped=true，cited / citedBy / topCited 为空 —— 那是「没算」，不是「没人引」。' +
-        'missingId 是缺稳定 id 的非日记笔记数（只提示、不回填）；MEMORY 里可以用 [[<id>]] 当来源，改名后仍指向同一篇。' +
-        'memory 给记忆余量（内容词 + 提示 = 总词，余量按总词算，可以为负）；retireCandidates 给「可考虑退役」的条目' +
-        '（来源归档 / 不存在、超过 ' + STALE_DAYS + ' 天未复核；显式写 archive/ 的有意引用不算）。' +
-        'evidence 把每条现行 MEMORY 结论与它的来源笔记、出处原话 / 外部地址并排摆出来（两跳封顶、零 zk 进程、绝不进注入），' +
-        'unverified 数出「没有可回对原话」的结论 —— 笔记是有损压缩的判断，真值在笔记之外，拿原话回来对才看得见错判断；' +
-        '只给材料，不判断结论对不对、不改 MEMORY.md。' +
-        'days 省略时窗口 = 距 DREAMS.md「上次做梦」的天数（没有则 7 天）。' +
-        '只返回材料：写 MEMORY.md / DREAMS.md 由你按 AGENTS.md 决定，这个工具不写任何文件。',
+        '整理晋升材料：最近 N 天新增的笔记（筛掉 authority=informal 与无标签的）、daily 里没划掉的 Loose ends、被引用最多的笔记。' +
+        '会读 MEMORY.md，已晋升过的不再作为候选。' +
+        'days 省略时窗口按 DREAMS.md「上次做梦」算。' +
+        '只返回材料、不写任何文件：写 MEMORY.md / DREAMS.md 由调用方按 AGENTS.md 决定。',
       parameters: {
         type: 'object',
         properties: {
@@ -2099,8 +2042,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
     t({
       name: 'zk_stats',
       description:
-        '看一眼知识库现状：笔记数、标签数、断链数、孤立笔记数、已归档（superseded）数，以及顶层目录 / 前 10 个标签的分布（byDir / byTag）。' +
-        '适合开始工作前了解上下文规模；笔记多了以后用它判断该先看哪里（不是排行榜）。',
+        '看一眼知识库现状：笔记数、标签数、断链数、孤立笔记数、已归档数，以及顶层目录 / 前 10 个标签的分布（byDir / byTag）。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: {
         schema: objSchema({

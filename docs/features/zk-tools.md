@@ -2,6 +2,10 @@
 
 **Purpose.** 让模型用 zk 思维工作：先查重、再写原子笔记、用双链连起来、每天记一段。
 
+**描述分层.** 每个工具的 `description` 只保留决策最小集（一句用途、参数含义/默认值、会改变调用方式的硬约束），
+因为它每轮随 tool schema 注入；各输出字段、实现口径与边界的完整说明见本文档对应章节，不进每轮注入。
+与 `AGENTS.md` / `WORKFLOW.md` 重复的规则仍留在描述里，headless 宿主由 `zk_context` 兜底。
+
 **Owns.** 16 个内置工具定义（`zk_search` / `zk_query` / `zk_recall` / `zk_walk` / `zk_new` / `zk_append` / `zk_daily` / `zk_link` /
 `zk_supersede` / `zk_rename` / `zk_context` / `zk_memory_write` / `zk_lint` / `zk_dream` / `zk_stats` / `zk_use`）以及笔记本
 `.zk/config.toml` 的 `[alias]` 派生的 `zk_<别名>` 工具：
