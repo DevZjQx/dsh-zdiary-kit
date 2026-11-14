@@ -108,6 +108,50 @@ export function memoryFormatDebt(body: string): MemoryFormatDebt {
 }
 
 /**
+ * 位置债：给 AGENTS.md 那两句话「新条目写顶部；超预算按日期丢最旧的一条」补机械可见性。
+ * 只数磁盘上的事实，不改一个字 —— 违例由人和 agent 处理，插件不搬条目、不猜谁该留。
+ *
+ * 口径与 `memoryFormatDebt` 共用 `splitMemoryEntries` / `isRetiredEntry` / `entryDate`：
+ * 退役条目不算、没日期的条目不参与排序（它们的缺口已由 `undated` 报）、围栏里的示例不算条目。
+ * 注入提示 / 记忆页 / `zk_lint` / `zk_context` 都取这一份，同一份 MEMORY 不许给出四个数。
+ */
+export interface MemoryOrderDebt {
+  /** 活条目里「日期新于其上方所有带日期条目」的条数；>0 = 有新条目没写顶部 */
+  outOfOrder: number
+  /** 最新日期那条在活条目里的位置（1-based）；0 = 没有带日期的活条目 */
+  newestAt: number
+  /** 最旧日期那一档有几条；>1 = 「按日期丢最旧」不唯一，实际由位置决胜 */
+  oldestTies: number
+  /** 最旧日期 YYYY-MM-DD；没有带日期的活条目时为空串 */
+  oldestDate: string
+}
+
+export function memoryOrderDebt(body: string): MemoryOrderDebt {
+  const entries = splitMemoryEntries(body).filter((entry) => !isRetiredEntry(entry))
+  const dated = entries
+    .map((entry, index) => ({ at: index + 1, date: entryDate(entry) }))
+    .filter((row): row is { at: number; date: string } => row.date !== null)
+  if (dated.length === 0) return { outOfOrder: 0, newestAt: 0, oldestTies: 0, oldestDate: '' }
+
+  let maxSeen = ''
+  let outOfOrder = 0
+  let newestDate = ''
+  let newestAt = 0
+  for (const row of dated) {
+    // 比上方所有条目都新：按「新条目写顶部」它本该排在最前面
+    if (maxSeen && row.date > maxSeen) outOfOrder += 1
+    if (row.date > maxSeen) maxSeen = row.date
+    if (row.date > newestDate) {
+      newestDate = row.date
+      newestAt = row.at
+    }
+  }
+  const oldestDate = dated.reduce((min, row) => (row.date < min ? row.date : min), dated[0]!.date)
+  const oldestTies = dated.filter((row) => row.date === oldestDate).length
+  return { outOfOrder, newestAt, oldestTies, oldestDate }
+}
+
+/**
  * 去掉退役条目（整条，不留半行），返回正文与删掉的条数。
  * 磁盘上的文件不动 —— 省略只发生在注入路径上；记忆页 / git 仍看得到它们。
  */

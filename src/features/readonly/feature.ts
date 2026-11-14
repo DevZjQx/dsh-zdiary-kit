@@ -340,6 +340,14 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
   }
   const formatLine = formatParts.length > 0 ? `格式：${formatParts.join(' · ')}` : ''
 
+  // 位置债：工作约定里「新条目写顶部 / 超预算按日期丢最旧」的机械核对（只报告，不改文件）。
+  // 数字取载荷里的 orderDebt（与注入、zk_lint、zk_context 同一份）；全干净就不写这一行。
+  const order = payload.orderDebt
+  const orderParts: string[] = []
+  if (order.outOfOrder > 0) orderParts.push(`${order.outOfOrder} 条新条目没写顶部（最新在第 ${order.newestAt} 条）`)
+  if (order.oldestTies > 1) orderParts.push(`${order.oldestTies} 条并列最旧（${order.oldestDate}，按位置决胜）`)
+  const orderLine = orderParts.length > 0 ? `位置（工作约定核对）：${orderParts.join(' · ')}` : ''
+
   // 人格段：超上限只告警
   const c = payload.persona
   const personaSummary = c.present
@@ -376,6 +384,7 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
     '<h1>记忆</h1>',
     `<p class="meta">${esc(usage)}</p>`,
     formatLine ? `<p class="meta">${esc(formatLine)}</p>` : '',
+    orderLine ? `<p class="meta">${esc(orderLine)}</p>` : '',
     scan && scan.completeness !== 'complete'
       ? `<p class="meta">${scan.completeness === 'partial' ? `只扫描了前 ${scan.limit} 篇：页面里的双链可能没解析到更早的笔记。` : '索引结果无法完整解析：页面里的双链可能不完整。'}</p>`
       : '',

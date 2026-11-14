@@ -27,8 +27,8 @@ import type { Config } from '../config/store.ts'
 import { DREAM_INTERVAL_DAYS, daysSinceDream, lastDreamDate } from './dream.ts'
 import { fenceMask } from './fence.ts'
 import { fileStamp } from './file-stamp.ts'
-import { entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
-import type { MemoryFormatDebt } from './memory-format.ts'
+import { entryDate, isRetiredEntry, memoryFormatDebt, memoryOrderDebt, splitMemoryEntries, stripRetiredEntries } from './memory-format.ts'
+import type { MemoryFormatDebt, MemoryOrderDebt } from './memory-format.ts'
 import { templateVersionOf } from './agents-template.ts'
 import { hasRecallSignal, lastRecallOf, readRecallSignal } from './recall-signal.ts'
 import { PERSONA_META_FILES, MEMORY_META_FILES } from './meta.ts'
@@ -89,6 +89,8 @@ export interface MemoryPayload {
   tocWords: number
   /** 记忆的格式债（与注入提示、`zk_lint` 同一个 `memoryFormatDebt`）：退役条目不算 */
   formatDebt: MemoryFormatDebt
+  /** 位置债（与注入提示、记忆页、`zk_lint` 同一个 `memoryOrderDebt`）：只报告，不改文件 */
+  orderDebt: MemoryOrderDebt
   /** AGENTS.md 的模板版本；0 = 没有标记，或根本没有 AGENTS.md（记忆页用 `files[].present` 区分）。只读首行标记，不跑 lint */
   templateVersion: number
   files: MemoryFileInfo[]
@@ -442,14 +444,18 @@ function computePayload(cfg: Config): MemoryPayload {
   // 格式债（P1）：日期 / 来源缺口的条数。只报告、不补 —— 但得摆到注入里，
   // 否则「按日期淘汰」对没日期的老库永远空转，而 lint 一周才跑一次。
   const debt = memoryFormatDebt(memorySource)
+  // 位置债：同一份截断前正文，退役条目已剔除；只报告「新条目没写顶部 / 最旧并列」，不改文件
+  const orderDebt = memoryOrderDebt(memorySource)
   // 模板版本与记忆页共用这一份（只读首行 marker，不跑 lint）：0 = 没有标记或没有 AGENTS.md
   const agentsBody = original.get('AGENTS.md') ?? ''
   const templateVersion = agentsBody.trim() ? templateVersionOf(agentsBody) : 0
-  /** 格式债的一句；没有缺口返回空串。skipUndated 用于避开「只能按位置丢」已经报过的同一个数 */
+  /** 格式债 + 位置债的一句；没有缺口返回空串。skipUndated 用于避开「只能按位置丢」已经报过的同一个数 */
   const debtNote = (skipUndated: boolean): string => {
     const parts: string[] = []
     if (!skipUndated && debt.undated > 0) parts.push(`${debt.undated} 条没日期`)
     if (debt.unlinked > 0) parts.push(`${debt.unlinked} 条没来源`)
+    if (orderDebt.outOfOrder > 0) parts.push(`${orderDebt.outOfOrder} 条新条目没写顶部`)
+    if (orderDebt.oldestTies > 1) parts.push(`${orderDebt.oldestTies} 条并列最旧`)
     return parts.length > 0 ? `MEMORY ${parts.join(' · ')}` : ''
   }
 
@@ -625,6 +631,7 @@ function computePayload(cfg: Config): MemoryPayload {
     retiredEntries: omitted.count,
     tocWords: countWords(toc),
     formatDebt: debt,
+    orderDebt,
     templateVersion,
     files: files.map((f) => ({
       name: f.name,
@@ -745,14 +752,16 @@ export function memoryCapacity(cfg: Config, opts: MemoryCapacityOptions = {}): M
   let body = ''
   try { body = fs.readFileSync(path.join(cfg.notebook, 'MEMORY.md'), 'utf8') } catch { /* 缺文件 = 空 */ }
   const debt = memoryFormatDebt(body)
+  const orderDebt = memoryOrderDebt(body)
   const retired = stripRetiredEntries(body).count
   // 退役条目注入时已省略，不会因预算被丢 —— 预告里不列它们
   const entries = splitMemoryEntries(body)
     .map((entry, index) => ({ entry, index, date: entryDate(entry) }))
     .filter((row) => !isRetiredEntry(row.entry))
-  const withDate = entries.filter((row) => row.date !== null)
-  const oldestDate = withDate.reduce((min, row) => (row.date! < min ? row.date! : min), '9999-99-99')
-  const sameDateCount = withDate.filter((row) => row.date === oldestDate).length
+  // 最旧日期 / 并列条数取唯一口径（与注入提示、记忆页、zk_lint 同一个 memoryOrderDebt），
+  // 免得「N 条同日」在 zk_context 和周审里对不上
+  const oldestDate = orderDebt.oldestDate
+  const sameDateCount = orderDebt.oldestTies
 
   // 15.2：只有确实有条目带召回信号时才启用「最后召回时间」次级键，否则连文案都不变
   const recallTie = hasRecallSignal(signal) && entries.some((row) => lastRecallOf(signal, row.entry) !== '')

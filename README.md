@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 3.13.0
+# dsh-zdiary-kit 3.14.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -20,9 +20,9 @@
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题）；meta 文件不作为来源或目标 |
 | `zk_supersede` | 废弃过时结论：标 `superseded` + 写 `reason` + 搬进 `archive/` + 重写能精确匹配的 `[[旧路径]]` 入链（其它写法列进 `missingLinks`）；默认只预演；meta 文件不能废弃 |
 | `zk_rename` | 改名 / 换目录并修断链：入链（`[[…]]` 与 Markdown 链接，保留 `#锚点` 与 `\|别名`）按实际解析结果改到新路径，根目录 meta 里的 `[[来源]]` 一起改，被搬走那篇自己的相对 Markdown 链接按新位置重算；默认只预演 |
-| `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）与角色人格 `PERSONA.md`（单独成段、不截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时这些内容每轮已自动带进系统提示。改 MEMORY 前用它看余量：`headroom` / `wouldTruncate` / `dropCandidates` 说明「再加一条会丢谁」，给 `proposed_entry` 或 `extra_words` 就能预估；同日条目按位置决胜（`sameDateCount`），不假装有使用频率 |
+| `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）与角色人格 `PERSONA.md`（单独成段、不截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时这些内容每轮已自动带进系统提示。改 MEMORY 前用它看余量：`headroom` / `wouldTruncate` / `dropCandidates` 说明「再加一条会丢谁」，给 `proposed_entry` 或 `extra_words` 就能预估；同日条目按位置决胜（`sameDateCount`），不假装有使用频率；`orderDebt` 报「新条目没写顶部 / 最旧日期并列」的位置债（工作约定的机械核对，只报告不改条目） |
 | `zk_memory_write` | 往 `MEMORY.md` / `USER.md` 末尾追加一条结论的**第一个 meta 写工具**；默认 `dry_run: true` 只预演、不动盘，`dry_run: false` 才真写（可带 `expect_stamp` 挡并发改动）。插件只做机械门：条目须是带 `YYYY-MM-DD` 与 `[[来源]]` 的顶层列表项、`[[来源]]` 要解析到活笔记、`add` 不能让注入载荷超预算（超了返回 `over-budget` + `dropCandidates`，**不静默截断**）；`action: retire` 追加 `- [superseded …]` 标记（退役条目不进注入，不做容量门）。不改一个字、不合并 / 替换、不自动补日期 / 来源、不提议退役哪条；每次真实写入把 pre-image 摘要与一行 diff 追加到 `DREAMS.md` 供周审复核。改已有条目仍用原生 edit；`WORKFLOW.md` 里写了「改 MEMORY 先预演」 |
-| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 / frontmatter 缺字段 / 标签卫生 / 模板版本 / 人格（缺失·旧版·比插件新·标记与内容不符·未填占位符）/ 日记时间轴（最近 90 天的空块·倒序·格式·位置）/ 空模板小节（`Content` / `Key claims` / `Quotes` 空着、正文写在了别的 `##` 下；日记不查），每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；另给 `missingId`（缺稳定 id 的非日记笔记数，只提示不回填）；只报告不改写 |
+| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 · 位置债（新条目没写顶部 / 最旧日期并列，只报告不搬条目） / frontmatter 缺字段 / 标签卫生 / 模板版本 / 人格（缺失·旧版·比插件新·标记与内容不符·未填占位符）/ 日记时间轴（最近 90 天的空块·倒序·格式·位置）/ 空模板小节（`Content` / `Key claims` / `Quotes` 空着、正文写在了别的 `##` 下；日记不查），每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；另给 `missingId`（缺稳定 id 的非日记笔记数，只提示不回填）；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、已在 MEMORY 的、窗口外积压、daily 未完成项、被引最多（先按「被日记提到几天」排）；带 `missingId`（缺稳定 id 的非日记笔记数）；`evidence` 把每条现行 MEMORY 结论与来源笔记的出处原话 / 外部地址并排回显（两跳封顶、零 zk 进程、绝不进注入），`unverified` 数出「没有可回对原话」的结论 —— 只给材料，不判断结论对错；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded），顶层目录与前 10 个标签的实时分布；外加 `usage`：本地聚合计数（`walk` / `recall` / `entryPoints` / `counterEntries` 各用了几次，自某天起）—— 用来看「入口 + 一跳」这条路到底有没有被用上。只存计数，不记查询词、不记路径 |
 | `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |

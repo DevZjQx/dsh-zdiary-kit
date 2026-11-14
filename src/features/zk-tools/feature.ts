@@ -164,6 +164,10 @@ const LINT_MEMORY = objSchema(
     total: { type: 'number' },
     unlinked: { type: 'number' },
     undated: { type: 'number' },
+    outOfOrder: { type: 'number' },
+    newestAt: { type: 'number' },
+    oldestTies: { type: 'number' },
+    oldestDate: { type: 'string' },
     retired: { type: 'number' },
     retiredBroken: { type: 'number' },
     stale: objSchema({
@@ -189,7 +193,7 @@ const LINT_MEMORY = objSchema(
       }, ['source', 'entry', 'link', 'reason', 'path']),
     },
   },
-  ['files', 'links', 'total', 'unlinked', 'undated', 'retired', 'retiredBroken', 'stale', 'items'],
+  ['files', 'links', 'total', 'unlinked', 'undated', 'outOfOrder', 'newestAt', 'oldestTies', 'oldestDate', 'retired', 'retiredBroken', 'stale', 'items'],
 )
 /** 日记时间轴：最近 90 天的空块 / 倒序 / 格式 / 位置（只报告） */
 const LINT_TIMELINE = objSchema(
@@ -1452,6 +1456,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         '同时列出已配置的笔记本（名字 / 路径 / 结构 / 当前）。' +
         '改 MEMORY.md 之前用它看余量：headroom / wouldTruncate / dropCandidates 说明「再加一条会丢谁」，' +
         '给 proposed_entry 或 extra_words 就能预估；同日条目按位置决胜（sameDateCount）。' +
+        'orderDebt 报「新条目没写顶部 / 最旧并列」的位置债，只报告不改条目。' +
         '宿主支持注入时这些内容每轮已自动进入系统提示；宿主不支持、或想核对「被截断了多少」时用它。',
       parameters: {
         type: 'object',
@@ -1495,6 +1500,12 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             undated: { type: 'number' },
             unlinked: { type: 'number' },
           }, ['total', 'undated', 'unlinked']),
+          orderDebt: objSchema({
+            outOfOrder: { type: 'number' },
+            newestAt: { type: 'number' },
+            oldestTies: { type: 'number' },
+            oldestDate: { type: 'string' },
+          }, ['outOfOrder', 'newestAt', 'oldestTies', 'oldestDate']),
           templateVersion: { type: 'number' },
           persona: objSchema({
             present: { type: 'boolean' },
@@ -1537,7 +1548,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           },
         }, ['text', 'words', 'budget', 'ratio', 'truncatedWords', 'retiredWords', 'tocWords', 'totalWords', 'overheadWords',
           'retiredEntries', 'headroom', 'extraWords', 'wouldTruncate', 'sameDateCount', 'format', 'suggestion', 'dropCandidates',
-          'formatDebt', 'templateVersion', 'persona', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
+          'formatDebt', 'orderDebt', 'templateVersion', 'persona', 'notebook', 'defaultNotebook', 'pinned', 'notebooks', 'files']),
       },
       async run(args, env) {
         // 不 ensureNotebook：读记忆不该依赖 zk，笔记本不存在时就是空载荷
@@ -1717,7 +1728,9 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         'frontmatter 解析失败的笔记单列一类：它们进不了索引，别的项统计不到，先修它们再看其余。' +
         'memoryLinks 查 MEMORY.md / USER.md 里的 [[来源链接]] 是否还指向活笔记（已废弃 / 不存在）—— ' +
         'supersede 不会重写 meta 文件里的链接，这类漂移 broken-links 看不见；另数没附链接（unlinked）、' +
-        '没写日期（undated）、已退役（retired）、退役后新结论失效（retiredBroken）与超过 90 天没复核（stale）的条目。' +
+        '没写日期（undated）、新条目没写顶部（outOfOrder / newestAt）、最旧日期并列（oldestTies / oldestDate）、' +
+        '已退役（retired）、退役后新结论失效（retiredBroken）与超过 90 天没复核（stale）的条目。' +
+        '位置债只报告，不改条目：写工具固定追加末尾，同日并列时按位置决胜。' +
         'incomplete 是 frontmatter 缺 type / status / authority 的笔记：缺失被索引落成空串，机械门会静默失效。' +
         'tags 查标签卫生（大小写变体 / 单例，标签总数 ≥ 30 才报）；template 说根目录 AGENTS.md 是不是当前版本。' +
         'similarTitles 是「改一两个字」的疑似重复（同目录、二元组相似度 ≥ 0.6）：与全等重名分开，只报告。' +

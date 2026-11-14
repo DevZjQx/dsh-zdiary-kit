@@ -10,7 +10,8 @@
   另读 `DREAMS.md` 的「上次做梦」一行（不进正文、不计预算）；
   `memoryUsage(cfg)` 是同一份载荷的投影（内容词 / 总词 / 预算 / 余量），给 dream 与后续页面用
 - `lib/memory-format.ts`：条目的唯一切分口径 —— `splitMemoryEntries` / `isRetiredEntry` / `entryDate` /
-  `stripRetiredEntries` / `daysSinceDate` / `memoryFormatDebt`（日期与来源缺口的机械计数）；
+  `stripRetiredEntries` / `daysSinceDate` / `memoryFormatDebt`（日期与来源缺口的机械计数）/
+  `memoryOrderDebt`（位置债：新条目没写顶部 / 最旧日期并列）；
   memory、dream、lint 共用，禁止各写一套
 - `lib/entry-points.ts`：MEMORY 当检索入口（R9）—— `liveMemoryEntries` / `entryPointsOf`（`via: query` 的来源可以不在结果集里），
   把「命中笔记 ← 已在 MEMORY 的哪条结论」接出来；索引只用本次结果笔记建、路径式来源直接读盘，零子进程（见下）
@@ -161,6 +162,22 @@ v11 修过时中文检索口径后为 187 词（flat 89）；v12 删「检索词
 模板版本只读首行标记）；没有 AGENTS.md 时 `templateVersion` 也是 0，靠 `files[].present` 区分「没模板」与「旧模板」，
 不报模板这一项；三处都干净就不写这一行。两个字段也出现在 `zk_context` 的输出里（只读、不计词数）。
 **只报告，不补日期、不猜来源** —— 那仍是人和 agent 的语义判断，插件只负责让缺口在每轮注入与周审入口里都可见。
+
+**位置债摆到眼前（工作约定的机械可见性）。** `AGENTS.md` 里「新条目写顶部；超预算按日期丢最旧的一条」是纯 prose 约定：
+写工具 `zk_memory_write` 固定往末尾追加（与「写顶部」相反），注入截断按日期丢的是**注入副本**、不是磁盘条目，
+最旧日期一并列还由位置决胜 —— 三处都没有任何东西把违例摆出来，等于没有约束力。
+`lib/memory-format.ts` 的 `memoryOrderDebt()` 机械数四样（退役行不算、没日期不参与排序、围栏示例不算条目）：
+`outOfOrder`（日期新于其上方所有带日期条目的活条目数，>0 就是有新条目没写顶部）、`newestAt`（最新那条排第几）、
+`oldestTies` / `oldestDate`（最旧那一档有几条并列 —— 「按日期丢最旧」不唯一时，实际由位置决胜）。
+**这是唯一口径**：`buildMemoryPayload` 的 `orderDebt`、`zk_context`、`zk_lint.memoryLinks`、记忆页都取它，
+同一份 MEMORY 不许给出四个数；`memoryCapacity.sameDateCount` 也改为读它，不再自己数一遍。
+出口沿用格式债的形状：注入在「记忆已用 / 已截断」那一行后面追加 `N 条新条目没写顶部 · N 条并列最旧`，
+**与格式债共用同一句、整条量过词数**，放不下就一句都不加（不许剩半句）；记忆页单列一行
+`位置（工作约定核对）：1 条新条目没写顶部（最新在第 3 条） · 8 条并列最旧（2026-11-01，按位置决胜）`；
+`zk_lint` 摘要行加同样两句；`zk_context.orderDebt` 给机器可读的四元组。
+**只报告、不搬条目、不猜谁该留、不改 `formatDebt` 形状**（`additionalProperties: false` + 逐字节稳定是硬约束，
+所以新字段走独立的 `orderDebt`）。不新增工具、不跑 zk 子进程、不动 `oldestIndex` 的淘汰行为：
+D2 之后位置本来就不再是截断正确性的前提，这里补的是「约定有没有被守」的可见性，不是把旧规则重新变成前提。
 
 **三级切分（P0-1）。** 只按 `##` 小节切时，「`# 记忆` + 要点列表」这种最常见的形状一个小节都切不出来，
 丢弃循环一次都不进，预算于是完全不生效（真机实测 880 / 449 / 895 词，`truncatedWords` 都是 0）。

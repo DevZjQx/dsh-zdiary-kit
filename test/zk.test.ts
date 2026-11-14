@@ -1940,7 +1940,9 @@ describe('M3: 巡检与做梦', () => {
     expect(lint.brokenLinks.total).toBe(1)
     // 没启用记忆层的库：不报这一项（files = 0），别给老 vault 添噪音
     expect(lint.memoryLinks).toEqual({
-      files: 0, links: 0, total: 0, unlinked: 0, undated: 0, retired: 0, retiredBroken: 0,
+      files: 0, links: 0, total: 0, unlinked: 0, undated: 0,
+      outOfOrder: 0, newestAt: 0, oldestTies: 0, oldestDate: '',
+      retired: 0, retiredBroken: 0,
       stale: { total: 0, staleDays: 90, items: [] }, items: [],
     })
   })
@@ -3881,6 +3883,26 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
       const bucket = lintLib.memoryLinkIssues(store.config(), [])
       expect(bucket.undated).toBe(payload.formatDebt.undated)
       expect(bucket.unlinked).toBe(payload.formatDebt.unlinked)
+
+      // 位置债：工作约定那两句话的机械核对，四处（注入 / 记忆页 / lint / zk_context）同一个数，只报告不改文件
+      fs.writeFileSync(path.join(nb, 'MEMORY.md'), [
+        '# 记忆', '',
+        '- **旧一。**（2026-11-01）[[记忆双链目标]]',
+        '- **旧二。**（2026-11-01）[[记忆双链目标]]',
+        '- **新条目追加在末尾。**（2026-11-15）[[记忆双链目标]]',
+        '',
+      ].join('\n'))
+      const orderPage = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=memory'))
+      expect(orderPage.body).toContain('位置（工作约定核对）：1 条新条目没写顶部（最新在第 3 条） · 2 条并列最旧（2026-11-01，按位置决胜）')
+      const orderPayload = memory.buildMemoryPayload(store.config())
+      expect(orderPayload.orderDebt).toEqual({ outOfOrder: 1, newestAt: 3, oldestTies: 2, oldestDate: '2026-11-01' })
+      const orderBucket = lintLib.memoryLinkIssues(store.config(), [])
+      expect(orderBucket.outOfOrder).toBe(orderPayload.orderDebt.outOfOrder)
+      expect(orderBucket.oldestTies).toBe(orderPayload.orderDebt.oldestTies)
+      expect(lintLib.formatMemoryLinks(orderBucket)).toContain('1 条新条目没写顶部（最新在第 3 条）')
+      const ctxOut = await toolsFeature.buildTools(() => nb).find((d) => d.name === 'zk_context')!
+        .execute({}, { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
+      expect(ctxOut.orderDebt).toEqual(orderPayload.orderDebt)
 
       const meta = await call('/dsh-zdiary-kit/api/note', makeReq('/dsh-zdiary-kit/api/note?path=MEMORY.md'))
       expect(meta.statusCode).toBe(400)
@@ -7099,5 +7121,88 @@ describe('依据回对（evidence）：把真值地址摆到结论旁边', () =>
       expect(x.sources).toHaveLength(evidenceLib.MAX_EVIDENCE_SOURCES)
       expect(x.sources.some((s) => s.hop === 2 && s.path === 'notes/sources/原始材料.md')).toBe(true)
     } finally { restore() }
+  })
+})
+
+describe('位置债：给「新条目写顶部 / 超预算按日期丢最旧」补机械可见性', () => {
+  const dated = (date: string, title: string): string => `- **${title}。**（${date}）[[notes/x]]`
+  const build = (files: Record<string, string>, budget = 300) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-order-'))
+    for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body)
+    try {
+      return memory.buildMemoryPayload(store.normalizeConfig({ notebook: dir, memoryBudgetWords: budget }))
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  test('memoryOrderDebt：新→旧有序时零违例，最新在第 1 条', () => {
+    const body = ['# 记忆', '',
+      dated('2026-11-15', '甲'), dated('2026-11-04', '乙'), dated('2026-11-01', '丙'),
+      ''].join('\n')
+    expect(memoryFormat.memoryOrderDebt(body)).toEqual({
+      outOfOrder: 0, newestAt: 1, oldestTies: 1, oldestDate: '2026-11-01',
+    })
+  })
+
+  test('memoryOrderDebt：最新追加在末尾（现行库的真实形状）+ 最旧同日并列', () => {
+    const body = ['# 记忆', '',
+      dated('2026-11-04', '乙'), dated('2026-11-01', '丙'), dated('2026-11-01', '丁'),
+      dated('2026-11-15', '甲'), // 最新却排最后
+      ''].join('\n')
+    expect(memoryFormat.memoryOrderDebt(body)).toEqual({
+      outOfOrder: 1, newestAt: 4, oldestTies: 2, oldestDate: '2026-11-01',
+    })
+  })
+
+  test('memoryOrderDebt：退役行不算、没日期不参与排序、围栏里的示例不算条目', () => {
+    const body = ['# 记忆', '',
+      '- 没日期的旧条目 [[notes/x]]',
+      dated('2026-11-01', '丙'),
+      '- [superseded 2026-10-01] 旧结论 → [[notes/y]]',
+      '~~~',
+      dated('2099-01-01', '围栏里的假条目'),
+      '~~~',
+      dated('2026-11-15', '甲'),
+      ''].join('\n')
+    const debt = memoryFormat.memoryOrderDebt(body)
+    expect(debt.outOfOrder).toBe(1)
+    // 位置按「活条目」数：没日期(1)、丙(2)、甲(3)；退役行整条剔除，围栏里的假条目跟着退役行走
+    expect(debt.newestAt).toBe(3)
+    expect(debt.oldestDate).toBe('2026-11-01')
+    expect(debt.oldestTies).toBe(1)
+  })
+
+  test('memoryOrderDebt：一条带日期的活条目都没有时全零', () => {
+    const debt = memoryFormat.memoryOrderDebt('# 记忆\n\n- 没日期\n- [superseded 2026-01-01] 旧结论 → [[notes/y]]\n')
+    expect(debt).toEqual({ outOfOrder: 0, newestAt: 0, oldestTies: 0, oldestDate: '' })
+  })
+
+  // 接近上限才回显用量（P1）：位置债跟在格式债后面，整条量过词数，放不下就一句都不加。
+  const padded = (budget: number) => {
+    const pad = '这是一条用来把用量推到接近上限但仍有余量的记忆条目内容。'.repeat(10)
+    const body = ['# MEMORY', '', '## 结论', '',
+      '- **旧一。**（2026-11-01）[[notes/a]]',
+      '- **旧二。**（2026-11-01）[[notes/a]]',
+      '- **新条目追加在末尾。**（2026-11-15）[[notes/b]]',
+      '', '- ' + pad, ''].join('\n')
+    return build({ 'MEMORY.md': body }, budget)
+  }
+
+  test('注入提示：接近上限时带上「新条目没写顶部 / 并列最旧」，且仍不超预算', () => {
+    const p = padded(200)
+    expect(p.truncatedWords).toBe(0)
+    expect(p.words).toBeLessThanOrEqual(200)
+    expect(p.text).toContain('记忆已用')
+    expect(p.text).toContain('1 条新条目没写顶部')
+    expect(p.text).toContain('2 条并列最旧')
+    expect(p.orderDebt).toEqual({ outOfOrder: 1, newestAt: 3, oldestTies: 2, oldestDate: '2026-11-01' })
+  })
+
+  test('注入提示：位置债放不下就整条不加，不许只剩半句', () => {
+    const p = padded(180)
+    expect(p.text).toContain('记忆已用')
+    expect(p.text).not.toContain('新条目没写顶部')
+    expect(p.text).not.toContain('并列最旧')
   })
 })

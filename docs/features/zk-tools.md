@@ -156,8 +156,10 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 「补空行 / 二级标题 / 写入指定小节」的语义，守卫（meta / `raw/`）也仍然在。
 `zk_context` 的 `files[].originalWords`（截断前词数）、`files[].retiredWords`（退役条目占的词数，只算在 `MEMORY.md` 上）、
 `tocWords`（目录占的词数）与 `ratio`（用量 = `words / budget`，两位小数，> 1 表示超预算）只用于解释预算，不改变注入内容。
-`formatDebt`（`total / undated / unlinked`，与记忆页、`zk_lint.memoryLinks` 同一个 `memoryFormatDebt`）
+`formatDebt`（`total / undated / unlinked`，与记忆页、`zk_lint.memoryLinks` 同一个 `memoryFormatDebt`）、
+`orderDebt`（`outOfOrder / newestAt / oldestTies / oldestDate`，同一个 `memoryOrderDebt`；位置债，只报告不改条目）
 与 `templateVersion`（AGENTS.md 首行标记；0 = 没标记或没文件，用 `files[].present` 区分）是同一批只读元数据。
+`formatDebt` 形状不变（逐字节稳定是硬约束），位置债单列 `orderDebt`；两者都进注入提示的同一句，整条量过词数。
 `originalWords` 含退役条目；展示层的「原 X」会先减掉 `retiredWords`，所以退役不会再被当成截断报出来。
 人格单独一组：`persona.present / contentWords / words / noticeWords / budget / overBudget / overWords / files[]`（`contentWords` 含 `## PERSONA.md` 标题），
 外加 `totalWords`（`countWords(payload.text)`）与 `overheadWords`（框 / 做梦提醒 / notice / 人格告警等开销）。
@@ -240,6 +242,9 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 `unlinked` 只数 **MEMORY.md** 的活条目里没有有效 `[[链接]]` 的（USER.md 是偏好清单，本来大多没有来源，
 不计；散文段落也不算，避免把自由文本变成告警噪音；退役行不计，`[[   ]]` 空目标不算来源）。
 它与 `undated` 取自 `memoryFormatDebt()`，和注入提示、记忆页是同一个数。
+`outOfOrder` / `newestAt` / `oldestTies` / `oldestDate` 取自 `memoryOrderDebt()`：数「新条目没写顶部」与
+「最旧日期并列（按位置决胜）」，给 AGENTS.md 那两句话补机械可见性；退役行不算、没日期不参与排序，
+与注入提示、记忆页、`zk_context.orderDebt` 同一个数。四样都只报告，不搬条目。
 同一份条目解析还数 `undated`（首行没有真校验过的 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）
 与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记），以及 `stale`（有日期且超过 `stale_days`，默认 90 天未复核）——
 都只报告；注入从 0.9 起省略退役条目（notice 说明省略数），文件本身不动。条目切分与日期解析统一走 `lib/memory-format`。
@@ -382,9 +387,10 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 
 **写 MEMORY 前的容量（G1 / G4，§10.4 第 6 项）.** 复用 `zk_context`，不新增 `zk_memory_check`：
 入参加 `proposed_entry` / `extra_words`，输出增量 `headroom` / `extraWords` / `wouldTruncate` /
-`dropCandidates`（首行摘要 / 日期 / 词数 / `reason`）/ `format` / `suggestion` / `sameDateCount` / `retiredEntries`。
+`dropCandidates`（首行摘要 / 日期 / 词数 / `reason`）/ `format` / `suggestion` / `sameDateCount` / `retiredEntries` /
+`orderDebt`（位置债四元组，与 `zk_lint.memoryLinks` 同一份 `memoryOrderDebt`）。
 容量全是 `buildMemoryPayload` / `memoryUsage` 的投影，条目解析复用 `splitMemoryEntries` / `entryDate`，
-不跑 zk、不写文件、不改注入文本。同日 tie 由 `sameDateCount` 与 `reason: same-date` 可见化，
+不跑 zk、不写文件、不改注入文本。`sameDateCount` 直接读 `memoryOrderDebt`，不再另数一遍；同日 tie 由它与 `reason: same-date` 可见化，
 `suggestion` 明说「按位置决胜」，不假装有使用频率。`zk_dream.memory` 补 `undated` / `unlinked` / `retired`，
 与 `zk_lint.memoryLinks` 同一口径。WORKFLOW.md 补做法、两份 AGENTS 模板各加一句指针，`TEMPLATE_VERSION` 升到 9
 （细节见 `docs/features/memory.md`）。

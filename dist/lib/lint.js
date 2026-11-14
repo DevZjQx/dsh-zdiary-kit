@@ -29,7 +29,7 @@ import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikil
 import { fenceMask } from './fence.js';
 import { emptyTemplateSlots } from './sections.js';
 import { parseFrontmatter } from './frontmatter.js';
-import { daysSinceDate, entryDate, isRetiredEntry, memoryFormatDebt, splitMemoryEntries } from './memory-format.js';
+import { daysSinceDate, entryDate, isRetiredEntry, memoryFormatDebt, memoryOrderDebt, splitMemoryEntries } from './memory-format.js';
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION, templateVersionOf } from './agents-template.js';
 import { PERSONA_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION } from './persona-template.js';
 import { timelineCounts, timelineIssues } from './timeline.js';
@@ -156,6 +156,10 @@ export function memoryLinkIssues(cfg, notes, opts = {}) {
     let links = 0;
     let unlinked = 0;
     let undated = 0;
+    let outOfOrder = 0;
+    let newestAt = 0;
+    let oldestTies = 0;
+    let oldestDate = '';
     let retired = 0;
     let retiredBroken = 0;
     let staleTotal = 0;
@@ -200,6 +204,12 @@ export function memoryLinkIssues(cfg, notes, opts = {}) {
             const debt = memoryFormatDebt(body);
             undated = debt.undated;
             unlinked = debt.unlinked;
+            // 位置债也取唯一口径：注入提示、记忆页、zk_context 与这里是同一个数
+            const order = memoryOrderDebt(body);
+            outOfOrder = order.outOfOrder;
+            newestAt = order.newestAt;
+            oldestTies = order.oldestTies;
+            oldestDate = order.oldestDate;
             for (const entry of splitMemoryEntries(body)) {
                 const first = entry.split('\n', 1)[0] ?? '';
                 // 退役行：磁盘保留、注入从 0.9 起省略（D3），只核对它指向的新结论是否还活着
@@ -230,6 +240,10 @@ export function memoryLinkIssues(cfg, notes, opts = {}) {
         total: items.length,
         unlinked,
         undated,
+        outOfOrder,
+        newestAt,
+        oldestTies,
+        oldestDate,
         retired,
         retiredBroken,
         stale: { total: staleTotal, staleDays, items: staleItems },
@@ -258,6 +272,10 @@ export function formatMemoryLinks(bucket) {
         parts.push(`${bucket.unlinked} 个条目没附来源链接`);
     if (bucket.undated > 0)
         parts.push(`${bucket.undated} 个条目没写日期（YYYY-MM-DD）`);
+    if (bucket.outOfOrder > 0)
+        parts.push(`${bucket.outOfOrder} 条新条目没写顶部（最新在第 ${bucket.newestAt} 条）`);
+    if (bucket.oldestTies > 1)
+        parts.push(`${bucket.oldestTies} 条并列最旧（${bucket.oldestDate}，按位置决胜）`);
     if (bucket.retired > 0) {
         parts.push(bucket.retiredBroken > 0
             ? `${bucket.retired} 条已退役，其中 ${bucket.retiredBroken} 条的新结论不是活笔记`
