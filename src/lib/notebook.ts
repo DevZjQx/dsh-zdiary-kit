@@ -502,7 +502,7 @@ export async function ensureNotebook(
     })
     : ensureTemplates(cfg, { 'daily.md': DAILY_TEMPLATE })
 
-  // AGENTS.md 是工作约定（检索词归宿 / 中文打 tags / MEMORY 截断方向）。
+  // AGENTS.md 是工作约定（写之前查重 / MEMORY 条目格式与截断方向）。
   // layered 自动写；flat 只有显式 withAgents 才写 —— 0.1.0 的 vault 升级过来必须一个文件都不多（M0）。
   // 不写的话，默认安装既没有约定、也没有周节奏提醒（P1-6），所以要有一个 opt-in 入口。
   const agentsWritten = layered || opts.withAgents === true ? writeAgentsTemplate(cfg) : false

@@ -1,4 +1,4 @@
-# dsh-zdiary-kit 3.12.0
+# dsh-zdiary-kit 3.13.0
 
 > 给 [DSH](https://github.com/deepseek-ai/deepseek-harness) 装一个**内置 [zk](https://github.com/zk-org/zk) 的知识库 / 日记本**：
 > 插件提供一键安装 zk（官方 release；设置页按钮或 `zk-kit install`）、自动建笔记本（zk init + 日记模板 + 日记 group），
@@ -294,7 +294,7 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 
 外加 `source.md` / `entry.md` 两套模板与 source / concept / entity / pattern 四个 group
 （`entry.md` 三处共用，`type` 与 `authority` 由 `[group.X.extra]` 注入），
-以及根目录两份模板：**`AGENTS.md`**（检索词归宿、中文必须打 tags 两件事）
+以及根目录两份模板：**`AGENTS.md`**（写之前查重 / MEMORY 条目格式与每周整理节奏；检索策略交给工具接口，不写进模板）
 与 **`WORKFLOW.md`**（改已有笔记前先列受影响清单等确认，再按 temporal / context variant / contradiction 三分类动手）。
 `WORKFLOW.md` 不进每轮注入 —— 它低频但重要，塞进 `AGENTS.md` 会把 500 词预算挤到 MEMORY 没位置。
 **只建目录与模板，不搬已有笔记**；已存在的模板与 `AGENTS.md` / `WORKFLOW.md` 一律不覆盖。

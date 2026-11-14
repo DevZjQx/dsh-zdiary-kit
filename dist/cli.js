@@ -424,7 +424,7 @@ async function doctor() {
     }
     if (exists) {
         // 记忆在跑、但没有工作约定：默认安装里这是常态（flat 不自动写 AGENTS.md），
-        // 代价是「每条结论附来源 / 中文打 tags / 每周整理」四条约定与周提醒全都不生效。
+        // 代价是「每条结论附来源 / 先 read 核对来源 / 每周整理」这些约定与周提醒全都不生效。
         const hasMemory = fs.existsSync(path.join(cfg.notebook, 'MEMORY.md'));
         const hasAgents = fs.existsSync(path.join(cfg.notebook, 'AGENTS.md'));
         if (hasMemory && !hasAgents) {

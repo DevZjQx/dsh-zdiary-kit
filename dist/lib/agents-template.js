@@ -7,18 +7,18 @@
  * 或在设置页点「写入 AGENTS.md 模板」—— 否则默认安装既没有约定、也没有周节奏提醒。
  *
  * 为什么单独一个文件：它是「给人读的文档」，不是逻辑；放在这里也方便直接对照
- * docs/features/memory.md 的口径（检索词归宿 / 中文检索）。
+ * docs/features/memory.md 的口径（记忆预算 / MEMORY 条目格式）。
  * 注意别让运行期消息只指向 docs/：插件发布后文档在 profile 的 node_modules 里，agent 够不着；
  * lint 的旧版提示直接带模板全文（见 lib/lint.ts 的 LintTemplateBucket.currentText）。
  *
  * 长度是设计约束：AGENTS.md 属于注入预算（默认 500 词，中文 2 字 = 1 词）且**永不截断**，
  * 模板自己吃掉过半预算，USER / MEMORY 就没位置了 —— 所以这里只留规则，不写教程。
- * 目标 ≤190 词（AGENTS_TEMPLATE 实测 187、AGENTS_TEMPLATE_FLAT 实测 89），单测里锁住。
+ * 目标 ≤190 词（AGENTS_TEMPLATE 实测 157、AGENTS_TEMPLATE_FLAT 实测 82），单测里锁住。
  * 首行 `<!-- zdiary-template: vN -->` 是版本标记：lint 据此报告「老库的 AGENTS.md 是旧版」，
  * 只报告不覆盖（模板允许用户改）。
  */
-/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧模板（v11：修过时的中文检索口径） */
-export const TEMPLATE_VERSION = 11;
+/** 模板版本：改模板就 +1；lint 用它判断老库是否还在用旧模板（v12：检索策略交给工具接口，删掉模板里的中文检索口径） */
+export const TEMPLATE_VERSION = 12;
 /** 首行版本标记（实测 4 词）；不许带日期 —— 带日期的写法实测 6 词，白花 2 词 */
 export const TEMPLATE_MARK = `<!-- zdiary-template: v${TEMPLATE_VERSION} -->`;
 /** 版本标记的正则（本文件内用；外部只通过 `templateVersionOf` 取数，免得又一个口径） */
@@ -44,6 +44,12 @@ export const TEMPLATE_SENTINELS = {
         required: ['先 read 核对来源', '改 MEMORY 前看 zk_context', 'zk_walk', '中文查正文已并用子串检索'],
         forbidden: ['DSH 不会自动加载', '从底部往前丢', '全文索引不切中文', 'FTS 不切中文', '中文查 tags'],
     },
+    // v12：检索策略交给工具接口自洽，删「检索词」一节与两处行内中文口径。
+    // 这次是「删文本」，所以哨兵靠 forbidden 抓「标记已升 v12、正文还留旧口径」
+    12: {
+        required: ['先 read 核对来源', '改 MEMORY 前看 zk_context', 'zk_walk'],
+        forbidden: ['DSH 不会自动加载', '从底部往前丢', '全文索引不切中文', 'FTS 不切中文', '中文查 tags', '值得检索', '中文查正文已并用子串检索', '中文查正文或 tags'],
+    },
 };
 export const AGENTS_TEMPLATE = `${TEMPLATE_MARK}
 
@@ -54,14 +60,9 @@ export const AGENTS_TEMPLATE = `${TEMPLATE_MARK}
 raw/ 只读材料 · notes/sources/ 来源
 notes/{concepts,entities,patterns}/ 原子笔记 · archive/ 废弃（不删）
 
-## 检索词
-
-值得检索 → tags 或正文；不值得 → 不写。
-中文查正文已并用子串检索；tags 用于组织与中文查重。
-
 ## 写之前
 
-1. zk_query / zk_search 查重，zk_walk 一跳（中文查正文或 tags）。
+1. zk_query / zk_search 查重，zk_walk 一跳。
 2. 一条笔记一件事，标题即结论；文件名用 zk_new 的 name（8–14 字）；来源给 type=source、结论给 type=concept（目录跟 type 走，别落 notes/ 根），zk_link 相连。
 3. 结论过时用 zk_supersede（默认预演，带 reason）：不删文件、不改旧结论。
 4. 改已有笔记前读 WORKFLOW.md：先列清单等确认，再按三分类动手。
@@ -83,7 +84,7 @@ export const AGENTS_TEMPLATE_FLAT = `${TEMPLATE_MARK}
 
 ## 写之前
 
-1. zk_search 查重，zk_walk 一跳；中文查正文已并用子串检索。
+1. zk_search 查重，zk_walk 一跳。
 2. 一笔记一件事，标题即结论；文件名 8–14 字。
 3. 结论过时用 zk_supersede（默认预演，带 reason）。
 

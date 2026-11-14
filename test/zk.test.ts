@@ -2858,12 +2858,15 @@ describe('M4: 结构设置与记忆预算', () => {
     const first = await notebookLib.ensureNotebook(m4)
     expect(first.agentsWritten).toBe(true)
     const body = fs.readFileSync(agentsFile, 'utf8')
-    // 计划 §4 M4 的两件事：检索词归宿、中文检索口径
-    expect(body).toContain('值得检索')
-    expect(body).toContain('tags')
-    expect(body).toMatch(/中文.*tags|tags.*中文/)
+    // 工作约定：写之前查重、MEMORY 条目格式与每周节奏
+    expect(body).toContain('zk_walk 一跳')
     expect(body).toContain('MEMORY.md')
     expect(body).toContain('WORKFLOW.md')
+    // v12：检索策略交给工具接口自洽，模板不再教「检索词归宿 / 中文查正文或 tags」
+    expect(body).not.toContain('## 检索词')
+    expect(body).not.toContain('值得检索')
+    expect(body).not.toContain('中文查正文或 tags')
+    expect(body).not.toContain('中文查正文已并用子串检索')
     // 截断从底部往前丢：模板必须说清新条目写在哪，否则 agent 继续往下追加，最新的结论先没
     expect(body).toContain('新条目写顶部')
 
@@ -5559,8 +5562,8 @@ describe('G1 / G4：写 MEMORY 前的容量可见（§10.4 第 6 项）', () => 
     }
   })
 
-  it('模板升到 v11：两份 AGENTS 都把 zk_walk 一跳写进查重那一步，且都守住词数预算', () => {
-    expect(agentsTpl.TEMPLATE_VERSION).toBe(11)
+  it('模板 v12：两份 AGENTS 都把 zk_walk 一跳写进查重那一步，且都守住词数预算', () => {
+    expect(agentsTpl.TEMPLATE_VERSION).toBe(12)
     expect(agentsTpl.TEMPLATE_SENTINELS[agentsTpl.TEMPLATE_VERSION]).toBeDefined()
     expect(agentsTpl.TEMPLATE_SENTINELS[agentsTpl.TEMPLATE_VERSION]!.required).toContain('zk_walk')
     expect(notebookLib.AGENTS_TEMPLATE).toContain('改 MEMORY 前看 zk_context')
@@ -5958,47 +5961,54 @@ describe('R8 / R9-v1 / R10：入口 + 一跳（§10.4 第 8–10 项）', () => 
     }
   })
 
-  test('R11：模板 v11 修过时中文检索口径，词数 187 / 89（不提高预算）', () => {
-    expect(agentsTpl.TEMPLATE_VERSION).toBe(11)
-    expect(memory.countWords(agentsTpl.AGENTS_TEMPLATE)).toBe(187)
-    expect(memory.countWords(agentsTpl.AGENTS_TEMPLATE_FLAT)).toBe(89)
-    expect(agentsTpl.AGENTS_TEMPLATE).toContain('1. zk_query / zk_search 查重，zk_walk 一跳（中文查正文或 tags）。')
-    expect(agentsTpl.AGENTS_TEMPLATE_FLAT).toContain('1. zk_search 查重，zk_walk 一跳；中文查正文已并用子串检索。')
-    expect(agentsTpl.TEMPLATE_SENTINELS[11]!.required).toContain('中文查正文已并用子串检索')
-    expect(agentsTpl.TEMPLATE_SENTINELS[11]!.forbidden).toContain('全文索引不切中文')
-    expect(agentsTpl.TEMPLATE_SENTINELS[11]!.forbidden).toContain('FTS 不切中文')
+  test('R12：模板删检索词一节与两处行内中文口径，词数 157 / 82（不提高预算）', () => {
+    expect(agentsTpl.TEMPLATE_VERSION).toBe(12)
+    expect(memory.countWords(agentsTpl.AGENTS_TEMPLATE)).toBe(157)
+    expect(memory.countWords(agentsTpl.AGENTS_TEMPLATE_FLAT)).toBe(82)
+    expect(agentsTpl.AGENTS_TEMPLATE).toContain('1. zk_query / zk_search 查重，zk_walk 一跳。')
+    expect(agentsTpl.AGENTS_TEMPLATE_FLAT).toContain('1. zk_search 查重，zk_walk 一跳。')
+    expect(agentsTpl.AGENTS_TEMPLATE).not.toContain('## 检索词')
+    const forbidden = agentsTpl.TEMPLATE_SENTINELS[12]!.forbidden!
+    expect(forbidden).toContain('值得检索')
+    expect(forbidden).toContain('中文查正文已并用子串检索')
+    expect(forbidden).toContain('中文查正文或 tags')
+    expect(forbidden).toContain('全文索引不切中文')
+    expect(forbidden).toContain('FTS 不切中文')
   })
 
-  it('R11：只把首行数字改成 v11、正文没加 zk_walk 的老库被报「标记与内容不符」', async () => {
-    const { c, dir } = await setup('nb-r10-sentinel')
+  it('R12：只把首行数字改成 v12、正文没加 zk_walk 的老库被报「标记与内容不符」', async () => {
+    const { c, dir } = await setup('nb-r12-sentinel-walk')
     try {
       const faked = notebookLib.AGENTS_TEMPLATE.replace('，zk_walk 一跳', '')
       fs.writeFileSync(path.join(dir, 'AGENTS.md'), faked, 'utf8')
       const st = lintLib.templateStatus(c)
-      expect(st.version).toBe(11)
+      expect(st.version).toBe(12)
       expect(st.mismatch).toBe(true)
       expect(st.mismatchDetail).toContain('zk_walk')
 
       fs.writeFileSync(path.join(dir, 'AGENTS.md'), notebookLib.AGENTS_TEMPLATE, 'utf8')
       const clean = lintLib.templateStatus(c)
-      expect(clean.version).toBe(11)
+      expect(clean.version).toBe(12)
       expect(clean.stale).toBe(false)
     } finally {
       restore()
     }
   })
 
-  it('R11：只把首行数字改成 v11、正文仍留过时中文口径的库被报「标记与内容不符」', async () => {
-    const { c, dir } = await setup('nb-r11-sentinel')
+  it('R12：标记升到 v12、正文仍留「检索词」旧节的库被报「标记与内容不符」', async () => {
+    const { c, dir } = await setup('nb-r12-sentinel')
     try {
-      const faked = notebookLib.AGENTS_TEMPLATE
-        .replace('中文查正文已并用子串检索；tags 用于组织与中文查重。', '中文必打 tags：全文索引不切中文，只查正文会静默查空、建重复笔记。')
-        .replace('中文查正文或 tags', '中文查 tags')
+      // v12 是删文本：旧库把旧节留在正文、只改了首行数字，哨兵靠 forbidden 抓出来
+      const faked = notebookLib.AGENTS_TEMPLATE.replace(
+        '## 写之前',
+        '## 检索词\n\n值得检索 → tags 或正文；不值得 → 不写。\n中文查正文已并用子串检索；tags 用于组织与中文查重。\n\n## 写之前',
+      )
       fs.writeFileSync(path.join(dir, 'AGENTS.md'), faked, 'utf8')
       const st = lintLib.templateStatus(c)
-      expect(st.version).toBe(11)
+      expect(st.version).toBe(12)
       expect(st.mismatch).toBe(true)
-      expect(st.mismatchDetail).toContain('全文索引不切中文')
+      expect(st.mismatchDetail).toContain('仍含旧版已移除的内容')
+      expect(st.mismatchDetail).toContain('值得检索')
       expect(st.mismatchDetail).toContain('中文查正文已并用子串检索')
     } finally {
       restore()
