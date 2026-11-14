@@ -377,6 +377,8 @@ function main(): void {
   })
 
   // ── 7. 记忆三件套：同日条目 + 一条无日期（M1 的「淘汰键坏了」要能复现） ──
+  // 这三条 [[来源]] 刻意写 frontmatter 标题而非根相对路径，是测 wikiIndex.byTitle 解析的边界样本，
+  // 不是书写范本：MEMORY 条目的口径见 AGENTS.md 模板「结论（YYYY-MM-DD）[[来源路径]]」。
   fs.writeFileSync(path.join(opts.out, 'MEMORY.md'), [
     '# MEMORY',
     '',

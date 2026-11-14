@@ -428,3 +428,6 @@ dirty 留到下次读。**回退只允许落在完整 db 上**：db 不完整（
 `WORKFLOW_TEMPLATE` 的「改 MEMORY.md 之前」补一行「先 `zk_memory_write` 预演」；`zk_context` 保持只读预览。
 **成本**：格式门要核实标题式来源，走一次 `scanNotes`（**1 个 zk 子进程**，与 `zk_lint` 同口径）；
 容量 / 日期 / 并发门都是纯 JS。详见 `docs/plan.md` §16 的实施记录。
+**口径统一**：`entry` 示例与 `AGENTS.md` 模板同口径（`结论（YYYY-MM-DD）[[来源路径]]`，路径式）；
+`[[笔记标题]]` 是标题式，夹具 `scripts/fixture.ts` 里那几条 MEMORY 条目是测 `wikiIndex.byTitle`
+的边界样本，不是书写范本。

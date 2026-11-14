@@ -1476,7 +1476,9 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 properties: {
                     target: S.enum('写哪份：MEMORY 或 USER（根目录 MEMORY.md / USER.md）', ['MEMORY', 'USER']),
                     action: S.enum('add（默认）= 追加一条现行结论；retire = 追加一条退役标记', ['add', 'retire']),
-                    entry: S.str('完整条目正文，例：`- **结论。** 2026-11-12（来源：[[笔记标题]]）`；插件不改一个字'),
+                    entry: S.str('完整条目正文，与 AGENTS.md 模板同口径，例：' +
+                        '`- 结论（2026-11-12）[[notes/sources/来源笔记.md]]`；' +
+                        '[[来源]] 用笔记本根相对路径（标题式在索引没扫全时会被拒）；插件不改一个字'),
                     dry_run: S.bool('true（默认）= 只预演、不改盘；false = 真的写'),
                     expect_stamp: S.str('可选：预演返回的 stamp，带回来挡并发改动'),
                 },

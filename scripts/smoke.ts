@@ -115,7 +115,7 @@ const memFile = path.join(notebook, 'MEMORY.md')
 const memBefore = fs.existsSync(memFile) ? fs.readFileSync(memFile, 'utf8') : null
 const memWrite = await call('zk_memory_write', {
   target: 'MEMORY', action: 'add', dry_run: true,
-  entry: `- **冒烟结论。** 2026-11-12（来源：[[${String(created.path)}]]）`,
+  entry: `- 冒烟结论（2026-11-12）[[${String(created.path)}]]`,
 })
 if (memWrite.accepted !== true || memWrite.performed !== false) throw new Error('zk_memory_write 预演没通过或不该写盘')
 if ((fs.existsSync(memFile) ? fs.readFileSync(memFile, 'utf8') : null) !== memBefore) throw new Error('zk_memory_write 预演改了盘')

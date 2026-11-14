@@ -65,7 +65,8 @@
 `PERSONA_META_FILES` 只含 `PERSONA.md`；人格上限、注入顺序、版本哨兵都只服务这一份。
 需要「别自动发布 / 别花钱」这类边界时，写进 `AGENTS.md`（工作约定）或 `PERSONA.md`（角色边界）。
 
-**记忆层与事实层的一致性。** `MEMORY.md` 每条结论后附 `[[来源路径]]`（写进 AGENTS 模板）；
+**记忆层与事实层的一致性。** `MEMORY.md` 每条结论后附 `[[来源路径]]`（写进 AGENTS 模板；
+`zk_memory_write` 的 `entry` 示例同口径，用路径式而非 `[[笔记标题]]`）；
 `zk_lint` 的 `memoryLinks` 只做机械核对：先按稳定 id 查（`[[<id>]]` → 该笔记当前路径，§10.4 第 7 项），
 未命中再走原路径 → 加 `.md` → `archive/` 下同名 → 活笔记标题 / 文件名，
 旧路径在 `archive/` 下找到同名（或活文件带 `status: superseded`）报 `superseded`，都找不到报 `missing`；
