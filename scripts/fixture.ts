@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * 规模夹具：生成 1k / 10k 的笔记库，给成本表与三态回归提供**可重复**的基线（plan §0.5）。
+ * 规模夹具：生成 1k / 10k 的笔记库，给成本表与三态回归提供**可重复**的基线。
  *
  * 为什么链接密度是参数：2026-11-05 实测建索引成本 ≈ 6.6 s + 26 ms × 链接数，与篇数弱相关
  * （同 10k 篇：0 链 6.6 s、10.4k 链 275 s）。只按篇数生成的夹具会把最贵的两条路径
@@ -136,7 +136,7 @@ function writeNote(out: string, note: Note): void {
 }
 
 function zkConfig(): string {
-  return `# 夹具自带的最小 zk 配置（plan §0.5）：wiki 链接 + 与插件默认布局一致的 group。
+  return `# 夹具自带的最小 zk 配置：wiki 链接 + 与插件默认布局一致的 group。
 # 没有 template：夹具不走 zk new，模板缺失不影响 index / list / graph。
 [note]
 extension = "md"
@@ -238,7 +238,7 @@ function main(): void {
     const targetIdx = Math.floor(rnd() * Math.max(1, stems.length))
     // 用文件名 stem（`[[检索方法-0]]`），不是 frontmatter title（`[[检索方法 0]]`）：
     // zk 0.15.7 按文件名 stem 解析 wikilink，带空格的标题会留下 target_id = null 的死链，
-    // 于是 `--link-to` 恒 0 条 —— 链接密度参数就白设了（plan §12.4）。
+    // 于是 `--link-to` 恒 0 条 —— 链接密度参数就白设了。
     const target = broken ? '幽灵笔记 ' + k : stems[targetIdx]!
     const list = perNote.get(idx) ?? []
     list.push(target)
@@ -376,7 +376,7 @@ function main(): void {
       ['status', 'active']]) + '# ' + similarB + '\n\n' + sentence(rnd, 3) + '\n',
   })
 
-  // ── 7. 记忆三件套：同日条目 + 一条无日期（M1 的「淘汰键坏了」要能复现） ──
+  // ── 7. 记忆三件套：同日条目 + 一条无日期（「淘汰键坏了」要能复现） ──
   // 这三条 [[来源]] 刻意写 frontmatter 标题而非根相对路径，是测 wikiIndex.byTitle 解析的边界样本，
   // 不是书写范本：MEMORY 条目的口径见 AGENTS.md 模板「结论（YYYY-MM-DD）[[来源路径]]」。
   fs.writeFileSync(path.join(opts.out, 'MEMORY.md'), [

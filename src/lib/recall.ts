@@ -43,7 +43,7 @@ export interface RecallResult {
   notes: RecallNote[]
   /** R9：MEMORY.md 的活条目（`via: query` 的来源可以不在本次结果里） */
   entryPoints: EntryPoint[]
-  /** true = 命中的入口超过上限，只回了前几条（§0.5 第 3 条：上限不许静默） */
+  /** true = 命中的入口超过上限，只回了前几条（上限不许静默） */
   entryPointsTruncated: boolean
   /**
    * true = `via: 'query'` 的入口已经写进 `text`（占同一份预算）；false = 预算放不下，还没写。

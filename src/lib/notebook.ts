@@ -20,7 +20,7 @@ import type { GroupBlock } from './notebook-config.ts'
 
 export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
 
-/** ensureNotebook 的可选动作：flat 下是否顺手写 AGENTS.md（默认不写，守住 M0 的「不多一个文件」） */
+/** ensureNotebook 的可选动作：flat 下是否顺手写 AGENTS.md（默认不写，守住「不多一个文件」） */
 export interface EnsureOptions {
   withAgents?: boolean
   /** 是否顺手写角色人格模板（PERSONA.md；opt-in，缺了才写，已存在绝不覆盖） */
@@ -53,7 +53,7 @@ export const DAILY_TEMPLATE = `# {{format-date now "%Y-%m-%d"}}
 {{content}}
 `
 
-/** layered 的日记模板：多三节，`{{content}}` 必须在，否则 stdin 的正文被丢（Z9） */
+/** layered 的日记模板：多三节，`{{content}}` 必须在，否则 stdin 的正文被丢 */
 export const DAILY_TEMPLATE_LAYERED = `# {{format-date now "%Y-%m-%d"}}
 
 ## Events
@@ -113,7 +113,7 @@ export interface GroupSpec {
   name: string
   paths: string[]
   template: string
-  /** TOML 单引号字面量：不写就没有 filename，zk 会退回随机 id（Z10） */
+  /** TOML 单引号字面量：不写就没有 filename，zk 会退回随机 id */
   filename?: string
   extra?: Record<string, string>
   comment: string
@@ -489,7 +489,7 @@ export async function ensureNotebook(
   let initialized = false
   if (!fs.existsSync(configFile)) {
     // init 会把目录里已有的笔记一起索引进空库 —— 10k / 1 链实测 202 s，
-    // 原来的 120 s 会把进程杀在写事务里，留下半库。这里直接给建库预算（M5.0a）。
+    // 原来的 120 s 会把进程杀在写事务里，留下半库。这里直接给建库预算。
     await zk(cfg, ['init', cfg.notebook], { signal, timeoutMs: indexPolicy.buildTimeoutMs })
     initialized = true
   }
@@ -503,11 +503,11 @@ export async function ensureNotebook(
     : ensureTemplates(cfg, { 'daily.md': DAILY_TEMPLATE })
 
   // AGENTS.md 是工作约定（写之前查重 / MEMORY 条目格式与截断方向）。
-  // layered 自动写；flat 只有显式 withAgents 才写 —— 0.1.0 的 vault 升级过来必须一个文件都不多（M0）。
-  // 不写的话，默认安装既没有约定、也没有周节奏提醒（P1-6），所以要有一个 opt-in 入口。
+  // layered 自动写；flat 只有显式 withAgents 才写 —— 0.1.0 的 vault 升级过来必须一个文件都不多。
+  // 不写的话，默认安装既没有约定、也没有周节奏提醒，所以要有一个 opt-in 入口。
   const agentsWritten = layered || opts.withAgents === true ? writeAgentsTemplate(cfg) : false
 
-  // 人格层（角色）只走显式 opt-in：两种结构都不自动多一个文件（D10）。
+  // 人格层（角色）只走显式 opt-in：两种结构都不自动多一个文件。
   const personaWritten = opts.withPersona === true
     ? writePersonaTemplate(cfg)
     : { personaWritten: false }

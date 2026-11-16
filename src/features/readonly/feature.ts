@@ -296,7 +296,7 @@ function renderMemoryBody(body: string, linkFor: (target: string) => string | nu
 }
 
 /**
- * 记忆页（P1-5 → D9）：人的周审入口 —— 人格 / 用户 / 工作约定 / 记忆 / 周审五段 + 载荷预览。
+ * 记忆页：人的周审入口 —— 人格 / 用户 / 工作约定 / 记忆 / 周审五段 + 载荷预览。
  * 不走 `loadNote`：根目录 meta 被 `loadAll` 排除、也被 `loadNote` 明确拒绝；
  * 这里按常量直接读盘，再复用渲染层的转义与双链白名单。
  * 载荷预览只转义展示（与 zk_context 同源），不提供编辑 —— 写仍然只走 zk_* / 编辑器。
@@ -507,7 +507,7 @@ async function handleNote(res: ServerResponse, cfg: Config, rel: string): Promis
   let backlinks: NoteRecord[] = []
   let backlinksTruncated = false
   try {
-    // 按篇反查（plan §0.5.1 结论 3）：打开一篇笔记不该为全库建图（10k 要 26–31 s）
+    // 按篇反查：打开一篇笔记不该为全库建图（10k 要 26–31 s）
     const found = await backlinksOf(cfg, loaded.rel)
     backlinks = found.notes.sort((a, b) => a.title.localeCompare(b.title))
     backlinksTruncated = found.truncated
@@ -518,7 +518,7 @@ async function handleNote(res: ServerResponse, cfg: Config, rel: string): Promis
     : loaded.doc.content
   const truncated = content.length < loaded.doc.content.length
 
-  // 时间轴警告（计划 §2 D3）：只在日记页出现，正文照原 markdown 渲染（空块保持空 h3）。
+  // 时间轴警告：只在日记页出现，正文照原 markdown 渲染（空块保持空 h3）。
   // 不受 zk_lint 的 90 天窗口限制：打开哪篇查哪篇。
   const timeline = isUnderDir(loaded.rel, cfg.dailyDir)
     ? timelineIssues(loaded.doc.content, 'auto')

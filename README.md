@@ -6,13 +6,26 @@
 >
 > 装好 zk 后不用先配环境：agent 第一次调用工具时就把笔记本建好；设置页里再调路径、重建索引、跑自检。
 
+## 文档地图
+
+README（本文）是导览与操作手册。实现口径、输出字段、边界与「为什么这么做」在 `docs/features/`：
+
+| 想了解 | 看 |
+|---|---|
+| 16 个工具的参数、输出字段、每条守卫的边界 | [docs/features/zk-tools.md](docs/features/zk-tools.md) |
+| 记忆注入、预算与截断、`AGENTS.md` 模板 | [docs/features/memory.md](docs/features/memory.md) |
+| 内置 zk 安装、笔记本自举、group 收敛 | [docs/features/provisioning.md](docs/features/provisioning.md) |
+| 设置页字段与宿主 API | [docs/features/settings.md](docs/features/settings.md) |
+| 只读视图的四道门与已知限制 | [docs/features/readonly.md](docs/features/readonly.md) |
+| 成本基线（子进程 / 字节 / p50 / p95） | [docs/bench-baseline.md](docs/bench-baseline.md) |
+
 ## 它给 agent 什么
 
 | 工具 | 干什么 |
 |---|---|
 | `zk_search` | 全文 / 标签 / 日期 / 断链 / 孤立笔记检索，返回标题、路径、标签、摘要与命中片段 `snippet`；中文自动并用子串、多词按覆盖度合并（`matchStrategy` 说明用了 `fts` / `regex` / `mixed`）；有 query 时默认按 FTS 相关性排序，显式 `sort` 才改顺序；`total` 只在结果完整（未截断）时给，触顶看 `hasMore` / `completeness`；带 `entryPoints`（MEMORY 的活条目：`via=query` 是「这条结论跟你的查询有关」，来源可以不在结果集里；`via=result` 是「这条结论指向本批结果」）与 `counterEntries`（归档里同名旧结论：`supersede` 的原因 + 被谁取代 —— 先看它，别把废掉的结论重新提出来） |
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active，也不再重复报死胡同 —— 归档已经在结果里）；中文多词同样按覆盖度合并、`snippet` 与 `total` 口径同 `zk_search`；`entryPoints` / `counterEntries` 与 `zk_search` 同口径 |
-| `zk_recall` | 召回装配：先按 query / 过滤条件检索（与 `zk_search` 同一套 R1–R3），再按词数预算 `budget`（默认 500）把命中笔记拼成一段可直接读的上下文；每条带标题、路径、`absPath` 与全文词数，放不下就整条丢弃、不切半句，被挡下的原因在 `notes[].reason`；`used` 一定不超过 `budget`（中文 2 字 1 词）；不读全文、不新增 zk 进程、不做重排 / 跨回合去重；`completeness` 沿用检索三态，装配过的 ≠ 全部命中；`entryPoints` / `counterEntries` 与 `zk_search` 共用同一份计算，`via=query` 的入口卡会排在装配正文之前（占同一份预算），放不下就置 `entryPointsInText=false` 并在正文外单列（不静默丢）。命令行对应 `zk-kit recall` |
+| `zk_recall` | 召回装配：先按 query / 过滤条件检索（与 `zk_search` 同一套检索与排序口径），再按词数预算 `budget`（默认 500）把命中笔记拼成一段可直接读的上下文；每条带标题、路径、`absPath` 与全文词数，放不下就整条丢弃、不切半句，被挡下的原因在 `notes[].reason`；`used` 一定不超过 `budget`（中文 2 字 1 词）；不读全文、不新增 zk 进程、不做重排 / 跨回合去重；`completeness` 沿用检索三态，装配过的 ≠ 全部命中；`entryPoints` / `counterEntries` 与 `zk_search` 共用同一份计算，`via=query` 的入口卡会排在装配正文之前（占同一份预算），放不下就置 `entryPointsInText=false` 并在正文外单列（不静默丢）。命令行对应 `zk-kit recall` |
 | `zk_walk` | 从一篇笔记出发走一跳邻居（只读）：`direction=both` 看反链 + 出链，`in` 只看谁链到它，`out` 只看它链到谁；种子写相对 / 绝对路径或精确标题 / 稳定 id（`[[标题]]` / `[[id]]` 也认），不精确命中就返回空、不会退回全库；按篇反查、不建全图（路径种子 2 个子进程），`limit` 硬顶 200，触顶 `completeness=partial`（邻居没列全，不代表没有）；每条邻居带 `section` / `linkLine`（那条边所在的小节与那一行 —— 没有它，同一篇种子的出链只有一串标题），只回标题 / 路径 / `absPath` / 摘要 / 那一行，全文仍用原生 read，**0 个额外子进程**。命令行对应 `zk-kit walk` |
 | `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/`、`archive/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面；归档只放 `zk_supersede` 搬进去的旧结论）；同目录里有「改一两个字」的相似标题时在 `similar` 里提示（带分数，只提示、不阻断）；中文笔记没有任何标签时在 `tagWarning` 里提示（只提示，不阻断）；正文第一行就是 `##` 时，模板的内容槽会被挤成空壳，`emptyTemplateSections` 点名（只提示，不改正文） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题）；根目录 meta 文件拒写 |
@@ -76,10 +89,10 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 写入是 opt-in：`zk-kit init --with-persona` 或设置页「写入人格模板」，已存在的文件绝不覆盖。
 设置页的按钮不依赖 zk 初始化：笔记本还没建好时也能先写人格文件（只建根目录与文件，不碰 `.zk`），
 写完会提醒你仍需要点「初始化 / 补建」建库。
-**边界**：M1 是「一本笔记本一份」人格；多个 agent 共用一个库时先别启用，等 M4 的 per-agent persona ——
+**边界**：当前只做「一本笔记本一份」人格；多个 agent 共用一个库时先别启用，等 per-agent 人格落地 ——
 否则 A 的人格会串到 B。
 
-**AGENTS.md 模板升到 v7**（精简模板）：已有文件不会被覆盖，
+模板首行有版本标记：已有文件不会被覆盖，
 `zk_lint` 会把它报成旧版、并把新版全文附在报告里 —— 自己挑要哪几条搬过去。
 
 维护用 `zk_lint`（结构体检 + 记忆链接核对）和 `zk_dream`（晋升候选 / 拒绝原因 / 未完成项）：两个工具都**只读**；
@@ -266,9 +279,7 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 
 `--fix` 写前备份 `.zk/config.toml.bak`，只改 paths 与组头；自定义的 `template` / `extra` / 注释 / 别的 group 一字不动。
 两个 group 要落到**同一条路径**时它拒绝写（整轮不改，并在 `groups` / `doctor` / 设置页里报出来）——
-那样 zk 命中哪个模板就只剩实现细节了。父子目录不算冲突：`dailyDir=notes` 与 `notes/concepts` 可以共存；
-没写 `paths` 的 group 按同名目录算（zk 的语义），同样算抢同一路径。
-`dailyGroup` 改名且 `dailyDir` 没变时，`--fix` 直接把旧组头改成新名字（连同 `.note` / `.extra` 子表），不追加第二个日记组。
+`dailyGroup` 改名且 `dailyDir` 没变时，`--fix` 直接把旧组头改成新名字，不追加第二个日记组。
 
 `archiveDir` 是另一条硬规则：**旧归档目录非空时拒绝改**。插件不迁移归档文件，改了会让废弃笔记重新进入检索、
 统计也会把它们算成活跃 —— 先手动迁移，或保持原值。空目录 / 不存在的目录可以改。
@@ -312,22 +323,16 @@ zk-kit groups --fix     # 只改 dsh-zdiary-kit 自己写的 group：paths 行�
 
 ## 检索路径：入口、一跳、死胡同
 
-插件借了卢曼卡片盒的**写法规约**（一笔记一件事 / 标题即结论 / 只连真实概念关联 / supersede 不删），
-检索这一侧只补了三件「纸质约束不成立、但机制可移植」的事，其余一律加法：
+除了全文索引，插件还给了三条「该看哪篇」的路，都是本地读、不新增 zk 进程：
 
-- **入口不只有全文索引**：`MEMORY.md` 每条活条目就是一张「概念 → 入口卡」。
-  `zk_search` / `zk_query` / `zk_recall` 的 `entryPoints` 里，`via=query` 表示这条结论跟你的查询有关 ——
-  它指向的笔记**可以不在本次结果里**（路径式来源直接落地；标题式只给入口名，用 `zk_walk` 跟进去）。
-- **一跳**：`zk_walk` 从任意一篇出发看邻居，每条带 `section` / `linkLine`，即「这条边为什么存在」。
-  不做 depth 2 / 递归 / 全图游走：agent 拿到 `absPath` 就能自己连走，把深度做进工具只是省一次往返，
-  却要重新过一遍成本表。
-- **死胡同**：`counterEntries` 把 `archive/` 里同名（或标题高度相似）的旧结论带出来，附 `supersede` 的原因与
-  被谁取代。`zk_supersede` 的旧结论默认不进检索 —— 这条提醒就是补那个洞：**「库里没有」不等于「从来没出现过」**。
-  0 命中时也会查一次（拿查询词当标题比），文案会明说「没有活笔记命中，但归档里有同名旧结论」。
+- **入口**：`MEMORY.md` 每条活条目就是一张「概念 → 入口卡」。`zk_search` / `zk_query` / `zk_recall` 的 `entryPoints`
+  里 `via=query` 表示这条结论跟你的查询有关 —— 它指向的笔记**可以不在本次结果里**（路径式来源直接落地；
+  标题式只给入口名，用 `zk_walk` 跟进去）。
+- **一跳**：`zk_walk` 从任意一篇出发看邻居，每条带 `section` / `linkLine`（这条边在哪一节、哪一行）。不做 depth 2 / 递归 / 全图游走。
+- **死胡同**：`counterEntries` 把 `archive/` 里同名（或标题高度相似）的旧结论带出来，附废弃原因与被谁取代 ——
+  `zk_supersede` 的旧结论默认不进检索，所以 **「库里没有」不等于「从来没出现过」**；0 命中时也会拿查询词比一次。
 
-这三件都是本地读 / 已付过费的字节：`zk_walk` 的子进程数与 3.9.0 之前一样（路径种子 2 个），
-`entryPoints` / `counterEntries` **不新增 zk 进程**（10k 夹具上死胡同探针 p50 约 50 ms，入口计算 < 5 ms）。
-`zk_stats.usage` 的计数落在 `<笔记本>/.zk/dsh-usage.json`，只有键与数字。
+`zk_stats.usage` 记各工具被调了几次（只存计数，不记查询词、不记路径），落在 `<笔记本>/.zk/dsh-usage.json`。
 
 ## 索引与「写后可读」
 
@@ -341,8 +346,7 @@ zk 的索引（`.zk/notebook.db`）是缓存：文件落盘不等于能搜到。
 - 半库不读：db 不完整（missing / interrupted）时 flush 不接手，交给冷建守卫 —— 小库自己补完，
   大库报「索引在建」，绝不退回读半截索引。
 
-读路径与「重建索引」共用一把跨进程锁（`.zk/dsh-index.lock`），所以插件进程和 `zk-kit` 命令行不会同时跑两个 `zk index`
-（两个并发只会撞 SQLite 写锁）。
+插件进程与 `zk-kit` 命令行共用一把跨进程锁，不会同时跑两个 `zk index`（两个并发只会撞 SQLite 写锁）。
 
 **外部编辑**（编辑器 / agent 原生 `Edit`，不经 `zk_*`）插件感知不到：`zk-kit doctor` / `zk_lint` 只按笔记本顶层目录的
 mtime 粗判 —— 新增 / 删除 / 改名会提示「索引可能落后」，**改已有笔记的正文不会**（目录 mtime 不变）。
@@ -471,7 +475,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
   `--links-per-note` 决定链接密度 —— 建索引成本主要花在链接上，产出目录自带 `.zk/config.toml`，进去 `zk index` 即可）·
   `bun run bench`（成本表：逐用例真起 zk，记子进程数 / 回传字节 / 峰值 RSS / p50 / p95 与库的篇数 / 链接数；默认 1k、3 轮；
   全量 10k 实测与复跑方法见 `docs/bench-baseline.md`）
-- **耗时差两个数量级**：`bun run test` 约 2 min（289 个用例，真起 zk；机器快慢能差一倍）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
+- **耗时差两个数量级**：`bun run test` 约 2 min（真起 zk；机器快慢能差一倍）；`fixture` 百毫秒级；`bench` 默认 1k 约十几秒，
   10k 上光一条 `graph.full` 就是 30 s、冷建索引几分钟。所以 `bench` **不在** `check` / CI 里，跟测试完全分开，不会因为你跑测试而变慢。
 - `bun run test` 会先按插件自己的顺序找 zk（配置 → `ZK_BIN` → PATH → `~/.dsh/zdiary/bin`），跑完要求 **skip = 0**：
   集成测试跳过一律按失败处理，否则「全绿」可能是「什么都没跑」。要换 zk 就 `ZK_BIN=/path/to/zk bun run check`。
@@ -495,7 +499,7 @@ src/
 │   ├── frontmatter.ts            # 只改 status / superseded-by 这类标量，其余行原样保留
 │   ├── meta.ts                   # meta 文件清单（注入 3 份 / 排除 7 份，一个真相）
 │   ├── lint.ts / dream.ts        # 巡检与做梦：只报告，绝不写文件
-│   ├── recall.ts                 # R4 召回装配：按词数预算拼装检索结果（只读）
+│   ├── recall.ts                 # 召回装配：按词数预算拼装检索结果（只读）
 │   ├── notebook.ts               # 自举：zk init + 日记模板 + group 配置（幂等）
 │   ├── install.ts / platform.ts  # 内置 zk：平台映射、下载、解包、验证
 │   ├── tool.ts                   # 最小 JSON Schema 构造 + 输入校验（裸注册工具自己兜）

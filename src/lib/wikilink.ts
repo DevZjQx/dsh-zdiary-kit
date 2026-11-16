@@ -22,7 +22,7 @@ export function normalizeTitle(title: string): string {
 }
 
 /**
- * 「同一篇」的身份键（§9.2）：有稳定 id 就只看 id，老笔记 / 日记退回 path。
+ * 「同一篇」的身份键：有稳定 id 就只看 id，老笔记 / 日记退回 path。
  * 改名 / 移动 / 重建索引不会改 frontmatter 里的 id，所以这个键不随检索地址漂移。
  */
 export function noteKey(note: { id?: string; path: string }): string {
@@ -80,7 +80,7 @@ function relOf(cfg: Config, abs: string): string {
 export function resolveWikiTarget(cfg: Config, target: string, index: WikiIndex): WikiResolution {
   const rel = String(target ?? '').replace(/\\/g, '/').replace(/^\.\//, '').trim()
   if (!rel) return { status: 'missing', path: '', explicit: false }
-  // 稳定 ID 优先（§9.2）：`[[<id>]]` 直接落到那篇笔记的当前路径，改名之后也不断链。
+  // 稳定 ID 优先：`[[<id>]]` 直接落到那篇笔记的当前路径，改名之后也不断链。
   // 老库没有 id，byId 为空，下面的路径 / 标题解析顺序逐字不变。
   const byId = index.byId.get(rel)
   if (byId) return { status: 'live', path: byId, explicit: false }

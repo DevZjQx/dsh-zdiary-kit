@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * 成本表（plan §0.5 第 2 条）：每个工具一行 —— 子进程数 / zk 回传字节 / 峰值 RSS / p50 / p95 / 超时 / 超限行为。
+ * 成本表：每个工具一行 —— 子进程数 / zk 回传字节 / 峰值 RSS / p50 / p95 / 超时 / 超限行为。
  *
  * 为什么单独一支：夹具生成是毫秒级，成本表才是分钟级，而且 10k 的 graph / index 一行就要几十秒到几分钟。
  * 这两件事都不能进 `bun run test`（测试要快到每次提交都跑得起），也不进 `bun run check` / CI。
@@ -129,7 +129,7 @@ interface Ctx {
   sample: string
   /** 出链最多的笔记（outlinks 的种子） */
   sampleOut: string
-  /** §0.5 成本表口径：库的篇数与链接数，读夹具的 .fixture.json（真实值，不是 CLI 参数） */
+  /** 成本表口径：库的篇数与链接数，读夹具的 .fixture.json（真实值，不是 CLI 参数） */
   notes: number
   links: number
 }
@@ -297,7 +297,7 @@ const CASES: Case[] = [
     timeoutMs: 60_000,
     run: async ({ cfg, sample }) => {
       // 必须走生产入口：手写 --link-to + 相对路径时，路径按 **bench 的 cwd** 解析；
-      // 不存在就会丢掉过滤条件返回全库（plan §0.5.1 的坑），测出来的不是反查。
+      // 不存在就会丢掉过滤条件返回全库，测出来的不是反查。
       const r = await backlinksOf(cfg, sample)
       return { count: r.notes.length, truncated: r.truncated }
     },
@@ -313,7 +313,7 @@ const CASES: Case[] = [
     },
   },
   {
-    // plan §11.3 / §12.4：R8（zk_walk direction=both）的成本口径 —— 单种子、两次按篇反查，不建全图。
+    // R8（zk_walk direction=both）的成本口径 —— 单种子、两次按篇反查，不建全图。
     // 走真的 walkFrom（路径种子）：2 个子进程、两笔传输字节相加；标题 / id 种子会多一次 `-M exact` 解析。
     id: 'walk.both',
     tool: 'zk_walk (both)',
@@ -325,7 +325,7 @@ const CASES: Case[] = [
     },
   },
   {
-    // 标题 / id 种子：解析那一次 `-M exact` 也要算进去（plan §11.3 的成本口径）。
+    // 标题 / id 种子：解析那一次 `-M exact` 也要算进去。
     id: 'walk.title',
     tool: 'zk_walk (title seed)',
     what: 'R8：标题种子 = 解析 1 次（-M exact）+ 按篇反查 2 次',
@@ -433,7 +433,7 @@ function ensureFixture(opts: Options): void {
  * 反查 / 正查的种子：优先用夹具清单里链数最多的那篇。
  *
  * 固定取 `notes/concepts` 排序第一篇的话，会命中边界笔记（`dup-title-a.md` / `long-note.md`），
- * 它们本来就没链接，于是 `--link-to` 恒 0 条、成本表上「反查很便宜」——测的不是反查（§12.4）。
+ * 它们本来就没链接，于是 `--link-to` 恒 0 条、成本表上「反查很便宜」——测的不是反查。
  * 老夹具没有 `samples` 字段时退回目录扫描，别让 bench 因此跑不起来。
  */
 function pickSample(dir: string, key: 'inbound' | 'outbound' = 'inbound'): string {
@@ -459,7 +459,7 @@ interface RowResult {
   id: string
   tool: string
   what: string
-  /** §0.5：本条用例跑在「多少篇 / 多少链」的库上 */
+  /** 本条用例跑在「多少篇 / 多少链」的库上 */
   notes: number
   links: number
   calls: number

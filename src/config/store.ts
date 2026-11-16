@@ -56,7 +56,7 @@ export interface Config {
    */
   aliasTools: boolean
   /**
-   * 是否记录召回信号 sidecar（§15.2）：`.zk/dsh-recall.json` 只按 path 聚合「哪篇 / 哪天 / 哪类检索命中」，
+   * 是否记录召回信号 sidecar：`.zk/dsh-recall.json` 只按 path 聚合「哪篇 / 哪天 / 哪类检索命中」，
    * 不记查询词、不记正文、不上报。默认关：关掉时不读不写，`zk_dream` / `zk_context` 输出与老版一致；
    * 打开后这份信号才用于 topCited 排序、退役保护、同日淘汰与周审审计流。
    */
@@ -275,7 +275,7 @@ export function config(workspace: string = processWorkspace()): Config {
   const raw = readJson<Record<string, unknown>>(CFG_FILE, {})
   const next = normalizeConfig(raw, workspace)
   // 一次性迁移：老形状（没有 notebooks / 顶层还留着 notebook 或 structure / 条目还是裸字符串）
-  // 读进来就写回新形状。这样以后翻默认值时，老 vault 的配置里已经有确定值（计划 §8）。
+  // 读进来就写回新形状。这样以后翻默认值时，老 vault 的配置里已经有确定值。
   const legacy = !('notebooks' in raw)
     || ('structure' in raw)
     || ('notebook' in raw)

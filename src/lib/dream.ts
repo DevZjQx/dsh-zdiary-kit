@@ -1,5 +1,5 @@
 /**
- * 做梦（M3）：只给材料，不写任何文件（计划 §3 D5 / D7）。
+ * 做梦：只给材料，不写任何文件。
  *
  * 晋升 MEMORY.md、写 DREAMS.md 都是 agent 的语义活；这里只做三件机械事：
  *   · 最近 N 天新增的笔记（按机械规则挡掉不可晋升的，附原因；日记不算候选，它的未完成项单独一栏）；
@@ -7,7 +7,7 @@
  *   · 被引用最多的笔记（一次 `zk graph` 数入链）。
  * 「rejected」是机械规则，不是相关性判断：authority=informal 与无标签两条，别再加。
  *
- * 晋升是一道**门**，门得知道门里已经有什么（P0-2）：读 MEMORY.md 判「这条已经晋升过」，
+ * 晋升是一道**门**，门得知道门里已经有什么：读 MEMORY.md 判「这条已经晋升过」，
  * 已经进去的移出候选、单列一栏 —— 否则同一批笔记每周原样重复，仪式几次之后就没人再看了。
  * 窗口默认也不再固定 7 天，而是跟着 DREAMS.md 的「上次做梦」走：漏做一周不会把笔记永久甩出窗口。
  */
@@ -33,7 +33,7 @@ import { normalizeTitle, noteKey, resolveWikiTarget, WIKI_LINK, wikiIndex } from
 import { AUDIT_RATE, hasRecallSignal, lastRecallOf, readRecallSignal, RECALL_PROTECT_DAYS } from './recall-signal.ts'
 import type { RecallSignal } from './recall-signal.ts'
 
-/** 每栏最多回多少条（计划 §4 M3 的 50 条上限） */
+/** 每栏最多回多少条 */
 export const MAX_ITEMS = 50
 /** topCited 只取前几名：给 agent 一个「本周被反复引用」的提示，不是排行榜 */
 export const TOP_CITED = 10
@@ -102,7 +102,7 @@ export interface DreamCandidate {
   promoted: boolean
   /** 怎么判出来的：link = MEMORY 里的 `[[链接]]`；title = 条目里写了标题；'' = 没晋升 */
   promotedBy: 'link' | 'title' | ''
-  /** 被多少篇日记提到过（P2-12：入链衡量作者中心性，日记才接近「被用到」） */
+  /** 被多少篇日记提到过（入链衡量作者中心性，日记才接近「被用到」） */
   dailyMentions: number
   /** 这些日记覆盖了几个不同日期（跨天复现比连着引用几次更强） */
   daysMentioned: number
@@ -197,13 +197,13 @@ export interface DreamResult {
   /**
    * true = 库太大（> 生效的 `graphBudget`，默认 `graphBudgetNotes = 2000`），这次没有建全图统计入链。
    * `cited` / `citedBy` 全是 0、`topCited` 为空 —— 那是「没算」，不是「没人引」。
-   * 全图 10k 要 26–31 s / 17 MB（plan §0.5.1），而 dream 给的是材料，不值得为一次汇总
-   * 把工具拖过 60 s 超时；增量口径见 plan §7 G2。
+   * 全图 10k 要 26–31 s / 17 MB，而 dream 给的是材料，不值得为一次汇总
+   * 把工具拖过 60 s 超时。
    */
   graphSkipped: boolean
   /** 生效的全图统计上限（`graphBudgetNotes`，或调用方覆盖的值）：graphSkipped 是与它比出来的 */
   graphBudget: number
-  /** 稳定 ID（§9.2）：缺 `id` 的非日记笔记数，只读计数，不回填 */
+  /** 稳定 ID：缺 `id` 的非日记笔记数，只读计数，不回填 */
   missingId: number
   /** 记忆用量（与注入 / 设置页同一口径）：晋升前先知道还剩多少预算 */
   memory: MemoryUsage
@@ -259,7 +259,7 @@ export function looseEndsOf(content: string): string[] {
  * 机械拒绝规则（只两条，别加语义判断）：
  *   · authority=informal —— 口头/未验证来源，进长期记忆会污染结论；
  *   · 无标签 —— 标签是唯一能确定性筛选的维度；没标签的笔记晋升后只能靠全文检索找回来
- *     （P2-7 起中文检索不再漏，但「按主题找」还是得靠标签）。
+ *     （中文检索不再漏，但「按主题找」还是得靠标签）。
  */
 export function rejectionReason(note: NoteRecord): string | null {
   if (note.authority === 'informal') return 'authority: informal（口头/未验证来源）'
@@ -273,7 +273,7 @@ function isUnder(rel: string, dir: string): boolean {
 }
 
 /**
- * 笔记的日历日期（计划 §2 D7 / Q6）。
+ * 笔记的日历日期。
  *
  * 日记补写时 `zk_daily --date` 只改文件名，zk 的 `created` 仍是今天 —— 按 created 筛窗口
  * 会把 10 月的日记算成本周新增。所以：日记看文件名，其他笔记看 frontmatter `date`，
@@ -351,7 +351,7 @@ function windowDaysOf(cfg: Config, now: Date, explicit?: number): number {
  * 而它们正是每周重复出现的候选来源。标题包含只做字符串比较、且要求标题 ≥ 6 字 ——
  * 短标题（「RAG」「额度」）在任意句子里都可能撞上，宁可重复报，不猜。
  *
- * 退役条目要分开处理（D3.3，顺序不能反）：
+ * 退役条目要分开处理（顺序不能反）：
  *   · 链接匹配用**原文** —— 退役行里的 `→ [[新结论]]` 是合法的「已晋升」指针；
  *   · 标题匹配用**去掉退役行之后**的正文 —— 退役行里的旧结论不该再算已晋升，
  *     否则归档后复用同一标题的笔记会永远进不了候选。
@@ -368,7 +368,7 @@ function promotionsOf(cfg: Config, notes: NoteRecord[]): Map<string, 'link' | 't
   const clean = withoutFences(body)
   for (const match of clean.matchAll(WIKI_LINK)) {
     const hit = resolveWikiTarget(cfg, String(match[1] ?? '').trim(), index)
-    // 解析结果是路径，按身份键记账（§9.2）：有 id 的笔记改名后仍是同一篇，不会重复晋升。
+    // 解析结果是路径，按身份键记账：有 id 的笔记改名后仍是同一篇，不会重复晋升。
     const note = byPath.get(hit.path)
     if (hit.status === 'live' && note) out.set(noteKey(note), 'link')
   }
@@ -399,7 +399,7 @@ function sourceTargetsOf(entry: string): string[] {
 }
 
 /**
- * 退役候选（D4.3）：只做机械规则，不判断「这条还有没有用」。
+ * 退役候选：只做机械规则，不判断「这条还有没有用」。
  *   · 有日期且超过 STALE_DAYS → stale；
  *   · 条目里的 `[[来源]]` 指向归档 / 不存在 → source-superseded / source-missing；
  *   · 显式写 `archive/` 的链接是有意引用旧结论（与 lint 同口径），不算来源断了；
@@ -449,7 +449,7 @@ function retireCandidatesOf(cfg: Config, notes: NoteRecord[], now: Date, signal:
 /**
  * 依据回对（只读）：把每条现行 MEMORY 结论的 `[[来源]]` 链与出处原话 / 外部地址并排摆出来。
  *
- * 两跳封顶，不做全图游走（§5）：第一跳是条目里的 `[[来源]]`，第二跳只走这些笔记
+ * 两跳封顶，不做全图游走：第一跳是条目里的 `[[来源]]`，第二跳只走这些笔记
  * 「出处 / 引文」小节里的 `[[链接]]`。全部本地读盘、零 zk 子进程；`raw/` 里的原始材料
  * 虽然不进索引，路径式链接照样能读（那正是「拿原话回来对」要的东西）。
  * 解析不到 / meta 文件 / 越界一律跳过，不猜、不补、不写。
@@ -520,7 +520,7 @@ export async function dreamNotebook(
   // 顺序跑：两个 zk 进程同时补索引会撞 SQLite 写锁（lint 里同样处理）
   const scan = await scanNotes(cfg, {}, signal)
   const notes = scan.notes
-  // 全图在 10k 上 26–31 s / 17 MB（plan §0.5.1）：超过预算就不建，并显式告诉调用方。
+  // 全图在 10k 上 26–31 s / 17 MB：超过预算就不建，并显式告诉调用方。
   // 预算来自配置（设置页可调）；opts.graphBudget 只给测试覆盖。
   const graphBudget = Math.max(0, Math.trunc(opts.graphBudget ?? cfg.graphBudgetNotes ?? GRAPH_BUDGET_NOTES))
   const graphReady = notes.length <= graphBudget
@@ -536,7 +536,7 @@ export async function dreamNotebook(
   }
   const citedOf = (n: NoteRecord): number => inbound.get(n.path)?.length ?? 0
 
-  // 使用信号（P2-12）：日记是本插件里唯一「按时间记录真实工作」的层，正好当召回日志用。
+  // 使用信号：日记是本插件里唯一「按时间记录真实工作」的层，正好当召回日志用。
   // 零新增状态：来源路径与日期都在已载入的 notes / edges 里。
   const byPath = new Map(notes.map((n) => [n.path, n]))
   const usageCache = new Map<string, Pick<DreamCandidate, 'dailyMentions' | 'daysMentioned' | 'lastMentioned'>>()
@@ -631,7 +631,7 @@ export async function dreamNotebook(
     }
   }
 
-  // 排序说明（P2-12）：先看「被日记提过几天」—— 跨天复现比同一天多次更强；同一天多篇日记
+  // 排序说明：先看「被日记提过几天」—— 跨天复现比同一天多次更强；同一天多篇日记
   // 再按 dailyMentions 排，入链数只是最后的次序。没有日记的库两项都是 0，
   // 排序自动退回原来的 cited 降序（行为兼容）。
   // 15.2：信号生效时先按「召回跨天数 → 查询多样性」；全 0 时下面的次序与原排序完全一致。

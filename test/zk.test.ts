@@ -479,7 +479,7 @@ describe('memory', () => {
     expect(p.text.match(/<\/system-reminder>/g)?.length).toBe(1)
   })
 
-  test('P0-1：无 ##、只有条目时也要截断（否则预算整个失效）', () => {
+  test('无 ##、只有条目时也要截断（否则预算整个失效）', () => {
     const body = [
       '# 记忆',
       ...Array.from({ length: 30 }, (_, i) => `- 第 ${i + 1} 条结论：这是一条用于验证预算的记忆条目，内容不长。`),
@@ -494,7 +494,7 @@ describe('memory', () => {
     expect(p.text).not.toContain('记忆已用')
   })
 
-  test('P0-1：无 ##、无列表项的整段散文也按段丢，首段保留', () => {
+  test('无 ##、无列表项的整段散文也按段丢，首段保留', () => {
     const body = [
       '# 记忆',
       ...Array.from({ length: 12 }, (_, i) => `第 ${i + 1} 段：没有列表符号的一整段记忆文字，用来验证段落切分真的生效。`),
@@ -506,7 +506,7 @@ describe('memory', () => {
     expect(p.text).not.toContain('第 12 段')
   })
 
-  test('P0-1：围栏里的 - 与空行不算可丢的条目 / 段落', () => {
+  test('围栏里的 - 与空行不算可丢的条目 / 段落', () => {
     const body = [
       '# 记忆',
       '',
@@ -530,7 +530,7 @@ describe('memory', () => {
     expect(tight.text).not.toContain('真条目六')
   })
 
-  test('P0-1：单条就超预算时不再切，点名「已无更多可丢」而不是只怪 AGENTS', () => {
+  test('单条就超预算时不再切，点名「已无更多可丢」而不是只怪 AGENTS', () => {
     const p = build({ 'MEMORY.md': '# 记忆\n\n- 唯一一条：' + '很长 '.repeat(120) }, 50)
     expect(p.words).toBeGreaterThan(50)
     expect(p.text).toContain('预算不足')
@@ -538,7 +538,7 @@ describe('memory', () => {
     expect(p.text).toMatch(/已无更多可丢的(条目|段落|小节)/)
   })
 
-  test('P0-2：只有一个 ## 小节时按条目继续丢，且先丢日期最旧的一条', () => {
+  test('只有一个 ## 小节时按条目继续丢，且先丢日期最旧的一条', () => {
     const entries = Array.from({ length: 12 }, (_, i) => {
       const day = String(i + 1).padStart(2, '0')
       return '- 2026-01-' + day + ' 第 ' + (i + 1) + ' 条结论：这是一条用于验证单节降级的记忆条目。'
@@ -558,7 +558,7 @@ describe('memory', () => {
     expect(p.text).not.toContain('2026-01-01')
   })
 
-  test('P0-2：单节且条目没日期时按位置丢尾部，并说明只能按位置丢', () => {
+  test('单节且条目没日期时按位置丢尾部，并说明只能按位置丢', () => {
     const items = Array.from({ length: 12 }, (_, i) =>
       '- 第 ' + (i + 1) + ' 条结论：没有日期的记忆条目，内容不长但足够占预算。')
     const body = ['# MEMORY', '## 结论', '', ...items].join('\n')
@@ -571,7 +571,7 @@ describe('memory', () => {
     expect(p.text).toContain('只能按位置丢')
   })
 
-  test('P0-2：两节丢到只剩一节后，继续按条目丢', () => {
+  test('两节丢到只剩一节后，继续按条目丢', () => {
     const items = Array.from({ length: 8 }, (_, i) =>
       '- 记 ' + (i + 1) + '：这一条用于验证两节降到一节之后的继续丢。')
     const body = ['# MEMORY', '## 一', ...items, '## 二', 'tail '.repeat(40)].join('\n')
@@ -584,7 +584,7 @@ describe('memory', () => {
     expect(p.text).not.toContain('记 8：')
   })
 
-  test('P1-2：接近上限时用量行带上格式债，且仍不超预算', () => {
+  test('接近上限时用量行带上格式债，且仍不超预算', () => {
     const body = ['# MEMORY', '', '## 结论', '',
       ...Array.from({ length: 4 }, (_, i) => '- 第 ' + (i + 1) + ' 条结论：这是一条没有日期也没有来源的记忆条目，用来验证格式债提示。')].join('\n')
     const p = build({ 'MEMORY.md': body }, 100)
@@ -594,7 +594,7 @@ describe('memory', () => {
     expect(p.text).toContain('MEMORY 4 条没日期 · 4 条没来源')
   })
 
-  test('P1-2：格式债放不下就整条不加，不能说一半', () => {
+  test('格式债放不下就整条不加，不能说一半', () => {
     const body = ['# MEMORY', '', '## 结论', '',
       ...Array.from({ length: 4 }, (_, i) => '- 第 ' + (i + 1) + ' 条结论：这是一条没有日期也没有来源的记忆条目，用来验证格式债提示。')].join('\n')
     // 只差几词：用量行照常报，格式债一句都不出现（不许剩「MEMORY 4 条没日期」）
@@ -604,7 +604,7 @@ describe('memory', () => {
     expect(p.text).not.toContain('没来源')
   })
 
-  test('P1-2：截断时也报格式债，且不和「只能按位置丢」重复报没日期', () => {
+  test('截断时也报格式债，且不和「只能按位置丢」重复报没日期', () => {
     const body = ['# MEMORY', '', '## 结论', '',
       ...Array.from({ length: 9 }, (_, i) => '- 第 ' + (i + 1) + ' 条结论：这是一条没有日期也没有来源的记忆条目，用来验证格式债提示。')].join('\n')
     const p = build({ 'MEMORY.md': body }, 135)
@@ -614,7 +614,7 @@ describe('memory', () => {
     expect(p.text.match(/9 条没日期/g)?.length).toBe(1)
   })
 
-  test('P0-2：预算内的单节文件一个字都不动', () => {
+  test('预算内的单节文件一个字都不动', () => {
     const items = Array.from({ length: 4 }, (_, i) => '- 条目 ' + (i + 1) + '：内容。')
     const body = ['# MEMORY', '', '## 结论', '', ...items].join('\n')
     const p = build({ 'MEMORY.md': body }, 500)
@@ -643,7 +643,7 @@ describe('memory', () => {
     expect(toc.indexOf('§条目三')).toBeLessThan(toc.indexOf('§乙'))
   })
 
-  test('P1-4：接近上限回显用量，且这一行算进预算', () => {
+  test('接近上限回显用量，且这一行算进预算', () => {
     const near = build({ 'MEMORY.md': '# 记忆\n' + 'w '.repeat(79) }, 100)
     expect(near.text).toContain('记忆已用')
     expect(near.words).toBeLessThanOrEqual(100)
@@ -837,7 +837,7 @@ describe('notebook bootstrap', () => {
   })
 })
 
-describe('M1: 配置收敛（group）', () => {
+describe('配置收敛（group）', () => {
   test('解析 group：双 / 单引号 / 裸键、缺 paths、重复、注释归属', () => {
     const text = [
       '# dsh-zdiary-kit：日记笔记组',
@@ -1144,7 +1144,7 @@ describe('M1: 配置收敛（group）', () => {
   })
 })
 
-describe('M2: 记忆生命周期', () => {
+describe('记忆生命周期', () => {
   const buildMem = (files: Record<string, string>, budget = 300) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zdiary-m2-'))
     for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body)
@@ -1634,7 +1634,7 @@ describe('frontmatter', () => {
   })
 })
 
-describe('M2: 结构化检索与废弃', () => {
+describe('结构化检索与废弃', () => {
   const dir = path.join(home, 'nb-m2')
   const m2 = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
   const note = (title: string, dirName: string, body: string) => zk.createNote(m2, { title, dir: dirName, content: body })
@@ -1648,7 +1648,7 @@ describe('M2: 结构化检索与废弃', () => {
     expect(text).not.toContain('第二次的正文')
   })
 
-  it('zk_search 的 type / status 过滤在 JS 层生效（Z6）', async () => {
+  it('zk_search 的 type / status 过滤在 JS 层生效', async () => {
     const concept = await note('过滤概念', 'notes/concepts', '概念正文')
     const source = await note('过滤来源', 'notes/sources', '来源正文')
     const onlyConcept = await zk.searchNotes(m2, { type: ['concept'], limit: 50 })
@@ -1788,7 +1788,7 @@ describe('M2: 结构化检索与废弃', () => {
   })
 })
 
-describe('M7: 改名不断链', () => {
+describe('改名不断链', () => {
   const dir = path.join(home, 'nb-m7')
   const m7 = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
   const note = (title: string, dirName: string, body: string) => zk.createNote(m7, { title, dir: dirName, content: body })
@@ -1883,7 +1883,7 @@ describe('M7: 改名不断链', () => {
   })
 })
 
-describe('M3: 巡检与做梦', () => {
+describe('巡检与做梦', () => {
   const dir = path.join(home, 'nb-m3')
   const m3 = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
   const note = (title: string, dirName: string, body: string) =>
@@ -2170,7 +2170,7 @@ describe('M3: 巡检与做梦', () => {
     expect(one[0].tags).toContain('keep')
   })
 
-  it('query 透传：中文 0 命中退回 -M re（Z12）', async () => {
+  it('query 透传：中文 0 命中退回 -M re', async () => {
     const hits = await zk.queryNotes(m3, ['-m', '被引用'])
     expect(hits.map((n) => n.title)).toContain('被引用概念')
   })
@@ -2197,7 +2197,7 @@ describe('M3: 巡检与做梦', () => {
   })
 })
 
-describe('M3.1: dream 读 MEMORY（已晋升 / 窗口 / 积压）', () => {
+describe('dream 读 MEMORY（已晋升 / 窗口 / 积压）', () => {
   const dir = path.join(home, 'nb-dream-promoted')
   const cfgP = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
   const note = (title: string, dirName: string, body: string) =>
@@ -2851,7 +2851,7 @@ describe('alias tools', () => {
   })
 })
 
-describe('M4: 结构设置与记忆预算', () => {
+describe('结构设置与记忆预算', () => {
   const m4dir = path.join(home, 'nb-m4')
   const m4 = store.normalizeConfig({ notebook: m4dir, zkPath: zkBin, structure: 'layered' })
   const agentsFile = path.join(m4dir, 'AGENTS.md')
@@ -2954,7 +2954,7 @@ describe('M4: 结构设置与记忆预算', () => {
       const next = store.config()
       expect(next.structure).toBe('layered')
       expect(next.memoryBudgetWords).toBe(180)
-      // archiveDir 的非空变更另有专门用例（M1：旧归档目录里有文件就拒绝改）
+      // archiveDir 的非空变更另有专门用例（旧归档目录里有文件就拒绝改）
       expect(next.archiveDir).toBe('archive')
       // 预算真的进注入：180 词上限
       expect(memory.buildMemoryPayload(next).budget).toBe(180)
@@ -3589,11 +3589,11 @@ describe('只读视图', () => {
   })
 })
 
-describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13–P2-15）', () => {
+describe('0.8.x：记忆与笔记本加固', () => {
   const fresh = (name: string, structure: 'flat' | 'layered' = 'flat') =>
     store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure })
 
-  it('P1-3：MEMORY 条目的日期 / 退役 / 退役后失效都各自计数', async () => {
+  it('MEMORY 条目的日期 / 退役 / 退役后失效都各自计数', async () => {
     const cfg = fresh('nb-p13')
     await notebookLib.ensureNotebook(cfg)
     const live = await zk.createNote(cfg, { title: '活结论', content: '正文 #x' })
@@ -3618,7 +3618,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(lintLib.formatMemoryLinks(lint.memoryLinks)).toContain('1 条已退役，其中 1 条的新结论不是活笔记')
   })
 
-  it('P1-3 / P2-15：模板带版本标记，并写清日期与退役格式', () => {
+  it('模板带版本标记，并写清日期与退役格式', () => {
     for (const body of [notebookLib.AGENTS_TEMPLATE, notebookLib.AGENTS_TEMPLATE_FLAT]) {
       expect(body.startsWith('<!-- zdiary-template: v')).toBe(true)
       expect(body).toContain('YYYY-MM-DD')
@@ -3629,7 +3629,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(notebookLib.WORKFLOW_TEMPLATE.startsWith('<!-- zdiary-template: v')).toBe(true)
   })
 
-  it('P1-6：flat 默认不写 AGENTS；显式 withAgents 写精简版且不覆盖', async () => {
+  it('flat 默认不写 AGENTS；显式 withAgents 写精简版且不覆盖', async () => {
     const cfg = fresh('nb-p16')
     const first = await notebookLib.ensureNotebook(cfg)
     expect(first.agentsWritten).toBe(false)
@@ -3650,7 +3650,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(fs.readFileSync(path.join(cfg.notebook, 'AGENTS.md'), 'utf8')).toBe('# 我自己写的\n')
   })
 
-  it('P1-7：flat 有分层目录时报 extra；archive 不算漂移；layered 不报', async () => {
+  it('flat 有分层目录时报 extra；archive 不算漂移；layered 不报', async () => {
     const dir = path.join(home, 'nb-p17')
     fs.mkdirSync(path.join(dir, 'notes/concepts'), { recursive: true })
     fs.mkdirSync(path.join(dir, 'archive'), { recursive: true })
@@ -3706,7 +3706,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(again.emptySections.total).toBe(3)
   })
 
-  it('P2-13：frontmatter 缺 type / status / authority 单列一桶，日记跳过；flat 不查', async () => {
+  it('frontmatter 缺 type / status / authority 单列一桶，日记跳过；flat 不查', async () => {
     const cfg = fresh('nb-p213', 'layered')
     await notebookLib.ensureNotebook(cfg)
     fs.writeFileSync(path.join(cfg.notebook, 'notes/concepts/partial.md'), '---\ntype: concept\ntitle: 部分\n---\n\n正文 #x\n')
@@ -3729,7 +3729,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect((await lintLib.lintNotebook(flat)).incomplete.total).toBe(0)
   })
 
-  test('P2-14：大小写变体与单例；标签不足 30 个不报', () => {
+  test('大小写变体与单例；标签不足 30 个不报', () => {
     const rec = (tags: string[]) => ({ tags } as unknown as Parameters<typeof lintLib.tagHygiene>[0][number])
     const few = lintLib.tagHygiene([rec(['Agent']), rec(['agent'])])
     expect(few.reported).toBe(false)
@@ -3747,7 +3747,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(tags.singletons.total).toBe(28)
   })
 
-  it('P2-15：无标记 / 旧版本都算旧模板，当前版本不算；旧模板结果直接带新版全文', async () => {
+  it('无标记 / 旧版本都算旧模板，当前版本不算；旧模板结果直接带新版全文', async () => {
     const cfg = fresh('nb-p215', 'layered')
     await notebookLib.ensureNotebook(cfg)
     // layered 初始化会写 AGENTS.md；先删掉，验证「没有文件」不是旧模板
@@ -3815,7 +3815,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     expect(flatOld.currentText).not.toContain('raw/')
   })
 
-  it('P1-5：只读视图记忆页显示四份文件与预算；meta 仍不能按路径打开', async () => {
+  it('只读视图记忆页显示四份文件与预算；meta 仍不能按路径打开', async () => {
     const paths = await import('../src/config/paths.ts')
     const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
     const nb = path.join(home, 'readonly-memory')
@@ -3839,7 +3839,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
 
       const page = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=memory'))
       expect(page.statusCode).toBe(200)
-      // D9：记忆页分人格 / 用户 / 工作约定 / 记忆 / 周审 + 载荷预览，不再只有四份文件名
+      // 记忆页分人格 / 用户 / 工作约定 / 记忆 / 周审 + 载荷预览，不再只有四份文件名
       for (const name of ['人格', '用户', '工作约定', '记忆', '周审', '载荷预览']) expect(page.body).toContain(name)
       expect(page.body).toContain('PERSONA.md')
       expect(page.body).toContain('记忆双链目标</a>')
@@ -3852,7 +3852,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
       // 载荷预览里会原样出现（转义后）；页面正文不能把它当正文渲染成裸标记
       expect(page.body).not.toContain('<!-- zdiary-template')
 
-      // P1-2：格式债摆在用量下面 —— 没日期要说，没来源的 0 也列出来（好和别的库对比）
+      // 格式债摆在用量下面 —— 没日期要说，没来源的 0 也列出来（好和别的库对比）
       expect(page.body).toContain('格式：1/1 条没日期 · 0 条没来源')
 
       // 全干净就不写这一行（不能出现空的「格式：」）
@@ -3914,7 +3914,7 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
     }
   })
 
-  it('P1-6：zk-kit init --with-agents 写模板，第二次不覆盖', async () => {
+  it('zk-kit init --with-agents 写模板，第二次不覆盖', async () => {
     const paths = await import('../src/config/paths.ts')
     const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
     const dir = path.join(home, 'cli-with-agents')
@@ -3943,11 +3943,11 @@ describe('0.8.x：记忆与笔记本加固（P1-3 / P1-5 / P1-6 / P1-7 / P2-13�
   })
 })
 
-describe('0.8.2：检索 / 标签提示 / 相似标题 / 分布 / 使用信号（P2-7 – P2-12）', () => {
+describe('0.8.2：检索 / 标签提示 / 相似标题 / 分布 / 使用信号', () => {
   const fresh = (name: string, structure: 'flat' | 'layered' = 'flat') =>
     store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure })
 
-  it('P2-7：中文查询 FTS + 子串合并；纯 ASCII 仍是单策略', async () => {
+  it('中文查询 FTS + 子串合并；纯 ASCII 仍是单策略', async () => {
     const cfg = fresh('nb-p27')
     await notebookLib.ensureNotebook(cfg)
     // 只有第一篇的「记忆系统」是独立词元（FTS 命中）；另两篇是更长的连续词元（FTS 漏）
@@ -3970,14 +3970,14 @@ describe('0.8.2：检索 / 标签提示 / 相似标题 / 分布 / 使用信号�
     expect(ascii.matchStrategy).toBe('regex')
   })
 
-  test('P2-9：中文没标签才提示，标签 / 正文 hashtag / 英文都不提示', () => {
+  test('中文没标签才提示，标签 / 正文 hashtag / 英文都不提示', () => {
     expect(zk.taglessCjkWarning('中文标题', '正文', [])).toContain('tags')
     expect(zk.taglessCjkWarning('中文标题', '正文', ['已有'])).toBeNull()
     expect(zk.taglessCjkWarning('中文标题', '正文 #已有', [])).toBeNull()
     expect(zk.taglessCjkWarning('English title', 'english body', [])).toBeNull()
   })
 
-  it('P2-10：相似标题单独报；全等归 duplicateTitles；短标题不报', async () => {
+  it('相似标题单独报；全等归 duplicateTitles；短标题不报', async () => {
     const cfg = fresh('nb-p210', 'layered')
     await notebookLib.ensureNotebook(cfg)
     const a = await zk.createNote(cfg, { title: '记忆系统的瓶颈在写路径', dir: 'notes/concepts', content: '正文 #x' })
@@ -4005,7 +4005,7 @@ describe('0.8.2：检索 / 标签提示 / 相似标题 / 分布 / 使用信号�
     expect(withDailies.similarTitles.items[0].paths.sort()).toEqual([a.path, b.path].sort())
   })
 
-  it('P2-11：stats 给目录 / 标签分布；非日记 150 篇且没有 INDEX.md 才提示', async () => {
+  it('stats 给目录 / 标签分布；非日记 150 篇且没有 INDEX.md 才提示', async () => {
     const cfg = fresh('nb-p211', 'flat')
     await notebookLib.ensureNotebook(cfg)
     await zk.createNote(cfg, { title: '甲', content: '正文 #one #two' })
@@ -4048,7 +4048,7 @@ describe('0.8.2：检索 / 标签提示 / 相似标题 / 分布 / 使用信号�
     expect(dailyHeavyLint.indexHint).toBe(false)
   })
 
-  it('P2-12：topCited 先按日记提及天数排，入链数只作次序', async () => {
+  it('topCited 先按日记提及天数排，入链数只作次序', async () => {
     const cfg = fresh('nb-p212', 'layered')
     await notebookLib.ensureNotebook(cfg)
     const conceptCited = await zk.createNote(cfg, { title: '被概念反复引用', dir: 'notes/concepts', content: '正文 #x' })
@@ -4078,7 +4078,7 @@ describe('0.8.2：检索 / 标签提示 / 相似标题 / 分布 / 使用信号�
   })
 })
 
-describe('0.10：角色人格（M1，人格壳与可观测）', () => {
+describe('角色人格（人格壳与可观测）', () => {
   const fresh = (name: string, structure: 'flat' | 'layered' = 'flat') =>
     store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure })
 
@@ -4553,7 +4553,7 @@ describe('v3.1: 时间轴 / archive / dream 日期', () => {
     }
   })
 })
-describe('v3.3 M2：写路径相似提醒', () => {
+describe('v3.3：写路径相似提醒', () => {
   const fresh = (name: string) =>
     store.normalizeConfig({ notebook: path.join(home, name), zkPath: zkBin, structure: 'layered' })
 
@@ -4604,7 +4604,7 @@ describe('v3.3 M2：写路径相似提醒', () => {
 })
 
 
-describe('M5.0a: 索引状态与冷启动', () => {
+describe('索引状态与冷启动', () => {
   const journalOf = (nb: string): string => path.join(nb, '.zk', 'notebook.db-journal')
 
   const fresh = async (name: string, notes: number) => {
@@ -4752,7 +4752,7 @@ describe('M5.0a: 索引状态与冷启动', () => {
   })
 })
 
-describe('M5.0b: 按篇反查（不建全图）', () => {
+describe('按篇反查（不建全图）', () => {
   it('backlinksOf / outlinksOf：目标不存在时回空而不是全库；limit 触顶报 truncated', async () => {
     const dir = path.join(home, 'nb-links')
     const c = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
@@ -4850,7 +4850,7 @@ describe('M5.0b: 按篇反查（不建全图）', () => {
   })
 })
 
-describe('M5.1：静默天花板三态化（§9.3 第 3 步）', () => {
+describe('静默天花板三态化', () => {
   it('status 过滤 > 200 命中：取足再过滤，不漏结果', async () => {
     const dir = path.join(home, 'nb-ceiling-filter')
     const c = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'flat' })
@@ -4925,7 +4925,7 @@ describe('M5.1：静默天花板三态化（§9.3 第 3 步）', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// R6 写后可读（plan §8.1 / §8.4 / §9.5 / §10.3 第 2 条 / §10.4 第 3 项）
+// R6 写后可读
 // ─────────────────────────────────────────────────────────────────────────────
 describe('R6: 写后可读', () => {
   const fresh = async (name: string) => {
@@ -4936,7 +4936,7 @@ describe('R6: 写后可读', () => {
 
   /**
    * 假 zk：预置一份「完整」的 db（indexStateOf=ready），只记 argv、按需慢建库 / 建库失败。
-   * 与 M5.0a 的 stub 不同：那里故意不给 db 来测冷建；R6 的 flush 只在完整 db 上跑。
+   * 与冷建用的 stub 不同：那里故意不给 db 来测冷建；R6 的 flush 只在完整 db 上跑。
    */
   const stubZk = (dir: string, opts: { sleepSec?: number; fail?: string } = {}) => {
     const nb = path.join(dir, 'nb')
@@ -5201,9 +5201,9 @@ describe('R6: 写后可读', () => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §10.4 第 4 项：R1 / R2 剩余 / R3 / R7
+// R1 / R2 剩余 / R3 / R7
 // ─────────────────────────────────────────────────────────────────────────────
-describe('R1 / R2 / R3 / R7：检索召回质量（§10.4 第 4 项）', () => {
+describe('R1 / R2 / R3 / R7：检索召回质量', () => {
   const originalConfig = {
     notebooks: { default: { path: notebook, structure: 'flat' as const } },
     active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
@@ -5372,7 +5372,7 @@ describe('R1 / R2 / R3 / R7：检索召回质量（§10.4 第 4 项）', () => {
   })
 })
 
-describe('R4：召回装配层（§10.4 第 5 项）', () => {
+describe('R4：召回装配层', () => {
   const originalConfig = {
     notebooks: { default: { path: notebook, structure: 'flat' as const } },
     active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
@@ -5483,7 +5483,7 @@ describe('R4：召回装配层（§10.4 第 5 项）', () => {
   })
 })
 
-describe('G1 / G4：写 MEMORY 前的容量可见（§10.4 第 6 项）', () => {
+describe('写 MEMORY 前的容量可见', () => {
   const originalConfig = {
     notebooks: { default: { path: notebook, structure: 'flat' as const } },
     active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
@@ -5547,7 +5547,7 @@ describe('G1 / G4：写 MEMORY 前的容量可见（§10.4 第 6 项）', () => 
     }
   })
 
-  it('G4：8 条同日标 same-date、suggestion 明说按位置决胜；format 与 lint / dream 计数一致', async () => {
+  it('8 条同日标 same-date、suggestion 明说按位置决胜；format 与 lint / dream 计数一致', async () => {
     const lines = ['# 记忆', '']
     for (let i = 0; i < 8; i += 1) lines.push(`- 2026-11-01 同日结论 ${i} [[notes/n${i}]]`)
     lines.push('- 2026-12-01 更新的结论 [[notes/newer]]')
@@ -5597,7 +5597,7 @@ describe('G1 / G4：写 MEMORY 前的容量可见（§10.4 第 6 项）', () => 
   })
 })
 
-describe('§10.4 第 7 项：稳定 ID（§9.2）', () => {
+describe('稳定 ID', () => {
   const originalConfig = {
     notebooks: { default: { path: notebook, structure: 'flat' as const } },
     active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
@@ -5732,9 +5732,9 @@ describe('§10.4 第 7 项：稳定 ID（§9.2）', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §11 插入评审通过后：R8 / R9-v1 / R10（§10.4 第 8–10 项）
+// R8 / R9-v1 / R10
 // ─────────────────────────────────────────────────────────────────────────────
-describe('R8 / R9-v1 / R10：入口 + 一跳（§10.4 第 8–10 项）', () => {
+describe('R8 / R9-v1 / R10：入口 + 一跳', () => {
   const originalConfig = {
     notebooks: { default: { path: notebook, structure: 'flat' as const } },
     active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
@@ -6039,9 +6039,9 @@ describe('R8 / R9-v1 / R10：入口 + 一跳（§10.4 第 8–10 项）', () => 
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2026-11-07 复核后补的三处（plan §14）：边的语义 / 入口不再是注解 / 死胡同可见
+// 2026-11-07 复核后补的三处：边的语义 / 入口不再是注解 / 死胡同可见
 // ─────────────────────────────────────────────────────────────────────────────
-describe('§14：边的语义、入口不再是注解、死胡同可见', () => {
+describe('边的语义、入口不再是注解、死胡同可见', () => {
   const originalConfig = {
     notebooks: { default: { path: notebook, structure: 'flat' as const } },
     active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
@@ -6474,7 +6474,7 @@ describe('围栏代码块：全项目统一口径', () => {
   })
 })
 
-describe('zk_memory_write（§15.1 / §10.4 第 16 项）', () => {
+describe('zk_memory_write', () => {
   const dir = path.join(home, 'nb-memory-write')
   const memFile = path.join(dir, 'MEMORY.md')
   const userFile = path.join(dir, 'USER.md')
@@ -6638,7 +6638,7 @@ describe('zk_memory_write（§15.1 / §10.4 第 16 项）', () => {
   })
 })
 
-describe('§15.6：`## Summary` 读回成字段（§10.4 第 17 项）', () => {
+describe('`## Summary` 读回成字段', () => {
   const originalConfig = {
     notebooks: { default: { path: notebook, structure: 'flat' as const } },
     active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',
@@ -6735,7 +6735,7 @@ describe('§15.6：`## Summary` 读回成字段（§10.4 第 17 项）', () => {
   })
 })
 
-describe('§15.2：召回信号 sidecar（§10.4 第 18 项）', () => {
+describe('召回信号 sidecar', () => {
   const originalConfig = {
     notebooks: { default: { path: notebook, structure: 'flat' as const } },
     active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal',

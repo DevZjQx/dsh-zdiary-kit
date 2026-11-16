@@ -198,7 +198,7 @@ export function config(workspace = processWorkspace()) {
     const raw = readJson(CFG_FILE, {});
     const next = normalizeConfig(raw, workspace);
     // 一次性迁移：老形状（没有 notebooks / 顶层还留着 notebook 或 structure / 条目还是裸字符串）
-    // 读进来就写回新形状。这样以后翻默认值时，老 vault 的配置里已经有确定值（计划 §8）。
+    // 读进来就写回新形状。这样以后翻默认值时，老 vault 的配置里已经有确定值。
     const legacy = !('notebooks' in raw)
         || ('structure' in raw)
         || ('notebook' in raw)

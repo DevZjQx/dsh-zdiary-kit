@@ -127,7 +127,7 @@ function baseArgs(cfg) {
 const WARNING_LINE = /^zk: warning: /;
 /**
  * 索引策略。测试会改 `waitMs` / `lockWaitMs` / `autoBuildMaxNotes` 把等待压到毫秒级；
- * 生产路径一律用默认值（不要从配置里读 —— 这几个数是按 §0.5.1 的实测定的）。
+ * 生产路径一律用默认值（不要从配置里读 —— 这几个数是实测定的）。
  */
 export const indexPolicy = {
     /** 建索引预算：10k / 3 链约 13 min（6.6 s + 26 ms × 链接数），留一倍余量 */
@@ -400,7 +400,7 @@ function releaseIndexLock(cfg, lock) {
 }
 /**
  * 启动一次索引：进程内 single-flight 靠 builds Map，跨进程靠调用方先抢到的锁。
- * 不传 lock 的只有两种：M5.0a 的冷建路径（db 本来就不完整，与 flush 互斥）、
+ * 不传 lock 的只有两种：冷建路径（db 本来就不完整，与 flush 互斥）、
  * 以及锁建不出来时的降级（退回 R6 之前的行为，不让显式重建失败）。
  * 成功时按「建库前拍下的 generation」清 dirty：建库期间的写入会留下差值，不会被误清。
  */
@@ -480,10 +480,10 @@ async function waitForIndexLockRelease(cfg, signal, budgetMs = indexPolicy.lockW
 /**
  * 读之前补一次增量索引（R6 的「写后可读」）。返回一条告警，或 null。
  *
- * 优先级（§9.3 第 4 步 / §10.3 第 2 条）：db 不完整（missing / interrupted）时**一律不在这里建**，
+ * 优先级：db 不完整（missing / interrupted）时**一律不在这里建**，
  * 交给紧随其后的 `ensureIndexReady` —— 它决定「小库自己补完 / 大库后台建并报 index-building」。
  * 所以 stale 回退只可能落在「完整但过期的 db」上，绝不会退回读半库，
- * 也就不会把 M5.0a 修掉的「读 → 杀 → 半库 → 再读」循环放回来。
+ * 也就不会把冷建守卫修掉的「读 → 杀 → 半库 → 再读」循环放回来。
  *
  * 挂在 zk() 这个唯一读入口上，searchNotesDetailed / lint / dream 以及 findNote / stats / 反查
  * 都自动覆盖；不脏时只是一次 stat + 一次读状态文件。
@@ -791,8 +791,8 @@ function parseList(stdout) {
 }
 /** 搜索 / 列举笔记 */
 /**
- * 所有查询都排除的路径/文件名（计划 §7）。
- * 两个坑（Z4）：
+ * 所有查询都排除的路径/文件名。
+ * 两个坑：
  *   · 不传 glob（`-x 'archive/**'` 会静默失效）；
  *   · `-x` 是**相对 cwd** 解析的，不是相对 `--notebook-dir` —— 插件跑在任意 cwd 下，
  *     所以一律拼成绝对路径，否则换台机器/换个工作目录排除就静默失效。
@@ -844,7 +844,7 @@ function coverageOf(text, words) {
     return n;
 }
 /**
- * 全量遍历用的字段格式（plan §0.5.1）：10k 实测 JSON 17.2 MB，
+ * 全量遍历用的字段格式：10k 实测 JSON 17.2 MB，
  * 这些字段只要约 2 MB，且省掉 body / rawContent / snippets。
  *
  * 分隔符用控制字符：标题 / 标签 / lead 里几乎不会出现；lead 放最后，
@@ -1193,7 +1193,7 @@ export async function allNotes(cfg, opts = {}, signal) {
 }
 /**
  * 用 zk 的过滤器挑笔记，只取**绝对路径**。
- * 别用 `{{path}}`：它相对 cwd，换个工作目录就变成 `../../tmp/...`（Z4 同款坑）。
+ * 别用 `{{path}}`：它相对 cwd，换个工作目录就变成 `../../tmp/...`（同款坑）。
  * 一类过滤器一次进程，不要按笔记逐条跑；取 MAX_SCAN + 1 条才能区分「正好 10 000」与「还有更多」。
  */
 export async function scanNotesWithFlag(cfg, flag, signal) {
@@ -1206,17 +1206,13 @@ export async function scanNotesWithFlag(cfg, flag, signal) {
     const paths = capped ? all.slice(0, MAX_SCAN) : all;
     return { paths, completeness: capped ? 'partial' : 'complete', scanned: paths.length };
 }
-/** 旧入口：只要路径（调用方不需要三态时用） */
-export async function notesWithFlag(cfg, flag, signal) {
-    return (await scanNotesWithFlag(cfg, flag, signal)).paths;
-}
 /**
  * `zk graph` 的 `--limit` 上限。注意它限的是**笔记载入数**（`zk graph --help`：`Limit the number of notes found`），
  * 不是边数 —— 实测 1 个来源 + 6 个目标、`--limit 3` 只回 2 条边。边集不完整的后果是**误报**，见 `graphEdges`。
  */
 export const MAX_GRAPH_NOTES = 10_000;
 /**
- * 全部双链边（一次 `zk graph`）。路径是**笔记本相对**的，按路径比对，不缓存 targetId（Z11 之后 id 会变）。
+ * 全部双链边（一次 `zk graph`）。路径是**笔记本相对**的，按路径比对，不缓存 targetId（id 会变）。
  *
  * `truncated` 必须往上报：`--limit` 到顶时 zk 不报错，少掉的那条边如果正好是回链，
  * S→X 就会被算成单向 —— 这是整个巡检里唯一能产生**误报**的截断（笔记扫描到顶只会漏报）。
@@ -1264,7 +1260,7 @@ export async function graphEdges(cfg, signal, opts = {}) {
 /**
  * 全图预算的默认值（篇数）：真正生效的是配置 `graphBudgetNotes`（默认取它）。
  *
- * 实测（§0.5.1）：1k / 0 链 0.45 s，10k / 1 链 26–31 s / 17 MB；成本随链接数线性涨
+ * 实测：1k / 0 链 0.45 s，10k / 1 链 26–31 s / 17 MB；成本随链接数线性涨
  * （6.6 s + 26 ms × 链接数），真实库 2–5 链/篇时 10k 会超过 60 s 超时。
  * 超过这个数就不要再调 `graphEdges`：改按篇反查（`backlinksOf` / `outlinksOf`），
  * 读不到就显式报 partial，别拿「返回了结果」冒充完整。
@@ -1273,7 +1269,7 @@ export const GRAPH_BUDGET_NOTES = 2_000;
 /** 按篇反查的默认上限：够显示用；改写链接的调用方自己传更大的限制 */
 export const MAX_LINK_NOTES = 200;
 /**
- * 按篇反查双链：一次 `zk list --link-to` / `--linked-by`，不建全图（plan §0.5.1 结论 3）。
+ * 按篇反查双链：一次 `zk list --link-to` / `--linked-by`，不建全图。
  *
  * ⚠️ 只认**绝对路径**。zk 0.15.7 实测：给相对路径、标题或不存在的路径时，过滤条件会被
  * 当成没写，返回**全库** —— 宁可先挡掉，也不要把「全库」当入链。
@@ -1330,7 +1326,7 @@ function seedAt(cfg, rel, opts = {}) {
     if (abs !== root && !abs.startsWith(root + path.sep))
         return null;
     // 种子也是「进入网络的入口」：meta / raw 不是可导航的笔记，归档要先显式允许。
-    // 与邻居侧的 `excludedNames` 同口径 —— 不能只有邻居过滤、种子随便进（plan §14.5）。
+    // 与邻居侧的 `excludedNames` 同口径 —— 不能只有邻居过滤、种子随便进。
     const norm = rel.replace(/\\/g, '/').replace(/^\.\//, '');
     if (isMetaPath(norm))
         return null;
@@ -1356,7 +1352,7 @@ function seedAt(cfg, rel, opts = {}) {
  * 种子解析：路径 / `[[路径]]` 只看磁盘（0 个子进程）；标题 / `[[id]]` 走一次 `zk list -M exact`（1 个子进程）。
  *
  * 为什么不用「全库扫描 + resolveWikiTarget」：10k 上那是一整趟 `zk list`（约 2.6 s / 2 MB），
- * 会把单种子 1 跳从 2 个进程抬到 3 个，与 R8 的成本口径（§11.3）不符。
+ * 会把单种子 1 跳从 2 个进程抬到 3 个，与 R8 的成本口径不符。
  * `-M exact` 实测能命中 frontmatter 的 id 与标题，但它是「逐词精确」而不是「整串相等」
  * （`记忆预算` 会同时命中 `记忆预算的另一篇`），所以拿到候选后还要在 JS 里比对一次
  * id / 标题 / 文件名，对不上就当没找到 —— 不拿第一个命中冒充种子。
@@ -1395,11 +1391,11 @@ async function resolveWalkSeed(cfg, raw, opts = {}, signal) {
  * 标题 / id 种子再加一次 `-M exact` 解析（共 3 个）。`limit` 硬钳 `MAX_LINK_NOTES` = 200，
  * 不用 `MAX_SCAN` —— 后者配合 `--format json` 会吐 17 MB，等于把全图成本放回来。
  * 默认排除 archive / raw / meta（与 `excludedNames` 同口径）：邻居与**种子**两侧都过滤，
- * 不能只过滤一侧（plan §14.5）。
+ * 不能只过滤一侧。
  *
  * 每条邻居多带 `section` / `linkLine`（那条边所在的小节与那一行）：
  * 入链用邻居 JSON 里已经在传输的 `rawContent`，出链读一次种子文件 —— 两边都是 **0 个额外子进程**。
- * 没有这两个字段，`lead` 对同一篇种子的所有出链是同一段文字，等于只给了 8 个标题（plan §14.1）。
+ * 没有这两个字段，`lead` 对同一篇种子的所有出链是同一段文字，等于只给了 8 个标题。
  */
 export async function walkFrom(cfg, opts, signal) {
     const direction = opts.direction ?? 'both';
@@ -1487,7 +1483,7 @@ export function sanitizeListArgs(argv) {
  * `zk list` 的透传入口（人终端用）。排除项与 format 在这里注入，不交给调用方。
  *
  * 0 命中且给了 `-m` 时退回正则（`-M re`）：FTS5 不切中文，不兜底的话
- * `query -m 中文短语` 会静默返回空（Z12，和 searchNotes 同一个坑）。
+ * `query -m 中文短语` 会静默返回空（和 searchNotes 同一个坑）。
  * 用户自己写了 `-M` 就尊重用户的选择，不覆盖。
  */
 export async function queryNotes(cfg, argv, signal) {
@@ -1535,7 +1531,7 @@ function assertWritablePath(cfg, abs) {
     }
 }
 /**
- * archive/ 只放 `supersede` 搬进去的旧结论（计划 §2 D6）：新建写进去不会报错，
+ * archive/ 只放 `supersede` 搬进去的旧结论：新建写进去不会报错，
  * 但 archive 在 excludedNames 里 —— 笔记会从检索、统计、反链里全部消失。
  * 只有 supersede 能往 archive 里搬：`zk_rename` 改名进 archive 是另一条既有守卫
  * （见 renameNote），这里只拦「新建」。
@@ -1647,7 +1643,7 @@ function normalizeNoteName(raw) {
     return name;
 }
 /**
- * 稳定 ID（§9.2）：10 位十六进制短随机串（40 bit，10⁴ 篇库的碰撞概率可忽略）。
+ * 稳定 ID：10 位十六进制短随机串（40 bit，10⁴ 篇库的碰撞概率可忽略）。
  * 纯小写 hex，不会与路径 / `.md` 后缀 / 中文标题撞形，`[[id]]` 才认得出来。
  */
 export function newNoteId() {
@@ -1656,7 +1652,7 @@ export function newNoteId() {
 /**
  * 用 zk new 建一篇（正文走 stdin → 模板里的 {{content}}）。
  *
- * 撞名（Z8）：`zk new` 遇到同名文件时 exit 0、**内容不写**、只回显路径 —— 不查就会静默丢内容。
+ * 撞名：`zk new` 遇到同名文件时 exit 0、**内容不写**、只回显路径 —— 不查就会静默丢内容。
  * 所以在建之前拍一张目录快照，建完发现文件名本来就有，直接报错（先写入的内容一个字没动，可以放心重试）。
  */
 export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c, { includeArchived: true }, s)) {
@@ -1793,7 +1789,7 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
             summaryWarning = `summary 没写进去：${err instanceof Error ? err.message : String(err)}（文件已建好，可以直接编辑那一节）`;
         }
     }
-    // 稳定 ID（§9.2）：只给 zk_new 新建的笔记写 id，老笔记 / 日记不回填。
+    // 稳定 ID：只给 zk_new 新建的笔记写 id，老笔记 / 日记不回填。
     // 建完才写：zk new -i 索引的是模板产物，改了文件就得标脏，让下一次读补索引（R6）。
     // 收尾失败一律吞掉（同 markIndexDirty）：笔记已经建好，不能让一次 id 写入看起来像整次创建失败。
     try {
@@ -2049,7 +2045,7 @@ export function appendDaily(cfg, p, entry, now = new Date()) {
     return appendToNote(cfg, p, entry, { heading: `${hh}:${mm}`, section: 'Events' });
 }
 const NOTE_EXT = /\.(md|markdown|org|txt)$/i;
-/** 相对笔记本、去掉扩展名的路径 —— 也就是 zk 双链里写的那一段（Z11） */
+/** 相对笔记本、去掉扩展名的路径 —— 也就是 zk 双链里写的那一段 */
 export function linkStemOf(cfg, abs) {
     return relPathOf(cfg, abs).replace(NOTE_EXT, '');
 }
@@ -2119,7 +2115,7 @@ export async function notebookStats(cfg, signal) {
     };
 }
 /**
- * 目录 / 标签分布（P2-11）：静态 INDEX.md 会过期，实时分布不需要第二份真相。
+ * 目录 / 标签分布：静态 INDEX.md 会过期，实时分布不需要第二份真相。
  * 数据来自已经载入的 live，不新增 zk 进程。
  */
 function distributionOf(live) {
@@ -2200,11 +2196,11 @@ async function inboundSources(cfg, rel, signal, opts = {}) {
 /**
  * 废弃一篇笔记：标 status → 重写入链 → 搬进 archive/（保留原相对路径）。
  *
- * 为什么必须重写入链（Z11）：双链是路径式的，文件一 move 全部入链即断。
+ * 为什么必须重写入链：双链是路径式的，文件一 move 全部入链即断。
  * 顺序：先改入链（指向将来的归档路径）→ 再改自己的 frontmatter → 最后 rename；
  * 正常路径下可重放：第二次调用看到 status 已是 superseded 就直接返回。
  * 例外：frontmatter 已写、rename 失败时，重试会直接返回，需要人工把文件搬进 archive/。
- * 索引不用手动重建（Z11：zk 下次运行时自己追平），但调用方不要在同一次里依赖旧 targetId。
+ * 索引不用手动重建（zk 下次运行时自己追平），但调用方不要在同一次里依赖旧 targetId。
  */
 export async function supersedeNote(cfg, opts, signal) {
     const dryRun = opts.dryRun !== false;
@@ -2595,9 +2591,9 @@ export function withTags(content, tags) {
     return body ? `${body}\n\n${line}` : line;
 }
 /**
- * 中文笔记没打标签的提示（P2-9）：写路径是唯一便宜的修复点。
+ * 中文笔记没打标签的提示：写路径是唯一便宜的修复点。
  *
- * 为什么是「没标签」而不是「搜不到」：P2-7 之后中文查询已经会并上子串匹配，正文照样找得回来；
+ * 为什么是「没标签」而不是「搜不到」：中文查询已经会并上子串匹配，正文照样找得回来；
  * 真正的代价在下一道门 —— `zk_dream` 的机械门按「无标签」把笔记拒出晋升候选，
  * `zk_stats` 的 byTag 分布里也没有它。标签仍是唯一能确定性筛选的维度。
  *

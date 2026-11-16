@@ -110,7 +110,7 @@ const call = async (name: string, args: unknown) => {
 const created = await call('zk_new', { title: '冒烟测试笔记', body: '这是冒烟测试写进去的正文。', tags: ['smoke'] })
 if (!fs.existsSync(String(created.absPath))) throw new Error('笔记没落盘：' + created.absPath)
 if (String(created.absPath) !== path.join(notebook, String(created.path))) throw new Error('zk_new 的 absPath 与 notebook + path 对不上')
-// §15.1：记忆写工具默认预演，且预演绝不改盘
+// 记忆写工具默认预演，且预演绝不改盘
 const memFile = path.join(notebook, 'MEMORY.md')
 const memBefore = fs.existsSync(memFile) ? fs.readFileSync(memFile, 'utf8') : null
 const memWrite = await call('zk_memory_write', {
@@ -122,8 +122,8 @@ if ((fs.existsSync(memFile) ? fs.readFileSync(memFile, 'utf8') : null) !== memBe
 const searched = await call('zk_search', { query: '冒烟', limit: 5 })
 const hit = (searched.notes as Array<Record<string, unknown>>)[0]
 if (!hit?.absPath || !fs.existsSync(String(hit.absPath))) throw new Error('zk_search 没返回可用的 absPath')
-// §15.6：检索结果带 summary 字段（老笔记 / 空 Summary 为空串，不假装有摘要）
-if (typeof hit.summary !== 'string') throw new Error('zk_search 没返回 notes[].summary（§15.6）')
+// 检索结果带 summary 字段（老笔记 / 空 Summary 为空串，不假装有摘要）
+if (typeof hit.summary !== 'string') throw new Error('zk_search 没返回 notes[].summary')
 const recalled = await call('zk_recall', { query: '冒烟', budget: 200, limit: 5 })
 if (Number(recalled.used) > Number(recalled.budget)) throw new Error('zk_recall 超预算')
 if (!Array.isArray(recalled.notes) || !(recalled.notes as unknown[]).length) throw new Error('zk_recall 没有装配出笔记')
@@ -133,7 +133,7 @@ await call('zk_link', { from: created.path, to: '被链接的笔记' })
 const walked = await call('zk_walk', { path: created.path, direction: 'out' })
 if (!(walked.notes as unknown[]).length) throw new Error('zk_walk 没返回出链邻居')
 const neighbour = (walked.notes as Array<Record<string, unknown>>)[0]!
-if (!neighbour?.linkLine) throw new Error('zk_walk 没给出这条边的那一行（§14.1）')
+if (!neighbour?.linkLine) throw new Error('zk_walk 没给出这条边的那一行')
 await call('zk_append', { path: created.path, text: '追加一段。', heading: '补充' })
 const queried = await call('zk_query', { tags: ['smoke'], status: 'active' })
 if (Number(queried.count) < 1) throw new Error('zk_query 没查到刚写的笔记')
@@ -147,7 +147,7 @@ const dreamed = await call('zk_dream', { days: 7 })
 if (!Array.isArray(dreamed.newNotes)) throw new Error('zk_dream 输出不对')
 const stats = await call('zk_stats', {})
 const usage = stats.usage as Record<string, number>
-if (!(usage.walk >= 1)) throw new Error('zk_stats 没记到 zk_walk 的计数（§14.4）')
+if (!(usage.walk >= 1)) throw new Error('zk_stats 没记到 zk_walk 的计数')
 await call('zk_context', {})
 await call('zk_use', {})
 

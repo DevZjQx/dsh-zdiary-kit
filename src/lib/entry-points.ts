@@ -1,5 +1,5 @@
 /**
- * R9：让 `MEMORY.md` 当检索入口（plan §11.2 / §14.2）。
+ * R9：让 `MEMORY.md` 当检索入口。
  *
  * 口径：MEMORY 里每条活条目已经是「概念 → 入口」的卡片，条目里的 `[[来源]]` 就是入口。
  *
@@ -8,14 +8,14 @@
  *   · `via: 'query'`  —— **条目本身命中检索词**：来源不必在结果集里。这才是卢曼的索引方向
  *     （关键词 → 卡号 → 那张卡可以不含这个词）。原来的实现用 `byPath` 卡死，只做成了注解。
  *
- * 三条边界（与 §11.2 / §11.4 一致）：
+ * 三条边界：
  *   · 只做字符串解析，不做语义判断（哪条更相关是 agent 的活）；
  *   · 零子进程：`via: 'result'` 只用传进来的结果笔记建索引；`via: 'query'` 只在条目命中查询时
  *     多读一次那篇来源文件的 frontmatter（≤ MAX_ENTRY_POINTS 次本地读），**不扫全库、不调 zk**；
  *   · 解析失败 / 没有 MEMORY.md 一律降级为「不带这一栏」，不让检索整体失败，也不谎称 complete。
  *
  * 解析复用 lint / dream / memory 的同一份口径：`splitMemoryEntries` / `isRetiredEntry` / `WIKI_LINK` /
- * `resolveWikiTarget` —— 退役行不计（D3），显式写 `archive/` 的链接是「有意引用旧结论」，不算活入口。
+ * `resolveWikiTarget` —— 退役行不计，显式写 `archive/` 的链接是「有意引用旧结论」，不算活入口。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -61,12 +61,12 @@ export interface EntryPoint {
 
 export interface EntryPointsResult {
   points: EntryPoint[]
-  /** true = 命中超过 MAX_ENTRY_POINTS，只回了前几条（§0.5 第 3 条：上限不许静默） */
+  /** true = 命中超过 MAX_ENTRY_POINTS，只回了前几条（上限不许静默） */
   truncated: boolean
 }
 
 export interface EntryPointsOptions {
-  /** 检索词：条目本身命中查询时，来源不必在结果集里也能当入口（plan §14.2） */
+  /** 检索词：条目本身命中查询时，来源不必在结果集里也能当入口 */
   query?: string
 }
 

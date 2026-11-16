@@ -1,5 +1,5 @@
 /**
- * 记忆注入（M1）：读 vault 根目录的 AGENTS.md / USER.md / MEMORY.md，
+ * 记忆注入：读 vault 根目录的 AGENTS.md / USER.md / MEMORY.md，
  * 按 `memoryBudgetWords` 截断，渲染成一段可注入系统提示的文本。
  * 另读 DREAMS.md 的「上次做梦」一行（不进正文、不计预算），给周节奏一句机械提醒。
  * 人格层（PERSONA.md）单独一段注入、永远在记忆段之前、不参与截断，
@@ -8,7 +8,7 @@
  * 硬约定：
  *   · 预算按**总载荷**算，不是只卡 MEMORY.md；
  *   · 切分按三级降级：`##` 小节 → 顶层列表项 → 空行段落。只有 `##` 一级时，
- *     `# 记忆` + 要点列表（最常见的写法）一个小节都切不出来，预算会整个失效 —— 见 P0-1；
+ *     `# 记忆` + 要点列表（最常见的写法）一个小节都切不出来，预算会整个失效；
  *   · 截断顺序纯机械：先丢 MEMORY 里**日期最旧**的一条（都没有日期才退回尾部整条），
  *     再丢 USER 的尾部整段，最后各自只留首段；AGENTS.md 是硬规则，永不截断（单独超预算时只告警）；
  *   · 退役条目（`- [superseded …]`）磁盘保留、注入省略 —— 它们按约定退役，不该继续占预算；
@@ -16,7 +16,7 @@
  *     选哪段是 agent 按当前任务判断，插件只搬运目录，不猜相关性；
  *   · 中文按「1 词 / 2 字」计 —— 空白切分在中文上严重低估，预算会变成装饰。
  *
- * 另有一条可观测性约定（D6 的补完）：截断不只回显「截了多少」，还要能解释「谁吃掉的」——
+ * 另有一条可观测性约定：截断不只回显「截了多少」，还要能解释「谁吃掉的」——
  * 否则用户只看到 MEMORY 常年不生效，排查会跑去怀疑注入没挂载（见 notice 里的 AGENTS 归因）。
  *
  * 读文件失败一律当作「没有这份文件」：老 vault 没有这些文件也能照常工作。
@@ -99,7 +99,7 @@ function splitItems(lines) {
     return { head, items };
 }
 /**
- * 单节再切一层（P0-2）：小节标题并进 head（永不丢），正文按顶层列表项切；
+ * 单节再切一层：小节标题并进 head（永不丢），正文按顶层列表项切；
  * 不足两条就保持原样 —— 只有一条时没有可丢的粒度，交给「预算不足」照旧点名。
  * 初次切分与「丢到只剩一节」都走这一个函数，保证两条路径同形。
  */
@@ -114,7 +114,7 @@ function degradeSingleSection(split) {
     return finishSplit([head], inner.items, 'items');
 }
 /**
- * 三级降级切分（P0-1）：`##` 小节 → 顶层列表项 → 空行段落。
+ * 三级降级切分：`##` 小节 → 顶层列表项 → 空行段落。
  * 只按 `##` 切时，「`# 记忆` + 要点列表」这种形状切不出任何小节，丢弃循环一次都不进，
  * 预算于是完全不生效（真机 880 / 449 / 895 词都是这个形状）。降级只影响超预算的库：
  * 预算内不调用这个函数的结果做任何改写。
@@ -138,7 +138,7 @@ function splitSections(body) {
     }
     if (sections.length > 0) {
         const split = finishSplit(head, sections, 'sections');
-        // 只有一节时再降一层（P0-2）：`## 结论` + 一串 `- 结论` 是最常见的形状，
+        // 只有一节时再降一层：`## 结论` + 一串 `- 结论` 是最常见的形状，
         // 不降级的话丢弃循环一次都不进，整篇绕过预算。
         return split.sections.length === 1 ? degradeSingleSection(split) ?? split : split;
     }
@@ -180,7 +180,7 @@ function firstSection(body) {
 }
 /**
  * 下一个该丢的条目：能解析出日期时选**最旧**的一条（同日期按位置靠后的先丢）；
- * 一条日期都解析不出来返回 null —— 调用方退回尾部丢，老库行为不变（D2.6）。
+ * 一条日期都解析不出来返回 null —— 调用方退回尾部丢，老库行为不变。
  *
  * 为什么按日期而不是位置：条目约定是「新结论写顶部」，但没人能保证每次都守；
  * 按位置丢会把最新结论先删掉，而那正好是最该留的。
@@ -353,7 +353,7 @@ function computePayload(cfg) {
     // 磁盘原文：files[].originalWords 与记忆页的对齐点，退役条目也算在里面
     const diskWords = new Map(files.map((f) => [f.name, countWords(f.body)]));
     const original = new Map(files.map((f) => [f.name, f.body]));
-    // 退役条目：磁盘保留、注入省略（D3）。先去掉，后面的截断只面对活条目。
+    // 退役条目：磁盘保留、注入省略。先去掉，后面的截断只面对活条目。
     const omitted = stripRetiredEntries(original.get('MEMORY.md') ?? '');
     if (omitted.count > 0)
         original.set('MEMORY.md', omitted.body);
@@ -447,12 +447,12 @@ function computePayload(cfg) {
     const keptWords = total();
     // 退役条目不算截断：它按约定退役，不是被预算挤掉的
     const omittedNote = omitted.count > 0 ? `已省略 ${omitted.count} 条退役条目（见 MEMORY.md）` : '';
-    // 这条提示本身也要吃饭（D3.2）：不把它算进 words，报出来的用量就会少一截
+    // 这条提示本身也要吃饭：不把它算进 words，报出来的用量就会少一截
     let finalWords = keptWords + countWords(toc) + countWords(omittedNote);
     const contentSum = files.reduce((sum, f) => sum + (contentWords.get(f.name) ?? 0), 0);
     // 报「正文被截掉多少」，不是净减少：目录也会占词，混在一起会让人以为没丢多少
     const truncatedWords = Math.max(0, contentSum - keptWords);
-    // 退役条目的词数：磁盘保留、注入省略（D3）—— 与截断分开报，「原 X」从此只反映截断
+    // 退役条目的词数：磁盘保留、注入省略 —— 与截断分开报，「原 X」从此只反映截断
     const retiredWords = Math.max(0, (diskWords.get('MEMORY.md') ?? 0) - (contentWords.get('MEMORY.md') ?? 0));
     let memoryInner = '';
     if (bodies.length > 0) {
@@ -466,7 +466,7 @@ function computePayload(cfg) {
         }
         if (omittedNote)
             notes.push(omittedNote);
-        // 一条日期都没有只能按位置丢：说出来，别让人以为是按日期挑的（D2.5）
+        // 一条日期都没有只能按位置丢：说出来，别让人以为是按日期挑的
         // 数字取内存里那份格式债，不在这里另数一遍（退役条目算不算会两边不一致）
         if (fellBack && truncatedWords > 0) {
             if (debt.undated > 0)
@@ -548,7 +548,7 @@ function computePayload(cfg) {
     if (memoryInner || personaText) {
         text = frameText((personaText ? personaText + '\n\n' : '') + memoryInner);
     }
-    // 模型真正收到的总量与开销：口径与 memoryUsage / D9 的载荷预览同源
+    // 模型真正收到的总量与开销：口径与 memoryUsage 的载荷预览同源
     const totalWords = countWords(text);
     return {
         text,
@@ -585,7 +585,7 @@ function computePayload(cfg) {
     };
 }
 /**
- * 记忆用量（D4）。只是 `buildMemoryPayload` 的投影 —— 不重读、不重算，
+ * 记忆用量。只是 `buildMemoryPayload` 的投影 —— 不重读、不重算，
  * 否则就是第三个计数口径，doctor / 设置页 / dream 三处迟早对不上。
  */
 export function memoryUsage(cfg) {
@@ -606,7 +606,7 @@ export function memoryUsage(cfg) {
 /**
  * 「改 MEMORY 之前」的容量快照：复用 `buildMemoryPayload` / `memoryUsage` 的投影，不新增计数口径；
  * 条目解析复用 `splitMemoryEntries` / `entryDate` / `isRetiredEntry`，与截断、`zk_lint` 同一份。
- * 纯读：不跑 zk、不写文件。同日 tie 只做可见化（G4），不改变 `oldestIndex` 的淘汰行为。
+ * 纯读：不跑 zk、不写文件。同日 tie 只做可见化，不改变 `oldestIndex` 的淘汰行为。
  */
 export function memoryCapacity(cfg, opts = {}) {
     // 15.2：默认关 / 没有召回记录时不改变任何口径（suggestion 文本也保持「按位置决胜」）
@@ -677,7 +677,7 @@ export function memoryCapacity(cfg, opts = {}) {
                 ? `再加 ${extraWords} 词会触发截断（余 ${usage.headroom} 词），先退役 / 精简 dropCandidates 里的条目`
                 : `还能放 ${usage.headroom - extraWords} 词`)
             : (usage.headroom < 0 ? `已超预算 ${-usage.headroom} 词` : `余 ${usage.headroom} 词`)];
-    // G4：同日不是「按日期挑的」；15.2 有召回信号时明说改用了最后召回时间，不假装有使用频率
+    // 同日不是「按日期挑的」；15.2 有召回信号时明说改用了最后召回时间，不假装有使用频率
     if (sameDateCount > 1)
         parts.push(`${sameDateCount} 条同日，${recallTie ? '按最后召回时间决胜（无信号回退位置）' : '按位置决胜'}`);
     if (format.length)

@@ -126,7 +126,7 @@ export default {
       try { console.warn('[zdiary] 宿主没有 tools 服务：zk_* 工具不可用（设置页仍可用）') } catch { /* ignore */ }
     }
 
-    // ── 记忆注入（M1）─────────────────────────────────────────────────
+    // ── 记忆注入 ─────────────────────────────────────────────────
     // text 用函数：宿主每个 step 都重新求值 → 改完 MEMORY.md 立刻生效，也不写会话历史。
     // 装配上下文带 agent.id（= 会话 id，裸装配没有）→ 记忆跟着**这次会话的工作区与笔记本**走，
     // 和 zk_* 工具看同一份；拿不到会话才退回进程工作区 + 全局默认笔记本。
@@ -152,7 +152,7 @@ export default {
         const others = Object.keys(cfg.notebooks).filter((name) => name !== cfg.active)
         const extra = others.length ? `；另有：${others.join('、')}（zk_use 切换本会话）` : ''
         // 配置 flat、盘上却是分层目录：新建笔记会静默落到 notes/ 根（无模板、随机文件名）。
-        // 把这一句写进每轮注入，agent 写之前就能看见（P1-7；只报告，不改结构）。
+        // 把这一句写进每轮注入，agent 写之前就能看见（只报告，不改结构）。
         const st = structureStatus(cfg)
         const drift = st.mode === 'flat' && st.extra.length
           ? `；⚠️ 盘上有分层目录（${st.extra.join('、')}），新建笔记会落在 ${cfg.notesDir}/ 根，不套模板`

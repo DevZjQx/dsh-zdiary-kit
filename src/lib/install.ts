@@ -6,7 +6,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { BIN_DIR, CACHE_DIR, expandHome } from '../config/paths.ts'
+import { BIN_DIR, CACHE_DIR } from '../config/paths.ts'
 import { run } from './exec.ts'
 import { zkAsset } from './platform.ts'
 import { managedBin, versionOf, ZkError } from './zk.ts'
@@ -76,12 +76,4 @@ export async function installZk(version: string, signal?: AbortSignal): Promise<
   if (!actual) throw new ZkError('装好的 zk 跑不起来', bin)
   // 镜像不给校验和（上游 release 也没有 checksums.txt），至少把「实际从哪下的」交回去
   return { path: bin, version: actual, asset: target.asset, url: target.url, mirror }
-}
-
-/** 用户手动指的那个路径是不是真的 zk */
-export async function verifyZkPath(p: string): Promise<{ ok: boolean; version?: string; error?: string }> {
-  const abs = path.resolve(expandHome(p))
-  if (!fs.existsSync(abs)) return { ok: false, error: '文件不存在：' + abs }
-  const version = await versionOf(abs)
-  return version ? { ok: true, version } : { ok: false, error: '跑不起来或不是 zk：' + abs }
 }

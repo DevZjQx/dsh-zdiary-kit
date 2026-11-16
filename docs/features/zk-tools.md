@@ -26,7 +26,7 @@
 
 **Public surface.** `buildTools()`（按默认工作区的笔记本配置构建，测试用）与 `registerZkTools(tools)`（返回撤销函数）。
 
-**稳定 ID（§9.2 / §10.4 第 7 项）.**
+**稳定 ID.**
 `zk_new` 建完笔记后在 frontmatter 写一个 10 位十六进制 `id`（`newNoteId()`，`lib/zk.ts`）：
 没有 frontmatter 的 flat 笔记补一个只含 `id` 的最小块、正文形状不变；老笔记 / 日记不回填（日记按日期命名，路径天然稳定）。
 `NoteRecord.id` 取 `metadata.id`，三条构造路径（`toRecord` / `parseLeanList` / `noteFromDisk`）都给；
@@ -63,7 +63,7 @@ stdout 原样返回（不做 JSON 解析），超过 `maxReadChars` 截断；exi
 且每个动作的 schema 不同（搜索有 tags/since/sort，写入有 path/text），分开才能让参数自解释。
 用 shell 拼字符串调 zk —— 拒绝：一律 `execFile` 数组参数，笔记标题里的引号/空格不会变成注入。
 在 `zk_query` 里加语义判断（"哪条更相关"）—— 拒绝：那是 agent 的活，插件只按字段过滤。
-（R1 / R3 加的是 zk 自带的 FTS 相关性与按词覆盖度的机械排序，不是让插件替模型判断语义。）
+（加的是 zk 自带的 FTS 相关性与按词覆盖度的机械排序，不是让插件替模型判断语义。）
 保留 `zk_read` 做「按搜索词读最相关的一篇」—— 拒绝：`zk_search` + 原生 `read` 两步就够，
 而多一层包装会让模型在两条读取路径之间选，路径解析也多一套。
 
@@ -81,7 +81,7 @@ stdout 原样返回（不做 JSON 解析），超过 `maxReadChars` 截断；exi
 `SEARCH_LEAN_TEMPLATE`，比全量扫描的精简格式多一列 `{{snippets}}`；无 `query` 时不加，避免全库多背正文。
 `status` 缺省按 `active` 算（`include_archived: true` 且未显式给 status 是例外）：0.1.0 的老笔记没有 frontmatter，不这样兜，flat vault 上一条都查不出来。
 `type: daily` 按 `cfg.dailyDir` 路径匹配：layered 日记模板没有 frontmatter，老日记也没有；只按 `metadata.type` 比对的话，枚举里的 `daily` 永远命中 0 条。
-`zk_new` 撞名直接报错（`zk new` 遇到同名文件是 exit 0 + 不写内容，Z8），不自动加后缀。
+`zk_new` 撞名直接报错（`zk new` 遇到同名文件是 exit 0 + 不写内容），不自动加后缀。
 flat 的随机 `{{id}}` 文件名撞不上，所以在建之前按标题查重一次（只查可见笔记，归档旧结论可复用标题）；
 layered 同目录同名靠 `{{slug title}}` 文件名拦住，不同目录允许同名（交给 `zk_lint` 提示）。
 文件名默认来自标题 slug：中文标题会生成很长的拼音文件名，所以 `zk_new` 支持 `name` 直接给 basename
@@ -101,13 +101,13 @@ group 的子目录照旧放行（zk 按路径前缀归组）。理由：`notes/`
 没有告警时输出里不带 `summaryWarning` 这个键：宿主按无损 JSON 校验工具输出，值为 `undefined` 的字段会让整次调用报
 `invalid output` —— 文件已经建好，模型却拿不到 `path`。
 只填不删：正文里多写一节 `## Content` 之类属于排版噪音，靠 `body` 的入参说明去避免，不在建完收尾时静默改正文。
-`emptyTemplateSections`（P2）：正文第一行就是 `##` 时，模板的内容槽（`Content` / `Key claims` / `Quotes`）会被挤成空壳 ——
+`emptyTemplateSections`：正文第一行就是 `##` 时，模板的内容槽（`Content` / `Key claims` / `Quotes`）会被挤成空壳 ——
 `{{content}}` 落在它们后面，内容其实没缺。建完收尾时按 `lib/sections.ts` 的同一份判定把空着的槽列出来（只提示，不改正文）：
 判定要求「槽空着」且「另有一个有内容的 `##` 小节」，所以新建的空笔记、只含代码块的小节、`## Summary` / `## Links` 都不会误报。
 修法是把正文并进那一节，或删掉那行空标题；`zk_lint` 的 `emptySections` 会复查存量。
-`tagWarning`（P2-9）：标题或正文含 CJK、而最终标签为空（入参 / 默认标签 / 正文 hashtag 都没有）时给一句提示 ——
+`tagWarning`：标题或正文含 CJK、而最终标签为空（入参 / 默认标签 / 正文 hashtag 都没有）时给一句提示 ——
 写路径是唯一便宜的修复点；一周后才在 `zk_dream` 里被「无标签」拒绝时，那篇已经进不了晋升候选，只能靠全文检索找回来。
-代价不在搜索：P2-7 之后中文查询会并上子串匹配，正文照样搜得到；问题在标签是唯一能确定性筛选的维度（`zk_query -t`、
+代价不在搜索：中文查询已并上子串匹配，正文照样搜得到；问题在标签是唯一能确定性筛选的维度（`zk_query -t`、
 `byTag` 分布都用不上它）。
 只提示、不阻断、不自动打标签：索引页与临时对照本来就不需要标签，自动生成的标签只是新的噪音。
 `zk_append` 拒写根目录的 meta 文件（AGENTS / USER / MEMORY / DREAMS / INDEX / WORKFLOW，清单来自 `lib/meta.ts`）：追加会把记忆变成流水账，
@@ -121,7 +121,7 @@ flat 在 `newNoteDir` 就拦、layered / 直接调用 `createNote` 在 `mkdir` �
 这是 3.1 唯一有意的写入收紧 —— 新建进 archive 不报错、却会从检索与统计里消失。
 `zk_stats` 除笔记 / 标签 / 断链 / 孤立外，还给 `archived`（索引里 archive/ 下的笔记数）与
 `superseded`（全部笔记中 `status: superseded` 的数量，含已归档与手工标的）—— 一次 `allNotes(includeArchived)`
-从索引算，不扫磁盘、也不逐篇读全文。`byDir` / `byTag`（P2-11）是同一份 live 上算出的实时分布
+从索引算，不扫磁盘、也不逐篇读全文。`byDir` / `byTag` 是同一份 live 上算出的实时分布
 （顶层目录 → 篇数，根目录文件记作 `.`；标签取前 10）：静态 `INDEX.md` 会过期，还要决定谁负责更新，
 而 150 篇正是检索开始变糊的拐点 —— 所以 `zk_lint` 只在「≥150 篇且没有 INDEX.md」时提示一句，不生成文件。
 篇数**不含日记**：日记按天自动增长，一年就能把任何库顶到 150 篇，而知识量并没有涨。
@@ -172,23 +172,23 @@ YAML 独有的转义（`\N`、`\_`）不是合法 JSON，退回「去掉引号�
 `memory.files[]` 与 `zk_context` 同形（`name / present / words / originalWords / retiredWords`）：`memoryUsage` 返回什么，schema 就得声明什么 ——
 少一个 key，宿主校验直接整次 invalid output。
 
-**dream 的入链统计有预算**（M5.0b）：`zk_dream` 的 `cited` / `citedBy` / `topCited` 来自一次全量建图，
+**dream 的入链统计有预算**：`zk_dream` 的 `cited` / `citedBy` / `topCited` 来自一次全量建图，
 而全图在 10k 上要 26–31 s / 17 MB。超过全图统计上限（`graphBudgetNotes`，默认 2000，设置页可调；
 0 = 永不建全图）时不再建图，结果带 `graphSkipped: true` 与生效的 `graphBudget`，
 render 明说「被引数与 topCited 是空的，不代表没人引用」—— 那是「没算」，不是「没人引」。
 其余材料（窗口候选、拒绝原因、Loose ends、退役候选、记忆余量）不受影响。
-全局被引的增量口径留给 plan §7 G2，别在这一步用全图硬撑。
+全局被引的增量口径留待后续，别在这一步用全图硬撑。
 
-`zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关（D7）。
+`zk_lint` / `zk_dream` 是**只读**工具，没有 `dry_run` 参数：不给只读工具留一个「看起来能写」的开关。
 `zk_lint` = 1 次 `zk list` + 三个 zk 原生过滤器（`--orphan` / `--broken-links` / `--tagless`）+ 单向链接的边，
 **顺序执行**：zk 每次都会顺手补索引，并发进程会撞 SQLite 写锁；200 条笔记约 0.9 秒（验收线 3 秒）。
 
-**单向链接的边从哪来**（M5.0b）：≤ 全图统计上限（`graphBudgetNotes`，默认 2000）时一次 `zk graph`
+**单向链接的边从哪来**：≤ 全图统计上限（`graphBudgetNotes`，默认 2000）时一次 `zk graph`
 （1k 实测 0.45 s，还能拿到 `snippetStart`）。超过上限改按篇反查：`--missing-backlink` 给候选目标，每个目标 `--link-to` 取来源、`--linked-by` 判回链；
 上限 50 个目标 / 60 个子进程（取先到者，实际约 30 个目标），触顶置 `edgesTruncated`。10k / 1 链夹具实测整次巡检 6.6 s
 （改动前只全图就 26–31 s / 17 MB）。反查路径没有偏移量，`where` 改成扫源文件判断，相对路径写法可能落到 `body`。
 
-**冷启动与半库**（M5.0a）：第一次读一个还没有索引的大库时，zk 会自己全量重建（10k / 1 链实测 202 s），
+**冷启动与半库**：第一次读一个还没有索引的大库时，zk 会自己全量重建（10k / 1 链实测约 250 s，3 链/篇到 12 分钟以上），
 原来的 60 s 超时把它杀在写事务里，留下 `notebook.db-journal` 的半库，下一次读又从零重来。
 现在所有命令先过 `ensureIndexReady`：≤ 200 篇让这条命令自己建（给 30 min 建库预算）；
 更大的库在后台起 `zk index`，最多等 15 s —— 等不到返回 `index-building`（带篇数与已等秒数），
@@ -198,7 +198,7 @@ render 明说「被引数与 topCited 是空的，不代表没人引用」——
 「陈旧」在 JS 里算（`stale_days` 默认 90）—— zk 的 `stale` 不是内置过滤器，只在用户的 `[filter]` 里定义过才存在。
 「重名标题」按「压空白 + 小写」归一化后分组。孤儿与无标签**排除 daily 目录**：日记按天写，天然没入链没标签，
 全报会淹掉真问题；断链仍包含日记。
-`similarTitles`（P2-10）是「改一两个字」的疑似重复：NFKC + 去标点后按字符二元组算 Jaccard ≥ 0.6，
+`similarTitles` 是「改一两个字」的疑似重复：NFKC + 去标点后按字符二元组算 Jaccard ≥ 0.6，
 或短串（≥ 6 字）被长串包含；只在同目录内比较，短于 4 字的标题跳过（`RAG` / `RAG 2` 的二元组太少，噪声大于信号）。
 与 `duplicateTitles` 分开报：全等的直接进重名，不再进疑似；只在内存里比较，同目录超过 300 篇或扫描触顶时置 `truncated`，
 并在 `completeness = partial` 的同时报 `droppedGroups`（有几组只比较了前 300 篇）。只报告，合并由人裁决。
@@ -213,7 +213,7 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 `total` / `counts` 按全量算、`items` 里每篇最多 50 条明细（整个桶最多 50 篇），所以四项分类相加始终等于 `total`；
 超过 2 MiB 或读不到的文件不会静默略过：计入 `skipped`，输出里点名「跳过 N 篇」。
 笔记页的时间轴警告不受这个窗口限制 —— 打开哪篇查哪篇。自动重排会改正文顺序、diff 不可审，所以不给自动修复开关。
-`emptySections`（P1）查**模板空壳**：`## Content` / `## Key claims` / `## Quotes` 空着，而同一篇里另有一个有内容的 `##` 小节 ——
+`emptySections` 查**模板空壳**：`## Content` / `## Key claims` / `## Quotes` 空着，而同一篇里另有一个有内容的 `##` 小节 ——
 正文写到了别处，模板槽只剩标题（`{{content}}` 落在槽后面的必然形状）。判定在 `lib/sections.ts`，与 `zk_new` 的
 `emptyTemplateSections` 共用；**日记不查**（layered 的 `## Observations` / `## Loose ends` 空着是版式，每天新建都如此），
 `## Summary`（选填）与 `## Links`（常年为空）也不算；围栏代码里的 `##` 不算标题、但「只含一个代码块」的小节也不算空。
@@ -253,21 +253,21 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记），以及 `stale`（有日期且超过 `stale_days`，默认 90 天未复核）——
 都只报告；注入从 0.9 起省略退役条目（notice 说明省略数），文件本身不动。条目切分与日期解析统一走 `lib/memory-format`。
 文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / 时间轴 / 空模板小节 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
-`incomplete`（P2-13）：`type` / `status` / `authority` 缺任一的笔记（**只在 layered 下查**：flat 的笔记
+`incomplete`：`type` / `status` / `authority` 缺任一的笔记（**只在 layered 下查**：flat 的笔记
 本来就不写这三个字段，整库标红不是「可发现的状态」而是噪音）。索引把缺失落成空串，
 于是「没写 authority」=「authority 正常」，dream 的 informal 门对它们静默失效。
 只能逐篇读 frontmatter（索引里区分不出「没写」与「空值」）；护栏是只读 live 且非日记，扫描触顶时置 `truncated`。
-`tags`（P2-14）：标签总数 ≥ 30 才报；`caseVariants` 是忽略大小写后同形的组（`#Agent` 3 篇 + `#agent` 2 篇 → 一组、总 5），
+`tags`：标签总数 ≥ 30 才报；`caseVariants` 是忽略大小写后同形的组（`#Agent` 3 篇 + `#agent` 2 篇 → 一组、总 5），
 `singletons` 是只出现一次的那批。只报告，不合并 —— 在别的库里它们可能就是两个概念。
-`template`（P2-15）：读根目录 `AGENTS.md` 首行的 `<!-- zdiary-template: vN -->`；无标记按 v0 算，
+`template`：读根目录 `AGENTS.md` 首行的 `<!-- zdiary-template: vN -->`；无标记按 v0 算，
 与 `TEMPLATE_VERSION` 不等时提示，并把当前结构对应的模板全文放进 `currentText`。只报告，不覆盖（模板允许用户改）。
 `version < current` 才给全文；`version > current`（插件被降级过）只报「模板比插件新」，不给旧模板 —— 否则 agent 会照旧版合并、把标记改回去。
 `version === current` 时再查正文哨兵（`TEMPLATE_SENTINELS`）：正文还留着当前版本删掉的句子 → `mismatch`，仍给全文，提示「疑似只改了版本号」。
 老库的 `AGENTS.md` 停在旧版本时，下次 `zk_lint` 会给出「旧版模板」+ 新模板全文 —— 这是有意的：
 它每轮注入，停在旧规则上就会一直按旧约定落笔；而插件安装后 docs 在包内、工作区外读不到，不能只给相对路径。
 `zk_dream` 的拒绝规则只有两条（`authority=informal`、无标签），日记不进候选/拒绝（它的未完成项单独一栏）：
-再加第三条就是语义判断，违反 D5。`topCited` 用一次 `zk graph` 数入链，不按笔记逐条跑。
-**使用信号（P2-12）**：入链数衡量的是作者写笔记时的中心性，不是「后来被用到」。日记是这个插件里唯一
+再加第三条就是语义判断。`topCited` 用一次 `zk graph` 数入链，不按笔记逐条跑。
+**使用信号**：入链数衡量的是作者写笔记时的中心性，不是「后来被用到」。日记是这个插件里唯一
 按时间记录真实工作的层，所以从同一次 `zk graph` 里再取「来源在 dailyDir 下的边」：候选与被引排行都带
 `dailyMentions`（被几篇日记提到）、`daysMentioned`（覆盖几个不同日期）、`lastMentioned`（最近日期）。
 日期优先取日记文件名（`YYYY-MM-DD`）—— 补写旧日记时 zk 的 `created` 会全是今天；文件名不是日期形状才退回 `created`。
@@ -280,7 +280,7 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 两条都是字符串比较 —— `[[链接]]` 经 `lib/wikilink` 解析到活笔记（`promotedBy: 'link'`），
 或者候选标题（归一化后 ≥ 6 字）出现在 MEMORY 的某一行里（`promotedBy: 'title'`，真机 7 条里 6 条是这种纯文字条目）。
 短标题（「RAG」）不做包含匹配：任意句子里都可能撞上，宁可重复报，不猜。归档链接不算晋升。
-退役条目（0.9 D3）让这两条略微分叉：链接匹配仍用**原文**（退役行的 `→ [[新结论]]` 是合法的已晋升指针），
+退役条目让这两条略微分叉：链接匹配仍用**原文**（退役行的 `→ [[新结论]]` 是合法的已晋升指针），
 标题匹配用 `stripRetiredEntries` 之后的正文（退役行里的旧标题不该再算已晋升）。
 不这样做的后果是可推演的：同一批笔记每周原样重复，人跳过几次之后 `DREAMS.md` 的日期不再更新，整套回路就断了。
 窗口默认也不再固定 7 天：`days` 省略时 = 距 `DREAMS.md`「上次做梦」的日历天数（1–365，没有或日期不合法才退回 7），
@@ -289,7 +289,7 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 候选的 `lead` 是 frontmatter 之后第一段正文（200 字内）—— 不是 zk 的 `lead`（那只是标题行）；
 `citedBy` 是同一次 `zk graph` 得到的入链来源前 5 条。给 agent 的是可重放的上下文（谁引了它、摘要是什么），
 不是「这条该晋升」的结论。
-**记忆余量与退役材料（0.9 D4）。** 结果的 `memory` 与注入同一口径：`words` 是内容词（含「记忆已用」提示行），
+**记忆余量与退役材料。** 结果的 `memory` 与注入同一口径：`words` 是内容词（含「记忆已用」提示行），
 `personaWords` 是整段人格注入量，`totalWords` 含人格 / 框 / 做梦提醒 / notice，
 `headroom = budget - (totalWords - personaWords)` 可以为负 —— 只报内容词等于说
 「还有 15 词」，而框和提示早就把它吃完了；人格是独立层，不占记忆预算。`retireCandidates` 是机械规则给的「可考虑退役」：有日期且 > 90 天（`stale`）、
@@ -307,7 +307,7 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 不改 `formatDebt` 形状（预算放不下且逐字节稳定是硬约束）、零 zk 子进程、只读不写、不抓库外 URL、不递归。
 `zk_dream` 只输出这些材料栏，不写任何文件。
 `zk-kit query` 的透传在 0 命中且给了 `-m` 时退回 `-M re`：FTS5 不切中文，不兜底会静默返回空（Z12）。
-`zk_search`（P2-7）更进一步：**查询含 CJK 时 FTS 与 `-M re` 各跑一次**，按路径去重合并，`matchStrategy` 返回
+`zk_search` 更进一步：**查询含 CJK 时 FTS 与 `-M re` 各跑一次**，按路径去重合并，`matchStrategy` 返回
 `fts` / `regex` / `mixed`。只兜 0 命中是不够的 —— FTS 命中 1–2 条时模型会以为「库里只有这些」，然后建重复笔记；
 纯 ASCII 查询仍只跑一个进程，不付这份开销。`mixed` 只在正则补到的笔记**真的进了返回**时才报：FTS 占满 `limit` 时
 两者按 `limit` 合并会把补的分片切掉，那时仍报 `fts`，界面文案不会谎称「已补上」。
@@ -315,14 +315,14 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 这种情况下 `completeness = unknown`：结果可能少了正则补的那部分，不能当成「全部命中」。
 `zk_query` 与 `zk_search` 共用 `searchNotesDetailed`，中文同样双跑；差别只在结构化过滤（见上）。
 
-**召回质量四件套（§10.4 第 4 项：R1 / R2 剩余 / R3 / R7）。**
+**召回质量四件套（R1 / R2 剩余 / R3 / R7）。**
 - **R1 相关性排序**：有 `query` 且没显式给 `sort` 时不再传 `--sort created-`（zk 只有 `created / modified / path / title / random / word-count`，没有 relevance），保住 FTS 的 BM25 顺序；`sort` 枚举加 `relevance`，说明「只在有 query 时有效，无 query 回退 `created-desc`」。工具层 / `zk-kit search` 都按这个默认值；显式 `sort` 一律不改写。CLI 与 `zk_query` 同步。
 - **R2 `snippet` / `total`**：`NoteRecord` 加 `snippet`。zk 0.15.7 的 `snippets[0]` 实测**就是首段**（长笔记里与 `lead` 逐字相同），并不定位深处的命中句 —— 所以 `buildSnippet` 先看片段里有没有查询词，没有就从 `rawContent` 取「最早命中 ±80 字」的窗口，压空白截 240 字。带 `status` / `type` 过滤走精简字段格式，那里没有 `rawContent`，于是只在**有 query 时**多用一列 `{{snippets}}`（`SEARCH_LEAN_TEMPLATE`），无 query 的全库扫描不背这段正文。`zk_search` / `zk_query` 输出透出 `snippet`（空串时整个键不出现）与 `words`，render 在 `snippet` 比 `lead` 多信息时替换 `lead`。
   `total` 是**精确命中总数（含结构化过滤后），只在 `completeness === 'complete'` 时给**：zk 的 `Found N notes` 会被 `--limit` 截断（实测 115 命中、`--limit 10` 时只报 `Found 10 notes`），拿不到 limit 之外的真实总数，额外起一个进程去数又违反「不新增子进程」。`partial` / `unknown` 时 `total` 缺失，`hasMore` / `completeness` 已经说明「还有多少不知道」，不拿 `count` 冒充。
 - **R3 中文多词**：`splitCjkQuery` 按空白 / 标点切词、去重、保留 ≥2 字、最多 4 个；少于 2 词、纯 ASCII 或超过 4 词都退回原来的「整串正则」两遍策略。多词时正则这一路换成转义后的 `(?:词1|词2|…)` **一次进程召回**（不逐词起进程），再用 `rawContent` 算每个命中覆盖了几个词，按 `coverage` 降序 → 原 FTS 顺序 → `created-desc` 排序；精简格式路径没有 `rawContent`，用 `title / lead / snippet` 算覆盖度（best effort）。`zk_query` 的旧描述「中文召回不完整，尽量配合 tags 使用」已改成与 `zk_search` 一致。
 - **R7 0 命中**：CJK 查询 0 命中时 render 追加「中文全文不切词：换更短的词，或按 tags 查」（`zk_query` 提示 `tags` 参数）；纯 ASCII 0 命中文案不变，提示不动 `notes` / `count`。
 
-**召回装配（R4，§10.4 第 5 项）.** 新增只读 `zk_recall`（`lib/recall.ts`）：检索之后按词数预算把命中笔记拼成一段可直接读的上下文，补上「召回之后还有装配」，插件此前停在 top-k。
+**召回装配（R4）.** 新增只读 `zk_recall`（`lib/recall.ts`）：检索之后按词数预算把命中笔记拼成一段可直接读的上下文，补上「召回之后还有装配」，插件此前停在 top-k。
 - 只做机械装配：不读全文、不做向量 / LLM rerank / 跨回合 dedup、不新增 zk 进程；一次 `searchNotesDetailed` 取候选（默认 30 条），其余全在内存里拼。
 - 分组轮转：按 `type` → 首个标签 → 「未分类」分组，各组轮流取一条，组内保持检索顺序；预算不会被排在最前的那一类全吃掉。
 - 每条取 `title` / `path` / `absPath` / `words` 与 `snippet`（比 `lead` 多信息时用它），`budget` / `used` 走 `countWords` 口径（中文 2 字 1 词）。放不下就**整条丢弃、不切半句**，`notes[].reason` 明写 `included` / `duplicate` / `empty` / `over-budget`；`used` 是对最终整段文本算的（分隔符也计入），所以一定 `<= budget`。
@@ -334,7 +334,7 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
   `false` 时在正文外补列 —— 不从 `text` 里嗅字符串，笔记正文里也可能出现同样的字。
   命中却全被预算挡下时，CLI 明说「放不进 N 词预算」，不再打印「没有匹配的笔记」。
 
-**一跳入口（R8，§10.4 第 8 项）.** 新增只读 `zk_walk`（`lib/zk.ts` 的 `walkFrom`）：从一篇种子出发走一跳，补上「沿链接走」的入口。
+**一跳入口（R8）.** 新增只读 `zk_walk`（`lib/zk.ts` 的 `walkFrom`）：从一篇种子出发走一跳，补上「沿链接走」的入口。
 - **种子解析**：路径（相对 / 绝对 / `[[路径]]`）只看磁盘，**0 个子进程**；标题 / `[[标题]]` / `[[id]]` 走一次
   `zk list -M exact --limit 5`，再在 JS 里按 id / 标题 / 文件名精确比对 —— `-M exact` 是「逐词精确」而不是整串相等
   （实测 `记忆预算` 会同时命中 `记忆预算的另一篇`），所以对不上就当没找到，**不拿第一个命中冒充种子，也不退回全库**。
@@ -343,7 +343,7 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 - **边界**：`limit` 硬钳 `MAX_LINK_NOTES` = 200（不是 `MAX_SCAN` 10 000：后者配 `--format json` 会吐 17 MB，等于把全图成本放回来）；
   默认排除 archive / raw / meta（`excludedNames` 同口径），`include_archived: true` 才连归档一起看；
   `complete / partial` 二态（按篇反查没有产生 `unknown` 的路径，**不谎称三态**），触顶明说「邻居没列全，不代表没有」。
-  每条邻居还带 `section` / `linkLine`（§14.1，`lib/edge-context.ts` 的 `linkContextOf`）：那条边所在的 `##` / `###` 小节与**那一行**。
+  每条邻居还带 `section` / `linkLine`（`lib/edge-context.ts` 的 `linkContextOf`）：那条边所在的 `##` / `###` 小节与**那一行**。
   没有它，`lead` 对同一篇种子的所有出链是同一段文字（邻居首段），等于只给了 8 个标题 ——
   而 Sammelverweise 的价值在于「关于 X 见这几处」。字节是白捡的：入链用邻居 JSON 里已经在传输的 `rawContent`，
   出链读一次种子文件，**0 个额外子进程**；只认 wiki 双链与 Markdown 行内链接，代码块里的 `[[…]]` 不算，
@@ -353,7 +353,7 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 - 成本（`docs/bench-baseline.md` 的三档实测）：路径种子 `both` 恒 2 子进程，10k 上 p95 1.3 / 1.1 / 1.8 s，
   传输 7.2 / 15.1 / 32.3 KB（0.2 / 1 / 3 链每篇）；全图同库 26–31 s / 17 MB。
 
-**MEMORY 当检索入口（R9，§10.4 第 9 项 / §14.2）.** `zk_search` / `zk_query` / `zk_recall` 的结果多一个可选 `entryPoints`。
+**MEMORY 当检索入口（R9）.** `zk_search` / `zk_query` / `zk_recall` 的结果多一个可选 `entryPoints`。
 两条来源，`via` 分开写：
 - `via: 'result'` —— 条目指向**本次命中**的笔记：把「这条已晋升结论」贴回结果（3.9.0 原语义）；
 - `via: 'query'` —— **条目本身命中检索词**：来源不必在结果集里。这才是索引的方向（关键词 → 卡号 → 那张卡
@@ -362,14 +362,14 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
   `resolved: false`，只给入口名（`title` 就是 `[[…]]` 里那一串，`path` / `absPath` 是空串 —— 不编），
   渲染成「用 zk_walk 走进去」。不为了补一次路径再起一个 zk 进程（10k 上 `zk list -M re` 实测 0.7–1.0 s）。
 - 口径在 `lib/entry-points.ts`：条目切分 / 退役判断复用 `splitMemoryEntries` / `isRetiredEntry`，
-  链接解析复用 `WIKI_LINK` / `resolveWikiTarget`；退役行不计（D3），归档目标归死胡同探针、不当活入口，
+  链接解析复用 `WIKI_LINK` / `resolveWikiTarget`；退役行不计，归档目标归死胡同探针、不当活入口，
   `raw/` / 根目录 meta 一律不算入口。
 - 查询比对是**机械的**：ASCII 按空格分词、CJK 长串补二元组，`entry` 文本包含任一比对项即命中；
   不排序（按 MEMORY 文件顺序）、不做语义判断（「哪条更相关」仍是 agent 的活）；最多 5 条（`MAX_ENTRY_POINTS`），
   超出置 `entryPointsTruncated`。
 - 解析失败或没有 MEMORY.md 时整个键不出现（老库输出与改动前一致），不谎称完整。
 
-**死胡同可见（§14.3）.** `lib/archive-probe.ts`：检索命中一篇活笔记时，顺手看 `archive/` 里有没有**同名旧结论**，
+**死胡同可见.** `lib/archive-probe.ts`：检索命中一篇活笔记时，顺手看 `archive/` 里有没有**同名旧结论**，
 带出 `supersede-reason` 与 `superseded-by`，放进 `counterEntries`（最多 3 条）。
 - 为什么：`zk_supersede` 搬进归档的旧结论被 `excludedNames` 排除出检索，只有 `zk_new` 写同名时才提示一次 ——
   于是 agent 在读 / 想的阶段看不到「这条路试过、为什么废」，只能重新踩一遍。这不是「不查全」的谦逊，
@@ -382,14 +382,14 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 - 只提示：不改默认结果集、不改 `completeness` 口径、不判断「是不是同一个错误」；`include_archived: true` 时
   归档已经在结果里，不再重复报。
 
-**本地聚合计数（§14.4）.** `lib/usage.ts` 在 `.zk/dsh-usage.json` 记「哪个工具被调了几次」
+**本地聚合计数.** `lib/usage.ts` 在 `.zk/dsh-usage.json` 记「哪个工具被调了几次」
 （`search` / `query` / `recall` / `walk` / `entryPoints` / `counterEntries`）＋首次计数时间，`zk_stats.usage` 读出来。
 - 只存键与数字：不记查询词、不记路径、不上报。写入失败 / 文件损坏一律静默降级，不影响工具调用。
 - 目的：到 3.9.0 为止入口 / 一跳的验收全是机械口径（子进程数、字节、schema、与 `graph` 对账），
   没有一条问「这条路有没有被真的用上」。`zk_stats` 的 `usage` 是唯一可观测的代理 ——
   发布后过一段时间看 `walk` / `entryPoints` / `counterEntries` 有没有涨。
 
-**写 MEMORY 前的容量（G1 / G4，§10.4 第 6 项）.** 复用 `zk_context`，不新增 `zk_memory_check`：
+**写 MEMORY 前的容量.** 复用 `zk_context`，不新增 `zk_memory_check`：
 入参加 `proposed_entry` / `extra_words`，输出增量 `headroom` / `extraWords` / `wouldTruncate` /
 `dropCandidates`（首行摘要 / 日期 / 词数 / `reason`）/ `format` / `suggestion` / `sameDateCount` / `retiredEntries` /
 `orderDebt`（位置债四元组，与 `zk_lint.memoryLinks` 同一份 `memoryOrderDebt`）。
@@ -399,19 +399,19 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 与 `zk_lint.memoryLinks` 同一口径。WORKFLOW.md 补做法、两份 AGENTS 模板各加一句指针，`TEMPLATE_VERSION` 升到 9
 （细节见 `docs/features/memory.md`）。
 
-**写后可读（R6，3.6.0）.** `zk_append` / `zk_link` / `zk_new` 的 `summary` 回填 / 改名 / 搬归档之后，
+**写后可读.** `zk_append` / `zk_link` / `zk_new` 的 `summary` 回填 / 改名 / 搬归档之后，
 插件在 `.zk/dsh-index-state.json` 记 `generation`（每次写入 +1）与 `indexedGeneration`（最近一次成功 `zk index` 覆盖到的快照）。
 两者不等就是 dirty，下一个 `zk()` 读（检索 / lint / dream / stats / 反查都算）之前自动补一次 `zk index`，最多等 15 秒：
 建完就读到新内容；建不完 / 失败 / 另一个进程在建则「完整但可能过期」回退，打一条 `[zdiary]` 告警（同一 generation 只打一次），
 dirty 留到下次读。**回退只允许落在完整 db 上**：db 不完整（missing / interrupted）时 flush 不接手，交给 `ensureIndexReady` 的冷建守卫，
-不把 M5.0a 修掉的「读→杀→半库→再读」循环放回来。跨进程 single-flight 靠 `.zk/dsh-index.lock`（O_EXCL + pid / mtime 判 stale，
+不把冷启动守卫修掉的「读→杀→半库→再读」循环放回来。跨进程 single-flight 靠 `.zk/dsh-index.lock`（O_EXCL + pid / mtime 判 stale，
 锁文件刚建好但 token 没写完的几秒内不当 stale，否则会把别人刚建的锁当垃圾删掉 → 两个 `zk index` 并发）；
 读路径与显式重建都先抢这把锁，不并发起第二个 `zk index`。
 `zk_new` 本身不需要标脏：`zk new` 自己会把新文件写进索引；只有摘要回填（`fs.writeFileSync` 绕过了 zk）才补标。
 外部编辑不被感知：`indexLagHint`（doctor / `zk_lint` 的 `indexLag`）只比 `notebook.db` 与笔记本**顶层**条目的 mtime，
 约十次 stat 而不是 10⁴ 次；目录 mtime 只在新增 / 删除 / 改名时变，**改已有笔记的正文一定漏报**（不是「可能漏报」）。
 
-**记忆写路径（§15.1 / §10.4 第 16 项）.** `zk_memory_write` 是第一个写根目录 meta 的工具；
+**记忆写路径.** `zk_memory_write` 是第一个写根目录 meta 的工具；
 所有 `zk_append` / `zk_new` / `zk_link` / `zk_supersede` 仍一律拒写 meta（`isMetaPath`）。
 入参 `target: MEMORY|USER`、`entry`（调用方给全文）、`action: add|retire`、`dry_run`（默认 true）、
 `expect_stamp`（可选，预演返回的 `fileStamp`）。机械门全在 `lib/memory-write.ts`：
@@ -431,7 +431,7 @@ dirty 留到下次读。**回退只允许落在完整 db 上**：db 不完整（
 `- [superseded …]` 标记，真正让某条现行结论退役仍需原生 edit 改写那一行（语义判断）。
 `WORKFLOW_TEMPLATE` 的「改 MEMORY.md 之前」补一行「先 `zk_memory_write` 预演」；`zk_context` 保持只读预览。
 **成本**：格式门要核实标题式来源，走一次 `scanNotes`（**1 个 zk 子进程**，与 `zk_lint` 同口径）；
-容量 / 日期 / 并发门都是纯 JS。详见 `docs/plan.md` §16 的实施记录。
+容量 / 日期 / 并发门都是纯 JS。
 **口径统一**：`entry` 示例与 `AGENTS.md` 模板同口径（`结论（YYYY-MM-DD）[[来源路径]]`，路径式）；
 `[[笔记标题]]` 是标题式，夹具 `scripts/fixture.ts` 里那几条 MEMORY 条目是测 `wikiIndex.byTitle`
 的边界样本，不是书写范本。

@@ -1,12 +1,12 @@
 /**
- * 巡检（M3）：只报告，不改任何笔记（计划 §3 D5）。
+ * 巡检：只报告，不改任何笔记。
  *
  * 一次 `zk list` 拿全量，再用 zk 原生的几个过滤器（孤儿 / 断链 / 无标签 / 缺回链）各跑一次进程；
  * 「陈旧」「重名」在 JS 里算，单向链接小库用一次 `zk graph` 的边、大库按篇反查（见 `oneWayByQueries`）。
  * 200 条笔记上 5 次进程就够 —— 大库那条路也按「问题数」而不是「篇数」计费。
  *
  * 「陈旧」为什么自己算：zk 的 `stale` 不是内置过滤器，`zk list stale` 只在你自己的
- * `[filter]` 里定义过才存在（Z3 只说了位置参数语法，没说它是内置的）。所以阈值由插件定。
+ * `[filter]` 里定义过才存在（只说了位置参数语法，没说它是内置的）。所以阈值由插件定。
  *
  * 孤儿与无标签**不含日记**：日记按天写，天然没有入链、也没有标签，
  * 全报出来只会把真正的问题（断链、单向链接）淹掉。断链仍包含日记 —— 那里出错是真问题。
@@ -43,11 +43,11 @@ import { timelineCounts, timelineIssues } from './timeline.ts'
 import { isDayString } from './dates.ts'
 import { similarKeyOf, similarScore } from './similar.ts'
 
-/** 每类最多回多少条（计划 §4 M3）；总数另给 */
+/** 每类最多回多少条；总数另给 */
 export const MAX_ITEMS = 50
 
 /**
- * 大库按篇反查的上限（plan §9.3）：目标数 50、子进程 60，取先到者（每个目标要 2 个进程，
+ * 大库按篇反查的上限：目标数 50、子进程 60，取先到者（每个目标要 2 个进程，
  * 实际约 30 个目标；10k 库上每个约 0.45 s）。超了就报 `edgesTruncated`，不静默少报。
  */
 const MAX_ONE_WAY_TARGETS = 50
@@ -176,7 +176,7 @@ export interface LintMemoryBucket {
   total: number
   /** 活条目里没有任何 `[[链接]]` 的条数（无法核对）；退役行不计，口径同 `memoryFormatDebt` */
   unlinked: number
-  /** MEMORY.md 活条目里首行没有 `YYYY-MM-DD` 的条数（P1-3）；退役行不计，口径同 `memoryFormatDebt` */
+  /** MEMORY.md 活条目里首行没有 `YYYY-MM-DD` 的条数；退役行不计，口径同 `memoryFormatDebt` */
   undated: number
   /** 位置债：日期新于其上方所有带日期条目的活条目数（>0 = 新条目没写顶部），口径同 `memoryOrderDebt` */
   outOfOrder: number
@@ -190,7 +190,7 @@ export interface LintMemoryBucket {
   retired: number
   /** 退役行里的 `→ [[新结论]]` 解析不到活笔记的条数 */
   retiredBroken: number
-  /** 有日期但超过阈值没复核的条目（D5.1）：只报告，不判断还有没有用 */
+  /** 有日期但超过阈值没复核的条目：只报告，不判断还有没有用 */
   stale: { total: number; staleDays: number; items: LintMemoryStale[] }
   items: LintMemoryLink[]
 }
@@ -253,7 +253,7 @@ export interface LintTemplateBucket {
   currentText?: string
 }
 
-/** 人格体检（M1：missing / old / newer / mismatch / placeholder） */
+/** 人格体检（missing / old / newer / mismatch / placeholder） */
 export interface LintPersonaIssue {
   file: 'PERSONA.md'
   kind: 'missing' | 'old' | 'newer' | 'mismatch' | 'placeholder'
@@ -266,7 +266,7 @@ export interface LintPersonaBucket {
   items: LintPersonaIssue[]
 }
 
-/** 时间轴问题：只报告，不自动修（计划 §2 D2） */
+/** 时间轴问题：只报告，不自动修 */
 export interface LintTimelineEntry {
   /** 日记（笔记本相对路径） */
   path: string
@@ -288,7 +288,7 @@ export interface LintTimelineBucket {
   items: LintTimelineEntry[]
 }
 
-/** 时间轴只扫最近多少天（计划 §2 D4）：一年日记会报几百条旧问题，把今天的问题挤出 50 条上限 */
+/** 时间轴只扫最近多少天：一年日记会报几百条旧问题，把今天的问题挤出 50 条上限 */
 export const TIMELINE_WINDOW_DAYS = 90
 
 /** 空模板小节：模板的内容槽空着，而正文写在了别的二级小节里（只报告，不改写） */
@@ -344,7 +344,7 @@ export interface LintResult {
   notebook: string
   /** 参与巡检的笔记数（已排除 raw / archive / meta 文件） */
   notes: number
-  /** 稳定 ID（§9.2）：缺 `id` 的非日记笔记数，只读计数，不回填 */
+  /** 稳定 ID：缺 `id` 的非日记笔记数，只读计数，不回填 */
   missingId: number
   /**
    * true = 笔记扫描触到上限，结果不完整：只会漏报，不会误报（别当成「只有这些问题」）。
@@ -385,7 +385,7 @@ export interface LintResult {
    */
   emptySections: LintEmptySectionBucket
   /**
-   * 非日记笔记已到 150 篇、根目录却没有 INDEX.md（P2-11）：只是提示，不生成静态索引。
+   * 非日记笔记已到 150 篇、根目录却没有 INDEX.md：只是提示，不生成静态索引。
    * 实时分布看 zk_stats（byDir / byTag），静态索引会过期、还要决定谁负责更新。
    * 日记不计入：它按天自动增长，一年就能把任何库顶到 150 篇，可知识量并没有涨。
    */
@@ -419,7 +419,7 @@ export function duplicateTitles(notes: NoteRecord[], max = MAX_ITEMS): LintDupli
 const SIMILAR_GROUP_MAX = 300
 
 /**
- * 疑似重复标题（P2-10）：精确查重只能挡住手滑 —— 中文改两个字就绕过去了。
+ * 疑似重复标题：精确查重只能挡住手滑 —— 中文改两个字就绕过去了。
  *
  * 纯机械：NFKC + 去标点后按字符二元组算 Jaccard ≥ 0.6，或短串（≥ 6 字）被长串包含。
  * 只在**同目录**内比较（不同目录的同名本来允许）；全等标题留给 duplicateTitles，这里不重复报。
@@ -568,7 +568,7 @@ export function memoryLinkIssues(cfg: Config, notes: NoteRecord[], opts: MemoryI
       oldestDate = order.oldestDate
       for (const entry of splitMemoryEntries(body)) {
         const first = entry.split('\n', 1)[0] ?? ''
-        // 退役行：磁盘保留、注入从 0.9 起省略（D3），只核对它指向的新结论是否还活着
+        // 退役行：磁盘保留、注入省略，只核对它指向的新结论是否还活着
         if (isRetiredEntry(entry)) {
           retired += 1
           const next = /→\s*\[\[([^\]|#]+)/.exec(entry)
@@ -682,7 +682,7 @@ export function formatLintExtras(
     )
   }
   if (r.missingId > 0) {
-    lines.push(`· 稳定 ID：${r.missingId} 篇没有 id — 新建的笔记已自动写入，老笔记只提示、不回填（§9.2）`)
+    lines.push(`· 稳定 ID：${r.missingId} 篇没有 id — 新建的笔记已自动写入，老笔记只提示、不回填`)
   }
   // 缺文件 = 人格未启用（默认状态）：不报错、不占行。
   // 有旧版 / 占位符 / 标记不符时才提醒 —— 否则每个老库每次 lint 都多一条永久 ⚠️，反而训练人忽略告警。
@@ -828,7 +828,7 @@ export function oneWayLinks(
 const REQUIRED_FIELDS = ['type', 'status', 'authority'] as const
 
 /**
- * frontmatter 缺字段（P2-13）：`toRecord` 把缺失的 status / type / authority 一律落成空串，
+ * frontmatter 缺字段：`toRecord` 把缺失的 status / type / authority 一律落成空串，
  * 于是「没写 authority」=「authority 正常」—— dream 的 informal 门对它们静默失效。
  * 索引里区分不出「没写」与「空值」，只能逐篇读 frontmatter；代价是 O(n) 次读盘，
  * 护栏是只读 live 且非日记，扫描触到上限时置 truncated。
@@ -867,7 +867,7 @@ export function incompleteFrontmatter(
 const TAG_MIN = 30
 
 /**
- * 标签卫生（P2-14）：标签是中文召回的补丁，补丁自己的卫生没人看。
+ * 标签卫生：标签是中文召回的补丁，补丁自己的卫生没人看。
  * 大小写变体纯机械可判（`#Agent` / `#agent`），单例标签是「写了一次就再没出现」的那批。
  * 只报告，不合并 —— 在别的库里它们可能就是两个概念，裁决留给人。
  */
@@ -930,7 +930,7 @@ function sentinelIssue(
 }
 
 /**
- * 人格体检（M1）：缺文件 = 未启用（不算错，但要让 zk_lint 可见）；
+ * 人格体检：缺文件 = 未启用（不算错，但要让 zk_lint 可见）；
  * 旧版 = 标记比当前模板旧；比插件新 = 插件才是旧的那个，别改文件去配；
  * 标记与内容不符 = 标记已是当前版本，正文还留着旧版内容（只改了首行数字）；
  * 占位符 = 模板里的 {{...}} 还没填（“未填”是机械可发现的“未启用一半”状态）。
@@ -978,7 +978,7 @@ export function personaStatus(cfg: Config): LintPersonaBucket {
 }
 
 /**
- * 模板版本（P2-15）：模板是行为约定，不是静态文档 —— 它每轮注入，写错一句就是每轮都在执行错规则。
+ * 模板版本：模板是行为约定，不是静态文档 —— 它每轮注入，写错一句就是每轮都在执行错规则。
  * 但模板允许用户改，不能自动覆盖；版本标记把「过期」变成可发现状态，只报告。
  *
  * 标记等于当前版本时再查正文哨兵：只把首行数字改成 vN、正文还是旧版，
@@ -1039,7 +1039,7 @@ export function emptySectionStatus(
 }
 
 /**
- * 最近 `TIMELINE_WINDOW_DAYS` 天的日记时间轴（计划 §2 D4）。
+ * 最近 `TIMELINE_WINDOW_DAYS` 天的日记时间轴。
  *
  * 自己走 dailyDir 而不是复用 `allNotes`：doctor 也会调它，而 doctor 在没有 zk 时
  * 也要能给出这一行。按文件名 `YYYY-MM-DD` 判日期；不是这个形状（自定义模板）
@@ -1183,7 +1183,7 @@ export async function lintNotebook(
     return starts.some((s) => s >= section.start && s < section.end) ? 'links' : 'body'
   }
 
-  // ── 单向链接：小库一次全图；大库按篇反查（plan §0.5.1 结论 3）─────────────
+  // ── 单向链接：小库一次全图；大库按篇反查─────────────
   // 全图在 10k / 1 链要 26–31 s / 17 MB，2–5 链会直接超过 60 s 超时；
   // 单篇反链已经走 `backlinksOf`，巡检在超过预算时也走同一条路。
   const sourceTextCache = new Map<string, string>()

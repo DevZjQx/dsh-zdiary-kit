@@ -40,7 +40,7 @@ interface ZkConfig {
   maxReadChars: number
   /** 是否把 .zk/config.toml 的 [alias] 注册成 zk_<名> 工具（默认 false） */
   aliasTools: boolean
-  /** 是否记录召回信号 sidecar（§15.2，默认 false；不记查询词 / 正文 / 不上报） */
+  /** 是否记录召回信号 sidecar（默认 false；不记查询词 / 正文 / 不上报） */
   recallSignal: boolean
   memoryBudgetWords: number
   personaBudgetWords: number

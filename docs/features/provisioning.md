@@ -20,15 +20,15 @@
 不注入（省预算），但和 meta 文件同口径排除出检索，`AGENTS.md` 里只留一行指针。
 因此从 flat 升级时旧 `daily.md` 会保留（没有 Events / Observations / Loose ends 三节）；想要 layered 日记模板，
 先备份并删掉 `<notebook>/.zk/templates/daily.md`，再重跑 `zk-kit init` 或点「初始化 / 补建」。
-`AGENTS.md` 在 `layered` 下自动写；`flat` 默认**不写**（从 0.1.0 升级来的 vault 不能因为升级多出一个文件，M0 的逐字节回归）。
+`AGENTS.md` 在 `layered` 下自动写；`flat` 默认**不写**（从 0.1.0 升级来的 vault 不能因为升级多出一个文件，逐字节回归锁着这条）。
 想要约定与周提醒就显式 opt-in：`zk-kit init --with-agents`、设置页「写入 AGENTS.md 模板」、
 或代码里 `ensureNotebook(cfg, signal, { withAgents: true })`；已存在的文件一律不覆盖。
-`flat` 用精简版 `AGENTS_TEMPLATE_FLAT`（实测 80 词，锁 ≤90）：不出现 `raw/` / `archive/` / `WORKFLOW.md`。
-`layered` 用完整版 `AGENTS_TEMPLATE`（实测 180 词，锁 ≤190）—— 它属于注入预算且**永不截断**，
+`flat` 用精简版 `AGENTS_TEMPLATE_FLAT`（实测 82 词，锁 ≤90）：不出现 `raw/` / `archive/` / `WORKFLOW.md`。
+`layered` 用完整版 `AGENTS_TEMPLATE`（实测 157 词，锁 ≤190）—— 它属于注入预算且**永不截断**，
 写长了 USER / MEMORY 就没位置。两份模板首行都有 `<!-- zdiary-template: vN -->`（`TEMPLATE_MARK`），
 `zk_lint` 据此报告老库的模板是否过期（只报告、不覆盖）。
-`entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入（Z10）；
-所有模板必须含 `{{content}}`，否则 stdin 的正文会被丢（Z9）。
+`entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入；
+所有模板必须含 `{{content}}`，否则 stdin 的正文会被丢。
 
 **人格模板（`PERSONA.md`）。** 只走显式 opt-in：`zk-kit init --with-persona`、
 设置页「写入人格模板」、或 `ensureNotebook(cfg, signal, { withPersona: true })`。

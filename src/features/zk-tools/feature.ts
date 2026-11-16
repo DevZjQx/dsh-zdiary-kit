@@ -138,7 +138,7 @@ const LINT_DUPLICATE = objSchema(
   },
   ['total', 'items'],
 )
-/** 疑似重复标题（P2-10）：只差一两个字 */
+/** 疑似重复标题：只差一两个字 */
 const LINT_SIMILAR = objSchema(
   {
     total: { type: 'number' },
@@ -251,7 +251,7 @@ const LINT_EMPTY_SECTIONS = objSchema(
   },
   ['scanned', 'skipped', 'notes', 'total', 'truncated', 'items'],
 )
-/** frontmatter 缺字段（P2-13） */
+/** frontmatter 缺字段 */
 const LINT_INCOMPLETE = objSchema(
   {
     total: { type: 'number' },
@@ -271,7 +271,7 @@ const LINT_INCOMPLETE = objSchema(
   },
   ['total', 'truncated', 'byField', 'items'],
 )
-/** 标签卫生（P2-14） */
+/** 标签卫生 */
 const LINT_TAGS = objSchema(
   {
     total: { type: 'number' },
@@ -293,7 +293,7 @@ const LINT_TAGS = objSchema(
   },
   ['total', 'reported', 'caseVariants', 'singletons'],
 )
-/** 模板版本（P2-15） */
+/** 模板版本 */
 const LINT_TEMPLATE = objSchema(
   {
     present: { type: 'boolean' },
@@ -954,7 +954,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
               absPath: { type: 'string' },
               relation: { type: 'string', enum: ['in', 'out'] },
               lead: { type: 'string' },
-              /** 这条边所在的 `##` / `###` 小节；找不到时键不出现（plan §14.1） */
+              /** 这条边所在的 `##` / `###` 小节；找不到时键不出现 */
               section: { type: 'string' },
               /** 这条边的那一行（压空白、截 160 码点）：没有它，同一篇种子的出链长得一模一样 */
               linkLine: { type: 'string' },
@@ -1108,7 +1108,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             warnings.push(`${target}：${err instanceof Error ? err.message : String(err)}`)
           }
         }
-        // 中文没标签：写路径是唯一便宜的修复点（P2-9）。只提示，不阻断。
+        // 中文没标签：写路径是唯一便宜的修复点。只提示，不阻断。
         const tagWarning = taglessCjkWarning(title, content, tags)
         // 归档同名只是提醒：zk_new 的查重本来就不含 archive，允许复用标题 —— 但要把废弃原因一起交出来
         // （createNote 建之前那次全库扫描已经算好了，这里不再单独跑一次 zk）
@@ -1313,7 +1313,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           path: String(args.path),
           by: args.by ? String(args.by) : undefined,
           reason: args.reason ? String(args.reason) : undefined,
-          // 缺省是预演：一句「更新一下 wiki」不该让全库漂移（计划 D7）
+          // 缺省是预演：一句「更新一下 wiki」不该让全库漂移
           dryRun: args.dry_run !== false,
         }, env.signal)
         return {
@@ -1456,7 +1456,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           tocWords: { type: 'number' },
           totalWords: { type: 'number' },
           overheadWords: { type: 'number' },
-          // G1 / G4：写 MEMORY 前的容量（纯增量字段，旧客户端只是多看到几列）
+          // 写 MEMORY 前的容量（纯增量字段，旧客户端只是多看到几列）
           retiredEntries: { type: 'number' },
           headroom: { type: 'number' },
           extraWords: { type: 'number' },
@@ -1564,7 +1564,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           ? `笔记本「${current.name}」（${current.structure}）→ ${current.path}` +
             (others.length ? `\n另有：${others.map((n) => `${n.name}（${n.structure}）`).join('、')} —— zk_use 切换本会话` : '')
           : `笔记本「${v.notebook}」`
-        // G1 / G4：写 MEMORY 前的余量、是否触发截断、同日决胜与「下一条会丢谁」
+        // 写 MEMORY 前的余量、是否触发截断、同日决胜与「下一条会丢谁」
         const capacity = `\n\n容量：余 ${v.headroom} 词（记忆内容 ${v.words}/${v.budget}，总载荷 ${v.totalWords}）` +
           (v.extraWords > 0 ? ` · 拟新增 ${v.extraWords} 词${v.wouldTruncate ? '（会触发截断）' : ''}` : '') +
           (v.sameDateCount > 1 ? ` · ${v.sameDateCount} 条同日，按位置决胜` : '') +
@@ -1849,7 +1849,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
             totalWords: { type: 'number' },
             budget: { type: 'number' },
             headroom: { type: 'number' },
-            /** G1：与 zk_lint.memoryLinks 同一口径的格式债 / 退役计数 */
+            /** 与 zk_lint.memoryLinks 同一口径的格式债 / 退役计数 */
             undated: { type: 'number' },
             unlinked: { type: 'number' },
             retired: { type: 'number' },
@@ -1957,7 +1957,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
         lines.push('记忆：内容 ' + v.memory.words + '/' + v.memory.budget + ' 词 + 提示 ' + promptWords +
           ' = ' + memoryTotal + ' 词（余 ' + v.memory.headroom + '）' +
           (v.memory.personaWords > 0 ? ' · 人格 ' + v.memory.personaWords + ' 词（单独注入，不计入记忆预算）' : ''))
-        if (v.missingId > 0) lines.push('· 稳定 ID：' + v.missingId + ' 篇没有 id — 新笔记自动写入，老笔记只提示、不回填（§9.2）')
+        if (v.missingId > 0) lines.push('· 稳定 ID：' + v.missingId + ' 篇没有 id — 新笔记自动写入，老笔记只提示、不回填')
         if (v.retireCandidates.length) {
           lines.push('可考虑退役：')
           for (const c of v.retireCandidates.slice(0, 10)) {
@@ -2065,7 +2065,7 @@ export function buildTools(workspaceOf: WorkspaceOf = () => processWorkspace()):
           },
           completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
           scanLimit: { type: 'number' },
-          /** 本地聚合计数（plan §14.4）：只看「入口 / 一跳」这条路有没有被用上，不记查询词 */
+          /** 本地聚合计数：只看「入口 / 一跳」这条路有没有被用上，不记查询词 */
           usage: objSchema({
             since: { type: 'string' },
             search: { type: 'number' },
