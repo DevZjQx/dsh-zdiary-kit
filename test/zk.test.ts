@@ -48,6 +48,8 @@ const usageLib = await import('../src/lib/usage.ts')
 const edgeContext = await import('../src/lib/edge-context.ts')
 const wikilinkLib = await import('../src/lib/wikilink.ts')
 const fenceLib = await import('../src/lib/fence.ts')
+const bodyTagsLib = await import('../src/lib/body-tags.ts')
+const tidyLib = await import('../src/lib/tidy.ts')
 const memoryWriteLib = await import('../src/lib/memory-write.ts')
 const recallSignalLib = await import('../src/lib/recall-signal.ts')
 const evidenceLib = await import('../src/lib/evidence.ts')
@@ -1909,7 +1911,7 @@ describe('巡检与做梦', () => {
     await zk.linkNotes(m3, cited.path, daily.path)
     await zk.indexNotebook(m3)
 
-    const lint = await lintLib.lintNotebook(m3, { staleDays: 90 })
+    const lint = await lintLib.lintNotebook(m3, { staleDays: 90, includeProvenance: true })
     expect(lint.notes).toBe(9)
     expect(lint.truncated).toBe(false)
     expect(lint.orphans.items.map((i) => i.path)).toContain(orphan.path)
@@ -1964,7 +1966,7 @@ describe('巡检与做梦', () => {
       `## 链接\n\n- [[${stem(linksTarget.path)}]]\n\n## 其他\n\n再看 [[${stem(afterTarget.path)}]]。`)
     await zk.indexNotebook(cfgOneWay)
 
-    const lint = await lintLib.lintNotebook(cfgOneWay)
+    const lint = await lintLib.lintNotebook(cfgOneWay, { includeProvenance: true })
     const byTarget = new Map(lint.oneWayLinks.items.map((i) => [i.path, i]))
     expect(byTarget.get(bodyTarget.path)?.where).toBe('body')
     expect(byTarget.get(bodyTarget.path)?.from).toEqual([bodySource.path])
@@ -2027,14 +2029,14 @@ describe('巡检与做梦', () => {
       `## Links\n\n- [[${stem(linksTarget.path)}]]\n- [[${stem(mixedTarget.path)}]]\n`)
     await zk.indexNotebook(cfgLinksOnly)
 
-    const all = await lintLib.lintNotebook(cfgLinksOnly)
+    const all = await lintLib.lintNotebook(cfgLinksOnly, { includeProvenance: true })
     expect(all.oneWayLinks.linksOnly).toBe(false)
     expect(all.oneWayLinks.total).toBe(3)
     expect(all.oneWayLinks.edges).toBe(4)
     expect(all.oneWayLinks.bodyOnly).toBe(2)
     expect(all.oneWayLinks.items.find((i) => i.path === bodyOnlyTarget.path)?.from).toEqual([bodySource.path])
 
-    const only = await lintLib.lintNotebook(cfgLinksOnly, { linksOnly: true })
+    const only = await lintLib.lintNotebook(cfgLinksOnly, { linksOnly: true, includeProvenance: true })
     expect(only.oneWayLinks.linksOnly).toBe(true)
     expect(only.oneWayLinks.total).toBe(2)
     expect(only.oneWayLinks.edges).toBe(2)
@@ -3626,7 +3628,7 @@ describe('0.8.x：记忆与笔记本加固', () => {
       // v5：写了来源链接，还得说清「要真的去读它」，否则模型只把它当脚注
       expect(body).toContain('先 read 核对来源')
     }
-    expect(notebookLib.WORKFLOW_TEMPLATE.startsWith('<!-- zdiary-template: v')).toBe(true)
+    expect(notebookLib.WORKFLOW_TEMPLATE.startsWith('<!-- zdiary-workflow: v')).toBe(true)
   })
 
   it('flat 默认不写 AGENTS；显式 withAgents 写精简版且不覆盖', async () => {
@@ -3752,7 +3754,12 @@ describe('0.8.x：记忆与笔记本加固', () => {
     await notebookLib.ensureNotebook(cfg)
     // layered 初始化会写 AGENTS.md；先删掉，验证「没有文件」不是旧模板
     fs.rmSync(path.join(cfg.notebook, 'AGENTS.md'))
-    expect(lintLib.templateStatus(cfg)).toEqual({ present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false })
+    const noAgents = lintLib.templateStatus(cfg)
+    expect(noAgents).toMatchObject({ present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false })
+    // WORKFLOW.md 单独核对（独立标记）：layered 初始化会写这一页，当前版本不该报旧
+    expect(noAgents.workflow.present).toBe(true)
+    expect(noAgents.workflow.version).toBe(agentsTpl.WORKFLOW_VERSION)
+    expect(noAgents.workflow.stale).toBe(false)
 
     fs.writeFileSync(path.join(cfg.notebook, 'AGENTS.md'), '# 手写规则\n')
     const old = lintLib.templateStatus(cfg)
@@ -4178,7 +4185,10 @@ describe('角色人格（人格壳与可观测）', () => {
     expect(lintLib.formatLintExtras({
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
-      template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
+      template: {
+        present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false,
+        workflow: { present: false, version: 0, current: agentsTpl.WORKFLOW_VERSION, stale: false },
+      },
       persona: missing,
       similarTitles: { total: 0, truncated: false, items: [] },
       timeline: { scanned: 0, notes: 0, total: 0, items: [] },
@@ -4190,7 +4200,10 @@ describe('角色人格（人格壳与可观测）', () => {
     const empty = lintLib.formatLintExtras({
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
-      template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
+      template: {
+        present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false,
+        workflow: { present: false, version: 0, current: agentsTpl.WORKFLOW_VERSION, stale: false },
+      },
       persona: { total: 0, items: [] },
       similarTitles: { total: 0, truncated: false, items: [] },
       timeline: { scanned: 0, notes: 0, total: 0, items: [] },
@@ -4200,7 +4213,10 @@ describe('角色人格（人格壳与可观测）', () => {
     expect(lintLib.formatLintExtras({
       incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
       tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
-      template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
+      template: {
+        present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false,
+        workflow: { present: false, version: 0, current: agentsTpl.WORKFLOW_VERSION, stale: false },
+      },
       persona: st,
       similarTitles: { total: 0, truncated: false, items: [] },
       timeline: { scanned: 0, notes: 0, total: 0, items: [] },
@@ -4217,7 +4233,10 @@ describe('角色人格（人格壳与可观测）', () => {
       lintLib.formatLintExtras({
         incomplete: { total: 0, truncated: false, byField: { type: 0, status: 0, authority: 0 }, items: [] },
         tags: { total: 0, reported: false, caseVariants: { total: 0, items: [] }, singletons: { total: 0, items: [] } },
-        template: { present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false },
+        template: {
+          present: false, version: 0, current: agentsTpl.TEMPLATE_VERSION, stale: false,
+          workflow: { present: false, version: 0, current: agentsTpl.WORKFLOW_VERSION, stale: false },
+        },
         persona: c,
         similarTitles: { total: 0, truncated: false, items: [] },
         timeline: { scanned: 0, notes: 0, total: 0, items: [] },
@@ -4803,9 +4822,9 @@ describe('按篇反查（不建全图）', () => {
     await zk.linkNotes(c, mutual.path, mutualSource.path)
     await zk.indexNotebook(c)
 
-    const graph = await lintLib.lintNotebook(c)
-    const queried = await lintLib.lintNotebook(c, { graphBudget: 0 })
-    const byConfig = await lintLib.lintNotebook({ ...c, graphBudgetNotes: 0 })
+    const graph = await lintLib.lintNotebook(c, { includeProvenance: true })
+    const queried = await lintLib.lintNotebook(c, { graphBudget: 0, includeProvenance: true })
+    const byConfig = await lintLib.lintNotebook({ ...c, graphBudgetNotes: 0 }, { includeProvenance: true })
     const shape = (r: typeof graph) => r.oneWayLinks.items.map((i) => ({ path: i.path, from: i.from, where: i.where }))
     expect(shape(queried)).toEqual(shape(graph))
     // 配置里的上限也生效（opts.graphBudget 只是测试覆盖）
@@ -7204,5 +7223,365 @@ describe('位置债：给「新条目写顶部 / 超预算按日期丢最旧」�
     expect(p.text).toContain('记忆已用')
     expect(p.text).not.toContain('新条目没写顶部')
     expect(p.text).not.toContain('并列最旧')
+  })
+})
+
+describe('标签落点：frontmatter 一份真相（P0）', () => {
+  it('layered：tags 写进 frontmatter 的 tags 格，正文不再追加 hashtag 行，zk 照样按标签查得到', async () => {
+    const dir = path.join(home, 'nb-tags-layered')
+    const cfgT = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfgT)
+    const created = await zk.createNote(cfgT, {
+      title: '标签落点',
+      dir: 'notes/concepts',
+      content: '正文里一个字都没写标签。',
+      tags: ['落点', 'C++'],
+    })
+    const raw = fs.readFileSync(created.absPath, 'utf8')
+    // 模板那一格被真正填上：以前永远是 `tags: []`，得靠人再补一次
+    expect(raw).toContain('tags: [落点, C++]')
+    // 正文里没有第二条真相
+    expect(raw).not.toContain('#落点')
+    expect(raw).not.toContain('#C++')
+    // id 与标签在同一次收尾里写入
+    expect(raw).toMatch(/^id: [0-9a-f]{10}$/m)
+
+    await zk.indexNotebook(cfgT)
+    for (const tag of ['落点', 'C++']) {
+      const hits = await zk.searchNotes(cfgT, { tags: [tag], limit: 10 })
+      expect(hits.map((n) => n.path)).toContain(created.path)
+    }
+  })
+
+  it('flat：没有 frontmatter tags 格 → 仍追加正文 hashtag 行（zk 只认正文）', async () => {
+    const dir = path.join(home, 'nb-tags-flat')
+    const cfgF = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'flat' })
+    await notebookLib.ensureNotebook(cfgF)
+    const created = await zk.createNote(cfgF, { title: '平坦标签', content: '正文。', tags: ['平坦'] })
+    const raw = fs.readFileSync(created.absPath, 'utf8')
+    expect(raw).toContain('#平坦')
+    expect(raw).not.toContain('tags: [')
+
+    await zk.indexNotebook(cfgF)
+    const hits = await zk.searchNotes(cfgF, { tags: ['平坦'], limit: 10 })
+    expect(hits.map((n) => n.path)).toContain(created.path)
+  })
+
+  it('正文里用户自己写的标签行不动：只撤插件追加的那一行，不重复追加', async () => {
+    const dir = path.join(home, 'nb-tags-dedupe')
+    const cfgD = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfgD)
+    const created = await zk.createNote(cfgD, {
+      title: '自带标签',
+      dir: 'notes/concepts',
+      content: '写正文时顺手写了 #来源。',
+      tags: ['来源', '补充'],
+    })
+    const raw = fs.readFileSync(created.absPath, 'utf8')
+    // 用户写的那一行只出现一次（withTags 不会把它再追加一遍）
+    expect(raw.match(/#来源/g)?.length).toBe(1)
+    // 两个标签都进了 frontmatter；没有第二份 `#来源 #补充` 行
+    expect(raw).toContain('tags: [来源, 补充]')
+    expect(raw).not.toContain('#来源 #补充')
+  })
+
+  it('近义标签：大小写变体与包含关系给候选；全新标签不打扰', async () => {
+    const dir = path.join(home, 'nb-tags-hints')
+    const cfgH = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfgH)
+    const make = (title: string, tags: string[]) =>
+      zk.createNote(cfgH, { title, dir: 'notes/concepts', content: '正文。', tags })
+    await make('先有甲', ['记忆'])
+    await make('先有乙', ['记忆'])
+    await make('先有丙', ['agent'])
+    await make('先有丁', ['agent'])
+
+    // 包含关系：记忆 ⊂ 记忆库
+    const contained = await make('后来的包含', ['记忆库'])
+    expect(contained.tagHints).toEqual([{ input: '记忆库', tag: '记忆', count: 2, kind: 'similar' }])
+    // 大小写变体优先报
+    const cased = await make('后来的大小写', ['Agent'])
+    expect(cased.tagHints).toEqual([{ input: 'Agent', tag: 'agent', count: 2, kind: 'case' }])
+    // 全新主题：不打扰（新标签本身是正常写作）
+    const fresh = await make('后来的全新', ['量子退火'])
+    expect(fresh.tagHints).toEqual([])
+    // 同形的不报自己：再写一次同一个标签，没有任何候选
+    const same = await make('后来的同形', ['量子退火'])
+    expect(same.tagHints).toEqual([])
+  })
+
+  it('zk_new 工具：输出带 tagHints，且不超出 output schema', async () => {
+    const dir = path.join(home, 'nb-tags-tool')
+    store.writeConfig({
+      notebooks: { default: { path: notebook, structure: 'flat' }, tags: { path: dir, structure: 'layered' } },
+      active: 'tags',
+    })
+    try {
+      await notebookLib.ensureNotebook(store.config())
+      const tool = toolsFeature.buildTools(() => dir).find((d) => d.name === 'zk_new')!
+      const first = await tool.execute({ title: '工具先有', type: 'concept', body: '正文', tags: ['界面'] },
+        { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
+      expect(undeclaredKeys(first, tool.output.schema)).toEqual([])
+      const second = await tool.execute({ title: '工具后来', type: 'concept', body: '正文', tags: ['界面层'] },
+        { signal: AbortSignal.timeout(30_000) }) as Record<string, unknown>
+      expect(undeclaredKeys(second, tool.output.schema)).toEqual([])
+      const hints = second.tagHints as Array<{ input: string; tag: string; kind: string }>
+      expect(hints.map((h) => `${h.input}→${h.tag}:${h.kind}`)).toEqual(['界面层→界面:similar'])
+      // render 里点名该怎么处理，而不是只给一个数字
+      const text = tool.output.render({}, second)[0].text
+      expect(text).toContain('标签近义')
+      expect(text).toContain('#界面层 ≈ #界面')
+    } finally {
+      store.writeConfig({ notebooks: { default: { path: notebook, structure: 'flat' } }, active: 'default', zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: ['default'] })
+    }
+  })
+})
+
+describe('单向链接：出处链只计数（P1）', () => {
+  it('concept↔source 默认不列，只给计数与 byType；include_provenance 才列；one_way_max 截断点名', async () => {
+    const dir = path.join(home, 'nb-oneway-prov')
+    const cfgP = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfgP)
+    const note = (title: string, dirName: string) =>
+      zk.createNote(cfgP, { title, dir: dirName, content: '正文。' })
+
+    // 出处链：来源 → 结论（这类边按惯例有向，两次裁决都不补回链）
+    const c1 = await note('出处甲', 'notes/concepts')
+    const c2 = await note('出处乙', 'notes/concepts')
+    const s1 = await note('来源甲', 'notes/sources')
+    const s2 = await note('来源乙', 'notes/sources')
+    await zk.linkNotes(cfgP, s1.path, c1.path)
+    await zk.linkNotes(cfgP, s2.path, c2.path)
+    // 同类边：概念 → 概念（hub 入口），这类仍然要人看
+    const hub = await note('入口概念', 'notes/concepts')
+    const leaf1 = await note('子结论甲', 'notes/concepts')
+    const leaf2 = await note('子结论乙', 'notes/concepts')
+    await zk.linkNotes(cfgP, hub.path, leaf1.path)
+    await zk.linkNotes(cfgP, hub.path, leaf2.path)
+    await zk.indexNotebook(cfgP)
+
+    const lint = await lintLib.lintNotebook(cfgP)
+    expect(lint.oneWayLinks.includeProvenance).toBe(false)
+    expect(lint.oneWayLinks.total).toBe(2)
+    expect(lint.oneWayLinks.edges).toBe(2)
+    expect(lint.oneWayLinks.provenance).toEqual({ targets: 2, edges: 2 })
+    expect(lint.oneWayLinks.items.map((i) => i.path).sort()).toEqual([leaf1.path, leaf2.path].sort())
+    expect(lint.oneWayLinks.itemsTruncated).toBe(false)
+    // byType 按边数降序，包含两类
+    expect(lint.oneWayLinks.byType).toEqual([
+      { from: 'concept', to: 'concept', edges: 2 },
+      { from: 'source', to: 'concept', edges: 2 },
+    ])
+    // 文案里说明「出处链只计数」，顺手给出开关
+    const line = lintLib.formatOneWay(lint.oneWayLinks)
+    expect(line).toContain('出处链 2 篇 / 2 条只计数')
+    expect(line).toContain('include_provenance')
+
+    const all = await lintLib.lintNotebook(cfgP, { includeProvenance: true })
+    expect(all.oneWayLinks.includeProvenance).toBe(true)
+    expect(all.oneWayLinks.total).toBe(4)
+    expect(all.oneWayLinks.provenance).toEqual({ targets: 2, edges: 2 })
+
+    const capped = await lintLib.lintNotebook(cfgP, { oneWayMax: 1 })
+    expect(capped.oneWayLinks.total).toBe(2)
+    expect(capped.oneWayLinks.items.length).toBe(1)
+    expect(capped.oneWayLinks.itemsTruncated).toBe(true)
+    expect(lintLib.formatOneWay(capped.oneWayLinks)).toContain('加 one_way_max / --max 看全')
+  })
+})
+
+describe('模板版本：WORKFLOW.md 独立核对（P1）', () => {
+  it('当前版本不报；旧共用标记 / 无标记 / 只改数字都报，并给出新版全文', async () => {
+    const dir = path.join(home, 'nb-wf-version')
+    const cfgW = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfgW)
+    const wfFile = path.join(dir, 'WORKFLOW.md')
+
+    const current = lintLib.workflowStatus(cfgW)
+    expect(current.present).toBe(true)
+    expect(current.version).toBe(agentsTpl.WORKFLOW_VERSION)
+    expect(current.stale).toBe(false)
+    expect(current.currentText).toBeUndefined()
+
+    // v12 及更早：与 AGENTS 共用标记，只升 AGENTS 的人不会想到动这里
+    fs.writeFileSync(wfFile, '<!-- zdiary-template: v12 -->\n\n# 改笔记的工作流（按需读）\n\n旧正文。\n')
+    const legacy = lintLib.workflowStatus(cfgW)
+    expect(legacy.stale).toBe(true)
+    expect(legacy.version).toBe(0)
+    expect(legacy.legacyMark).toBe(true)
+    expect(legacy.currentText).toBe(notebookLib.WORKFLOW_TEMPLATE)
+    const extras = lintLib.formatLintExtras({ ...(await lintLib.lintNotebook(cfgW)) }).join('\n')
+    expect(extras).toContain('WORKFLOW.md')
+    expect(extras).toContain('zdiary-workflow')
+    expect(extras).toContain('--- 新版 WORKFLOW 模板开始 ---')
+
+    // 只把首行换成新版号、正文还是旧的：哨兵抓出来
+    fs.writeFileSync(wfFile, `<!-- zdiary-workflow: v${agentsTpl.WORKFLOW_VERSION} -->\n\n# 我的工作流\n`)
+    const mismatch = lintLib.workflowStatus(cfgW)
+    expect(mismatch.stale).toBe(true)
+    expect(mismatch.detail).toContain('zk_memory_write')
+
+    // 版本比插件新：不给旧模板，免得把规则改回去
+    fs.writeFileSync(wfFile, '<!-- zdiary-workflow: v99 -->\n\n# 未来工作流\n')
+    const future = lintLib.workflowStatus(cfgW)
+    expect(future.stale).toBe(true)
+    expect(future.version).toBe(99)
+    expect(future.currentText).toBeUndefined()
+
+    // flat 库初始化就不写这一页：缺文件 = 未启用，不报
+    const flat = store.normalizeConfig({ notebook: path.join(home, 'nb-wf-flat'), zkPath: zkBin, structure: 'flat' })
+    expect(lintLib.workflowStatus(flat)).toEqual({
+      present: false, version: 0, current: agentsTpl.WORKFLOW_VERSION, stale: false,
+    })
+  })
+})
+
+describe('INDEX.md 规模行漂移（P1）', () => {
+  const writeIndex = (dir: string, body: string) => fs.writeFileSync(path.join(dir, 'INDEX.md'), body)
+
+  it('没有 INDEX.md 不报；篇数差 > max(5, 10%) 或日期 > 14 天才报，不生成、不改写', async () => {
+    const dir = path.join(home, 'nb-index-drift')
+    const cfgI = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+    await notebookLib.ensureNotebook(cfgI)
+    for (const title of ['索引甲', '索引乙']) {
+      await zk.createNote(cfgI, { title, dir: 'notes/concepts', content: '正文。' })
+    }
+    await zk.indexNotebook(cfgI)
+
+    expect(lintLib.indexStatus(cfgI, [], new Date()).present).toBe(false)
+
+    const today = zk.localDate(new Date().toISOString())
+    writeIndex(dir, `# INDEX\n\n> 规模：2 篇非日记（2 概念）。最后更新 ${today}。\n`)
+    const fresh = lintLib.indexStatus(cfgI, [{}, {}] as never, new Date())
+    expect(fresh).toEqual({ present: true, claimedNotes: 2, claimedDate: today, actualNotes: 2, ageDays: 0, drifted: false })
+    expect(lintLib.formatLintExtras({ ...(await lintLib.lintNotebook(cfgI)) }).join('\n')).not.toContain('INDEX.md 规模行')
+
+    // 篇数落后：真库的形态（自称 150、实际 231）
+    writeIndex(dir, `# INDEX\n\n> 规模：40 篇非日记（40 概念）。最后更新 ${today}。\n`)
+    const drifted = lintLib.indexStatus(cfgI, [{}, {}] as never, new Date())
+    expect(drifted.drifted).toBe(true)
+    const extras = lintLib.formatLintExtras({ ...(await lintLib.lintNotebook(cfgI)) }).join('\n')
+    expect(extras).toContain('INDEX.md 规模行过期')
+    expect(extras).toContain('实际 2 篇')
+    expect(extras).toContain('别让入口表变成第二份会过期的真相')
+
+    // 日期过期（篇数对得上也报）
+    writeIndex(dir, '# INDEX\n\n> 规模：2 篇非日记（2 概念）。最后更新 2020-01-01。\n')
+    const old = lintLib.indexStatus(cfgI, [{}, {}] as never, new Date())
+    expect(old.claimedNotes).toBe(2)
+    expect(old.drifted).toBe(true)
+    expect(old.ageDays).toBeGreaterThan(14)
+    // 只读：文件一个字没动
+    expect(fs.readFileSync(path.join(dir, 'INDEX.md'), 'utf8')).toContain('2020-01-01')
+  })
+})
+
+describe('正文重复标签：lint 看得见，zk-kit tidy 收得掉', () => {
+  const dir = path.join(home, 'nb-bodytags')
+  const cfgT = store.normalizeConfig({ notebook: dir, zkPath: zkBin, structure: 'layered' })
+  const cli = path.resolve(import.meta.dir, '..', 'src', 'cli.ts')
+
+  /** 把 createNote 建出来的笔记改成「旧版」形状：frontmatter 有 tags，正文还留着一行 #tag */
+  const legacy = (abs: string, tags: string[], bodyLine: string): void => {
+    const text = fs.readFileSync(abs, 'utf8')
+    let next = fm.setFrontmatter(text, { tags: fm.formatFlowList(tags) })
+    next = next.replace(/\n## Links\s*$/, `\n${bodyLine}\n\n## Links\n`)
+    fs.writeFileSync(abs, next)
+  }
+
+  test('findTagParagraphs：整行 hashtag 才算，围栏 / 句子里的不动，首行不碰', () => {
+    const md = [
+      '---', 'tags: [a, b]', '---', '',
+      '# 标题', '',
+      '正文里 #a 不是标签段。', '',
+      '#a #b', '',
+      '```', '#a #b', '```', '',
+      '#b', '',
+    ].join('\n')
+    const found = bodyTagsLib.findTagParagraphs(md)
+    expect(found.map((p) => p.tags)).toEqual([['a', 'b'], ['b']])
+    const out = bodyTagsLib.stripTagParagraphs(md, found)
+    expect(out).not.toContain('\n#a #b\n\n```') // 段落删了，围栏里那份还在
+    expect(out).toContain('```\n#a #b\n```')
+    expect(out).toContain('正文里 #a 不是标签段。')
+  })
+
+  test('tagCleanup：子集才 removable；漂移与没有 tags 格都不动', () => {
+    const subset = '---\ntags: [甲, 乙]\n---\n\n# 标题\n\n正文。\n\n#甲 #乙\n'
+    expect(bodyTagsLib.tagCleanup(subset)?.removable).toBe(true)
+    const drift = '---\ntags: [甲]\n---\n\n# 标题\n\n正文。\n\n#甲 #旧词\n'
+    const d = bodyTagsLib.tagCleanup(drift)
+    expect(d?.removable).toBe(false)
+    expect(d?.drift).toEqual(['旧词'])
+    // flat：没有 tags 格 —— 正文标签是唯一索引来源，不看也不报
+    expect(bodyTagsLib.tagCleanup('# 标题\n\n正文。\n\n#甲\n')).toBeNull()
+    // 块式列表：形状不认识，一个字不碰
+    expect(bodyTagsLib.tagCleanup('---\ntags:\n  - 甲\n---\n\n# 标题\n\n#甲\n')).toBeNull()
+  })
+
+  it('tidy：默认预演不改文件；--fix 只删标签段；再跑幂等；有效标签不变', async () => {
+    await notebookLib.ensureNotebook(cfgT)
+    const dup = await zk.createNote(cfgT, { title: '正文重复标签', dir: 'notes/concepts', content: '正文一段。' })
+    legacy(dup.absPath, ['甲', '乙'], '#甲 #乙')
+    const drift = await zk.createNote(cfgT, { title: '正文标签漂移', dir: 'notes/concepts', content: '正文。' })
+    legacy(drift.absPath, ['甲'], '#甲 #旧词')
+    // flat 形状（没有 frontmatter tags）：正文标签要留着
+    const flatAbs = path.join(dir, 'notes', 'concepts', 'flat-无tags格.md')
+    fs.writeFileSync(flatAbs, '# flat\n\n正文。\n\n#甲\n')
+    await zk.indexNotebook(cfgT)
+
+    const before = fs.readFileSync(dup.absPath, 'utf8')
+    const tagsBefore = (await zk.allNotes(cfgT)).find((n) => n.path === dup.path)?.tags ?? []
+    expect(tagsBefore.sort()).toEqual(['乙', '甲'].sort())
+
+    const lintBefore = await lintLib.lintNotebook(cfgT, {})
+    expect(lintBefore.bodyTags.notes).toBe(1)
+    expect(lintBefore.bodyTags.paragraphs).toBe(1)
+    expect(lintBefore.bodyTags.driftNotes).toBe(1)
+
+    const dry = await tidyLib.tidyTags(cfgT, { dryRun: true })
+    expect(dry.notes).toBe(1)
+    expect(dry.changed).toBe(0)
+    expect(dry.drift.map((i) => i.path)).toEqual([drift.path])
+    expect(fs.readFileSync(dup.absPath, 'utf8')).toBe(before) // 预演没落盘
+
+    const fixed = await tidyLib.tidyTags(cfgT, { dryRun: false })
+    expect(fixed.changed).toBe(1)
+    const after = fs.readFileSync(dup.absPath, 'utf8')
+    expect(after).not.toContain('#甲 #乙')
+    expect(after).toContain('正文一段。')
+    expect(after).toMatch(/## Links/)
+    expect(fm.parseFrontmatter(after).fields.tags).toBe('[甲, 乙]')
+    // 漂移那篇一个字没动；flat 那篇也没动
+    expect(fs.readFileSync(drift.absPath, 'utf8')).toContain('#甲 #旧词')
+    expect(fs.readFileSync(flatAbs, 'utf8')).toContain('#甲')
+    // 有效标签不变（zk 取并集，删正文行不该改变任何标签）
+    expect((await zk.allNotes(cfgT)).find((n) => n.path === dup.path)?.tags.sort()).toEqual(tagsBefore.sort())
+
+    const again = await tidyLib.tidyTags(cfgT, { dryRun: true })
+    expect(again.notes).toBe(0)
+  })
+
+  it('cli：默认预演、--fix 落盘', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const saved = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const run = (...args: string[]) =>
+      spawnSync(process.execPath, [cli, ...args], { env: process.env, encoding: 'utf8', timeout: 30_000 })
+    const dir2 = path.join(home, 'cli-tidy')
+    try {
+      store.writeConfig({ notebooks: { default: { path: dir2, structure: 'layered' } }, active: 'default', defaultTags: [] })
+      expect(run('init').status).toBe(0)
+      expect(run('new', '--title', 'CLI 标签测试', '--type', 'concept', '--body', '正文').status).toBe(0)
+      const concepts = path.join(dir2, 'notes', 'concepts')
+      const abs = path.join(concepts, fs.readdirSync(concepts).find((f) => f.endsWith('.md')) as string)
+      legacy(abs, ['甲'], '#甲')
+      expect(run('tidy').stdout).toContain('预演')
+      expect(fs.readFileSync(abs, 'utf8')).toContain('#甲')
+      expect(run('tidy', '--fix').status).toBe(0)
+      expect(fs.readFileSync(abs, 'utf8')).not.toContain('\n#甲\n')
+      expect(run('tidy').stdout).toContain('没有需要收')
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, saved)
+    }
   })
 })

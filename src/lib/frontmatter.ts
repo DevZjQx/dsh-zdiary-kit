@@ -71,3 +71,78 @@ export function setFrontmatter(content: string, patch: Record<string, string | u
   const block = ['---', ...head, '---'].join('\n')
   return wellFormed ? `${block}\n${body}` : `${block}\n\n${body}`
 }
+
+/**
+ * 解析 / 生成 YAML flow 列表（只用于 `tags`）：`[]`、`[a, b]`、`["a, b", c]`。
+ *
+ * 为什么只认 flow 形式：模板里写的就是 `tags: []`，工具只需在那一格上做并集；
+ * 块式列表（`tags:` 换行 + `- a`）有缩进与续行两种写法，猜错一次就是整份 frontmatter 被改坏 ——
+ * 遇到不认识的形状返回 null，调用方退回正文 hashtag 行，一个字都不碰。
+ */
+export function parseFlowList(raw: string): string[] | null {
+  const text = String(raw ?? '').trim()
+  if (!text.startsWith('[') || !text.endsWith(']')) return null
+  const inner = text.slice(1, -1).trim()
+  if (!inner) return []
+  const parts: string[] = []
+  let current = ''
+  let quote = ''
+  for (const ch of inner) {
+    if (quote) {
+      current += ch
+      if (ch === quote) quote = ''
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      current += ch
+      continue
+    }
+    if (ch === ',') {
+      parts.push(current.trim())
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  parts.push(current.trim())
+  return parts.filter(Boolean).map(stripQuotes)
+}
+
+/** YAML 里裸写会被当成布尔 / 空值的词 */
+const YAML_RESERVED = /^(?:true|false|null|yes|no|on|off|~)$/i
+
+/** 标签写成 flow 列表项：能不加引号就不加（与手写风格一致），带空格 / 标点的加双引号 */
+function formatListItem(value: string): string {
+  const plain = /^[\p{L}\p{N}_][\p{L}\p{N}_.#+-]*$/u.test(value) && !YAML_RESERVED.test(value)
+  return plain ? value : JSON.stringify(value)
+}
+
+/** `[a, b]`：值里没有引号需求时与手写风格一致 */
+export function formatFlowList(values: readonly string[]): string {
+  return `[${values.map(formatListItem).join(', ')}]`
+}
+
+/**
+ * 标签落点（一份真相）：模板有 frontmatter `tags` 格就并进那一格，并撤掉建笔记时追加的正文 hashtag 行；
+ * 没有这一格（flat 的模板 / 自定义模板）或形状不认识时，保留正文行 —— 那是 zk 唯一能索引到的地方。
+ *
+ * `appendedLine` 是建笔记时**我们自己**追加的那一行（`#a #b`），不是用户写的：
+ * 只撤这一行，正文里原有的标签行一个字都不动。
+ */
+export function placeTags(content: string, tags: readonly string[], appendedLine: string | null): string {
+  if (!tags.length) return content
+  const parsed = parseFrontmatter(content)
+  if (!('tags' in parsed.fields)) return content
+  const existing = parseFlowList(parsed.fields.tags ?? '')
+  if (existing === null) return content
+  const merged = [...existing]
+  for (const tag of tags) if (!merged.includes(tag)) merged.push(tag)
+  let text = content
+  if (appendedLine) {
+    const escaped = appendedLine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // 追加时用一个空行隔开：连那个空行一起收掉，正文与后面的小节之间不留空洞
+    text = text.replace(new RegExp(`\\n\\n${escaped}(?=\\n|$)`), '')
+  }
+  return setFrontmatter(text, { tags: formatFlowList(merged) })
+}

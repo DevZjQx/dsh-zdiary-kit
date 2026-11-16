@@ -28,13 +28,14 @@ import { backlinksOf, GRAPH_BUDGET_NOTES, graphEdges, indexLagHint, localDate, M
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.js';
 import { fenceMask } from './fence.js';
 import { emptyTemplateSlots } from './sections.js';
+import { tagCleanup } from './body-tags.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { daysSinceDate, entryDate, isRetiredEntry, memoryFormatDebt, memoryOrderDebt, splitMemoryEntries } from './memory-format.js';
-import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION, templateVersionOf } from './agents-template.js';
+import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION, templateVersionOf, WORKFLOW_LEGACY_MARK_RE, WORKFLOW_SENTINELS, WORKFLOW_TEMPLATE, WORKFLOW_VERSION, workflowVersionOf, } from './agents-template.js';
 import { PERSONA_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION } from './persona-template.js';
 import { timelineCounts, timelineIssues } from './timeline.js';
 import { isDayString } from './dates.js';
-import { similarKeyOf, similarScore } from './similar.js';
+import { similarKeyOf, similarScore, similarTags } from './similar.js';
 /** 每类最多回多少条；总数另给 */
 export const MAX_ITEMS = 50;
 /**
@@ -49,6 +50,14 @@ export const TIMELINE_WINDOW_DAYS = 90;
 export const EMPTY_SECTION_MAX_BYTES = 1024 * 1024;
 /** 超过这个大小的日记不读（doctor / lint 不该把 2 GiB 的日志拉进内存）：跳过并计入 skipped */
 export const TIMELINE_MAX_BYTES = 2 * 1024 * 1024;
+/** 规模行：`规模：150 篇非日记（93 概念 / …）` */
+const INDEX_SCALE_RE = /(\d+)\s*篇\s*非日记/;
+const INDEX_DATE_RE = /最后更新[：:\s]*(\d{4}-\d{2}-\d{2})/;
+/** 篇数偏差的下限与比例：小库差 3 篇不值得报，大库差 10% 才是「索引已经落后一代」 */
+const INDEX_DRIFT_MIN = 5;
+const INDEX_DRIFT_RATIO = 0.1;
+/** 「最后更新」多少天前算过期 */
+const INDEX_STALE_DAYS = 14;
 /** 标题归一化与链接解析在 `lib/wikilink.ts`（dream 也用同一套）；这里保留导出，免得调用方跟着搬 */
 export { normalizeTitle };
 /** 同一标题出现在多篇里（slug 命名下不同目录可以同名，检索时容易挑错） */
@@ -307,6 +316,27 @@ export function formatTimeline(bucket) {
         (sample.length > 0 ? ` — ${sample.join('；')}` : '');
 }
 /**
+ * 单向链接一行文案：`zk_lint` 与 `zk-kit lint` 共用（两边各写一遍就会改到一半）。
+ * 清单被 `oneWayMax` 截断时点名「加参数看全」——否则就是 11-15 那次「手抄到库外文件」。
+ */
+export function formatOneWay(bucket, maxShown = 5) {
+    const label = bucket.linksOnly ? '单向链接（Links）' : '单向链接';
+    const bodyNote = bucket.bodyOnly > 0
+        ? (bucket.linksOnly ? `（另有正文引用 ${bucket.bodyOnly} 条未计）` : `（正文引用 ${bucket.bodyOnly} 条）`)
+        : '';
+    const prov = bucket.provenance;
+    const provNote = prov.edges > 0 && !bucket.includeProvenance
+        ? `；出处链 ${prov.targets} 篇 / ${prov.edges} 条只计数（concept↔source 是有向的出处链，默认不列；include_provenance=true 可列）`
+        : '';
+    if (bucket.total === 0)
+        return `✓ ${label}：0${bodyNote}${provNote}`;
+    const items = bucket.items.slice(0, maxShown).map((i) => `${i.path} ← ${i.from.join('、')}`);
+    const cut = bucket.itemsTruncated
+        ? `（清单截断：只列前 ${bucket.items.length} 个 / 共 ${bucket.total}；加 one_way_max / --max 看全）`
+        : bucket.total > items.length ? ' …' : '';
+    return `✗ ${label}：${bucket.total} 篇 / ${bucket.edges} 条单向边${bodyNote}${provNote} — ${items.join('；')}${cut}`;
+}
+/**
  * 三个后加的桶（缺字段 / 标签卫生 / 模板版本）的文案，同样只写一份：
  * `zk-kit lint` 与 `zk_lint` 各写一遍就会改到一半。返回空数组 = 这一库三项都没问题，不占行。
  */
@@ -327,6 +357,23 @@ export function formatLintExtras(r) {
             '｜正文自己起了 ## 小节，模板的内容槽（Content / Key claims / Quotes）空着；删掉那行空标题，或把正文并进那一节' +
             (emptySections.skipped > 0 ? `（另有 ${emptySections.skipped} 篇没读：文件过大或读不出来）` : '') +
             '（只报告，不改写）');
+    }
+    const bodyTags = r.bodyTags;
+    if (bodyTags && bodyTags.notes > 0) {
+        const listed = bodyTags.items.slice(0, 5);
+        lines.push(`✗ 正文重复标签：${bodyTags.notes} 篇 / ${bodyTags.paragraphs} 段 — ` +
+            listed.map((i) => `${i.path}（${i.paragraphs} 段）`).join('、') +
+            (bodyTags.notes > listed.length ? ' …' : '') +
+            '｜frontmatter 的 tags 已覆盖这些标签，正文那几行是第二份真相（zk 取并集：只改 frontmatter 不会让旧标签失效）；' +
+            'zk-kit tidy --fix 收掉（默认预演）' +
+            (bodyTags.skipped > 0 ? `（另有 ${bodyTags.skipped} 篇没读：文件过大或读不出来）` : ''));
+    }
+    if (bodyTags && bodyTags.driftNotes > 0) {
+        const listed = bodyTags.drift.slice(0, 3);
+        lines.push(`⚠️ 正文标签不在 frontmatter：${bodyTags.driftNotes} 篇 — ` +
+            listed.map((i) => `${i.path}（${i.tags.map((t) => '#' + t).join(' ')}）`).join('、') +
+            (bodyTags.driftNotes > listed.length ? ' …' : '') +
+            '｜删段会丢标签、并集会复活旧词，只能人裁（只报告，不改写）');
     }
     if (r.missingId > 0) {
         lines.push(`· 稳定 ID：${r.missingId} 篇没有 id — 新建的笔记已自动写入，老笔记只提示、不回填`);
@@ -375,12 +422,16 @@ export function formatLintExtras(r) {
     if (r.tags.reported) {
         const cv = r.tags.caseVariants;
         const sg = r.tags.singletons;
+        // 单例给「最近的已有标签」：周审要的是可执行的合并候选，不是一串光秃秃的标签名
+        const sgSample = sg.items.slice(0, 5)
+            .map((i) => (i.suggest.length ? `${i.tag}→${i.suggest[0].tag}` : i.tag))
+            .join('、');
         lines.push(cv.total === 0
             ? `✓ 标签卫生：${r.tags.total} 个标签，没有大小写变体；单例 ${sg.total} 个` +
-                (sg.items.length ? `（${sg.items.slice(0, 5).join('、')}）` : '')
+                (sgSample ? `（${sgSample}）` : '')
             : `✗ 标签卫生：${cv.total} 组大小写变体 — ` +
                 cv.items.slice(0, 3).map((g) => `${g.variants.join(' / ')}（${g.total}）`).join('；') +
-                `；单例 ${sg.total} 个`);
+                `；单例 ${sg.total} 个` + (sgSample ? `（${sgSample}）` : ''));
     }
     if (r.template.stale) {
         const t = r.template;
@@ -406,6 +457,41 @@ export function formatLintExtras(r) {
             lines.push(t.currentText.trimEnd());
             lines.push('--- 新版模板结束 ---');
         }
+    }
+    const wf = r.template.workflow;
+    if (wf.stale) {
+        if (wf.detail) {
+            lines.push(`⚠️ WORKFLOW.md 标记是 v${wf.version}，但正文与 v${wf.version} 不符（${wf.detail}）` +
+                '—— 疑似只改了版本号；按下面的新版合并后再改标记。');
+        }
+        else if (wf.version > wf.current) {
+            lines.push(`⚠️ WORKFLOW.md 的模板版本比插件新（v${wf.version} > 当前 v${wf.current}）—— ` +
+                '插件是旧的那个，别改文件去配它；升级插件后再看。这里不给旧模板，免得把规则改回去。');
+        }
+        else {
+            const why = wf.legacyMark
+                ? '首行还是旧共用标记 `<!-- zdiary-template: vN -->`（v12 及更早两页共用一个号；现在是 zdiary-workflow v' + wf.current + '）'
+                : wf.version === 0 ? '没有版本标记（手写 / 旧版）' : `旧版模板 v${wf.version}（当前 v${wf.current}）`;
+            lines.push(`⚠️ WORKFLOW.md ${why} —— 只报告，不覆盖。` +
+                (wf.currentText
+                    ? '新版全文如下：按需合并你在这一页自己加的规则，再把首行换成新版标记（只改数字不算升级）。'
+                    : ''));
+        }
+        if (wf.currentText) {
+            lines.push('--- 新版 WORKFLOW 模板开始 ---');
+            lines.push(wf.currentText.trimEnd());
+            lines.push('--- 新版 WORKFLOW 模板结束 ---');
+        }
+    }
+    const index = r.index;
+    if (index?.present && index.drifted) {
+        const claimed = index.claimedNotes === undefined ? '没有规模行' : `自称 ${index.claimedNotes} 篇非日记`;
+        const date = index.claimedDate
+            ? `（最后更新 ${index.claimedDate}${index.ageDays === undefined ? '' : `，${index.ageDays} 天前`}）`
+            : '';
+        const gap = index.claimedNotes === undefined ? '' : `，实际 ${index.actualNotes} 篇（差 ${Math.abs(index.claimedNotes - index.actualNotes)}）`;
+        lines.push(`⚠️ INDEX.md 规模行过期：${claimed}${date}${gap}｜只报告：更新那一行或删掉规模声明，` +
+            '别让入口表变成第二份会过期的真相');
     }
     if (r.similarTitles.total > 0) {
         const sample = r.similarTitles.items.slice(0, 3)
@@ -512,7 +598,12 @@ export function tagHygiene(notes, max = 20) {
         return { variants: group, total: group.reduce((sum, tag) => sum + (counts.get(tag) ?? 0), 0) };
     })
         .sort((a, b) => b.total - a.total || a.variants[0].localeCompare(b.variants[0]));
-    const singletons = tags.filter((tag) => counts.get(tag) === 1).sort((a, b) => a.localeCompare(b));
+    // 已有词汇只拿「用过不止一次」的：单例之间的相似没有参考价值（两个都只写了一次）
+    const inventory = [...counts].filter(([, count]) => count > 1).map(([tag, count]) => ({ tag, count }));
+    const singletons = tags
+        .filter((tag) => counts.get(tag) === 1)
+        .sort((a, b) => a.localeCompare(b))
+        .map((tag) => ({ tag, suggest: similarTags(tag, inventory, 2) }));
     return {
         total: tags.length,
         reported: true,
@@ -598,6 +689,44 @@ export function personaStatus(cfg) {
     return { total: items.length, items };
 }
 /**
+ * `INDEX.md` 规模行核对（纯解析，不跑 zk）：`规模：N 篇非日记` 与 `最后更新 YYYY-MM-DD`。
+ * 判据写死在这儿：偏差 > max(5, 10% 实际) 或日期 > 14 天 —— 与 `staleDays` 无关，
+ * 那是「笔记多久没改」，这是「索引多久没跟」。
+ */
+export function indexStatus(cfg, nonDaily, now = new Date()) {
+    const actualNotes = nonDaily.length;
+    let body = '';
+    try {
+        body = fs.readFileSync(path.join(cfg.notebook, 'INDEX.md'), 'utf8');
+    }
+    catch {
+        return { present: false, actualNotes, drifted: false };
+    }
+    const scale = INDEX_SCALE_RE.exec(body);
+    const date = INDEX_DATE_RE.exec(body);
+    const claimedNotes = scale ? Number(scale[1]) : undefined;
+    const claimedDate = date && isDayString(date[1]) ? date[1] : undefined;
+    let ageDays;
+    if (claimedDate) {
+        const [year, month, day] = claimedDate.split('-').map(Number);
+        const at = new Date(year, month - 1, day).getTime();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        ageDays = Math.max(0, Math.round((today - at) / 86_400_000));
+    }
+    const noteDrift = claimedNotes === undefined
+        ? false
+        : Math.abs(claimedNotes - actualNotes) > Math.max(INDEX_DRIFT_MIN, Math.ceil(actualNotes * INDEX_DRIFT_RATIO));
+    const dateDrift = ageDays !== undefined && ageDays > INDEX_STALE_DAYS;
+    return {
+        present: true,
+        ...(claimedNotes === undefined ? {} : { claimedNotes }),
+        ...(claimedDate === undefined ? {} : { claimedDate }),
+        actualNotes,
+        ...(ageDays === undefined ? {} : { ageDays }),
+        drifted: noteDrift || dateDrift,
+    };
+}
+/**
  * 模板版本：模板是行为约定，不是静态文档 —— 它每轮注入，写错一句就是每轮都在执行错规则。
  * 但模板允许用户改，不能自动覆盖；版本标记把「过期」变成可发现状态，只报告。
  *
@@ -605,25 +734,54 @@ export function personaStatus(cfg) {
  * 会让 lint 误以为已经合并完 —— 这种情况仍报，并给出当前模板全文。
  */
 export function templateStatus(cfg) {
+    const workflow = workflowStatus(cfg);
     let body = '';
     try {
         body = fs.readFileSync(path.join(cfg.notebook, 'AGENTS.md'), 'utf8');
     }
     catch {
-        return { present: false, version: 0, current: TEMPLATE_VERSION, stale: false };
+        return { present: false, version: 0, current: TEMPLATE_VERSION, stale: false, workflow };
     }
     const version = templateVersionOf(body);
     const mismatchDetail = version === TEMPLATE_VERSION
         ? sentinelIssue(body, TEMPLATE_SENTINELS[TEMPLATE_VERSION])
         : null;
     const stale = version !== TEMPLATE_VERSION || mismatchDetail !== null;
-    const base = { present: true, version, current: TEMPLATE_VERSION, stale };
+    const base = { present: true, version, current: TEMPLATE_VERSION, stale, workflow };
     const currentText = cfg.structure === 'flat' ? AGENTS_TEMPLATE_FLAT : AGENTS_TEMPLATE;
     // 不 stale 时不要留下 currentText: undefined —— 宿主按无损 JSON 校验，undefined 会让整次调用 invalid；
     // 版本比插件新时也不给：那是插件该升级，不是用户该回退
     if (mismatchDetail !== null)
         return { ...base, mismatch: true, mismatchDetail, currentText };
     return version < TEMPLATE_VERSION ? { ...base, currentText } : base;
+}
+/**
+ * WORKFLOW.md 的版本核对：与 AGENTS 分开（独立标记、独立哨兵）。
+ *
+ * 为什么必须分开查：v12 及更早的 WORKFLOW.md 首行与 AGENTS 共用 `zdiary-template: vN`，
+ * 而 lint 只读 AGENTS.md —— 真库里出现过「AGENTS 已升 v12、WORKFLOW 还写着 v11」而完全无人报。
+ * 缺文件不报：flat 库初始化就不写这一页。
+ */
+export function workflowStatus(cfg) {
+    let body = '';
+    try {
+        body = fs.readFileSync(path.join(cfg.notebook, 'WORKFLOW.md'), 'utf8');
+    }
+    catch {
+        return { present: false, version: 0, current: WORKFLOW_VERSION, stale: false };
+    }
+    const version = workflowVersionOf(body);
+    const mismatchDetail = version === WORKFLOW_VERSION
+        ? sentinelIssue(body, WORKFLOW_SENTINELS[WORKFLOW_VERSION])
+        : null;
+    const stale = version !== WORKFLOW_VERSION || mismatchDetail !== null;
+    const base = { present: true, version, current: WORKFLOW_VERSION, stale };
+    const legacy = version === 0 && WORKFLOW_LEGACY_MARK_RE.test(body);
+    const withLegacy = legacy ? { ...base, legacyMark: true } : base;
+    if (mismatchDetail !== null)
+        return { ...withLegacy, detail: mismatchDetail, currentText: WORKFLOW_TEMPLATE };
+    // 版本比插件新：插件该升级，别把旧模板递过去让它改回去
+    return version < WORKFLOW_VERSION ? { ...withLegacy, currentText: WORKFLOW_TEMPLATE } : withLegacy;
 }
 /**
  * 空模板小节：`## Content` / `## Key claims` / `## Quotes` 空着，而正文写在了别的 `##` 小节里。
@@ -663,6 +821,57 @@ export function emptySectionStatus(cfg, notes, isDaily, max = MAX_ITEMS) {
         items.push({ path: note.path, title: note.title, empty });
     }
     return { scanned, skipped, notes: items.length, total, truncated: items.length > max, items: items.slice(0, max) };
+}
+/**
+ * 正文重复标签：读正文，找出 frontmatter 已覆盖的纯标签段。
+ *
+ * 与 `zk-kit tidy` 共用 `body-tags.ts` 的判据（否则体检与修复会各说各话）。
+ * 日记不查：日记模板没有 `tags` 格，正文 hashtag 是自由写法；没有 `tags` 格的 flat 笔记也不查，
+ * 那里的正文标签是 zk 唯一的索引来源，删了就是丢标签。
+ */
+export function bodyTagStatus(cfg, notes, isDaily, max = MAX_ITEMS) {
+    let scanned = 0;
+    let skipped = 0;
+    let paragraphs = 0;
+    const items = [];
+    const drift = [];
+    for (const note of notes) {
+        const abs = note.absPath ? path.resolve(note.absPath) : path.resolve(cfg.notebook, note.path);
+        if (isDaily(abs))
+            continue;
+        let body = '';
+        try {
+            if (fs.statSync(abs).size > EMPTY_SECTION_MAX_BYTES) {
+                skipped += 1;
+                continue;
+            }
+            body = fs.readFileSync(abs, 'utf8');
+        }
+        catch {
+            skipped += 1;
+            continue;
+        }
+        scanned += 1;
+        const cleanup = tagCleanup(body);
+        if (!cleanup)
+            continue;
+        if (!cleanup.removable) {
+            drift.push({ path: note.path, title: note.title, tags: cleanup.drift });
+            continue;
+        }
+        paragraphs += cleanup.paragraphs.length;
+        items.push({ path: note.path, title: note.title, paragraphs: cleanup.paragraphs.length, tags: cleanup.tags });
+    }
+    return {
+        scanned,
+        skipped,
+        notes: items.length,
+        paragraphs,
+        driftNotes: drift.length,
+        truncated: items.length > max || drift.length > max,
+        items: items.slice(0, max),
+        drift: drift.slice(0, max),
+    };
 }
 /**
  * 最近 `TIMELINE_WINDOW_DAYS` 天的日记时间轴。
@@ -934,9 +1143,20 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         oneWayCompleteness = scanned.truncated ? 'partial' : 'complete';
     }
     const linksOnly = opts.linksOnly === true;
+    const includeProvenance = opts.includeProvenance === true;
+    const oneWayMax = Math.min(500, Math.max(1, Math.trunc(opts.oneWayMax ?? MAX_ITEMS)));
+    /** 出处链：concept 与 source 之间的跨类型边（同类型不算，pattern / entity 也不算） */
+    const provenanceOf = (fromPath, toPath) => {
+        const from = byPath.get(fromPath)?.type;
+        const to = byPath.get(toPath)?.type;
+        return (from === 'concept' ? to === 'source' : from === 'source' ? to === 'concept' : false);
+    };
     const oneWayItems = [];
+    const typeCounts = new Map();
     let oneWayEdges = 0;
     let bodyOnly = 0;
+    let provenanceEdges = 0;
+    let provenanceTargets = 0;
     for (const row of oneWayRows) {
         // 目标也不报日记：普通笔记链到日记（"今天做了 X"）同样是正常引用方向，
         // 要求日记回链每篇被提到的笔记，跟要求笔记回链日记是同一个问题。
@@ -959,24 +1179,28 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         bodyOnly += body.length;
         if (linksOnly && links.length === 0)
             continue;
-        if (linksOnly) {
-            oneWayEdges += links.length;
-            oneWayItems.push({
-                title: target.title,
-                path: target.path,
-                from: links,
-                where: 'links',
-            });
+        const counted = linksOnly ? links : all;
+        const provenance = counted.filter((s) => provenanceOf(s, row.target));
+        const actionable = counted.filter((s) => !provenanceOf(s, row.target));
+        for (const source of counted) {
+            const key = `${byPath.get(source)?.type || '-'}→${target.type || '-'}`;
+            const rowCount = typeCounts.get(key) ?? { from: byPath.get(source)?.type || '-', to: target.type || '-', edges: 0 };
+            rowCount.edges += 1;
+            typeCounts.set(key, rowCount);
         }
-        else {
-            oneWayEdges += all.length;
-            oneWayItems.push({
-                title: target.title,
-                path: target.path,
-                from: all,
-                where: links.length === 0 ? 'body' : body.length === 0 ? 'links' : 'mixed',
-            });
-        }
+        provenanceEdges += provenance.length;
+        if (provenance.length > 0 && actionable.length === 0)
+            provenanceTargets += 1;
+        const from = includeProvenance ? counted : actionable;
+        if (from.length === 0)
+            continue;
+        oneWayEdges += from.length;
+        oneWayItems.push({
+            title: target.title,
+            path: target.path,
+            from,
+            where: linksOnly ? 'links' : links.length === 0 ? 'body' : body.length === 0 ? 'links' : 'mixed',
+        });
     }
     oneWayItems.sort((a, b) => a.path.localeCompare(b.path));
     const oneWayBucket = {
@@ -984,9 +1208,13 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         edges: oneWayEdges,
         bodyOnly,
         linksOnly,
+        provenance: { targets: provenanceTargets, edges: provenanceEdges },
+        includeProvenance,
+        byType: [...typeCounts.values()].sort((a, b) => b.edges - a.edges || a.from.localeCompare(b.from) || a.to.localeCompare(b.to)),
         edgesTruncated: oneWayTruncated,
+        itemsTruncated: oneWayItems.length > oneWayMax,
         completeness: oneWayCompleteness,
-        items: oneWayItems.slice(0, MAX_ITEMS),
+        items: oneWayItems.slice(0, oneWayMax),
     };
     const parseErrors = parseErrorWarnings(cfg, warnings);
     const scanTruncated = completeness !== 'complete';
@@ -1034,8 +1262,10 @@ export async function lintNotebook(cfg, opts = {}, signal) {
         // 模板空壳（`## Content` 空着、正文写在别的 `##` 下）：读正文的桶，只对非日记笔记；
         // 上限 / 跳过的计数照实给出，别把「没读」当成「没有」
         emptySections: emptySectionStatus(cfg, notes, isDaily),
+        bodyTags: bodyTagStatus(cfg, notes, isDaily),
         // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
         indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
+        index: indexStatus(cfg, nonDaily, now),
         // 放在最后算：前面的读命令已经把 pending 的 dirty 补掉了，剩下的是「补不上 / 外部编辑」
         indexLag: indexLagHint(cfg) ?? '',
     };

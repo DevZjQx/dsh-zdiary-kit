@@ -18,7 +18,7 @@ import { PERSONA_TEMPLATE } from './persona-template.ts'
 import { effectivePaths, isPluginOwned, normGroupPath, parseGroupBlocks, sameGroupPath, samePaths } from './notebook-config.ts'
 import type { GroupBlock } from './notebook-config.ts'
 
-export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.ts'
+export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE, WORKFLOW_VERSION } from './agents-template.ts'
 
 /** ensureNotebook 的可选动作：flat 下是否顺手写 AGENTS.md（默认不写，守住「不多一个文件」） */
 export interface EnsureOptions {

@@ -27,7 +27,7 @@ README（本文）是导览与操作手册。实现口径、输出字段、边�
 | `zk_query` | 结构化检索：按 type / status / 标签 / 目录 / 日期过滤，默认只看 active 且不含归档；`include_archived` 连归档一起查（此时未显式给 status 则不再默认过滤 active，也不再重复报死胡同 —— 归档已经在结果里）；中文多词同样按覆盖度合并、`snippet` 与 `total` 口径同 `zk_search`；`entryPoints` / `counterEntries` 与 `zk_search` 同口径 |
 | `zk_recall` | 召回装配：先按 query / 过滤条件检索（与 `zk_search` 同一套检索与排序口径），再按词数预算 `budget`（默认 500）把命中笔记拼成一段可直接读的上下文；每条带标题、路径、`absPath` 与全文词数，放不下就整条丢弃、不切半句，被挡下的原因在 `notes[].reason`；`used` 一定不超过 `budget`（中文 2 字 1 词）；不读全文、不新增 zk 进程、不做重排 / 跨回合去重；`completeness` 沿用检索三态，装配过的 ≠ 全部命中；`entryPoints` / `counterEntries` 与 `zk_search` 共用同一份计算，`via=query` 的入口卡会排在装配正文之前（占同一份预算），放不下就置 `entryPointsInText=false` 并在正文外单列（不静默丢）。命令行对应 `zk-kit recall` |
 | `zk_walk` | 从一篇笔记出发走一跳邻居（只读）：`direction=both` 看反链 + 出链，`in` 只看谁链到它，`out` 只看它链到谁；种子写相对 / 绝对路径或精确标题 / 稳定 id（`[[标题]]` / `[[id]]` 也认），不精确命中就返回空、不会退回全库；按篇反查、不建全图（路径种子 2 个子进程），`limit` 硬顶 200，触顶 `completeness=partial`（邻居没列全，不代表没有）；每条邻居带 `section` / `linkLine`（那条边所在的小节与那一行 —— 没有它，同一篇种子的出链只有一串标题），只回标题 / 路径 / `absPath` / 摘要 / 那一行，全文仍用原生 read，**0 个额外子进程**。命令行对应 `zk-kit walk` |
-| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 只补正文里没有的；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/`、`archive/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面；归档只放 `zk_supersede` 搬进去的旧结论）；同目录里有「改一两个字」的相似标题时在 `similar` 里提示（带分数，只提示、不阻断）；中文笔记没有任何标签时在 `tagWarning` 里提示（只提示，不阻断）；正文第一行就是 `##` 时，模板的内容槽会被挤成空壳，`emptyTemplateSections` 点名（只提示，不改正文） |
+| `zk_new` | 新建原子笔记（zk 生成文件名、套模板、写索引），可带摘要、标签与双链；`summary` 填进模板的 `## Summary`（正文里已写了这一节就不动，返回 `summaryApplied: false`）；`name` 可直接指定短文件名（不给则按标题生成，中文标题得到拼音长名）；layered 下不给 `dir` 就按 `type` 落位（source → notes/sources），两者都没有、或给的 `dir` 不在任何 group 里都直接报错；`tags` 落点只有一份：模板有 frontmatter `tags` 格就并进那一格（zk 同样索引它），没有这一格（flat / 自定义模板）才追加正文 `#tag` 行 —— 以前无论模板长什么样都写正文，`tags: []` 永远空着要人再补；`tagHints` 给出只差大小写或互为包含的已有标签（`界面层 ≈ 界面（12 篇）`），只提示、不阻断、不自动改；flat 下按标题查重，重复直接报错；归档里有同名旧结论只警告并带出废弃原因；type / authority 只有 layered 模板会写进 frontmatter；`raw/`、`archive/` 与根目录 meta 文件一律拒写（写进去会被排除出索引 / 被当成人写的工作面；归档只放 `zk_supersede` 搬进去的旧结论）；同目录里有「改一两个字」的相似标题时在 `similar` 里提示（带分数，只提示、不阻断）；中文笔记没有任何标签时在 `tagWarning` 里提示（只提示，不阻断）；正文第一行就是 `##` 时，模板的内容槽会被挤成空壳，`emptyTemplateSections` 点名（只提示，不改正文） |
 | `zk_append` | 往已有笔记末尾续写（自动补空行，可先起二级标题）；根目录 meta 文件拒写 |
 | `zk_daily` | 打开/创建某天的日记，并追加一条带时间的记录（layered 模板写进 `## Events` 的 `### HH:MM`，flat 追加到文件末尾的 `## HH:MM`） |
 | `zk_link` | 在两篇笔记间加 `[[…]]` 双链（已存在不重复加；目标不存在会给出候选；链接追加到文末，已有 Links/链接 小节则不重复起标题）；meta 文件不作为来源或目标 |
@@ -35,7 +35,7 @@ README（本文）是导览与操作手册。实现口径、输出字段、边�
 | `zk_rename` | 改名 / 换目录并修断链：入链（`[[…]]` 与 Markdown 链接，保留 `#锚点` 与 `\|别名`）按实际解析结果改到新路径，根目录 meta 里的 `[[来源]]` 一起改，被搬走那篇自己的相对 Markdown 链接按新位置重算；默认只预演 |
 | `zk_context` | 读知识库根目录的 `AGENTS.md` / `USER.md` / `MEMORY.md`（按注入预算截断）与角色人格 `PERSONA.md`（单独成段、不截断），并列出已配置的笔记本（名字 / 路径 / 结构 / 当前）；宿主支持注入时这些内容每轮已自动带进系统提示。改 MEMORY 前用它看余量：`headroom` / `wouldTruncate` / `dropCandidates` 说明「再加一条会丢谁」，给 `proposed_entry` 或 `extra_words` 就能预估；同日条目按位置决胜（`sameDateCount`），不假装有使用频率；`orderDebt` 报「新条目没写顶部 / 最旧日期并列」的位置债（工作约定的机械核对，只报告不改条目） |
 | `zk_memory_write` | 往 `MEMORY.md` / `USER.md` 末尾追加一条结论的**第一个 meta 写工具**；默认 `dry_run: true` 只预演、不动盘，`dry_run: false` 才真写（可带 `expect_stamp` 挡并发改动）。插件只做机械门：条目须是带 `YYYY-MM-DD` 与 `[[来源]]` 的顶层列表项、`[[来源]]` 要解析到活笔记、`add` 不能让注入载荷超预算（超了返回 `over-budget` + `dropCandidates`，**不静默截断**）；`action: retire` 追加 `- [superseded …]` 标记（退役条目不进注入，不做容量门）。不改一个字、不合并 / 替换、不自动补日期 / 来源、不提议退役哪条；每次真实写入把 pre-image 摘要与一行 diff 追加到 `DREAMS.md` 供周审复核。改已有条目仍用原生 edit；`WORKFLOW.md` 里写了「改 MEMORY 先预演」 |
-| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 · 位置债（新条目没写顶部 / 最旧日期并列，只报告不搬条目） / frontmatter 缺字段 / 标签卫生 / 模板版本 / 人格（缺失·旧版·比插件新·标记与内容不符·未填占位符）/ 日记时间轴（最近 90 天的空块·倒序·格式·位置）/ 空模板小节（`Content` / `Key claims` / `Quotes` 空着、正文写在了别的 `##` 下；日记不查），每类最多 50 条；非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；另给 `missingId`（缺稳定 id 的非日记笔记数，只提示不回填）；只报告不改写 |
+| `zk_lint` | 体检：解析失败 / 断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名标题 / 疑似重复标题 / 记忆链接失效 · 位置债（新条目没写顶部 / 最旧日期并列，只报告不搬条目） / frontmatter 缺字段 / 标签卫生 / 正文重复标签（整段只有 `#tag`、frontmatter `tags` 已覆盖：两处真相，只报告；`zk-kit tidy --fix` 收掉） / 模板版本 / 人格（缺失·旧版·比插件新·标记与内容不符·未填占位符）/ 日记时间轴（最近 90 天的空块·倒序·格式·位置）/ 空模板小节（`Content` / `Key claims` / `Quotes` 空着、正文写在了别的 `##` 下；日记不查），每类最多 50 条（单向链接的清单上限单独可调 `one_way_max` / CLI `--max`，1–500）；单向链接分出**出处链**（concept ↔ source 的跨类型边）：默认只给 `provenance` 计数与 `byType` 分布、不逐条列（那类边按惯例有向，补成互指清单只会把复核预算税掉），`include_provenance: true` 才列；`INDEX.md` 存在时核对它的「规模：N 篇非日记 / 最后更新」是否还跟得上实时数（只报告，不生成、不改写），非日记笔记到 150 篇且没有 `INDEX.md` 时提示一句；另给 `missingId`（缺稳定 id 的非日记笔记数，只提示不回填）；只报告不改写 |
 | `zk_dream` | 晋升材料：窗口新增（机械筛掉 `informal` 与无标签，带正文摘要与入链来源）、已在 MEMORY 的、窗口外积压、daily 未完成项、被引最多（先按「被日记提到几天」排）；带 `missingId`（缺稳定 id 的非日记笔记数）；`evidence` 把每条现行 MEMORY 结论与来源笔记的出处原话 / 外部地址并排回显（两跳封顶、零 zk 进程、绝不进注入），`unverified` 数出「没有可回对原话」的结论 —— 只给材料，不判断结论对错；只报告 |
 | `zk_stats` | 笔记数 / 标签数 / 断链 / 孤立 / 归档（superseded），顶层目录与前 10 个标签的实时分布；外加 `usage`：本地聚合计数（`walk` / `recall` / `entryPoints` / `counterEntries` 各用了几次，自某天起）—— 用来看「入口 + 一跳」这条路到底有没有被用上。只存计数，不记查询词、不记路径 |
 | `zk_use` | 切换**本会话**用的笔记本（只影响这个会话，不改全局默认）；不带参数就列出现有的与当前固定的 |
@@ -79,7 +79,7 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 但文件本身不动 —— git 与记忆页仍看得到「这里曾经有过什么」。
 `flat` 结构默认**不写** `AGENTS.md`（从 0.1.0 升级过来的库一个文件都不多）；要约定与周提醒就显式
 `zk-kit init --with-agents`，或在设置页点「写入 AGENTS.md 模板」—— 已存在的文件绝不覆盖。
-模板首行有 `<!-- zdiary-template: vN -->` 版本标记：老库的 `AGENTS.md` 是旧版时 `zk_lint` 只提示，不自动改；标记比插件新时提示升级插件；标记等于当前版本但正文还留着旧句时按「标记与内容不符」报（只改数字不算合并）。
+模板首行有 `<!-- zdiary-template: vN -->` 版本标记：老库的 `AGENTS.md` 是旧版时 `zk_lint` 只提示，不自动改；标记比插件新时提示升级插件；标记等于当前版本但正文还留着旧句时按「标记与内容不符」报（只改数字不算合并）。`WORKFLOW.md` 另有自己的 `<!-- zdiary-workflow: vN -->` 标记，`zk_lint` 的 `template.workflow` 单独核对（旧共用标记、只改号、比插件新都各有说法）。
 
 **角色人格**：根目录还可以放 `PERSONA.md`（名字 / 身份 / 语气 / 边界）。它与 `MEMORY.md` 同级：人和 agent 直接编辑，`zk_append` / `zk_new` 一律拒写，
 **缺文件 = 未启用**（旧库行为一个词不变）。它单独成段、永远在记忆段之前注入，**不参与记忆预算的截断**：
@@ -92,8 +92,10 @@ DSH 自带的 AGENTS.md 加载只看「项目根 → 当前目录」链，**不�
 **边界**：当前只做「一本笔记本一份」人格；多个 agent 共用一个库时先别启用，等 per-agent 人格落地 ——
 否则 A 的人格会串到 B。
 
-模板首行有版本标记：已有文件不会被覆盖，
-`zk_lint` 会把它报成旧版、并把新版全文附在报告里 —— 自己挑要哪几条搬过去。
+模板首行有版本标记：已有文件不会被覆盖，`zk_lint` 会把它报成旧版、并把新版全文附在报告里 —— 自己挑要哪几条搬过去。
+两种模板**各有各的版本号**：`AGENTS.md` 是 `<!-- zdiary-template: vN -->`，`WORKFLOW.md` 是 `<!-- zdiary-workflow: vN -->`
+（v12 及更早两页共用一个号，只升 AGENTS 的人不会想到动 WORKFLOW —— 真库里就这样静默落后过一版）。
+`WORKFLOW.md` 缺文件不报（flat 初始化就不写这一页）；旧共用标记、只改版本号、比插件新，各有各的说法。
 
 维护用 `zk_lint`（结构体检 + 记忆链接核对）和 `zk_dream`（晋升候选 / 拒绝原因 / 未完成项）：两个工具都**只读**；
 写 `MEMORY.md` / `DREAMS.md` 由 agent 按 `AGENTS.md` 自己决定（`zk_memory_write` 是唯一例外：按机械门往 `MEMORY.md`
@@ -380,8 +382,10 @@ zk-kit new --title "示例笔记" --body "正文" --tags demo --type concept
 zk-kit search --tags demo --limit 5
 zk-kit recall 示例 --budget 200        # 召回装配：按词数预算拼一段可读上下文（只读）
 zk-kit daily --entry "今天把 zk-kit 跑了一遍"
-zk-kit lint --stale-days 90          # 体检（只读）
+zk-kit lint --stale-days 90          # 体检（只读；--links-only / --include-provenance / --max 500）
 zk-kit dream --days 7                # 晋升材料（只读）
+zk-kit tidy                          # 正文重复标签：预演要收哪些标签段（默认 dry-run，不改文件）
+zk-kit tidy --fix                    # 只删「整段只有 #tag 且 frontmatter 已覆盖」的段落；幂等
 zk-kit query -- -t demo --limit 5    # 透传 zk list：--notebook-dir / --format / -x 会被替换掉
 zk-kit index
 zk-kit config get structure          # 看一个配置项（不传键 = 全量）
@@ -450,6 +454,7 @@ zk-kit doctor                        # 自检：zk / 笔记本 / 模板 / group 
 | 体检报「AGENTS.md 是旧版 / 无版本标记 / 标记与内容不符」 | 模板升级过，老库不会自动覆盖（可能有你自己的改动）：`zk_lint` 的输出里会直接附上新版模板全文，按需合并到自己的 `AGENTS.md`；合并完内容再改首行标记，只把数字改成 vN 会被正文哨兵发现。不合并也能用，只是少新加的约定 |
 | 体检报「人格版本比插件新」 | 文件里的标记来自更新版本的插件：插件才是旧的那个，别改文件里的版本号，升级插件后再看 |
 | 体检报「疑似重复标题」 | 同目录里有两篇标题只差一两个字（二元组相似度 ≥ 0.6，或短标题被长标题包含）。只报告：确认是同一结论就用 `zk_supersede` 合并，不是就留着 |
+| 体检提示「正文重复标签」 | 旧版本 / 手工写入的笔记把 `#tag` 也写进了正文，与 frontmatter `tags` 成了两份真相（zk 取并集：只改 frontmatter 不会让旧标签失效）。先跑 `zk-kit tidy` 看清单（默认预演），确认后 `--fix`：只删「整段只有 hashtag 且 frontmatter 已覆盖」的段落；正文有、frontmatter 没有的标签只报不动（删了会丢、并集复活旧词，人裁） |
 | 体检提示「笔记已到 150 篇（不含日记）」 | 检索开始变糊的拐点，但插件不生成 `INDEX.md`（静态索引会过期）。用 `zk_stats` 看目录 / 标签分布决定先读哪里；真要总索引就自己写，提示会消失 |
 | 中文搜索只回来几条 | `zk_search` / `zk_query` 对含中文的查询都会 FTS + 子串各跑一次并合并（`matchStrategy: mixed`）：FTS5 不切中文，整串查询只匹配字面量。多词查询（如「记忆 召回」）会自动切成词做 alternation、按覆盖度排序，命中句进 `snippet`。0 命中时会提示换更短的词或按 tags 查 |
 | 体检报「frontmatter 缺字段」（layered） | 缺 `type` / `status` / `authority`：索引把缺失落成空串，`authority=informal` 这类机械门对它们静默失效。按模板补上即可；flat 不查这一项 |

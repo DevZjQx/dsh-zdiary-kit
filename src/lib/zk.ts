@@ -15,10 +15,10 @@ import type { Config } from '../config/store.ts'
 import { ExecError, findOnPath, run } from './exec.ts'
 import { readJson, writeJson } from './json-file.ts'
 import { withFileLockSync } from './lock.ts'
-import { parseFrontmatter, setFrontmatter } from './frontmatter.ts'
+import { parseFrontmatter, placeTags, setFrontmatter } from './frontmatter.ts'
 import { isMetaPath, META_NAMES } from './meta.ts'
-import { similarCandidates } from './similar.ts'
-import type { SimilarCandidate } from './similar.ts'
+import { similarCandidates, similarTags } from './similar.ts'
+import type { SimilarCandidate, TagHit } from './similar.ts'
 import { linkContextOf } from './edge-context.ts'
 import { fenceMask } from './fence.ts'
 import { emptyTemplateSlots } from './sections.ts'
@@ -1899,6 +1899,11 @@ export interface NewNoteInput {
   type?: string
   /** frontmatter 的 authority（走 `--extra authority=`） */
   authority?: string
+  /**
+   * 标签：模板有 frontmatter `tags` 格就并进那一格（zk 同样索引它），没有这一格才退回正文 hashtag 行。
+   * 一份真相 —— 以前无论模板长什么样都往正文追加，frontmatter 的 `tags: []` 永远空着，得手工补。
+   */
+  tags?: string[]
 }
 
 export interface NewNoteResult {
@@ -1909,6 +1914,12 @@ export interface NewNoteResult {
   archived: ArchivedTitleHit[]
   /** 同目录下标题相似的已有笔记（P2）：只提示，不阻断；归档不参与，归一化后全等的也不重复报 */
   similar: SimilarCandidate[]
+  /**
+   * 近义标签（P0）：入参标签与库里已有的标签只差大小写、或互为包含时给出候选。
+   * 只提示、不阻断、不自动改 —— 「新标签」本身是正常写作，只有确定可判的近义才值得一条告警。
+   * `input` 是本次写入的那个标签，`tag` 是库里已有的近义标签。
+   */
+  tagHints: Array<TagHit & { input: string }>
   /** summary 是否真的写进了文件（false = 没给、正文里已有 Summary，或收尾失败；后两种看 summaryWarning） */
   summaryApplied: boolean
   /** 给了 summary 却没写进去的原因；笔记本身已经建好，不影响调用方继续用 */
@@ -2039,12 +2050,16 @@ export async function createNote(
       '换一个 name，或直接用 read / edit 改那一篇',
     )
   }
+  // 标签先进正文（模板的 `{{content}}` 位置是对的），建完再决定要不要搬进 frontmatter：
+  // 只有这样才能同时照顾「模板有 tags 格」（layered）与「只有正文 hashtag 可索引」（flat）。
+  const inputTags = [...new Set((input.tags ?? []).map((t) => String(t).trim().replace(/^#+/, '')).filter(Boolean))]
+  const injected = inputTags.length ? withTagsDetailed(input.content ?? '', inputTags) : { content: input.content ?? '', appended: null as string | null }
   const args = ['new', dirAbs, '-t', title, '-i', '-p']
   if (input.group) args.push('-g', input.group)
   // 只在真给了 type/authority 时才传：flat 的 daily/notes 模板没有 {{extra.*}}，多传无害但没必要
   if (input.type) args.push('--extra', `type=${input.type}`)
   if (input.authority) args.push('--extra', `authority=${input.authority}`)
-  const stdout = await zk(cfg, args, { signal, input: input.content ?? '' })
+  const stdout = await zk(cfg, args, { signal, input: injected.content })
   const last = stdout.trim().split('\n').filter(Boolean).pop() ?? ''
   if (!last) throw new ZkError('zk new 没有返回笔记路径')
   const abs = path.isAbsolute(last) ? last : path.resolve(cfg.notebook, last)
@@ -2114,11 +2129,14 @@ export async function createNote(
   }
   // 稳定 ID：只给 zk_new 新建的笔记写 id，老笔记 / 日记不回填。
   // 建完才写：zk new -i 索引的是模板产物，改了文件就得标脏，让下一次读补索引（R6）。
-  // 收尾失败一律吞掉（同 markIndexDirty）：笔记已经建好，不能让一次 id 写入看起来像整次创建失败。
+  // 标签落点也在这一趟里定：模板有 `tags` 格就并进那一格（并撤掉刚追加的正文行），否则留在正文。
+  // 收尾失败一律吞掉（同 markIndexDirty）：笔记已经建好，不能让一次收尾写入看起来像整次创建失败。
   try {
     const text = fs.readFileSync(finalAbs, 'utf8')
-    if (!parseFrontmatter(text).fields.id) {
-      fs.writeFileSync(finalAbs, setFrontmatter(text, { id: newNoteId() }), 'utf8')
+    let next = placeTags(text, inputTags, injected.appended)
+    if (!parseFrontmatter(next).fields.id) next = setFrontmatter(next, { id: newNoteId() })
+    if (next !== text) {
+      fs.writeFileSync(finalAbs, next, 'utf8')
       markIndexDirty(cfg)
     }
   } catch { /* 收尾失败：文件已落盘，不回滚、不误导 */ }
@@ -2128,12 +2146,24 @@ export async function createNote(
   try {
     emptyTemplateSections = emptyTemplateSlots(fs.readFileSync(finalAbs, 'utf8')).map((slot) => slot.heading)
   } catch { /* 收尾失败：文件已落盘，不回滚 */ }
+  // 近义标签：只用建之前那份快照（建完再扫一遍等于多起一个进程），归档里的旧词汇不算
+  let tagHints: Array<TagHit & { input: string }> = []
+  if (inputTags.length && snapshot) {
+    const counts = new Map<string, number>()
+    for (const note of snapshot) {
+      if (inArchive(cfg, note.path)) continue
+      for (const tag of note.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+    }
+    const inventory = [...counts].map(([tag, count]) => ({ tag, count }))
+    tagHints = inputTags.flatMap((input) => similarTags(input, inventory, 2).map((hit) => ({ ...hit, input })))
+  }
   return {
     path: relPathOf(cfg, finalAbs),
     absPath: finalAbs,
     title,
     archived,
     similar,
+    tagHints,
     summaryApplied,
     summaryWarning,
     emptyTemplateSections,
@@ -3046,14 +3076,24 @@ function hasHashtag(body: string, tag: string): boolean {
   return new RegExp(`(^|[^\\p{L}\\p{N}_-])#${escaped}(?![\\p{L}\\p{N}_-])`, 'u').test(body)
 }
 
-export function withTags(content: string, tags: string[]): string {
+/**
+ * 正文标签：返回追加后的正文与**实际追加的那一行**。
+ *
+ * 为什么要返回那一行：建完笔记后如果模板有 frontmatter `tags` 格，标签要搬进那一格，
+ * 刚追加的正文行必须精确撤掉（只撤我们自己写的那行，用户正文里的标签行一个字不动）。
+ */
+export function withTagsDetailed(content: string, tags: string[]): { content: string; appended: string | null } {
   const body = String(content ?? '').replace(/\s+$/, '')
-  if (!tags.length) return body
+  if (!tags.length) return { content: body, appended: null }
   // 正文里已经写过的标签跳过：以前正文写了 #tag、入参又给 tags，末尾会多出一行一模一样的
   const missing = tags.filter((tag) => !hasHashtag(body, tag))
-  if (!missing.length) return body
+  if (!missing.length) return { content: body, appended: null }
   const line = missing.map((t) => `#${t}`).join(' ')
-  return body ? `${body}\n\n${line}` : line
+  return { content: body ? `${body}\n\n${line}` : line, appended: line }
+}
+
+export function withTags(content: string, tags: string[]): string {
+  return withTagsDetailed(content, tags).content
 }
 
 /**

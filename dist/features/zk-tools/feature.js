@@ -15,7 +15,7 @@ import { configFor, pinSession, sessionNotebook, sessionState } from '../../conf
 import { defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from '../../config/paths.js';
 import { S, validateArgs } from '../../lib/tool.js';
 import { ensureNotebook, newNoteDir } from '../../lib/notebook.js';
-import { searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, withTags, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, runAlias, hasCjk, walkFrom, scanNotes, ZkError, } from '../../lib/zk.js';
+import { searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, runAlias, hasCjk, walkFrom, scanNotes, ZkError, } from '../../lib/zk.js';
 import { configuredAliases, readAliases } from '../../lib/alias.js';
 import { buildMemoryPayload, memoryCapacity, META_FILES } from '../../lib/memory.js';
 import { assembleRecall } from '../../lib/recall.js';
@@ -26,7 +26,7 @@ import { bumpRecall } from '../../lib/recall-signal.js';
 import { wikiIndex } from '../../lib/wikilink.js';
 import { writeMemory } from '../../lib/memory-write.js';
 import { META_NAMES } from '../../lib/meta.js';
-import { formatLintExtras, formatMemoryLinks, lintNotebook } from '../../lib/lint.js';
+import { formatLintExtras, formatMemoryLinks, formatOneWay, lintNotebook } from '../../lib/lint.js';
 import { dreamNotebook, STALE_DAYS } from '../../lib/dream.js';
 const text = (value) => [{ type: 'text', text: value }];
 /** render 的 args 是 unknown：只取 query 判断要不要给中文 0 命中提示（R7） */
@@ -77,10 +77,21 @@ const LINT_ONE_WAY = objSchema({
     edges: { type: 'number' },
     bodyOnly: { type: 'number' },
     linksOnly: { type: 'boolean' },
+    provenance: objSchema({ targets: { type: 'number' }, edges: { type: 'number' } }, ['targets', 'edges']),
+    includeProvenance: { type: 'boolean' },
+    byType: {
+        type: 'array',
+        items: objSchema({
+            from: { type: 'string' },
+            to: { type: 'string' },
+            edges: { type: 'number' },
+        }, ['from', 'to', 'edges']),
+    },
     edgesTruncated: { type: 'boolean' },
+    itemsTruncated: { type: 'boolean' },
     completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'] },
     items: { type: 'array', items: LINT_ONE_WAY_ITEM },
-}, ['total', 'edges', 'bodyOnly', 'linksOnly', 'edgesTruncated', 'completeness', 'items']);
+}, ['total', 'edges', 'bodyOnly', 'linksOnly', 'provenance', 'includeProvenance', 'byType', 'edgesTruncated', 'itemsTruncated', 'completeness', 'items']);
 const LINT_STALE = objSchema({
     total: { type: 'number' },
     items: {
@@ -196,6 +207,32 @@ const LINT_EMPTY_SECTIONS = objSchema({
         }, ['path', 'title', 'empty']),
     },
 }, ['scanned', 'skipped', 'notes', 'total', 'truncated', 'items']);
+/** 正文重复标签：整段只有 #tag、frontmatter 已覆盖（只报告；zk-kit tidy --fix 收掉） */
+const LINT_BODY_TAGS = objSchema({
+    scanned: { type: 'number' },
+    skipped: { type: 'number' },
+    notes: { type: 'number' },
+    paragraphs: { type: 'number' },
+    driftNotes: { type: 'number' },
+    truncated: { type: 'boolean' },
+    items: {
+        type: 'array',
+        items: objSchema({
+            path: { type: 'string' },
+            title: { type: 'string' },
+            paragraphs: { type: 'number' },
+            tags: { type: 'array', items: { type: 'string' } },
+        }, ['path', 'title', 'paragraphs', 'tags']),
+    },
+    drift: {
+        type: 'array',
+        items: objSchema({
+            path: { type: 'string' },
+            title: { type: 'string' },
+            tags: { type: 'array', items: { type: 'string' } },
+        }, ['path', 'title', 'tags']),
+    },
+}, ['scanned', 'skipped', 'notes', 'paragraphs', 'driftNotes', 'truncated', 'items', 'drift']);
 /** frontmatter 缺字段 */
 const LINT_INCOMPLETE = objSchema({
     total: { type: 'number' },
@@ -229,9 +266,31 @@ const LINT_TAGS = objSchema({
     }, ['total', 'items']),
     singletons: objSchema({
         total: { type: 'number' },
-        items: { type: 'array', items: { type: 'string' } },
+        items: {
+            type: 'array',
+            items: objSchema({
+                tag: { type: 'string' },
+                suggest: {
+                    type: 'array',
+                    items: objSchema({
+                        tag: { type: 'string' },
+                        count: { type: 'number' },
+                        kind: { type: 'string', enum: ['case', 'similar'] },
+                    }, ['tag', 'count', 'kind']),
+                },
+            }, ['tag', 'suggest']),
+        },
     }, ['total', 'items']),
 }, ['total', 'reported', 'caseVariants', 'singletons']);
+/** INDEX.md 规模行漂移（只核对，不生成） */
+const LINT_INDEX = objSchema({
+    present: { type: 'boolean' },
+    claimedNotes: { type: 'number' },
+    claimedDate: { type: 'string' },
+    actualNotes: { type: 'number' },
+    ageDays: { type: 'number' },
+    drifted: { type: 'boolean' },
+}, ['present', 'actualNotes', 'drifted']);
 /** 模板版本 */
 const LINT_TEMPLATE = objSchema({
     present: { type: 'boolean' },
@@ -241,7 +300,16 @@ const LINT_TEMPLATE = objSchema({
     mismatch: { type: 'boolean' },
     mismatchDetail: { type: 'string' },
     currentText: { type: 'string' },
-}, ['present', 'version', 'current', 'stale']);
+    workflow: objSchema({
+        present: { type: 'boolean' },
+        version: { type: 'number' },
+        current: { type: 'number' },
+        stale: { type: 'boolean' },
+        legacyMark: { type: 'boolean' },
+        detail: { type: 'string' },
+        currentText: { type: 'string' },
+    }, ['present', 'version', 'current', 'stale']),
+}, ['present', 'version', 'current', 'stale', 'workflow']);
 /** 人格体检：缺失 / 旧版 / 比插件新 / 标记与内容不符 / 未填占位符（只报告，不覆盖） */
 const LINT_PERSONA = objSchema({
     total: { type: 'number' },
@@ -900,7 +968,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     name: S.str('文件名（不含扩展名，也不要带目录）；不给就由 zk 按标题生成。中文标题建议给一个短名，否则是长拼音'),
                     body: S.str('正文 Markdown（可空）。会插在模板的 {{content}} 位置（layered 下在 ## Content 之下、## Links 之前）：不要自己再写 ## Content / ## Summary 这类模板小节，会多出重复标题'),
                     summary: S.str('一句话摘要（填进模板的 ## Summary；正文里已经写了这一节就不动）'),
-                    tags: S.arr('标签（不写 #）。与设置里的默认标签合并；正文里已经写过的标签不会再追加一行', S.str('标签名')),
+                    tags: S.arr('标签（不写 #）。与设置里的默认标签合并；模板有 frontmatter tags 格就写那一格（layered），没有才追加正文 hashtag 行；与库里已有标签近义时在 tagHints 里提示', S.str('标签名')),
                     dir: S.str('放到哪个子目录（相对笔记本）。flat 默认 notesDir；layered 必须落在某个 group（notes/sources 等，子目录也行），不给就按 type 落位；两者都没有、或不在 group 里都会报错'),
                     type: S.enum('笔记类型（写进 frontmatter；layered 结构下决定模板的分节，不给 dir 时也决定目录）', ['source', 'concept', 'entity', 'pattern']),
                     authority: S.enum('可信度（写进 frontmatter，给未来的自己判断该不该引用）', ['official', 'expert', 'informal']),
@@ -922,6 +990,15 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     summaryWarning: { type: 'string' },
                     emptyTemplateSections: { type: 'array', items: { type: 'string' } },
                     tagWarning: { type: 'string' },
+                    tagHints: {
+                        type: 'array',
+                        items: objSchema({
+                            input: { type: 'string' },
+                            tag: { type: 'string' },
+                            count: { type: 'number' },
+                            kind: { type: 'string', enum: ['case', 'similar'] },
+                        }, ['input', 'tag', 'count', 'kind']),
+                    },
                     archived: {
                         type: 'array',
                         items: objSchema({
@@ -944,20 +1021,24 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
             async run(args, env) {
                 const cfg = configFor(env.workspace, env.sessionId);
                 await ensureNotebook(cfg, env.signal);
-                const tags = [...new Set([...(cfg.defaultTags ?? []), ...(Array.isArray(args.tags) ? args.tags.map(String) : [])])];
+                // 标签只留名字：前导 # 去掉、去空、去重（写进 frontmatter 的那份必须是同一个形状）
+                const tags = [...new Set([...(cfg.defaultTags ?? []), ...(Array.isArray(args.tags) ? args.tags.map(String) : [])]
+                        .map((t) => t.trim().replace(/^#+/, ''))
+                        .filter(Boolean))];
                 const type = args.type ? String(args.type) : undefined;
                 const title = String(args.title);
                 const body = args.body ? String(args.body) : '';
-                const content = withTags(body, tags);
+                // 标签交给 createNote 落位：模板有 frontmatter `tags` 格就写那一格，没有才追加正文 hashtag 行
                 const created = await createNote(cfg, {
                     title,
                     name: args.name ? String(args.name) : undefined,
                     summary: args.summary ? String(args.summary) : undefined,
-                    content,
+                    content: body,
                     dir: newNoteDir(cfg, { dir: args.dir ? String(args.dir) : undefined, type }),
                     group: args.group ? String(args.group) : undefined,
                     type,
                     authority: args.authority ? String(args.authority) : undefined,
+                    tags,
                 }, env.signal);
                 const links = [];
                 const warnings = [];
@@ -972,7 +1053,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     }
                 }
                 // 中文没标签：写路径是唯一便宜的修复点。只提示，不阻断。
-                const tagWarning = taglessCjkWarning(title, content, tags);
+                const tagWarning = taglessCjkWarning(title, body, tags);
                 // 归档同名只是提醒：zk_new 的查重本来就不含 archive，允许复用标题 —— 但要把废弃原因一起交出来
                 // （createNote 建之前那次全库扫描已经算好了，这里不再单独跑一次 zk）
                 const archived = created.archived;
@@ -984,6 +1065,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     ...(created.similar.length ? { similar: created.similar } : {}),
                     ...(created.summaryWarning ? { summaryWarning: created.summaryWarning } : {}),
                     ...(created.emptyTemplateSections.length ? { emptyTemplateSections: created.emptyTemplateSections } : {}),
+                    ...(created.tagHints.length ? { tagHints: created.tagHints } : {}),
                     ...(tagWarning ? { tagWarning } : {}),
                 };
             },
@@ -1000,8 +1082,10 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     lines.push('⚠️ 模板小节空着：' + v.emptyTemplateSections.join('、') +
                         ' —— 正文以 ## 开头，内容落在了它后面；把正文并进那一节，或删掉那行空标题（zk_lint 的「空模板小节」会复查）');
                 }
-                if (v.tagWarning)
-                    lines.push('⚠️ ' + v.tagWarning);
+                if (v.tagHints?.length) {
+                    lines.push('⚠️ 标签近义：' + v.tagHints.map((h) => `${h.kind === 'case' ? '大小写变体' : '近义'}：#${h.input} ≈ #${h.tag}（${h.count} 篇）`).join('、') +
+                        ' —— 确认是不是同一个标签；要统一就改这一篇的 tags');
+                }
                 if (v.similar?.length) {
                     lines.push('⚠️ 疑似已有：' + v.similar.map((s) => `${s.title}（${s.path}，${s.score.toFixed(2)}）`).join('、') +
                         ' —— 先 read 确认是不是同一条；要合并就 zk_supersede，不要直接再写一遍');
@@ -1564,6 +1648,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 properties: {
                     stale_days: S.num('多少天没修改算陈旧（1-3650，默认 90）'),
                     links_only: S.bool('只报 Links 小节的单向链接；正文引用只计数（默认 false）'),
+                    include_provenance: S.bool('单向链接里连出处链（concept↔source）一起列；默认只计数（那类边按惯例有向）'),
+                    one_way_max: S.num('单向链接清单上限（1-500，默认 50）；total 始终是全量'),
                 },
                 additionalProperties: false,
             },
@@ -1591,9 +1677,11 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     persona: LINT_PERSONA,
                     timeline: LINT_TIMELINE,
                     emptySections: LINT_EMPTY_SECTIONS,
+                    bodyTags: LINT_BODY_TAGS,
                     indexHint: { type: 'boolean' },
+                    index: LINT_INDEX,
                     indexLag: { type: 'string' },
-                }, ['notebook', 'notes', 'missingId', 'truncated', 'completeness', 'scanLimit', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'emptySections', 'indexHint', 'indexLag']),
+                }, ['notebook', 'notes', 'missingId', 'truncated', 'completeness', 'scanLimit', 'staleDays', 'parseErrors', 'orphans', 'brokenLinks', 'stale', 'tagless', 'oneWayLinks', 'duplicateTitles', 'similarTitles', 'memoryLinks', 'incomplete', 'tags', 'template', 'persona', 'timeline', 'emptySections', 'bodyTags', 'indexHint', 'index', 'indexLag']),
             },
             async run(args, env) {
                 const cfg = configFor(env.workspace, env.sessionId);
@@ -1601,6 +1689,8 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 return lintNotebook(cfg, {
                     staleDays: args.stale_days === undefined ? undefined : Number(args.stale_days),
                     linksOnly: args.links_only === true,
+                    includeProvenance: args.include_provenance === true,
+                    oneWayMax: args.one_way_max === undefined ? undefined : Number(args.one_way_max),
                 }, env.signal);
             },
             render(_args, value) {
@@ -1621,18 +1711,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                 lines.push(line('孤儿', v.orphans));
                 lines.push(line('无标签', v.tagless));
                 const oneWay = v.oneWayLinks;
-                const oneWayLabel = oneWay.linksOnly ? '单向链接（Links）' : '单向链接';
-                const bodyNote = oneWay.bodyOnly > 0
-                    ? (oneWay.linksOnly ? '（另有正文引用 ' + oneWay.bodyOnly + ' 条未计）' : '（正文引用 ' + oneWay.bodyOnly + ' 条）')
-                    : '';
-                if (oneWay.total === 0)
-                    lines.push('✓ ' + oneWayLabel + '：0' + bodyNote);
-                else {
-                    const items = oneWay.items.slice(0, 5).map((i) => i.path + ' ← ' + i.from.join('、'));
-                    lines.push('✗ ' + oneWayLabel + '：' + oneWay.total + ' 篇 / ' + oneWay.edges + ' 条单向边' +
-                        bodyNote +
-                        ' — ' + items.join('；') + (oneWay.total > items.length ? ' …' : ''));
-                }
+                lines.push(formatOneWay(oneWay));
                 lines.push(v.stale.total === 0
                     ? '✓ 陈旧：0'
                     : '✗ 陈旧：' + v.stale.total + ' 篇 — ' +

@@ -101,7 +101,8 @@
 
 **Public surface.** `buildMemoryPayload(cfg)`、`memoryUsage(cfg)`、`countWords(text)`、`formatFileShares(files, tocWords)`、`META_FILES`（别名 `MEMORY_META_FILES`）、
 `PERSONA_META_FILES`、`PERSONA_TEMPLATE`、`stripPersonaMarker`、
-`AGENTS_TEMPLATE` / `AGENTS_TEMPLATE_FLAT`、`TEMPLATE_VERSION` / `TEMPLATE_MARK`、`WORKFLOW_TEMPLATE`。
+`AGENTS_TEMPLATE` / `AGENTS_TEMPLATE_FLAT`、`TEMPLATE_VERSION` / `TEMPLATE_MARK`、`WORKFLOW_TEMPLATE`、
+`WORKFLOW_VERSION` / `WORKFLOW_MARK` / `workflowVersionOf`。
 笔记本侧：`writeAgentsTemplate(cfg)` / `writePersonaTemplate(cfg)`（缺才写，返回是否写入）与
 `ensureNotebook(cfg, signal, { withAgents, withPersona })`。
 `WORKFLOW.md` 不进 `META_FILES`（不注入），只在 `META_NAMES` 里（排除出检索、`zk_append` 拒写）。
@@ -234,7 +235,7 @@ dream 的判重分两步（顺序不能反）：`[[链接]]` 匹配用**原文**
 精简版只保留 flat 下成立的四条规则，路径里不出现 `raw/` / `archive/` / `WORKFLOW.md`。
 
 **模板版本。** 模板是行为约定，每轮注入；老库的 `AGENTS.md` 停在旧版本时，agent 会一直按旧规则写。
-但模板允许用户改，不能自动覆盖 —— 两份模板首行写死 `<!-- zdiary-template: vN -->`，`zk_lint` 读它：
+但模板允许用户改，不能自动覆盖 —— 两份 AGENTS 模板首行写死 `<!-- zdiary-template: vN -->`，`zk_lint` 读它：
 无标记按 v0 算；低于当前模板提示「旧版模板」，高于当前模板提示「模板版本比插件新」，都只报告、不改文件。
 提示里**直接带上当前结构对应的新版模板全文**（`template.currentText`），不再让 agent 去找 `docs/features/memory.md`：
 插件装进 DSH 后文档躺在 profile 的 `node_modules` 里，工作区外的读取可能被策略拦掉，给路径等于让它多搜几次。
@@ -244,6 +245,11 @@ dream 的判重分两步（顺序不能反）：`[[链接]]` 匹配用**原文**
 还留着旧句 = 只把首行数字改成了 vN，报「标记与内容不符」并把当前模板全文给出。哨兵只查当前版本；
 用户合法改模板被误报也只是提示，不覆盖。
 标记固定 4 词、不带日期（带日期实测 6 词，白花 2 词）；改模板时 `TEMPLATE_VERSION + 1`。
+
+`WORKFLOW.md` 不注入，但同样有版本：它用独立标记 `<!-- zdiary-workflow: vN -->` 与 `WORKFLOW_VERSION`，
+`zk_lint` 的 `template.workflow` 单独核对（缺文件不报 —— flat 不写这一页）。
+为什么要独立：v12 及更早两页共用一个号，升 AGENTS 时没人会想到还要改 WORKFLOW —— 真库里它就这样停在 v11，
+而 lint 只读 AGENTS.md，「谁也没报」比报错更难查。`legacyMark` 点名旧共用标记，`detail` 是正文哨兵不符的原因。
 
 **依据回对不进注入。** MEMORY 每条结论附 `[[来源]]`，`zk_lint` 核对的是「链接还指向活笔记吗」，
 从来不是「结论跟原文对不对」。笔记是有损压缩的判断，真值常在笔记之外（本库 `## 出处` 里的外部 URL、`raw/` 里的原始材料），

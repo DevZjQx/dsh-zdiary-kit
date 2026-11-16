@@ -36,6 +36,35 @@ export function templateVersionOf(body: string): number {
   return hit ? Number(hit[1]) : 0
 }
 
+/**
+ * WORKFLOW.md 的模板版本：**独立**于 `TEMPLATE_VERSION`。
+ *
+ * 为什么独立：两份文件各改各的（AGENTS 注入、WORKFLOW 按需读），共用一个号时
+ * 「AGENTS 升到 v12、WORKFLOW 内容一字未变」也会让 WORKFLOW 被标成旧版 —— 反过来，
+ * 只升 AGENTS 的人不会想到还要动 WORKFLOW，旧号就永远留着。v12 及更早的 WORKFLOW.md
+ * 首行用的是 `zdiary-template`，`workflowVersionOf` 对它返回 0（lint 报「旧标记」，不是「v0 模板」）。
+ */
+export const WORKFLOW_VERSION = 1
+export const WORKFLOW_MARK = `<!-- zdiary-workflow: v${WORKFLOW_VERSION} -->`
+const WORKFLOW_MARK_RE = /<!--\s*zdiary-workflow:\s*v(\d+)\s*-->/
+
+/** WORKFLOW.md 的版本；没有新标记返回 0（含 v12 及更早的共用标记） */
+export function workflowVersionOf(body: string): number {
+  const hit = WORKFLOW_MARK_RE.exec(String(body ?? ''))
+  return hit ? Number(hit[1]) : 0
+}
+
+/** 旧版 WORKFLOW.md 首行：与 AGENTS 共用的标记（v12 及更早） */
+export const WORKFLOW_LEGACY_MARK_RE = /<!--\s*zdiary-template:\s*v(\d+)\s*-->/
+
+/**
+ * WORKFLOW.md 当前版本的正文哨兵：标记已经是新版号、正文却还是旧版时抓出来。
+ * 只挑「新版才有 / 旧版已删」的确定文本，不做语义判断。
+ */
+export const WORKFLOW_SENTINELS: Record<number, TemplateSentinels> = {
+  1: { required: ['zk_memory_write', 'zk_rename'] },
+}
+
 /** 正文哨兵：标记写着当前版本时，正文必须满足的文本条件 */
 export interface TemplateSentinels {
   /** 当前版本新增 / 保留的文本；缺一条 = 标记与内容不符 */
@@ -114,7 +143,7 @@ MEMORY.md 每条：结论（YYYY-MM-DD）[[来源路径]]，先 read 核对来�
  * 根目录 WORKFLOW.md：只在「要动已有笔记」时才需要读，所以不注入、不计预算。
  * 放进注入的话，AGENTS.md 一膨胀就会挤掉 MEMORY —— 这些规则低频但重要，适合按需读。
  */
-export const WORKFLOW_TEMPLATE = `${TEMPLATE_MARK}
+export const WORKFLOW_TEMPLATE = `${WORKFLOW_MARK}
 
 # 改笔记的工作流（按需读）
 

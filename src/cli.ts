@@ -13,17 +13,19 @@ import { buildMemoryPayload, formatFileShares } from './lib/memory.ts'
 import { installZk, sourceLabel } from './lib/install.ts'
 import {
   resolveZk, searchNotesDetailed, queryNotes, createNote, readNote, findNote, appendToNote, ensureDailyNote,
-  appendDaily, linkNotes, notebookStats, indexNotebook, indexPolicy, withTags, taglessCjkWarning, hasNotebook, localDate, ZkError,
+  appendDaily, linkNotes, notebookStats, indexNotebook, indexPolicy, taglessCjkWarning, hasNotebook, localDate, ZkError,
   allNotes, parseErrorWarnings, indexLagHint, walkFrom,
 } from './lib/zk.ts'
 import type { NoteRecord } from './lib/zk.ts'
-import { formatLintExtras, formatMemoryLinks, lintNotebook, personaStatus, timelineStatus } from './lib/lint.ts'
+import { formatLintExtras, formatMemoryLinks, formatOneWay, lintNotebook, personaStatus, timelineStatus } from './lib/lint.ts'
 import type { LintResult } from './lib/lint.ts'
 import { assembleRecall } from './lib/recall.ts'
 import { entryPointLines, entryPointsOf } from './lib/entry-points.ts'
 import { archivedCounterparts, describeCounterEntries } from './lib/archive-probe.ts'
 import { dreamNotebook, STALE_DAYS } from './lib/dream.ts'
 import type { DreamResult } from './lib/dream.ts'
+import { tidyTags } from './lib/tidy.ts'
+import type { TidyTagsResult } from './lib/tidy.ts'
 
 const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
 
@@ -43,9 +45,10 @@ const HELP = `zk-kit —— dsh-zdiary-kit 的命令行
   zk-kit daily [--entry 一段] [--date yesterday]
   zk-kit append <路径> --text 一段 [--heading 标题]
   zk-kit link <来源路径> <目标路径或标题>
-  zk-kit lint [--stale-days 90] [--links-only]
+  zk-kit lint [--stale-days 90] [--links-only] [--include-provenance] [--max 50]
                                       体检：断链 / 孤儿 / 无标签 / 单向链接 / 陈旧 / 重名（只读）
   zk-kit dream [--days N]             晋升材料：窗口新增 / daily 未完成 / 被引最多（只读；不传 days 就按 DREAMS.md 的上次做梦算窗口）
+  zk-kit tidy [--fix]                 收掉正文里与 frontmatter 重复的标签段（默认预演；--fix 才落盘，幂等）
   zk-kit query [-- <zk list 参数>]     透传 zk list（--notebook-dir / --format / -x 会被替换掉）
   zk-kit index                        重建索引
   zk-kit notebooks                    列出所有笔记本（* 是当前那个；[flat/layered] 是各自的结构）
@@ -166,19 +169,7 @@ function lintReport(r: LintResult): string {
   lines.push(row('孤儿', r.orphans.total, r.orphans.items))
   lines.push(row('无标签', r.tagless.total, r.tagless.items))
   const oneWay = r.oneWayLinks
-  const oneWayLabel = oneWay.linksOnly ? '单向链接（Links）' : '单向链接'
-  const bodyNote = oneWay.bodyOnly > 0
-    ? (oneWay.linksOnly ? `（另有正文引用 ${oneWay.bodyOnly} 条未计）` : `（正文引用 ${oneWay.bodyOnly} 条）`)
-    : ''
-  if (oneWay.total === 0) lines.push(`✓ ${oneWayLabel}：0${bodyNote}`)
-  else {
-    const items = oneWay.items.slice(0, 5).map((i) => `${i.path} ← ${i.from.join('、')}`)
-    lines.push(
-      `✗ ${oneWayLabel}：${oneWay.total} 篇 / ${oneWay.edges} 条单向边` +
-      bodyNote +
-      ` — ${items.join('；')}${oneWay.total > items.length ? ' …' : ''}`,
-    )
-  }
+  lines.push(formatOneWay(oneWay))
   lines.push(r.stale.total === 0
     ? '✓ 陈旧：0'
     : `✗ 陈旧：${r.stale.total} 篇 — ` + r.stale.items.slice(0, 5).map((s) => `${s.path}（${s.modified}）`).join('、'))
@@ -200,6 +191,33 @@ function lintReport(r: LintResult): string {
   if (oneWay.completeness === 'partial') lines.push('⚠️ 建图笔记载入触到上限：单向链接可能误报（回链边未加载）')
   else if (oneWay.completeness === 'unknown') lines.push('⚠️ 无法确认单向链接的边集是否完整（旧版 zk 未给出载入篇数）：可能误报')
   lines.push('（只报告，没有改动任何文件）')
+  return lines.join('\n')
+}
+
+function tidyReport(r: TidyTagsResult): string {
+  const skipped = r.skipped > 0 ? `（跳过 ${r.skipped} 篇：文件过大或读不出来）` : ''
+  const head = r.dryRun
+    ? `预演：${r.notes} 篇可收 / ${r.paragraphs} 段（没改文件）`
+    : `已收 ${r.changed} 篇 / ${r.paragraphs} 段`
+  const lines = [`整理正文标签：扫 ${r.scanned} 篇${skipped} — ${head}`]
+  if (r.truncated) lines.push('⚠️ 笔记数触到扫描上限：结果不完整（只会漏收，不会误收）')
+  if (r.notes === 0 && r.drift.length === 0) {
+    lines.push('✓ 没有需要收的正文标签段')
+    return lines.join('\n')
+  }
+  for (const item of r.items.slice(0, 20)) {
+    lines.push(`  ${item.path}（${item.paragraphs} 段：${item.tags.map((t) => '#' + t).join(' ')}）`)
+  }
+  if (r.items.length > 20) lines.push(`  … 另有 ${r.items.length - 20} 篇`)
+  if (r.drift.length > 0) {
+    lines.push(`⚠️ 正文标签不在 frontmatter：${r.drift.length} 篇 —— 没动（删段会丢标签，并集会复活旧词）`)
+    for (const item of r.drift.slice(0, 5)) {
+      lines.push(`  ${item.path}（${item.tags.map((t) => '#' + t).join(' ')}）`)
+    }
+    if (r.drift.length > 5) lines.push(`  … 另有 ${r.drift.length - 5} 篇`)
+  }
+  if (r.dryRun && r.notes > 0) lines.push('确认后加 --fix 落盘（只删标签段与多余空行，不动结论）')
+  else if (!r.dryRun && r.notes > 0) lines.push('（收完的笔记下次不再出现；索引已标脏，下一次检索自动补）')
   return lines.join('\n')
 }
 
@@ -545,21 +563,27 @@ async function main(): Promise<void> {
       if (type && !(NOTE_KINDS as readonly string[]).includes(type)) {
         throw new ZkError(`--type 只能是：${NOTE_KINDS.join(' / ')}`)
       }
-      const tags = [...new Set([...cfg.defaultTags, ...list(flags.tags)])]
+      const tags = [...new Set([...cfg.defaultTags, ...list(flags.tags)]
+        .map((t) => t.trim().replace(/^#+/, ''))
+        .filter(Boolean))]
       const body = str(flags.body)
       const created = await createNote(cfg, {
         title,
         name: str(flags.name) || undefined,
         summary: str(flags.summary) || undefined,
-        content: withTags(body, tags),
+        content: body,
         dir: newNoteDir(cfg, { dir: str(flags.dir) || undefined, type }),
         type,
+        tags,
       })
       const archived = created.archived
       print(json ? { ...created, tags } : `已创建 ${created.path}${tags.length ? ' · ' + tags.map((t) => '#' + t).join(' ') : ''}`, json)
       if (created.summaryWarning) console.error('⚠️ ' + created.summaryWarning)
-      const tagWarning = taglessCjkWarning(title, withTags(body, tags), tags)
+      const tagWarning = taglessCjkWarning(title, body, tags)
       if (tagWarning) console.error('⚠️ ' + tagWarning)
+      for (const hit of created.tagHints) {
+        console.error(`⚠️ 标签近义：${hit.kind === 'case' ? '大小写变体' : '近义'}：#${hit.input} ≈ #${hit.tag}（${hit.count} 篇）—— 要统一就改这一篇的 tags`)
+      }
       for (const hit of archived) {
         console.error(`⚠️ 归档里有同名旧结论：${hit.path}${hit.reason ? `（废弃原因：${hit.reason}）` : '（没有记录废弃原因）'} —— 先读它，确认不是同一个结论再复用标题`)
       }
@@ -677,6 +701,8 @@ async function main(): Promise<void> {
       const r = await lintNotebook(cfg, {
         staleDays: Number(str(flags['stale-days'])) || 90,
         linksOnly: flags['links-only'] === true || flags['links-only'] === 'true',
+        includeProvenance: flags['include-provenance'] === true || flags['include-provenance'] === 'true',
+        oneWayMax: Number(str(flags['max'])) || undefined,
       })
       print(json ? r : lintReport(r), json)
       return
@@ -688,6 +714,14 @@ async function main(): Promise<void> {
       const days = Number(str(flags.days))
       const r = await dreamNotebook(cfg, Number.isFinite(days) && days > 0 ? { days } : {})
       print(json ? r : dreamReport(r), json)
+      return
+    }
+
+    case 'tidy': {
+      await ensureNotebook(cfg)
+      const fix = flags.fix === true || flags.fix === 'true'
+      const r = await tidyTags(cfg, { dryRun: !fix })
+      print(json ? r : tidyReport(r), json)
       return
     }
 

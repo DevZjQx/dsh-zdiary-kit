@@ -33,15 +33,20 @@ import {
 import { normalizeTitle, resolveWikiTarget, WIKI_LINK, wikiIndex } from './wikilink.ts'
 import { fenceMask } from './fence.ts'
 import { emptyTemplateSlots } from './sections.ts'
+import { tagCleanup } from './body-tags.ts'
 import { parseFrontmatter } from './frontmatter.ts'
 import { daysSinceDate, entryDate, isRetiredEntry, memoryFormatDebt, memoryOrderDebt, splitMemoryEntries } from './memory-format.ts'
 import type { FrontmatterFields } from './frontmatter.ts'
-import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION, templateVersionOf } from './agents-template.ts'
+import {
+  AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, TEMPLATE_SENTINELS, TEMPLATE_VERSION, templateVersionOf,
+  WORKFLOW_LEGACY_MARK_RE, WORKFLOW_SENTINELS, WORKFLOW_TEMPLATE, WORKFLOW_VERSION, workflowVersionOf,
+} from './agents-template.ts'
 import { PERSONA_TEMPLATE_SENTINELS, PERSONA_TEMPLATE_VERSION } from './persona-template.ts'
 import type { TimelineIssue, TimelineIssueKind } from './timeline.ts'
 import { timelineCounts, timelineIssues } from './timeline.ts'
 import { isDayString } from './dates.ts'
-import { similarKeyOf, similarScore } from './similar.ts'
+import { similarKeyOf, similarScore, similarTags } from './similar.ts'
+import type { TagHit } from './similar.ts'
 
 /** 每类最多回多少条；总数另给 */
 export const MAX_ITEMS = 50
@@ -126,21 +131,44 @@ export interface LintOneWayEntry extends LintEntry {
   where: 'links' | 'body' | 'mixed'
 }
 
+export interface LintOneWayTypeCount {
+  /** 来源笔记的 type（flat 库 / 老笔记没有 type 记作 `-`） */
+  from: string
+  /** 目标笔记的 type */
+  to: string
+  /** 这一类有多少条单向边 */
+  edges: number
+}
+
 export interface LintOneWayBucket {
-  /** 缺回链的**目标笔记数**（不是边数） */
+  /** 需要人看一眼的**目标笔记数**：已剔除只有出处链的目标（除非 includeProvenance） */
   total: number
-  /** 单向边数：一个目标可能被多条边指向 */
+  /** 上面那些目标身上的单向边数：一个目标可能被多条边指向 */
   edges: number
   /** 正文引用的单向边数；linksOnly 时这些边只计数、不列出 */
   bodyOnly: number
   /** true = 只列 Links 小节的单向边（正文引用只进 bodyOnly） */
   linksOnly: boolean
   /**
+   * 出处链（concept ↔ source 的跨类型边）：只计数、默认不列。
+   *
+   * 为什么单列：这本库 11-01 / 11-05 / 11-08 三次裁决「概念↔来源本来有向，补成互指清单检索价值为零」，
+   * 而它一直是单向链接里最大的一类。每次周审都重报同一批已裁决的边，等于把复核预算税掉。
+   * 想全看就 `include_provenance: true`。
+   */
+  provenance: { targets: number; edges: number }
+  /** true = items 里也列出处链（默认 false） */
+  includeProvenance: boolean
+  /** 边数按 (来源类型 → 目标类型) 拆分，降序：让「哪一类值得动」一眼可见（linksOnly 时只算 Links 小节的边） */
+  byType: LintOneWayTypeCount[]
+  /**
    * true = 单向链接的边集不完整：小库是 `zk graph` 触到 `--limit`，大库是按篇反查触到
    * 目标数 / 子进程预算。与 `truncated`（笔记扫描）不同：那边少一篇只会漏报，
    * 这边**缺一条回链边就会把双向误判成单向** —— 触顶必须显式报出来。
    */
   edgesTruncated: boolean
+  /** true = items 被 `oneWayMax` 截断（total 仍是全量） */
+  itemsTruncated: boolean
   /** 上面那条的三种写法：partial = 边集不完整；unknown = 老 zk 连是否触顶都判断不了 */
   completeness: Completeness
   items: LintOneWayEntry[]
@@ -216,13 +244,20 @@ export interface LintTagGroup {
   total: number
 }
 
+export interface LintTagSingleton {
+  /** 只出现过一次的标签 */
+  tag: string
+  /** 已有的近义标签（篇数 ≥ 2 的才算），按篇数降序、最多 2 条；空数组 = 没找到 */
+  suggest: TagHit[]
+}
+
 export interface LintTagBucket {
   /** 不同标签的总数 */
   total: number
   /** false = 标签少于阈值，不做卫生检查（小库的噪音没有价值） */
   reported: boolean
   caseVariants: { total: number; items: LintTagGroup[] }
-  singletons: { total: number; items: string[] }
+  singletons: { total: number; items: LintTagSingleton[] }
 }
 
 export interface LintTemplateBucket {
@@ -250,6 +285,29 @@ export interface LintTemplateBucket {
    * `version > current` 时不给：那说明用户升过更新的插件（或手写了更高标记），这时插件才是旧的那个，
    * 把当前版本的模板递过去等于让 agent 把规则改回去。
    */
+  currentText?: string
+  /**
+   * WORKFLOW.md 的版本核对：与 AGENTS.md 分开算（一份文件一个号）。
+   * 缺文件 = 未启用（flat 不写这一页），不报。只报告，不覆盖。
+   */
+  workflow: LintWorkflowBucket
+}
+
+/**
+ * WORKFLOW.md 的版本桶。`legacyMark` 表示首行还是 v12 及更早的共用标记
+ * `<!-- zdiary-template: vN -->` —— 那时两份文件共用一个号，只升 AGENTS 的人不会想到动它。
+ */
+export interface LintWorkflowBucket {
+  present: boolean
+  /** 0 = 没有新版标记（含旧共用标记） */
+  version: number
+  current: number
+  stale: boolean
+  /** true = 首行是旧的 `zdiary-template` 标记 */
+  legacyMark?: boolean
+  /** 标记与正文不符的人读原因 */
+  detail?: string
+  /** stale 且版本不比插件新时给当前模板全文（agent 读不到包内 docs，只能跟着结果走） */
   currentText?: string
 }
 
@@ -320,17 +378,90 @@ export interface LintEmptySectionBucket {
   items: LintEmptySectionEntry[]
 }
 
+/**
+ * 正文重复标签：整段只有 `#tag`，而 frontmatter 的 `tags` 已经覆盖了它们。
+ *
+ * 两份真相的代价：只改 frontmatter 不会让旧标签失效（zk 取并集），正文却还显示着它；
+ * agent 读一篇会看到两处标签，容易只改一处。`zk-kit tidy --fix` 收掉，这里只报告。
+ */
+export interface LintBodyTagEntry {
+  path: string
+  title: string
+  /** 可整段删的纯标签段数 */
+  paragraphs: number
+  /** 这些段里的标签（去重、保序） */
+  tags: string[]
+}
+
+export interface LintBodyTagDrift {
+  path: string
+  title: string
+  /** 正文写了、frontmatter 没有的标签：删了会丢、并集会复活旧词，只能人裁 */
+  tags: string[]
+}
+
+export interface LintBodyTagBucket {
+  /** 实际读到并检查的非日记篇数 */
+  scanned: number
+  /** 没读到的篇数（文件过大 / 读不出来）：不静默，文案里点名 */
+  skipped: number
+  /** 可自动收的篇数（正文标签 ⊆ frontmatter tags） */
+  notes: number
+  /** 可自动收的标签段总数 */
+  paragraphs: number
+  /** 人裁的篇数（正文标签不在 frontmatter） */
+  driftNotes: number
+  /** items 是否被截断（前 MAX_ITEMS 篇） */
+  truncated: boolean
+  items: LintBodyTagEntry[]
+  drift: LintBodyTagDrift[]
+}
+
 /** 超过这个大小不读（同 TIMELINE_MAX_BYTES：巡检不该把一个大文件拉进内存） */
 export const EMPTY_SECTION_MAX_BYTES = 1024 * 1024
 
 /** 超过这个大小的日记不读（doctor / lint 不该把 2 GiB 的日志拉进内存）：跳过并计入 skipped */
 export const TIMELINE_MAX_BYTES = 2 * 1024 * 1024
 
+/**
+ * `INDEX.md` 的规模行漂移：只核对人手写的那一行，**不生成索引**。
+ *
+ * 为什么必要：根目录的 `INDEX.md` 自称「150 篇 / 最后更新 11-12」，实际 231 篇 —— 谁都没报，
+ * 因为 `indexHint` 只在「没有这个文件」时才响。手工维护的索引不会因为存在就正确。
+ * 只比对两个数（非日记篇数、最后更新日期），改不改那行仍归人。
+ */
+export interface LintIndexBucket {
+  present: boolean
+  /** 规模行里自称的非日记篇数；没有规模行 / 写法不认识 = 不给这个键（不写 null：宿主按无损 JSON 校验） */
+  claimedNotes?: number
+  /** 「最后更新」的日期（YYYY-MM-DD）；没有就不给这个键 */
+  claimedDate?: string
+  /** 实际非日记篇数（与 `indexHint` 同口径） */
+  actualNotes: number
+  /** claimedDate 距今天数；没有日期就不给这个键 */
+  ageDays?: number
+  /** 判据：篇数偏差 > max(5, 10%) 或 ageDays > 14（有日期才判） */
+  drifted: boolean
+}
+
+/** 规模行：`规模：150 篇非日记（93 概念 / …）` */
+const INDEX_SCALE_RE = /(\d+)\s*篇\s*非日记/
+const INDEX_DATE_RE = /最后更新[：:\s]*(\d{4}-\d{2}-\d{2})/
+/** 篇数偏差的下限与比例：小库差 3 篇不值得报，大库差 10% 才是「索引已经落后一代」 */
+const INDEX_DRIFT_MIN = 5
+const INDEX_DRIFT_RATIO = 0.1
+/** 「最后更新」多少天前算过期 */
+const INDEX_STALE_DAYS = 14
+
 export interface LintOptions {
   /** 多少天没修改算陈旧（默认 90） */
   staleDays?: number
   /** 只报 Links 小节的单向链接；正文引用只计数（默认 false = 全报） */
   linksOnly?: boolean
+  /** 单向链接清单上限（默认 MAX_ITEMS=50，1–500）；total 始终是全量 */
+  oneWayMax?: number
+  /** 连出处链（concept ↔ source）一起列（默认 false：只计数） */
+  includeProvenance?: boolean
   /**
    * 覆盖配置里的 `graphBudgetNotes`（默认 2000）。超过就改成按篇反查。
    * 只给测试用：把它压到 0 就能在小库上跑大库的那条路径。
@@ -385,11 +516,18 @@ export interface LintResult {
    */
   emptySections: LintEmptySectionBucket
   /**
+   * 正文重复标签：整段只有 `#tag`、frontmatter 已覆盖。只报告；`zk-kit tidy --fix` 收掉。
+   * 没有 `tags` 格的 flat 笔记不进来：正文标签在那边是唯一的索引来源。
+   */
+  bodyTags: LintBodyTagBucket
+  /**
    * 非日记笔记已到 150 篇、根目录却没有 INDEX.md：只是提示，不生成静态索引。
    * 实时分布看 zk_stats（byDir / byTag），静态索引会过期、还要决定谁负责更新。
    * 日记不计入：它按天自动增长，一年就能把任何库顶到 150 篇，可知识量并没有涨。
    */
   indexHint: boolean
+  /** `INDEX.md` 的规模行漂移核对（只核对，不生成、不改写） */
+  index: LintIndexBucket
   /**
    * 「索引可能落后」的提示（R6）：工具写入会在下一次检索前自动补索引，
    * 这里只报「补不上 / 外部编辑」两种残留情况；空串 = 没有提示。只读，不自动重建。
@@ -657,11 +795,36 @@ export function formatTimeline(bucket: LintTimelineBucket): string {
 }
 
 /**
+ * 单向链接一行文案：`zk_lint` 与 `zk-kit lint` 共用（两边各写一遍就会改到一半）。
+ * 清单被 `oneWayMax` 截断时点名「加参数看全」——否则就是 11-15 那次「手抄到库外文件」。
+ */
+export function formatOneWay(bucket: LintOneWayBucket, maxShown = 5): string {
+  const label = bucket.linksOnly ? '单向链接（Links）' : '单向链接'
+  const bodyNote = bucket.bodyOnly > 0
+    ? (bucket.linksOnly ? `（另有正文引用 ${bucket.bodyOnly} 条未计）` : `（正文引用 ${bucket.bodyOnly} 条）`)
+    : ''
+  const prov = bucket.provenance
+  const provNote = prov.edges > 0 && !bucket.includeProvenance
+    ? `；出处链 ${prov.targets} 篇 / ${prov.edges} 条只计数（concept↔source 是有向的出处链，默认不列；include_provenance=true 可列）`
+    : ''
+  if (bucket.total === 0) return `✓ ${label}：0${bodyNote}${provNote}`
+  const items = bucket.items.slice(0, maxShown).map((i) => `${i.path} ← ${i.from.join('、')}`)
+  const cut = bucket.itemsTruncated
+    ? `（清单截断：只列前 ${bucket.items.length} 个 / 共 ${bucket.total}；加 one_way_max / --max 看全）`
+    : bucket.total > items.length ? ' …' : ''
+  return `✗ ${label}：${bucket.total} 篇 / ${bucket.edges} 条单向边${bodyNote}${provNote} — ${items.join('；')}${cut}`
+}
+
+/**
  * 三个后加的桶（缺字段 / 标签卫生 / 模板版本）的文案，同样只写一份：
  * `zk-kit lint` 与 `zk_lint` 各写一遍就会改到一半。返回空数组 = 这一库三项都没问题，不占行。
  */
 export function formatLintExtras(
-  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'persona' | 'similarTitles' | 'timeline' | 'indexHint' | 'missingId'> & { emptySections?: LintEmptySectionBucket },
+  r: Pick<LintResult, 'incomplete' | 'tags' | 'template' | 'persona' | 'similarTitles' | 'timeline' | 'indexHint' | 'missingId'> & {
+    emptySections?: LintEmptySectionBucket
+    bodyTags?: LintBodyTagBucket
+    index?: LintIndexBucket
+  },
 ): string[] {
   const lines: string[] = []
   const timeline = formatTimeline(r.timeline)
@@ -679,6 +842,27 @@ export function formatLintExtras(
       '｜正文自己起了 ## 小节，模板的内容槽（Content / Key claims / Quotes）空着；删掉那行空标题，或把正文并进那一节' +
       (emptySections.skipped > 0 ? `（另有 ${emptySections.skipped} 篇没读：文件过大或读不出来）` : '') +
       '（只报告，不改写）',
+    )
+  }
+  const bodyTags = r.bodyTags
+  if (bodyTags && bodyTags.notes > 0) {
+    const listed = bodyTags.items.slice(0, 5)
+    lines.push(
+      `✗ 正文重复标签：${bodyTags.notes} 篇 / ${bodyTags.paragraphs} 段 — ` +
+      listed.map((i) => `${i.path}（${i.paragraphs} 段）`).join('、') +
+      (bodyTags.notes > listed.length ? ' …' : '') +
+      '｜frontmatter 的 tags 已覆盖这些标签，正文那几行是第二份真相（zk 取并集：只改 frontmatter 不会让旧标签失效）；' +
+      'zk-kit tidy --fix 收掉（默认预演）' +
+      (bodyTags.skipped > 0 ? `（另有 ${bodyTags.skipped} 篇没读：文件过大或读不出来）` : ''),
+    )
+  }
+  if (bodyTags && bodyTags.driftNotes > 0) {
+    const listed = bodyTags.drift.slice(0, 3)
+    lines.push(
+      `⚠️ 正文标签不在 frontmatter：${bodyTags.driftNotes} 篇 — ` +
+      listed.map((i) => `${i.path}（${i.tags.map((t) => '#' + t).join(' ')}）`).join('、') +
+      (bodyTags.driftNotes > listed.length ? ' …' : '') +
+      '｜删段会丢标签、并集会复活旧词，只能人裁（只报告，不改写）',
     )
   }
   if (r.missingId > 0) {
@@ -731,12 +915,16 @@ export function formatLintExtras(
   if (r.tags.reported) {
     const cv = r.tags.caseVariants
     const sg = r.tags.singletons
+    // 单例给「最近的已有标签」：周审要的是可执行的合并候选，不是一串光秃秃的标签名
+    const sgSample = sg.items.slice(0, 5)
+      .map((i) => (i.suggest.length ? `${i.tag}→${i.suggest[0].tag}` : i.tag))
+      .join('、')
     lines.push(cv.total === 0
       ? `✓ 标签卫生：${r.tags.total} 个标签，没有大小写变体；单例 ${sg.total} 个` +
-        (sg.items.length ? `（${sg.items.slice(0, 5).join('、')}）` : '')
+        (sgSample ? `（${sgSample}）` : '')
       : `✗ 标签卫生：${cv.total} 组大小写变体 — ` +
         cv.items.slice(0, 3).map((g) => `${g.variants.join(' / ')}（${g.total}）`).join('；') +
-        `；单例 ${sg.total} 个`)
+        `；单例 ${sg.total} 个` + (sgSample ? `（${sgSample}）` : ''))
   }
   if (r.template.stale) {
     const t = r.template
@@ -766,6 +954,47 @@ export function formatLintExtras(
       lines.push(t.currentText.trimEnd())
       lines.push('--- 新版模板结束 ---')
     }
+  }
+  const wf = r.template.workflow
+  if (wf.stale) {
+    if (wf.detail) {
+      lines.push(
+        `⚠️ WORKFLOW.md 标记是 v${wf.version}，但正文与 v${wf.version} 不符（${wf.detail}）` +
+        '—— 疑似只改了版本号；按下面的新版合并后再改标记。',
+      )
+    } else if (wf.version > wf.current) {
+      lines.push(
+        `⚠️ WORKFLOW.md 的模板版本比插件新（v${wf.version} > 当前 v${wf.current}）—— ` +
+        '插件是旧的那个，别改文件去配它；升级插件后再看。这里不给旧模板，免得把规则改回去。',
+      )
+    } else {
+      const why = wf.legacyMark
+        ? '首行还是旧共用标记 `<!-- zdiary-template: vN -->`（v12 及更早两页共用一个号；现在是 zdiary-workflow v' + wf.current + '）'
+        : wf.version === 0 ? '没有版本标记（手写 / 旧版）' : `旧版模板 v${wf.version}（当前 v${wf.current}）`
+      lines.push(
+        `⚠️ WORKFLOW.md ${why} —— 只报告，不覆盖。` +
+        (wf.currentText
+          ? '新版全文如下：按需合并你在这一页自己加的规则，再把首行换成新版标记（只改数字不算升级）。'
+          : ''),
+      )
+    }
+    if (wf.currentText) {
+      lines.push('--- 新版 WORKFLOW 模板开始 ---')
+      lines.push(wf.currentText.trimEnd())
+      lines.push('--- 新版 WORKFLOW 模板结束 ---')
+    }
+  }
+  const index = r.index
+  if (index?.present && index.drifted) {
+    const claimed = index.claimedNotes === undefined ? '没有规模行' : `自称 ${index.claimedNotes} 篇非日记`
+    const date = index.claimedDate
+      ? `（最后更新 ${index.claimedDate}${index.ageDays === undefined ? '' : `，${index.ageDays} 天前`}）`
+      : ''
+    const gap = index.claimedNotes === undefined ? '' : `，实际 ${index.actualNotes} 篇（差 ${Math.abs(index.claimedNotes - index.actualNotes)}）`
+    lines.push(
+      `⚠️ INDEX.md 规模行过期：${claimed}${date}${gap}｜只报告：更新那一行或删掉规模声明，` +
+      '别让入口表变成第二份会过期的真相',
+    )
   }
   if (r.similarTitles.total > 0) {
     const sample = r.similarTitles.items.slice(0, 3)
@@ -892,7 +1121,12 @@ export function tagHygiene(notes: NoteRecord[], max = 20): LintTagBucket {
       return { variants: group, total: group.reduce((sum, tag) => sum + (counts.get(tag) ?? 0), 0) }
     })
     .sort((a, b) => b.total - a.total || a.variants[0].localeCompare(b.variants[0]))
-  const singletons = tags.filter((tag) => counts.get(tag) === 1).sort((a, b) => a.localeCompare(b))
+  // 已有词汇只拿「用过不止一次」的：单例之间的相似没有参考价值（两个都只写了一次）
+  const inventory = [...counts].filter(([, count]) => count > 1).map(([tag, count]) => ({ tag, count }))
+  const singletons = tags
+    .filter((tag) => counts.get(tag) === 1)
+    .sort((a, b) => a.localeCompare(b))
+    .map((tag) => ({ tag, suggest: similarTags(tag, inventory, 2) }))
   return {
     total: tags.length,
     reported: true,
@@ -978,6 +1212,42 @@ export function personaStatus(cfg: Config): LintPersonaBucket {
 }
 
 /**
+ * `INDEX.md` 规模行核对（纯解析，不跑 zk）：`规模：N 篇非日记` 与 `最后更新 YYYY-MM-DD`。
+ * 判据写死在这儿：偏差 > max(5, 10% 实际) 或日期 > 14 天 —— 与 `staleDays` 无关，
+ * 那是「笔记多久没改」，这是「索引多久没跟」。
+ */
+export function indexStatus(cfg: Config, nonDaily: NoteRecord[], now = new Date()): LintIndexBucket {
+  const actualNotes = nonDaily.length
+  let body = ''
+  try { body = fs.readFileSync(path.join(cfg.notebook, 'INDEX.md'), 'utf8') } catch {
+    return { present: false, actualNotes, drifted: false }
+  }
+  const scale = INDEX_SCALE_RE.exec(body)
+  const date = INDEX_DATE_RE.exec(body)
+  const claimedNotes = scale ? Number(scale[1]) : undefined
+  const claimedDate = date && isDayString(date[1] as string) ? (date[1] as string) : undefined
+  let ageDays: number | undefined
+  if (claimedDate) {
+    const [year, month, day] = claimedDate.split('-').map(Number)
+    const at = new Date(year as number, (month as number) - 1, day as number).getTime()
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+    ageDays = Math.max(0, Math.round((today - at) / 86_400_000))
+  }
+  const noteDrift = claimedNotes === undefined
+    ? false
+    : Math.abs(claimedNotes - actualNotes) > Math.max(INDEX_DRIFT_MIN, Math.ceil(actualNotes * INDEX_DRIFT_RATIO))
+  const dateDrift = ageDays !== undefined && ageDays > INDEX_STALE_DAYS
+  return {
+    present: true,
+    ...(claimedNotes === undefined ? {} : { claimedNotes }),
+    ...(claimedDate === undefined ? {} : { claimedDate }),
+    actualNotes,
+    ...(ageDays === undefined ? {} : { ageDays }),
+    drifted: noteDrift || dateDrift,
+  }
+}
+
+/**
  * 模板版本：模板是行为约定，不是静态文档 —— 它每轮注入，写错一句就是每轮都在执行错规则。
  * 但模板允许用户改，不能自动覆盖；版本标记把「过期」变成可发现状态，只报告。
  *
@@ -985,21 +1255,47 @@ export function personaStatus(cfg: Config): LintPersonaBucket {
  * 会让 lint 误以为已经合并完 —— 这种情况仍报，并给出当前模板全文。
  */
 export function templateStatus(cfg: Config): LintTemplateBucket {
+  const workflow = workflowStatus(cfg)
   let body = ''
   try { body = fs.readFileSync(path.join(cfg.notebook, 'AGENTS.md'), 'utf8') } catch {
-    return { present: false, version: 0, current: TEMPLATE_VERSION, stale: false }
+    return { present: false, version: 0, current: TEMPLATE_VERSION, stale: false, workflow }
   }
   const version = templateVersionOf(body)
   const mismatchDetail = version === TEMPLATE_VERSION
     ? sentinelIssue(body, TEMPLATE_SENTINELS[TEMPLATE_VERSION])
     : null
   const stale = version !== TEMPLATE_VERSION || mismatchDetail !== null
-  const base = { present: true, version, current: TEMPLATE_VERSION, stale }
+  const base = { present: true, version, current: TEMPLATE_VERSION, stale, workflow }
   const currentText = cfg.structure === 'flat' ? AGENTS_TEMPLATE_FLAT : AGENTS_TEMPLATE
   // 不 stale 时不要留下 currentText: undefined —— 宿主按无损 JSON 校验，undefined 会让整次调用 invalid；
   // 版本比插件新时也不给：那是插件该升级，不是用户该回退
   if (mismatchDetail !== null) return { ...base, mismatch: true, mismatchDetail, currentText }
   return version < TEMPLATE_VERSION ? { ...base, currentText } : base
+}
+
+/**
+ * WORKFLOW.md 的版本核对：与 AGENTS 分开（独立标记、独立哨兵）。
+ *
+ * 为什么必须分开查：v12 及更早的 WORKFLOW.md 首行与 AGENTS 共用 `zdiary-template: vN`，
+ * 而 lint 只读 AGENTS.md —— 真库里出现过「AGENTS 已升 v12、WORKFLOW 还写着 v11」而完全无人报。
+ * 缺文件不报：flat 库初始化就不写这一页。
+ */
+export function workflowStatus(cfg: Config): LintWorkflowBucket {
+  let body = ''
+  try { body = fs.readFileSync(path.join(cfg.notebook, 'WORKFLOW.md'), 'utf8') } catch {
+    return { present: false, version: 0, current: WORKFLOW_VERSION, stale: false }
+  }
+  const version = workflowVersionOf(body)
+  const mismatchDetail = version === WORKFLOW_VERSION
+    ? sentinelIssue(body, WORKFLOW_SENTINELS[WORKFLOW_VERSION])
+    : null
+  const stale = version !== WORKFLOW_VERSION || mismatchDetail !== null
+  const base = { present: true, version, current: WORKFLOW_VERSION, stale }
+  const legacy = version === 0 && WORKFLOW_LEGACY_MARK_RE.test(body)
+  const withLegacy = legacy ? { ...base, legacyMark: true } : base
+  if (mismatchDetail !== null) return { ...withLegacy, detail: mismatchDetail, currentText: WORKFLOW_TEMPLATE }
+  // 版本比插件新：插件该升级，别把旧模板递过去让它改回去
+  return version < WORKFLOW_VERSION ? { ...withLegacy, currentText: WORKFLOW_TEMPLATE } : withLegacy
 }
 
 /**
@@ -1036,6 +1332,54 @@ export function emptySectionStatus(
     items.push({ path: note.path, title: note.title, empty })
   }
   return { scanned, skipped, notes: items.length, total, truncated: items.length > max, items: items.slice(0, max) }
+}
+
+/**
+ * 正文重复标签：读正文，找出 frontmatter 已覆盖的纯标签段。
+ *
+ * 与 `zk-kit tidy` 共用 `body-tags.ts` 的判据（否则体检与修复会各说各话）。
+ * 日记不查：日记模板没有 `tags` 格，正文 hashtag 是自由写法；没有 `tags` 格的 flat 笔记也不查，
+ * 那里的正文标签是 zk 唯一的索引来源，删了就是丢标签。
+ */
+export function bodyTagStatus(
+  cfg: Config,
+  notes: NoteRecord[],
+  isDaily: (abs: string) => boolean,
+  max = MAX_ITEMS,
+): LintBodyTagBucket {
+  let scanned = 0
+  let skipped = 0
+  let paragraphs = 0
+  const items: LintBodyTagEntry[] = []
+  const drift: LintBodyTagDrift[] = []
+  for (const note of notes) {
+    const abs = note.absPath ? path.resolve(note.absPath) : path.resolve(cfg.notebook, note.path)
+    if (isDaily(abs)) continue
+    let body = ''
+    try {
+      if (fs.statSync(abs).size > EMPTY_SECTION_MAX_BYTES) { skipped += 1; continue }
+      body = fs.readFileSync(abs, 'utf8')
+    } catch { skipped += 1; continue }
+    scanned += 1
+    const cleanup = tagCleanup(body)
+    if (!cleanup) continue
+    if (!cleanup.removable) {
+      drift.push({ path: note.path, title: note.title, tags: cleanup.drift })
+      continue
+    }
+    paragraphs += cleanup.paragraphs.length
+    items.push({ path: note.path, title: note.title, paragraphs: cleanup.paragraphs.length, tags: cleanup.tags })
+  }
+  return {
+    scanned,
+    skipped,
+    notes: items.length,
+    paragraphs,
+    driftNotes: drift.length,
+    truncated: items.length > max || drift.length > max,
+    items: items.slice(0, max),
+    drift: drift.slice(0, max),
+  }
 }
 
 /**
@@ -1285,9 +1629,20 @@ export async function lintNotebook(
   }
 
   const linksOnly = opts.linksOnly === true
+  const includeProvenance = opts.includeProvenance === true
+  const oneWayMax = Math.min(500, Math.max(1, Math.trunc(opts.oneWayMax ?? MAX_ITEMS)))
+  /** 出处链：concept 与 source 之间的跨类型边（同类型不算，pattern / entity 也不算） */
+  const provenanceOf = (fromPath: string, toPath: string): boolean => {
+    const from = byPath.get(fromPath)?.type
+    const to = byPath.get(toPath)?.type
+    return (from === 'concept' ? to === 'source' : from === 'source' ? to === 'concept' : false)
+  }
   const oneWayItems: LintOneWayEntry[] = []
+  const typeCounts = new Map<string, LintOneWayTypeCount>()
   let oneWayEdges = 0
   let bodyOnly = 0
+  let provenanceEdges = 0
+  let provenanceTargets = 0
   for (const row of oneWayRows) {
     // 目标也不报日记：普通笔记链到日记（"今天做了 X"）同样是正常引用方向，
     // 要求日记回链每篇被提到的笔记，跟要求笔记回链日记是同一个问题。
@@ -1305,23 +1660,26 @@ export async function lintNotebook(
     // bodyOnly 始终统计全部正文边：linksOnly 时它们被隐藏，但要让调用方知道有多少
     bodyOnly += body.length
     if (linksOnly && links.length === 0) continue
-    if (linksOnly) {
-      oneWayEdges += links.length
-      oneWayItems.push({
-        title: target.title,
-        path: target.path,
-        from: links,
-        where: 'links',
-      })
-    } else {
-      oneWayEdges += all.length
-      oneWayItems.push({
-        title: target.title,
-        path: target.path,
-        from: all,
-        where: links.length === 0 ? 'body' : body.length === 0 ? 'links' : 'mixed',
-      })
+    const counted = linksOnly ? links : all
+    const provenance = counted.filter((s) => provenanceOf(s, row.target))
+    const actionable = counted.filter((s) => !provenanceOf(s, row.target))
+    for (const source of counted) {
+      const key = `${byPath.get(source)?.type || '-'}→${target.type || '-'}`
+      const rowCount = typeCounts.get(key) ?? { from: byPath.get(source)?.type || '-', to: target.type || '-', edges: 0 }
+      rowCount.edges += 1
+      typeCounts.set(key, rowCount)
     }
+    provenanceEdges += provenance.length
+    if (provenance.length > 0 && actionable.length === 0) provenanceTargets += 1
+    const from = includeProvenance ? counted : actionable
+    if (from.length === 0) continue
+    oneWayEdges += from.length
+    oneWayItems.push({
+      title: target.title,
+      path: target.path,
+      from,
+      where: linksOnly ? 'links' : links.length === 0 ? 'body' : body.length === 0 ? 'links' : 'mixed',
+    })
   }
   oneWayItems.sort((a, b) => a.path.localeCompare(b.path))
   const oneWayBucket: LintOneWayBucket = {
@@ -1329,9 +1687,13 @@ export async function lintNotebook(
     edges: oneWayEdges,
     bodyOnly,
     linksOnly,
+    provenance: { targets: provenanceTargets, edges: provenanceEdges },
+    includeProvenance,
+    byType: [...typeCounts.values()].sort((a, b) => b.edges - a.edges || a.from.localeCompare(b.from) || a.to.localeCompare(b.to)),
     edgesTruncated: oneWayTruncated,
+    itemsTruncated: oneWayItems.length > oneWayMax,
     completeness: oneWayCompleteness,
-    items: oneWayItems.slice(0, MAX_ITEMS),
+    items: oneWayItems.slice(0, oneWayMax),
   }
 
   const parseErrors = parseErrorWarnings(cfg, warnings)
@@ -1383,8 +1745,10 @@ export async function lintNotebook(
     // 模板空壳（`## Content` 空着、正文写在别的 `##` 下）：读正文的桶，只对非日记笔记；
     // 上限 / 跳过的计数照实给出，别把「没读」当成「没有」
     emptySections: emptySectionStatus(cfg, notes, isDaily),
+    bodyTags: bodyTagStatus(cfg, notes, isDaily),
     // 150 篇（不含日记）是检索开始变糊的拐点：提示一下，不生成静态索引（会过期，还要决定谁更新）
     indexHint: nonDaily.length >= 150 && !fs.existsSync(path.join(cfg.notebook, 'INDEX.md')),
+    index: indexStatus(cfg, nonDaily, now),
     // 放在最后算：前面的读命令已经把 pending 的 dirty 补掉了，剩下的是「补不上 / 外部编辑」
     indexLag: indexLagHint(cfg) ?? '',
   }

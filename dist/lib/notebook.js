@@ -15,7 +15,7 @@ import { assertNotArchiveCreate, indexPolicy, ZkError, zk } from './zk.js';
 import { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.js';
 import { PERSONA_TEMPLATE } from './persona-template.js';
 import { effectivePaths, isPluginOwned, normGroupPath, parseGroupBlocks, sameGroupPath, samePaths } from './notebook-config.js';
-export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE } from './agents-template.js';
+export { AGENTS_TEMPLATE, AGENTS_TEMPLATE_FLAT, WORKFLOW_TEMPLATE, WORKFLOW_VERSION } from './agents-template.js';
 export const DAILY_TEMPLATE = `# {{format-date now "%Y-%m-%d"}}
 
 {{content}}

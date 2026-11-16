@@ -114,3 +114,66 @@ export function similarCandidates(
   out.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
   return out.slice(0, max)
 }
+
+/**
+ * 标签近义：写路径提示（`zk_new`）与周审「单例标签」共用同一份判定。
+ *
+ * 为什么不能直接复用标题那套：标题相似度的下限是 4 码点（避开「RAG / RAG 2」这种噪声），
+ * 而标签本来就短（`版本` / `记忆` 是 2 码点）；拿 4 码点去卡，等于把最该并的那批全放过。
+ *
+ * 只判三种**确定可判**的形态，不做词形还原、不做跨语言、不猜语义：
+ *   · 只差大小写（`Agent` / `agent`）；
+ *   · 短串被长串包含，短串 ≥ 2 码点（`版本` ⊂ `版本管理`、`记忆` ⊂ `AI记忆`）；
+ *   · 字符二元组 Jaccard ≥ 0.6，两串都 ≥ 2 码点（`编排` / `编排器` 之外的近似写法）。
+ */
+export interface TagHit {
+  tag: string
+  /** 库里有多少篇用了它 */
+  count: number
+  /** case = 只差大小写（同一件事的两种写法）；similar = 包含或字符相近 */
+  kind: 'case' | 'similar'
+}
+
+/** 标签的比较形态：NFKC → 小写 → 去首尾空白。不抹标点：`C++` 与 `C#` 是两件事 */
+function tagKey(tag: string): string {
+  return String(tag ?? '').normalize('NFKC').toLowerCase().trim()
+}
+
+/**
+ * 与 `tag` 近义的已有标签，最多 `max` 条：大小写变体优先，其次按使用篇数降序。
+ * `inventory` 由调用方给（写路径用建笔记前的全库快照，lint 用频次表），这里不读盘。
+ */
+export function similarTags(
+  tag: string,
+  inventory: Iterable<{ tag: string; count: number }>,
+  max = 3,
+): TagHit[] {
+  const key = tagKey(tag)
+  if (!key) return []
+  const grams = bigrams(key)
+  const out: TagHit[] = []
+  for (const item of inventory) {
+    if (item.tag === tag) continue
+    const other = tagKey(item.tag)
+    if (!other) continue
+    let kind: TagHit['kind'] | null = null
+    if (other === key) kind = 'case'
+    else {
+      // 长度按码点算（不混用 UTF-16 length），与 similarKeyOf 同一口径
+      const keySize = [...key].length
+      const otherSize = [...other].length
+      const [short, long, shortSize] = keySize <= otherSize ? [key, other, keySize] : [other, key, otherSize]
+      if (shortSize >= 2 && long.includes(short)) kind = 'similar'
+      else if (keySize >= 2 && otherSize >= 2) {
+        const otherGrams = bigrams(other)
+        if (jaccard(grams, otherGrams) >= SIMILAR_RATIO) kind = 'similar'
+      }
+    }
+    if (kind) out.push({ tag: item.tag, count: item.count, kind })
+  }
+  out.sort((a, b) =>
+    (a.kind === b.kind ? 0 : a.kind === 'case' ? -1 : 1) ||
+    b.count - a.count ||
+    a.tag.localeCompare(b.tag))
+  return out.slice(0, max)
+}

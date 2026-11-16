@@ -14,9 +14,9 @@ import { BIN_DIR } from '../config/paths.js';
 import { ExecError, findOnPath, run } from './exec.js';
 import { readJson, writeJson } from './json-file.js';
 import { withFileLockSync } from './lock.js';
-import { parseFrontmatter, setFrontmatter } from './frontmatter.js';
+import { parseFrontmatter, placeTags, setFrontmatter } from './frontmatter.js';
 import { isMetaPath, META_NAMES } from './meta.js';
-import { similarCandidates } from './similar.js';
+import { similarCandidates, similarTags } from './similar.js';
 import { linkContextOf } from './edge-context.js';
 import { fenceMask } from './fence.js';
 import { emptyTemplateSlots } from './sections.js';
@@ -1719,6 +1719,10 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
     if (clash) {
         throw new ZkError(`同名笔记已存在：${dir === '.' ? '' : dir + '/'}${clash}`, '换一个 name，或直接用 read / edit 改那一篇');
     }
+    // 标签先进正文（模板的 `{{content}}` 位置是对的），建完再决定要不要搬进 frontmatter：
+    // 只有这样才能同时照顾「模板有 tags 格」（layered）与「只有正文 hashtag 可索引」（flat）。
+    const inputTags = [...new Set((input.tags ?? []).map((t) => String(t).trim().replace(/^#+/, '')).filter(Boolean))];
+    const injected = inputTags.length ? withTagsDetailed(input.content ?? '', inputTags) : { content: input.content ?? '', appended: null };
     const args = ['new', dirAbs, '-t', title, '-i', '-p'];
     if (input.group)
         args.push('-g', input.group);
@@ -1727,7 +1731,7 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
         args.push('--extra', `type=${input.type}`);
     if (input.authority)
         args.push('--extra', `authority=${input.authority}`);
-    const stdout = await zk(cfg, args, { signal, input: input.content ?? '' });
+    const stdout = await zk(cfg, args, { signal, input: injected.content });
     const last = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
     if (!last)
         throw new ZkError('zk new 没有返回笔记路径');
@@ -1791,11 +1795,15 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
     }
     // 稳定 ID：只给 zk_new 新建的笔记写 id，老笔记 / 日记不回填。
     // 建完才写：zk new -i 索引的是模板产物，改了文件就得标脏，让下一次读补索引（R6）。
-    // 收尾失败一律吞掉（同 markIndexDirty）：笔记已经建好，不能让一次 id 写入看起来像整次创建失败。
+    // 标签落点也在这一趟里定：模板有 `tags` 格就并进那一格（并撤掉刚追加的正文行），否则留在正文。
+    // 收尾失败一律吞掉（同 markIndexDirty）：笔记已经建好，不能让一次收尾写入看起来像整次创建失败。
     try {
         const text = fs.readFileSync(finalAbs, 'utf8');
-        if (!parseFrontmatter(text).fields.id) {
-            fs.writeFileSync(finalAbs, setFrontmatter(text, { id: newNoteId() }), 'utf8');
+        let next = placeTags(text, inputTags, injected.appended);
+        if (!parseFrontmatter(next).fields.id)
+            next = setFrontmatter(next, { id: newNoteId() });
+        if (next !== text) {
+            fs.writeFileSync(finalAbs, next, 'utf8');
             markIndexDirty(cfg);
         }
     }
@@ -1807,12 +1815,26 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
         emptyTemplateSections = emptyTemplateSlots(fs.readFileSync(finalAbs, 'utf8')).map((slot) => slot.heading);
     }
     catch { /* 收尾失败：文件已落盘，不回滚 */ }
+    // 近义标签：只用建之前那份快照（建完再扫一遍等于多起一个进程），归档里的旧词汇不算
+    let tagHints = [];
+    if (inputTags.length && snapshot) {
+        const counts = new Map();
+        for (const note of snapshot) {
+            if (inArchive(cfg, note.path))
+                continue;
+            for (const tag of note.tags)
+                counts.set(tag, (counts.get(tag) ?? 0) + 1);
+        }
+        const inventory = [...counts].map(([tag, count]) => ({ tag, count }));
+        tagHints = inputTags.flatMap((input) => similarTags(input, inventory, 2).map((hit) => ({ ...hit, input })));
+    }
     return {
         path: relPathOf(cfg, finalAbs),
         absPath: finalAbs,
         title,
         archived,
         similar,
+        tagHints,
         summaryApplied,
         summaryWarning,
         emptyTemplateSections,
@@ -2579,16 +2601,25 @@ function hasHashtag(body, tag) {
     const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`(^|[^\\p{L}\\p{N}_-])#${escaped}(?![\\p{L}\\p{N}_-])`, 'u').test(body);
 }
-export function withTags(content, tags) {
+/**
+ * 正文标签：返回追加后的正文与**实际追加的那一行**。
+ *
+ * 为什么要返回那一行：建完笔记后如果模板有 frontmatter `tags` 格，标签要搬进那一格，
+ * 刚追加的正文行必须精确撤掉（只撤我们自己写的那行，用户正文里的标签行一个字不动）。
+ */
+export function withTagsDetailed(content, tags) {
     const body = String(content ?? '').replace(/\s+$/, '');
     if (!tags.length)
-        return body;
+        return { content: body, appended: null };
     // 正文里已经写过的标签跳过：以前正文写了 #tag、入参又给 tags，末尾会多出一行一模一样的
     const missing = tags.filter((tag) => !hasHashtag(body, tag));
     if (!missing.length)
-        return body;
+        return { content: body, appended: null };
     const line = missing.map((t) => `#${t}`).join(' ');
-    return body ? `${body}\n\n${line}` : line;
+    return { content: body ? `${body}\n\n${line}` : line, appended: line };
+}
+export function withTags(content, tags) {
+    return withTagsDetailed(content, tags).content;
 }
 /**
  * 中文笔记没打标签的提示：写路径是唯一便宜的修复点。

@@ -25,8 +25,11 @@
 或代码里 `ensureNotebook(cfg, signal, { withAgents: true })`；已存在的文件一律不覆盖。
 `flat` 用精简版 `AGENTS_TEMPLATE_FLAT`（实测 82 词，锁 ≤90）：不出现 `raw/` / `archive/` / `WORKFLOW.md`。
 `layered` 用完整版 `AGENTS_TEMPLATE`（实测 157 词，锁 ≤190）—— 它属于注入预算且**永不截断**，
-写长了 USER / MEMORY 就没位置。两份模板首行都有 `<!-- zdiary-template: vN -->`（`TEMPLATE_MARK`），
+写长了 USER / MEMORY 就没位置。两份 AGENTS 模板首行是 `<!-- zdiary-template: vN -->`（`TEMPLATE_MARK`），
 `zk_lint` 据此报告老库的模板是否过期（只报告、不覆盖）。
+`WORKFLOW.md`（只在 layered 写）有**自己的**标记 `<!-- zdiary-workflow: vN -->`（`WORKFLOW_VERSION` / `WORKFLOW_MARK`）：
+两页各改各的，共用一个号会让「AGENTS 升版、WORKFLOW 没变」被误标旧版，也会让只升 AGENTS 的人根本想不到它。
+v12 及更早的 `WORKFLOW.md` 首行还是共用的 `zdiary-template` 标记，`zk_lint` 按 `legacyMark` 报出来。
 `entry.md` 由 concept / entity / pattern 共用，`type` 与 `authority` 走 `[group.X.extra]` 注入；
 所有模板必须含 `{{content}}`，否则 stdin 的正文会被丢。
 

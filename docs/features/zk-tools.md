@@ -93,8 +93,12 @@ layered 的落点必须在某个 group 里：`zk_new` 不给 `dir` 就按 `type`
 group 的子目录照旧放行（zk 按路径前缀归组）。理由：`notes/` 根不属于任何 group，zk 会退回内置模板 ——
 没有 frontmatter、文件名是随机 `{{id}}`，以前会静默建出来，只有回头看路径才发现。
 校验用的是 `layeredGroups()` 这份唯一真相，所以 `journal/`（日记 group）也在白名单里。
-`tags` 只追加正文里还没出现过的 `#tag`：正文自己写了一行标签、入参又给一遍时，以前末尾会多出一行一模一样的；
-边界按标签字符判断，`#素材库` 不会挡住 `#素材`。
+`tags` 的落点只有一份（P0）：模板有 frontmatter `tags` 格就并进那一格，没有这一格才追加正文 `#tag` 行。
+layered 的 `entry.md` / `source.md` 天生带 `tags: []` —— 以前工具无论模板长什么样都只往正文追加，那一格永远是空的，
+建完还得人再补一次 frontmatter，标签于是有两份真相（真库 231 篇全是这个形状）。zk 本身**也索引 frontmatter 标签**
+（`zk list --tag` 对 `tags: [落点, C++]` 与正文 `#落点` 一样命中，带空格 / 标点的会加双引号），所以这不是降级。
+收尾时只撤**我们自己追加的那一行**：正文里用户手写的 `#标签` 一个字都不动；正文已经写过同一个标签时也不重复追加
+（边界按标签字符判断，`#素材库` 不会挡住 `#素材`）。flat / 自定义模板没这一格，行为与以前逐字相同。
 `summary` 写进模板的 `## Summary`：这一节模板里天生是空的，而 `{{content}}` 落在 `## Content` 下面 —— 不给 `summary`，
 它没有任何写入路径能填。flat / 自定义模板没有这一节时，在一级标题下面补一节；正文里自己写了 Summary 就不覆盖，
 一个字都不改，返回 `summaryApplied: false` 和 `summaryWarning`（工具层与 CLI 都据此告警）。
@@ -110,6 +114,12 @@ group 的子目录照旧放行（zk 按路径前缀归组）。理由：`notes/`
 代价不在搜索：中文查询已并上子串匹配，正文照样搜得到；问题在标签是唯一能确定性筛选的维度（`zk_query -t`、
 `byTag` 分布都用不上它）。
 只提示、不阻断、不自动打标签：索引页与临时对照本来就不需要标签，自动生成的标签只是新的噪音。
+`tagHints`（P0）：入参标签与库里已有标签**只差大小写**（`Agent` / `agent`），或**互为包含且短串 ≥ 2 码点**
+（`版本` ⊂ `版本管理`、`记忆` ⊂ `AI记忆`），或字符二元组 Jaccard ≥ 0.6 时，回一条
+`{input, tag, count, kind: 'case' | 'similar'}`：`input` 是这次写的，`tag` 是库里已有的那个。
+「新标签」本身不报 —— 写新主题是正常写作，只有确定可判的近义才值得一条告警（真库 122 个标签里 11 个单例，
+大半是合法的新主题）。候选只用建笔记前那份全库快照（不额外起 zk 进程），归档里的旧词汇不算。
+判定在 `lib/similar.ts` 的 `similarTags()`，与 `zk_lint` 的单例建议共用同一份 —— 两边各写一套就会给出不同答案。
 `zk_append` 拒写根目录的 meta 文件（AGENTS / USER / MEMORY / DREAMS / INDEX / WORKFLOW，清单来自 `lib/meta.ts`）：追加会把记忆变成流水账，
 也让「这条记忆是谁改的」失去审计线索；子目录里的同名文件是普通笔记，照常可写。
 同一道守卫也覆盖 `zk_new`（不能新建根目录 meta）、`zk_link`（meta 不能作为来源或目标）与 `zk_supersede`（不能废弃 meta，否则会把它搬进 archive/）。
@@ -125,6 +135,11 @@ flat 在 `newNoteDir` 就拦、layered / 直接调用 `createNote` 在 `mkdir` �
 （顶层目录 → 篇数，根目录文件记作 `.`；标签取前 10）：静态 `INDEX.md` 会过期，还要决定谁负责更新，
 而 150 篇正是检索开始变糊的拐点 —— 所以 `zk_lint` 只在「≥150 篇且没有 INDEX.md」时提示一句，不生成文件。
 篇数**不含日记**：日记按天自动增长，一年就能把任何库顶到 150 篇，而知识量并没有涨。
+**但「文件存在」不等于「内容还准」**（P1）：`INDEX.md` 自称「150 篇非日记 / 最后更新 11-12」、实际 231 篇时，
+没有一项会响 —— 手工维护的索引就这样安静地落后了 81 篇。所以 `zk_lint.index` 只核对它的两个数：
+规模行里的非日记篇数（`claimedNotes`）与「最后更新」的日期（`claimedDate` / `ageDays`），
+偏差 > max(5, 实际 10%) 或日期 > 14 天时 `drifted: true`，文案点名「更新那一行或删掉规模声明」。
+仍然**不生成、不改写**：入口表是要人维护的判断，插件的活是把「已经不准了」变成可发现的状态。
 `zk_supersede` 默认 `dry_run: true`：一句「更新一下 wiki」不该让全库漂移。
 `reason` 会做单行规范化（≤200 字）并以 YAML 双引号标量写进归档的 `supersede-reason`：带冒号或引号也不会写坏
 frontmatter；预演也回显，重放返回已记录的原因。双引号值读回来走 JSON 解析（`\"`、`\n` 还原成原字符），
@@ -223,10 +238,19 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 不用 zk 的 `--missing-backlink`：它的原义是「至少有一条单向链接」，日记天然是一串出边，
 日记提过的每篇笔记都会常年挂在桶里 —— 那不是「没接上」，是正常的引用方向，桶就再也清零不了。
 普通笔记链到日记（"今天做了 X"）同理，不要求日记回链。
-`oneWayLinks.items` 是缺回链的目标 X（不是来源），`from` 是没被 X 回链的来源 S；`edges` 是全部单向边数（`items` 截到 50 条时仍计全量），
+`oneWayLinks.items` 是缺回链的目标 X（不是来源），`from` 是没被 X 回链的来源 S；`edges` 是全部单向边数（`items` 被 `oneWayMax` 截断时仍计全量），
 `where` / `bodyOnly` 标出其中来自正文引用（不在 `## Links` / `## 链接` 小节）的部分 —— 正文引用天然常单向，
 单独计数，方便判断该不该补回链。`zk_lint(links_only=true)` / `zk-kit lint --links-only` 只列 Links 小节的单向边，
 正文引用只进 `bodyOnly`；默认 `false`，仍然全报。
+
+**出处链单列**（P1）：来源 → 结论（或结论 → 来源）的**跨类型**边记进 `provenance`（`targets` / `edges`），
+默认只计数、不逐条列 —— 它的方向是有意的：来源是证据、结论是判断，要求结论回链每篇来源，
+每页 Links 就变成一张互指清单。真库 11-01 / 11-05 / 11-08 三次裁决「保持有向」，而它一直是单向链接里最大的一类，
+每周重报同一批已裁过的边等于把复核预算税掉。`include_provenance: true`（CLI `--include-provenance`）才列；
+`byType` 给出「来源类型 → 目标类型」的边数（降序；`links_only` 时只算 Links 小节的边），用来判断哪一类真的值得动。
+`total` / `edges` 只算**人要看的那部分**，与 `provenance` 相加才是全量。
+`one_way_max`（CLI `--max`，1–500，默认 50）单独调清单上限；被截断时 `itemsTruncated: true`，文案里点名
+「加 one_way_max / --max 看全」—— 以前硬顶 50 且没有出口，真库那次只能把清单手抄到库外文件里。
 `parseErrors` 单列一类：frontmatter 写坏（典型是 `tags: [#你好世界]` —— YAML 里 `#` 不是 tag 前缀，要写 `tags: ["你好世界"]`）
 时 zk 以 exit 0 跳过那篇、只往 stderr 打一行 `error parsing note content`，于是它不在索引里 ——
 搜不到，也不会出现在上面任何一个桶里（表现成邻居突然孤儿 / 断链）。`zk()` 收 exit 0 的 stderr warning，
@@ -252,17 +276,31 @@ flat（没有 `## Events`）要求 `## HH:MM`，顺序检查跨全文。时间�
 同一份条目解析还数 `undated`（首行没有真校验过的 `YYYY-MM-DD`，退役行不计）、`retired`（`- [superseded …]` 条目数）
 与 `retiredBroken`（退役行的 `→ [[新结论]]` 解析不到活笔记），以及 `stale`（有日期且超过 `stale_days`，默认 90 天未复核）——
 都只报告；注入从 0.9 起省略退役条目（notice 说明省略数），文件本身不动。条目切分与日期解析统一走 `lib/memory-format`。
-文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()`（缺字段 / 标签卫生 / 模板版本 / 疑似重复 / 时间轴 / 空模板小节 / INDEX 提示）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
+文案由 `lib/lint` 的 `formatMemoryLinks()` / `formatLintExtras()` / `formatOneWay()`（缺字段 / 标签卫生 / 正文重复标签 / 模板版本（含 WORKFLOW）/ 疑似重复 / 时间轴 / 空模板小节 / INDEX 提示与规模行漂移）统一生成，`zk_lint` 与 `zk-kit lint` 共用一份 —— 两处各写一遍，下次改措辞只会改到一半。
 `incomplete`：`type` / `status` / `authority` 缺任一的笔记（**只在 layered 下查**：flat 的笔记
 本来就不写这三个字段，整库标红不是「可发现的状态」而是噪音）。索引把缺失落成空串，
 于是「没写 authority」=「authority 正常」，dream 的 informal 门对它们静默失效。
 只能逐篇读 frontmatter（索引里区分不出「没写」与「空值」）；护栏是只读 live 且非日记，扫描触顶时置 `truncated`。
 `tags`：标签总数 ≥ 30 才报；`caseVariants` 是忽略大小写后同形的组（`#Agent` 3 篇 + `#agent` 2 篇 → 一组、总 5），
-`singletons` 是只出现一次的那批。只报告，不合并 —— 在别的库里它们可能就是两个概念。
+`singletons` 是只出现一次的那批，每项是 `{tag, suggest}`：`suggest` 给出已有的近义标签（`similarTags()`，
+只拿用过 ≥ 2 次的词做参照），周审拿到的就是「地图→地图集」这样的合并候选，而不是一串光秃秃的名字。
+只报告，不合并 —— 在别的库里它们可能就是两个概念。
+`bodyTags`：正文里的纯标签段（整段只有 `#tag`）。写路径从 3.x 起只写 frontmatter `tags`（`placeTags`），
+新笔记不再产生第二份；但旧版本 / 手工写入的笔记还留着正文那行，zk 把两处取并集 ——
+只改 frontmatter 不会让旧标签失效，删掉的标签还能被 `--tag` 命中，人读正文却对不上。
+判据在 `lib/body-tags`：整行 hashtag、跳过围栏与正文第一处内容（`#标题` 与标签行同形）；
+**只有 frontmatter 有可解析的 `tags` 格才判**（没有这一格的 flat 笔记，正文标签是 zk 唯一的索引来源，不看也不报）。
+`items` 是正文标签 ⊆ frontmatter、可安全删的篇（`notes` / `paragraphs` 计全量，`items` 截前 50）；
+`drift` 是正文有、frontmatter 没有的标签 —— 删了会丢、并集会复活旧词，只报不动，人裁。
+只报告；显式修复走 `zk-kit tidy`（默认预演，`--fix` 才删段并收掉多余空行，幂等，跳过日记 / raw / archive / meta）。
 `template`：读根目录 `AGENTS.md` 首行的 `<!-- zdiary-template: vN -->`；无标记按 v0 算，
 与 `TEMPLATE_VERSION` 不等时提示，并把当前结构对应的模板全文放进 `currentText`。只报告，不覆盖（模板允许用户改）。
 `version < current` 才给全文；`version > current`（插件被降级过）只报「模板比插件新」，不给旧模板 —— 否则 agent 会照旧版合并、把标记改回去。
 `version === current` 时再查正文哨兵（`TEMPLATE_SENTINELS`）：正文还留着当前版本删掉的句子 → `mismatch`，仍给全文，提示「疑似只改了版本号」。
+`template.workflow` 单独核对 `WORKFLOW.md`（P1）：它有自己的标记 `<!-- zdiary-workflow: vN -->` 与版本号
+`WORKFLOW_VERSION`，不再跟着 `TEMPLATE_VERSION` 走 —— 两页各改各的，共用一个号时「AGENTS 升 v12、WORKFLOW 内容没变」
+也会被标旧，反过来只升 AGENTS 的人干脆不会想到动它（真库就这样停在共用标记 v11，而 lint 只读 AGENTS.md，没人报）。
+`legacyMark: true` 表示首行还是旧的 `zdiary-template` 标记；`detail` 是哨兵不符的原因；缺文件 = 未启用（flat 不写这一页），不报。
 老库的 `AGENTS.md` 停在旧版本时，下次 `zk_lint` 会给出「旧版模板」+ 新模板全文 —— 这是有意的：
 它每轮注入，停在旧规则上就会一直按旧约定落笔；而插件安装后 docs 在包内、工作区外读不到，不能只给相对路径。
 `zk_dream` 的拒绝规则只有两条（`authority=informal`、无标签），日记不进候选/拒绝（它的未完成项单独一栏）：
