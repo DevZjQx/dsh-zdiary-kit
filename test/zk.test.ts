@@ -3589,6 +3589,106 @@ describe('只读视图', () => {
       fs.rmSync(path.join(home, 'readonly-empty'), { recursive: true, force: true })
     }
   })
+
+  test('结构可读：type / status 徽标、标签页过滤、归档旧结论可见、详情页出链', async () => {
+    const paths = await import('../src/config/paths.ts')
+    const before = fs.readFileSync(paths.CFG_FILE, 'utf8')
+    const nb = path.join(home, 'readonly-notebook-3')
+    const routes = new Map<string, (req: never, res: never) => unknown>()
+    readonlyFeature.registerReadOnly({ route: (p, h) => routes.set(p, h) })
+    const call = async (pathname: string, req: Record<string, unknown>): Promise<FakeRes> => {
+      const handler = routes.get(pathname)
+      expect(handler).toBeTruthy()
+      const res = makeRes()
+      await handler!(req as never, res as never)
+      return res
+    }
+
+    try {
+      store.writeConfig({ notebooks: { default: { path: nb, structure: 'layered' } }, zkPath: zkBin, notesDir: 'notes', dailyDir: 'journal', defaultTags: [] })
+      const cfg = store.config()
+      await notebookLib.ensureNotebook(cfg)
+      // 真起 zk 建一篇来源 + 一篇结论：supersede 把来源搬进 archive/，结论链向它
+      const source = await zk.createNote(cfg, { title: '旧来源', content: '旧来源正文 #样板', dir: 'notes/sources', type: 'source' })
+      const concept = await zk.createNote(cfg, { title: '新结论', content: '新结论正文 [[旧来源]] #样板', dir: 'notes/concepts', type: 'concept' })
+      await zk.linkNotes(cfg, concept.path, source.path)
+      await zk.supersedeNote(cfg, { path: source.path, by: concept.path, reason: '有新结论', dryRun: false })
+      const archivedRel = 'archive/notes/sources/' + path.basename(source.path)
+      // 固定 mtime 再重建索引：created 是日期粒度（两篇同一天就恒等），拿它断言「排序生效」恒真；
+      // modified 才是 --sort 真正吃的键。让归档那篇更新，看它会不会被排到前面。
+      const at = (second: number): Date => new Date(Date.UTC(2026, 0, 1, 0, 0, second))
+      fs.utimesSync(path.join(nb, concept.path), at(10), at(10))
+      fs.utimesSync(path.join(nb, archivedRel), at(20), at(20))
+      await zk.indexNotebook(cfg)
+
+      // scanNotes：归档默认被排除口径吞掉；includeArchived 才回得来（与 zk_search 的 include_archived 同一口径）
+      const plain = await zk.scanNotes(cfg, {})
+      expect(plain.notes.map((n) => n.path)).not.toContain(archivedRel)
+      const withArchive = await zk.scanNotes(cfg, { includeArchived: true })
+      expect(withArchive.notes.map((n) => n.path)).toContain(archivedRel)
+      expect(withArchive.notes.find((n) => n.path === archivedRel)?.status).toBe('superseded')
+
+      // scanNotes：sort 交给 zk（SORT_TERMS 里的值），modified-desc 确实把最新的排前面 ——
+      // 归档那篇 mtime 更新，就该排在活结论前面（默认序里它是后面的）。
+      const sorted = await zk.scanNotes(cfg, { sort: 'modified-desc', includeArchived: true })
+      expect(sorted.notes.map((n) => n.path)).toEqual([archivedRel, concept.path])
+
+      const view = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view'))
+      expect(view.statusCode).toBe(200)
+      // 首页连归档一起扫：旧结论重新可见，且带 superseded 徽标
+      expect(view.body).toContain('已归档（superseded）')
+      expect(view.body).toContain('badge superseded')
+      expect(view.body).toContain('旧来源')
+      // 归档不混进「最近更新」：活结论在前，归档在自己的小节里
+      const recent = view.body.slice(view.body.indexOf('<h2>最近更新</h2>'), view.body.indexOf('<h2>已归档'))
+      expect(recent).toContain('新结论')
+      expect(recent).not.toContain('旧来源')
+      expect(recent).toContain('class="type"')
+      expect(recent).toContain('concept')
+
+      // 标签页 / 标签过滤：纯 GET 查询串，无 JS
+      const byStatus = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=tags&status=superseded'))
+      expect(byStatus.body).toContain('旧来源')
+      expect(byStatus.body).not.toContain('新结论')
+      const byType = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=tags&type=concept'))
+      expect(byType.body).toContain('新结论')
+      expect(byType.body).not.toContain('旧来源')
+
+      // 标签页列出归档旧结论（includeArchived：agent 查得回，人也看得见）
+      const tag = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=tag&tag=' + encodeURIComponent('样板')))
+      expect(tag.body).toContain('旧来源')
+      expect(tag.body).toContain('badge superseded')
+
+      // 详情页：出链一节（反链一直有，出链原来只在 zk_walk 里）
+      const conceptPage = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=note&path=' + encodeURIComponent(concept.path)))
+      expect(conceptPage.statusCode).toBe(200)
+      expect(conceptPage.body).toContain('<h2>出链</h2>')
+      expect(conceptPage.body).toContain(encodeURIComponent(archivedRel))
+      expect(conceptPage.body).toContain('badge superseded')
+
+      // 归档页：能打开、指出被谁取代、反链不因归档消失
+      const archivedPage = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=note&path=' + encodeURIComponent(archivedRel)))
+      expect(archivedPage.statusCode).toBe(200)
+      expect(archivedPage.body).toContain('取代')
+      expect(archivedPage.body).toContain('新结论')
+
+      // RSS 与首页「最近更新」同一份口径：归档旧结论不进 feed
+      const feed = await call('/dsh-zdiary-kit/feed.xml', makeReq('/dsh-zdiary-kit/feed.xml'))
+      expect(feed.statusCode).toBe(200)
+      expect(feed.body).toContain('新结论')
+      expect(feed.body).not.toContain('旧来源')
+
+      // api/notes 的 type / status 与页面同一份口径：带过滤条件时连归档一起查，默认列表仍不含归档
+      const apiArchived = await call('/dsh-zdiary-kit/api/notes', makeReq('/dsh-zdiary-kit/api/notes?status=superseded'))
+      const apiArchivedJson = JSON.parse(apiArchived.body) as { count: number; notes: { path: string }[] }
+      expect(apiArchivedJson.notes.map((n) => n.path)).toEqual([archivedRel])
+      const apiDefault = await call('/dsh-zdiary-kit/api/notes', makeReq('/dsh-zdiary-kit/api/notes'))
+      expect((JSON.parse(apiDefault.body) as { notes: { path: string }[] }).notes.map((n) => n.path)).not.toContain(archivedRel)
+    } finally {
+      fs.writeFileSync(paths.CFG_FILE, before)
+      fs.rmSync(nb, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('0.8.x：记忆与笔记本加固', () => {

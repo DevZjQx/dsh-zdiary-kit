@@ -4,7 +4,7 @@
  * 设计边界（和设置页的写 API 完全分开）：
  *   · 只挂 4 条 GET 路由，全部在 /dsh-zdiary-kit 下，和 DSH 同端口，不自己 listen；
  *   · 方法门：GET / HEAD 以外一律 405，默认拒绝 —— 不是「没写 POST 就算只读」；
- *   · 副作用门：只调 hasNotebook / scanNotes / searchNotes / readNote / backlinksOf，
+ *   · 副作用门：只调 hasNotebook / scanNotes / searchNotes / readNote / backlinksOf / outlinksOf，
  *     **不调 ensureNotebook**（那会建库）、不跑 init / index / install；
  *   · 面门：不读 /api/settings 的 snapshot，不返回 zkPath / 配置文件路径 / absPath；
  *   · 地址门：只认回环（Host + 对端地址），DSH 绑到 0.0.0.0 时视图也不会跟着上网。
@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isLoopback, json, ROUTE_BASE } from '../../lib/http.js';
 import { config } from '../../config/store.js';
-import { absPathOf, attachSummaries, backlinksOf, hasNotebook, isUnderDir, localDate, readNote, scanNotes, searchNotes, ZkError } from '../../lib/zk.js';
+import { absPathOf, attachSummaries, backlinksOf, hasNotebook, inArchive, isUnderDir, localDate, outlinksOf, readNote, scanNotes, searchNotes, ZkError } from '../../lib/zk.js';
 import { isMetaPath } from '../../lib/meta.js';
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
 import { RETIRED_ENTRY_RE } from '../../lib/memory-format.js';
@@ -39,6 +39,8 @@ const MAX_FILE = 2 * 1024 * 1024;
  * 而 zk 默认不索引 org / txt —— 放进来只会得到「能直连、永远搜不到、还被 markdown 渲染坏」的页面。
  */
 const NOTE_EXT = /\.(?:md|markdown)$/i;
+/** 首页「已归档（superseded）」一节最多列多少篇：与「最近更新 30 / 日记 10」一样有界，其余给总数 */
+const ARCHIVE_PREVIEW = 50;
 /** 站内链接：查询串路由（宿主的 register 只支持 exact，拼不出 /note/:id） */
 function viewHref(params) {
     return `${VIEW}?${new URLSearchParams(params).toString()}`;
@@ -162,6 +164,21 @@ function tagCounts(notes) {
 function tagLinks(tags) {
     return tags.map((tag) => `<a href="${esc(viewHref({ p: 'tag', tag }))}">#${esc(tag)}</a>`).join(' ');
 }
+/** zk 索引里的 type：老笔记没有就给一个可读的占位，不猜 */
+function typeLabel(type) {
+    return type || '笔记';
+}
+/**
+ * 结构徽标：type 一律小字（原始 zk 值：source / concept / daily…，不翻译、不猜），
+ * status 只有非 active 才上徽标 —— 满屏 active 徽标等于没有徽标；
+ * superseded 单独一个 class，让它一眼能和 retired 区分开。
+ */
+function noteBadges(note) {
+    const status = note.status && note.status !== 'active'
+        ? ` <span class="badge ${esc(note.status)}">${esc(note.status)}</span>`
+        : '';
+    return `<span class="type">${esc(typeLabel(note.type))}</span>${status}`;
+}
 function noteTable(cfg, notes) {
     if (!notes.length)
         return '<p class="meta">没有笔记。</p>';
@@ -169,44 +186,83 @@ function noteTable(cfg, notes) {
     const rows = attachSummaries(cfg, notes).map((note) => {
         const date = localDate(note.modified || note.created) || '—';
         const brief = note.summary.length > 80 ? note.summary.slice(0, 80) + '…' : note.summary;
-        return `<tr><td class="meta">${esc(date)}</td><td><a href="${esc(noteHref(note.path))}">${esc(note.title || note.path)}</a></td><td class="meta">${esc(brief || '—')}</td><td class="meta">${tagLinks(note.tags)}</td></tr>`;
+        const badges = noteBadges(note);
+        return `<tr><td class="meta">${esc(date)}</td><td><a href="${esc(noteHref(note.path))}">${esc(note.title || note.path)}</a>${badges}</td><td class="meta">${esc(brief || '—')}</td><td class="meta">${tagLinks(note.tags)}</td></tr>`;
     }).join('');
     return `<table><tr><th>日期</th><th>标题</th><th>摘要</th><th>标签</th></tr>${rows}</table>`;
 }
 function searchForm(value = '') {
     return `<form class="search" method="get" action="${VIEW}"><input type="search" name="q" value="${esc(value)}" placeholder="搜索标题、正文…" aria-label="搜索"><button type="submit">搜索</button></form>`;
 }
-/** 首页 / 标签页要「有没有扫全」；MAX_SCAN 是唯一的载入上限（不再用 2000 截断计数） */
+/**
+ * 首页 / 标签页要「有没有扫全」；MAX_SCAN 是唯一的载入上限（不再用 2000 截断计数）。
+ * 连归档一起扫（includeArchived）：被 supersede 的旧结论也是库的一部分，
+ * 排除口径吞掉它们，首页的「已归档（superseded）」一节就永远空着 ——
+ * 「最近更新」与标签计数在下面已经各自滤回 active，不会把归档混进去。
+ * 与 agent 的 `include_archived` 同一份口径：zk_* 查得回，人看的页面也看得见。
+ */
 async function loadScan(cfg) {
-    return scanNotes(cfg);
+    return scanNotes(cfg, { includeArchived: true });
 }
 /** 只需要笔记的调用方（搜索兜底 / 记忆页反链解析） */
 async function loadAll(cfg) {
     return (await loadScan(cfg)).notes;
 }
-/** 搜索 / 标签走 zk；`q` 与 `tag` 同时给就是两个条件一起收（zk 按 AND 处理，不静默忽略其中一个） */
 async function pickNotes(cfg, opts) {
     if (opts.q || opts.tag) {
-        return searchNotes(cfg, { query: opts.q, tags: opts.tag ? [opts.tag] : [], limit: opts.limit, sort: 'modified-desc' });
+        const notes = await searchNotes(cfg, {
+            query: opts.q,
+            tags: opts.tag ? [opts.tag] : [],
+            type: opts.type ? [opts.type] : [],
+            status: opts.status ? [opts.status] : [],
+            limit: opts.limit,
+            sort: 'modified-desc',
+            includeArchived: opts.includeArchived,
+        });
+        return { notes, atLeast: '' };
     }
-    return (await loadAll(cfg)).sort(byModified).slice(0, opts.limit);
+    if (opts.type || opts.status) {
+        // 无 query 的 type / status 过滤也走 zk：JS 层过滤建立在全量扫描上，
+        // 归档目录的旧结论只有 includeArchived 才进得来（与标签过滤同一份口径）。
+        const notes = await searchNotes(cfg, {
+            type: opts.type ? [opts.type] : [],
+            status: opts.status ? [opts.status] : [],
+            limit: opts.limit,
+            sort: 'modified-desc',
+            includeArchived: opts.includeArchived,
+        });
+        return { notes, atLeast: '' };
+    }
+    const scan = await scanNotes(cfg, { includeArchived: opts.includeArchived, sort: 'modified-desc' });
+    return { notes: scan.notes.slice(0, opts.limit), atLeast: scan.completeness === 'complete' ? '' : '≥' };
 }
 // ── 页面 ──────────────────────────────────────────────────────────────
 async function handleHome(res, cfg) {
     const scan = await loadScan(cfg);
     const all = scan.notes;
     const atLeast = scan.completeness === 'complete' ? '' : '≥';
-    const recent = [...all].sort(byModified).slice(0, 30);
-    const journal = all.filter((note) => isUnderDir(note.path, cfg.dailyDir) || note.type === 'daily').sort(byModified).slice(0, 10);
-    const tags = tagCounts(all);
+    const active = all.filter((note) => note.status !== 'superseded');
+    const archived = all.filter((note) => note.status === 'superseded');
+    const recent = [...active].sort(byModified).slice(0, 30);
+    // 归档只在自己的小节里露面：日记一节也滤回 active，别让一篇 superseded 的日记同时出现在两处
+    const journal = active.filter((note) => isUnderDir(note.path, cfg.dailyDir) || note.type === 'daily').sort(byModified).slice(0, 10);
+    // 这一节不能无界：10k 库的归档可能上万行，与旁边两节的口径不一致 —— 只列最近 ARCHIVE_PREVIEW 篇
+    const archivedRecent = [...archived].sort(byModified).slice(0, ARCHIVE_PREVIEW);
+    const tags = tagCounts(active);
     const body = [
         `<h1>${esc(cfg.active || 'zdiary')}</h1>`,
         searchForm(),
-        `<p class="meta">${atLeast}${all.length} 篇笔记 · ${atLeast}${tags.length} 个标签 · 只读</p>`,
+        `<p class="meta">${atLeast}${all.length} 篇笔记（${atLeast}${active.length} 篇活跃 · ${atLeast}${archived.length} 篇已归档） · ${atLeast}${tags.length} 个标签 · 只读</p>`,
         '<h2>最近更新</h2>',
         noteTable(cfg, recent),
         '<h2>日记</h2>',
         noteTable(cfg, journal),
+        archived.length
+            ? '<h2>已归档（superseded）</h2>' + noteTable(cfg, archivedRecent) +
+                (archived.length > archivedRecent.length
+                    ? `<p class="meta">共 ${atLeast}${archived.length} 篇已归档，这里只列最近 ${ARCHIVE_PREVIEW} 篇（按修改时间）。</p>`
+                    : '')
+            : '',
         '<h2>标签</h2>',
         tags.length
             ? `<p class="tags">${tags.slice(0, 80).map(([tag, count]) => `<a href="${esc(viewHref({ p: 'tag', tag }))}">#${esc(tag)}</a><span class="count">${count}</span>`).join(' · ')}</p>`
@@ -382,33 +438,65 @@ async function handleMemory(res, cfg) {
     ].join('\n');
     sendHtml(res, 200, shell(cfg, '记忆', body));
 }
-async function handleTags(res, cfg) {
+/** 结构过滤的取值：type 跟 zk_new 的目录约定走，status 只有两态 */
+const TYPE_VALUES = ['concept', 'source', 'daily', 'meeting', 'person', 'topic'];
+const STATUS_VALUES = ['active', 'superseded'];
+/** 「type=source · status=superseded」这样的可读串；两个都空就是「不过滤」 */
+function structureSummary(type, status) {
+    return [type ? `type=${type}` : '', status ? `status=${status}` : ''].filter(Boolean).join(' · ') || '不过滤';
+}
+/** type / status 过滤表单：纯 GET、无 JS，select 的当前值回显 */
+function structureForm(current, tag) {
+    const hidden = tag !== null
+        ? `<input type="hidden" name="p" value="tag"><input type="hidden" name="tag" value="${esc(tag)}">`
+        : '<input type="hidden" name="p" value="tags">';
+    const options = (values, picked, empty) => `<option value=""${picked ? '' : ' selected'}>${esc(empty)}</option>` +
+        values.map((v) => `<option value="${v}"${v === picked ? ' selected' : ''}>${esc(v)}</option>`).join('');
+    return `<form class="search" method="get" action="${VIEW}">${hidden}` +
+        `<select name="type" aria-label="按 type 过滤">${options(TYPE_VALUES, current.type, '全部 type')}</select> ` +
+        `<select name="status" aria-label="按 status 过滤">${options(STATUS_VALUES, current.status, '全部 status')}</select> ` +
+        '<button type="submit">过滤</button></form>';
+}
+async function handleTags(res, cfg, type, status) {
     const scan = await loadScan(cfg);
     const notes = scan.notes;
     const atLeast = scan.completeness === 'complete' ? '' : '≥';
-    const tags = tagCounts(notes);
+    const active = notes.filter((note) => note.status !== 'superseded');
+    const archived = notes.filter((note) => note.status === 'superseded');
+    const tags = tagCounts(active);
     const body = [
         `<p class="crumb"><a href="${VIEW}">首页</a> / 标签</p>`,
         '<h1>标签</h1>',
-        `<p class="meta">${atLeast}${tags.length} 个标签 · ${atLeast}${notes.length} 篇笔记` +
+        `<p class="meta">${atLeast}${tags.length} 个标签 · ${atLeast}${notes.length} 篇笔记（${atLeast}${active.length} 篇活跃 · ${atLeast}${archived.length} 篇已归档）` +
             (scan.completeness === 'complete' ? '' : `（只扫描了前 ${scan.limit} 篇）`) + '</p>',
+        structureForm({ type, status }, null),
+        (type || status)
+            ? `<p class="meta">过滤：${esc(structureSummary(type, status))} · <a href="${esc(viewHref({ p: 'tags' }))}">清除</a></p>` +
+                noteTable(cfg, await pickNotes(cfg, { type, status, limit: 200, includeArchived: true }).then((picked) => picked.notes))
+            : '',
         tags.length
             ? `<p class="tags">${tags.map(([tag, count]) => `<a href="${esc(viewHref({ p: 'tag', tag }))}">#${esc(tag)}</a><span class="count">${count}</span>`).join(' · ')}</p>`
             : '<p class="meta">还没有标签。</p>',
     ].join('\n');
     sendHtml(res, 200, shell(cfg, '标签', body));
 }
-async function handleTag(res, cfg, tag) {
+async function handleTag(res, cfg, tag, type, status) {
     if (!tag) {
         noticePage(res, cfg, '标签', '没给标签名：从首页或标签页点一个进来。', 400);
         return;
     }
-    const notes = await searchNotes(cfg, { tags: [tag], limit: 200, sort: 'modified-desc' });
+    // 归档旧结论也用同一个标签查回（include_archived）：agent 用 zk_search 的 include_archived
+    // 能查回被 supersede 的结论，这一页不再被排除口径整个吞掉。
+    const picked = await pickNotes(cfg, { tag, type, status, limit: 200, includeArchived: true });
+    const notes = picked.notes;
+    const archivedCount = notes.filter((note) => inArchive(cfg, note.path)).length;
     const body = [
         `<p class="crumb"><a href="${VIEW}">首页</a> / <a href="${esc(viewHref({ p: 'tags' }))}">标签</a></p>`,
         `<h1>#${esc(tag)}</h1>`,
-        `<p class="meta">${notes.length} 篇（最多 200 篇）</p>`,
-        noteTable(cfg, notes),
+        `<p class="meta">${notes.length} 篇（最多 200 篇${archivedCount ? `，其中归档 ${archivedCount} 篇` : ''}）</p>` +
+            structureForm({ type, status }, tag) +
+            ((type || status) ? `<p class="meta">过滤：${esc(structureSummary(type, status))}</p>` : '') +
+            noteTable(cfg, notes),
     ].join('\n');
     sendHtml(res, 200, shell(cfg, `#${tag}`, body));
 }
@@ -482,6 +570,23 @@ async function handleNote(res, cfg, rel) {
         backlinksTruncated = found.truncated;
     }
     catch { /* 反链读不出来就不显示 */ }
+    let outlinks = [];
+    let outlinksTruncated = false;
+    try {
+        // 出链：同一套按篇反查（--linked-by），归档目标也列出来 ——
+        // 指向被 supersede 旧结论的边，正是「为什么换了结论」的线索，不该因为目标在归档目录就消失。
+        const found = await outlinksOf(cfg, loaded.rel, { includeArchived: true });
+        outlinks = found.notes.sort((a, b) => a.title.localeCompare(b.title));
+        outlinksTruncated = found.truncated;
+    }
+    catch { /* 出链读不出来就不显示 */ }
+    // 被 supersede 的笔记：把 supersede 写下的「被谁取代 / 为什么」读出来（frontmatter 一行，不再跑 zk）
+    let supersededBy = null;
+    let supersedeReason = null;
+    if (loaded.doc.status === 'superseded') {
+        supersededBy = String(loaded.doc.metadata['superseded-by'] ?? '') || null;
+        supersedeReason = String(loaded.doc.metadata['supersede-reason'] ?? '') || null;
+    }
     const content = loaded.doc.content.length > MAX_CONTENT
         ? loaded.doc.content.slice(0, MAX_CONTENT)
         : loaded.doc.content;
@@ -498,12 +603,22 @@ async function handleNote(res, cfg, rel) {
         '</details></div>',
     ].join('\n');
     const body = [
-        `<p class="crumb"><a href="${VIEW}">首页</a> / ${esc(loaded.doc.type || '笔记')}</p>`,
+        `<p class="crumb"><a href="${VIEW}">首页</a> / ${esc(typeLabel(loaded.doc.type))}</p>`,
         `<h1>${esc(loaded.doc.title || loaded.rel)}</h1>`,
-        `<p class="meta">${esc(localDate(loaded.doc.created) || '—')} · ${loaded.doc.words} 词${loaded.doc.tags.length ? ' · ' + tagLinks(loaded.doc.tags) : ''}</p>`,
+        `<p class="meta">${noteBadges(loaded.doc)} · ${esc(localDate(loaded.doc.created) || '—')} · ${loaded.doc.words} 词${loaded.doc.tags.length ? ' · ' + tagLinks(loaded.doc.tags) : ''}</p>`,
+        (supersededBy || supersedeReason)
+            ? `<p class="notice">已废弃（superseded）：${supersededBy ? `被 ${esc(supersededBy)} 取代` : '没有写被谁取代'}${supersedeReason ? ` —— ${esc(supersedeReason)}` : ''}</p>`
+            : '',
         timelineNotice,
         truncated ? `<p class="notice">正文超过 ${MAX_CONTENT} 字符，这里只显示前 ${MAX_CONTENT} 字符。</p>` : '',
         `<article>${renderMarkdown(content, { linkFor, skipFirstH1: true })}</article>`,
+        '<h2>出链</h2>',
+        outlinks.length
+            ? `<ul>${outlinks.slice(0, 100).map((note) => `<li><a href="${esc(noteHref(note.path))}">${esc(note.title || note.path)}</a>${noteBadges(note)}</li>`).join('')}</ul>` +
+                (outlinksTruncated || outlinks.length > 100
+                    ? `<p class="meta">${outlinksTruncated ? '出链超过 200 条' : `共 ${outlinks.length} 条`}，这里只列前 100 条。</p>`
+                    : '')
+            : '<p class="meta">这篇没有链到其它笔记。</p>',
         '<h2>反链</h2>',
         backlinks.length
             ? `<ul>${backlinks.slice(0, 100).map((note) => `<li><a href="${esc(noteHref(note.path))}">${esc(note.title || note.path)}</a></li>`).join('')}</ul>` +
@@ -526,6 +641,10 @@ async function handleView(req, res) {
     const p = url.searchParams.get('p') ?? '';
     const q = (url.searchParams.get('q') ?? '').trim();
     const tag = (url.searchParams.get('tag') ?? '').trim();
+    // 结构过滤：type / status 都是纯 GET 查询串（无 JS，Web 1.0 口径）；
+    // 未知值不猜：原样传给 zk 的 JS 层过滤，匹配不到就是空结果，页面照常可读。
+    const type = (url.searchParams.get('type') ?? '').trim();
+    const status = (url.searchParams.get('status') ?? '').trim();
     if (!st.ready) {
         noticePage(res, st.cfg, '只读视图', st.reason);
         return;
@@ -536,9 +655,9 @@ async function handleView(req, res) {
         if (p === 'memory')
             return await handleMemory(res, st.cfg);
         if (p === 'tags')
-            return await handleTags(res, st.cfg);
+            return await handleTags(res, st.cfg, type, status);
         if (p === 'tag')
-            return await handleTag(res, st.cfg, tag);
+            return await handleTag(res, st.cfg, tag, type, status);
         if (q)
             return await handleSearch(res, st.cfg, q);
         return await handleHome(res, st.cfg);
@@ -582,9 +701,13 @@ async function handleApiNotes(req, res) {
     }
     const q = (url.searchParams.get('q') ?? '').trim();
     const tag = (url.searchParams.get('tag') ?? '').trim();
+    const type = (url.searchParams.get('type') ?? '').trim();
+    const status = (url.searchParams.get('status') ?? '').trim();
     try {
-        const notes = await pickNotes(st.cfg, { q, tag, limit: limitOf(url) });
-        json(res, 200, { ok: true, count: notes.length, notes: notes.map(publicNote) });
+        // includeArchived 跟着过滤条件走：归档目录默认被 `-x` 排除，`?status=superseded` / 归档里的
+        // `?type=source` 不带它就是恒空（静默空结果）。默认列表保持「不含归档」的既有口径不变。
+        const picked = await pickNotes(st.cfg, { q, tag, type, status, limit: limitOf(url), includeArchived: Boolean(type || status) });
+        json(res, 200, { ok: true, count: picked.notes.length, notes: picked.notes.map(publicNote) });
     }
     catch (err) {
         json(res, 503, { ok: false, error: publicMessage(err) });
@@ -646,7 +769,9 @@ async function handleFeed(req, res) {
     }
     let notes;
     try {
-        notes = (await loadAll(st.cfg)).sort(byModified).slice(0, 30);
+        // RSS 是「最近更新」的订阅面，与首页同一份口径：supersede 过的旧结论不进 feed。
+        // 否则它们会被 supersede 时的改写顶到最前面，把真正的更新挤下去（首页已滤回 active）。
+        notes = (await loadAll(st.cfg)).filter((note) => note.status !== 'superseded').sort(byModified).slice(0, 30);
     }
     catch (err) {
         sendText(res, 503, publicMessage(err));

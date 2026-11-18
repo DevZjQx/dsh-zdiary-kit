@@ -183,9 +183,9 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 
 | 地址 | 内容 |
 |---|---|
-| `GET /dsh-zdiary-kit/view` | 首页：最近更新、日记、标签；`?q=` 搜索，`?p=note&path=…` 正文 + 反链，`?p=tags` / `?p=tag&tag=…` 标签，`?p=memory` 四份记忆文件 + 预算 |
-| `GET /dsh-zdiary-kit/feed.xml` | 最近 30 篇的 RSS 2.0 |
-| `GET /dsh-zdiary-kit/api/notes?q=&tag=&limit=` | 只读列表（`limit` 1–200，默认 50） |
+| `GET /dsh-zdiary-kit/view` | 首页：最近更新、日记、已归档（superseded）、标签；`?q=` 搜索，`?p=note&path=…` 正文 + 出链 + 反链，`?p=tags` / `?p=tag&tag=…` 标签（`type=` / `status=` 纯 GET 过滤），`?p=memory` 四份记忆文件 + 预算 |
+| `GET /dsh-zdiary-kit/feed.xml` | 最近 30 篇的 RSS 2.0（与首页「最近更新」同一口径，不含归档） |
+| `GET /dsh-zdiary-kit/api/notes?q=&tag=&type=&status=&limit=` | 只读列表（`limit` 1–200，默认 50；带 `type` / `status` 时与页面同口径，连归档一起查） |
 | `GET /dsh-zdiary-kit/api/note?path=…` | 单篇正文（笔记本内相对路径） |
 
 **只读是真的只读**：只放行 GET / HEAD（其余 405），不调 `ensureNotebook` / `init` / `index` / `install`，
@@ -195,6 +195,10 @@ dsh plugin --profile web add "link:/path/to/dsh-zdiary-kit"
 绑到局域网 IP 时这个视图在本机也打不开，同时也绝不会暴露到网上。
 正文全部转义、不解析原始 HTML；markdown 只渲染标题 / 段落 / 列表 / 引用 / 代码块，链接只放行 http(s)、mailto 与站内路径。
 没初始化或 zk 跑不起来时，页面给一句提示，`feed.xml` 与 `api/*` 回 503 —— 不喂 200 的空频道，免得阅读器把「插件坏了」缓存成「没有新笔记」。
+列表与详情读出 zk 索引里的结构：每行带 `type` 小字（原始 zk 值，不翻译）与 `status` 徽标（`superseded` 一眼能认出来），标签页按 `type` / `status` 收窄（纯 GET 查询串，无 JS）。
+首页连归档一起扫：被 `zk_supersede` 搬进 `archive/` 的旧结论在「已归档（superseded）」一节重新可见（`zk_*` 用 `include_archived` 查得回，人看的页面不再被排除口径吞掉），
+「最近更新」「日记」与标签计数仍只算 active，归档那一节只列最近 50 篇。笔记页补上「出链」小节（反链一直有，出链原来只在 `zk_walk` 里），出链与反链都连归档一起看 ——
+指向旧结论的边正是「为什么换了结论」的线索。`feed.xml` 与「最近更新」同口径，不推归档。
 
 视图没有会话，只能看**插件进程工作区**解析出的那本笔记本（与设置页一致）；写入仍然只走 agent 的 `zk_*` 与 CLI。
 细节见 [docs/features/readonly.md](docs/features/readonly.md)。

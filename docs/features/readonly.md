@@ -5,13 +5,13 @@
 
 **Owns.** 四条 `GET` 路由，全部与 DSH 同端口（不自己 `listen`）：
 
-- `GET /dsh-zdiary-kit/view`：首页（最近更新 / 日记 / 标签）、搜索、标签页、笔记页
-  - `?p=note&path=…`：笔记正文 + 反链（按篇反查 `--link-to`，不建全图；超过 200 条只列前 100 条并注明）
+- `GET /dsh-zdiary-kit/view`：首页（最近更新 / 日记 / 已归档 / 标签）、搜索、标签页、笔记页
+  - `?p=note&path=…`：笔记正文 + 出链 + 反链（按篇反查 `--link-to` / `--linked-by`，不建全图；超过 200 条只列前 100 条并注明）
   - `?p=memory`：记忆页 —— 人格 / 用户 / 工作约定 / 记忆 / 周审五段 + 载荷预览（人周审的入口）
-  - `?p=tags` / `?p=tag&tag=…`：标签列表 / 单个标签
+  - `?p=tags` / `?p=tag&tag=…`：标签列表 / 单个标签，都吃 `type=` / `status=` 过滤（纯 GET 查询串，无 JS）
   - `?q=…`：搜索（GET 表单，无 JS）
-- `GET /dsh-zdiary-kit/feed.xml`：最近 30 篇的 RSS 2.0
-- `GET /dsh-zdiary-kit/api/notes?q=&tag=&limit=`：只读列表（`limit` 1–200，默认 50）
+- `GET /dsh-zdiary-kit/feed.xml`：最近 30 篇的 RSS 2.0（与首页「最近更新」同一份口径，不含归档）
+- `GET /dsh-zdiary-kit/api/notes?q=&tag=&type=&status=&limit=`：只读列表（`limit` 1–200，默认 50；`type` / `status` 与页面同一份过滤口径：带了这两个条件就连归档一起查，不带则不含归档）
 - `GET /dsh-zdiary-kit/api/note?path=…`：单篇正文（`path` 必须是笔记本内的相对路径）
 
 查询串路由不是偷懒：宿主的 `webServer.register` 只支持 `exact` / `prefix` 两种匹配，拼不出 `/note/:id`。
@@ -28,7 +28,7 @@
 
 1. **方法门**：只放行 `GET` / `HEAD`，其余 `405` + `Allow: GET, HEAD`。默认拒绝，
    不是「没写 POST handler 就算只读」。
-2. **副作用门**：只调 `hasNotebook` / `allNotes` / `searchNotes` / `readNote` / `backlinksOf`；
+2. **副作用门**：只调 `hasNotebook` / `scanNotes` / `searchNotes` / `readNote` / `backlinksOf` / `outlinksOf`；
    **不调** `ensureNotebook` / `init` / `index` / `install`。没初始化就显示提示，不顺手建库。
 3. **面门**：不复用设置页的 `snapshot`，不返回 `zkPath`、配置文件路径、`absPath`；
    `.zk/` 与根目录 meta（`AGENTS.md` / `MEMORY.md` 等）按路径直接打不开。
@@ -49,9 +49,26 @@
 **读语义。**
 
 - 首页 / 标签页一次扫描最多 10000 篇（`MAX_SCAN`）；触顶时篇数 / 标签数带 `≥`、页脚写明「只扫描了前 N 篇」，不再用 2000 篇截断计数。
+  扫描连归档一起（`includeArchived`）：被 `zk_supersede` 搬进 `archive/` 的旧结论也是库的一部分，
+  排除口径吞掉它们，「已归档（superseded）」一节就永远空着 —— 与 agent 的 `include_archived` 同一份口径：
+  `zk_*` 查得回，人看的页面也看得见。「最近更新」「日记」与标签计数各自滤回 active，归档只在自己的小节里出现；
+  「已归档（superseded）」一节只列最近 50 篇（按修改时间，`ARCHIVE_PREVIEW`），其余给一句总数 —— 与旁边两节一样有界。
+- `feed.xml` 取「最近 30 篇」时滤掉归档：RSS 是「最近更新」的订阅面，
+  被 supersede 的旧结论刚被改写、mtime 反而最新，混进去会把真正的更新挤下去。
+- `api/notes` 的 `type=` / `status=` 跟着归档一起查（`includeArchived: Boolean(type || status)`）：
+  不带上它，`?status=superseded` 与归档里的 `?type=source` 恒为空 —— 静默空结果最难查；
+  不带过滤条件的默认列表口径不变（不含归档）。
+- 列表与详情露出 zk 索引里的 `type` / `status`：每行标题后跟 `type` 小字（原始 zk 值：`source` / `concept` / `daily`…；
+  不翻译、不猜，老笔记没有就写「笔记」），
+  非 active 的 `status` 上徽标（`superseded` / `retired` 各一个 class）。满屏 active 徽标等于没有徽标，active 不上。
+- 标签页 / 标签页可按 `type=` / `status=` 收窄（`?p=tags&status=superseded`、`?p=tag&tag=…&type=concept`）：
+  纯 GET 查询串、无 JS，与现有 Web 1.0 口径一致；未知值不猜，原样传给 zk 的 JS 层过滤，匹配不到就是空结果。
 - 搜索走 `searchNotes`：zk 的 FTS 不切中文，0 命中时自动退回正则子串（和 `zk_search` 同一套兜底）。
   `q` 与 `tag` 同时给就是两个条件一起收（AND），不会静默丢掉其中一个。
-- 笔记页：正文 + 入链（`zk graph`，读不出来就不显示）；`[[目标]]` 按路径 → 去扩展名路径 → 标题 → 文件名解析。
+- 笔记页：正文 + 出链 + 入链（`--link-to` / `--linked-by` 按篇反查，不建全图；读不出来就不显示）；出链原来只存在于 agent 的 `zk_walk` 里，
+  人看的这一面一直只有反链。出链与反链都 `includeArchived`：指向被 supersede 旧结论的边，
+  正是「为什么换了结论」的线索，不因目标在归档目录就消失。归档页指出被谁取代（`superseded-by`）与为什么（`supersede-reason`）。
+  `[[目标]]` 按路径 → 去扩展名路径 → 标题 → 文件名解析。
   日记页在有 timeline 问题（空块 / 倒序 / 格式 / 位置）时，在标题下插一条 `.notice`：
   一行 `时间轴：12 处（空块 5 · 倒序 2 · 格式 1 · 位置 4）` + 可折叠的逐行明细；正文仍按原 markdown 渲染，
   空块保持空 `<h3>`，不排序、不隐藏。普通笔记与没有问题的日记页逐字不变；不受 `zk_lint` 的 90 天窗口限制。

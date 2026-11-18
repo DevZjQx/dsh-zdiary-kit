@@ -27,3 +27,6 @@ Thumbs.db
 
 # 本地计划文档（评审草稿，不入库）
 /docs/plan.md
+
+# agent 运行产物（team-solve 等本地 run 目录，不入库）
+/.memdoor/

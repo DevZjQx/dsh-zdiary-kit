@@ -1179,6 +1179,11 @@ export async function scanNotes(cfg, opts = {}, signal) {
     const args = ['list', '--quiet', '--no-pager', '--format', LEAN_TEMPLATE, '-d', LEAN_RECORD, '--limit', String(limit + 1)];
     for (const name of excludedNames(cfg, { includeArchived: opts.includeArchived }))
         args.push('-x', name);
+    // 只读视图按 modified-desc 取「最近更新」：让 zk 排好再截 limit + 1，
+    // 不在 JS 里排全库（排序键同 SORT_TERMS，不认识的值照旧走 zk 默认序）。
+    const sortTerm = opts.sort ? SORT_TERMS[opts.sort] : undefined;
+    if (sortTerm)
+        args.push('--sort', sortTerm);
     const parsed = parseLeanList(await zk(cfg, args, { signal, warnings: opts.warnings }), cfg);
     const capped = parsed.notes.length > limit;
     const notes = capped ? parsed.notes.slice(0, limit) : parsed.notes;
@@ -1841,7 +1846,7 @@ export async function createNote(cfg, input, signal, scan = (c, s) => allNotes(c
     };
 }
 /** 笔记本相对路径是否在归档目录下（supersede 会把文件搬进去，路径保持不变） */
-function inArchive(cfg, rel) {
+export function inArchive(cfg, rel) {
     return rel === cfg.archiveDir || rel.startsWith(`${cfg.archiveDir}/`);
 }
 /**
