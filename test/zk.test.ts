@@ -4450,7 +4450,8 @@ describe('角色人格（人格壳与可观测）', () => {
       expect(page.statusCode).toBe(200)
       // 退役行：删除线 + 徽标，且不再和活条目一样渲染
       expect(page.body).toContain('class="retired"')
-      expect(page.body).toContain('>retired</span>')
+      // 徽标要同时带 retired class，`.badge.retired` 才真的生效（否则只剩删除线在撑视觉）
+      expect(page.body).toContain('class="badge retired">retired</span>')
       expect(page.body).toContain('<s>')
       // 载荷预览与 payload 同源（转义后的 <system-reminder>）
       expect(page.body).toContain('载荷预览')
@@ -6979,6 +6980,63 @@ describe('召回信号 sidecar', () => {
       const after = memory.memoryCapacity(c)
       expect(after.suggestion).toContain('按最后召回时间决胜')
       expect(after.dropCandidates[0]?.title).toContain('甲结论')
+    } finally { restore() }
+  })
+
+  it('M4 对账：信号开启时 dropCandidates 与实际丢弃顺序逐条一致（旧召回先丢）', async () => {
+    const { c } = await setup('nb-152-m4-reconcile', true)
+    try {
+      const long = '这一条结论的正文足够长，用来把预算撑爆。'.repeat(6)
+      // 四条同日、最后召回时间各不相同的长条目：预告（dropCandidates）与实际截断
+      // 必须丢同一条 —— 这是 M4 之前两套决胜并存时对不上账的地方。
+      // 条目加长是为了让预算真的截得动（headroom 只剩 40 词时 6 词的条目丢一条也不够）。
+      fs.writeFileSync(path.join(c.notebook, 'MEMORY.md'),
+        '# 记忆\n\n'
+        + `- 2026-01-01 甲结论 [[甲]] ${long}\n`
+        + `- 2026-01-01 乙结论 [[乙]] ${long}\n`
+        + `- 2026-01-01 丙结论 [[丙]] ${long}\n`
+        + `- 2026-01-01 丁结论 [[丁]] ${long}\n`)
+      // 甲 11-01 最先丢，乙 11-02，丙 11-03，丁 11-11（最近召回，最后才丢）
+      writeSignal(c, {
+        'notes/a.md': { count: 1, last: '2026-11-01', days: ['2026-11-01'], queryKinds: ['search'], title: '甲' },
+        'notes/b.md': { count: 1, last: '2026-11-02', days: ['2026-11-02'], queryKinds: ['search'], title: '乙' },
+        'notes/c.md': { count: 1, last: '2026-11-03', days: ['2026-11-03'], queryKinds: ['search'], title: '丙' },
+        'notes/d.md': { count: 1, last: '2026-11-11', days: ['2026-11-11'], queryKinds: ['search'], title: '丁' },
+      })
+      const capacity = memory.memoryCapacity(c)
+      expect(capacity.suggestion).toContain('按最后召回时间决胜')
+      const predicted = capacity.dropCandidates.map((d) => d.title)
+      expect(predicted[0]).toContain('甲结论')
+      expect(predicted[1]).toContain('乙结论')
+      expect(predicted[2]).toContain('丙结论')
+      expect(predicted[3]).toContain('丁结论')
+
+      // 实际丢弃：截断一直丢到装得下为止，留下的永远是预告顺序的**后缀**。
+      // 把预算压到「最多放一条」，丢的必须是预告里的前三条（甲 / 乙 / 丙），
+      // 留下最后召回最近的丁 —— 按位置决胜留下的会是排最前的甲，正好反过来。
+      // MEMORY.md 本身不动：纯读，落盘内容一个字不变。
+      const onDisk = fs.readFileSync(path.join(c.notebook, 'MEMORY.md'), 'utf8')
+      // 被丢的条目本来就会以标题形式进「未注入的段落」目录，所以「谁还在正文里」
+      // 只能对注入正文判 —— 对整段 text 判 not.toContain 等于要求目录也一起消失。
+      const bodyOf = (text: string): string => text.split('## 未注入的段落')[0] ?? text
+      const budget1 = capacity.dropCandidates[0]!.words + capacity.dropCandidates[1]!.words + 1
+      const truncated = memory.buildMemoryPayload({ ...c, memoryBudgetWords: budget1 })
+      expect(truncated.truncatedWords).toBeGreaterThan(0)
+      const kept = bodyOf(truncated.text)
+      expect(kept).not.toContain('甲结论')
+      expect(kept).not.toContain('乙结论')
+      expect(kept).not.toContain('丙结论')
+      expect(kept).toContain('丁结论')
+      expect(onDisk).toContain('甲结论')
+
+      // 再松一档（多放两条）：丢的是甲乙，留下丙丁 —— 与预告的前两位对上。
+      const roomier = memory.buildMemoryPayload({ ...c, memoryBudgetWords: budget1 + capacity.dropCandidates[2]!.words + 1 })
+      expect(roomier.truncatedWords).toBeGreaterThan(0)
+      const keptLater = bodyOf(roomier.text)
+      expect(keptLater).not.toContain('甲结论')
+      expect(keptLater).not.toContain('乙结论')
+      expect(keptLater).toContain('丙结论')
+      expect(keptLater).toContain('丁结论')
     } finally { restore() }
   })
 

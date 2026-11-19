@@ -60,6 +60,8 @@ const CSS = [
   '.type{color:#777;font-size:12px;margin-left:6px}',
   '.badge{display:inline-block;margin-left:6px;padding:0 5px;border:1px solid #999;border-radius:3px;font-size:11px;color:#555;background:#f3f3f3}',
   '.badge.superseded{border-color:#d9a300;color:#8a6100;background:#fffbe6}',
+  '.retired{color:#777}',
+  '.badge.retired{border-color:#999;color:#666;background:#f0f0f0}',
   'footer{margin-top:26px;color:#666;font-size:12px}',
   '.crumb{font-size:13px;color:#666}',
   '@media print{body{max-width:none;font-size:12pt}nav,form.search,footer{display:none}a{color:#000;text-decoration:none}}',

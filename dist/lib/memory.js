@@ -184,14 +184,33 @@ function firstSection(body) {
  *
  * 为什么按日期而不是位置：条目约定是「新结论写顶部」，但没人能保证每次都守；
  * 按位置丢会把最新结论先删掉，而那正好是最该留的。
+ *
+ * 同日决胜（M4，与 `memoryCapacity` 的 dropCandidates 同一套）：15.2 召回信号开启且
+ * 有条目带「最后召回时间」时，同日按**越久没被召回越先丢**；否则仍按位置靠后的先丢。
+ * 只传 split 时行为与 0.9 逐字节一致 —— 变化只发生在显式开信号的人身上，
+ * 而他们从 `zk_context` 预告（dropCandidates）拿到的正是这套顺序。
  */
-function oldestIndex(split) {
+function oldestIndex(split, signal) {
+    // 信号不生效（默认关 / 空记录）时连「有没有条目带召回时间」都不查：老库零开销
+    const recallTie = signal !== undefined && hasRecallSignal(signal) &&
+        split.sections.some((section) => lastRecallOf(signal, section) !== '');
+    const recallOf = (section) => recallTie ? lastRecallOf(signal, section) : '';
     let best = null;
     for (const [index, section] of split.sections.entries()) {
         const date = entryDate(section);
         if (!date)
             continue;
-        if (!best || date < best.date || (date === best.date && index > best.index)) {
+        if (!best ||
+            date < best.date ||
+            (date === best.date &&
+                // 同日：先比最后召回时间（只在信号开启且可比时），再按位置
+                (recallTie
+                    ? (() => {
+                        const a = recallOf(section);
+                        const b = recallOf(split.sections[best.index] ?? '');
+                        return a !== b ? a < b : index > best.index;
+                    })()
+                    : index > best.index))) {
             best = { index, date };
         }
     }
@@ -391,6 +410,9 @@ function computePayload(cfg) {
     const dropped = [];
     const tocCap = tocCapOf(budget);
     let fellBack = false;
+    // 15.2 / M4：截断与「预告会丢谁」必须用同一套决胜键。信号只读一次，
+    // 传给 oldestIndex（同日按最后召回）—— 关闭时它是空信号，oldestIndex 走原路径。
+    const signal = cfg.recallSignal === true ? readRecallSignal(cfg) : undefined;
     for (const name of ['MEMORY.md', 'USER.md']) {
         if (total() + countWords(tocText(dropped, tocCap)) <= budget)
             break;
@@ -414,7 +436,7 @@ function computePayload(cfg) {
             // MEMORY 按「最旧日期」丢；解析不出日期（或这是 USER）就退回尾部，行为与 0.8.3 一致
             let index = split.sections.length - 1;
             if (name === 'MEMORY.md') {
-                const oldest = oldestIndex(split);
+                const oldest = oldestIndex(split, signal);
                 if (oldest === null)
                     fellBack = true;
                 else
@@ -606,7 +628,8 @@ export function memoryUsage(cfg) {
 /**
  * 「改 MEMORY 之前」的容量快照：复用 `buildMemoryPayload` / `memoryUsage` 的投影，不新增计数口径；
  * 条目解析复用 `splitMemoryEntries` / `entryDate` / `isRetiredEntry`，与截断、`zk_lint` 同一份。
- * 纯读：不跑 zk、不写文件。同日 tie 只做可见化，不改变 `oldestIndex` 的淘汰行为。
+ * 纯读：不跑 zk、不写文件。同日 tie 与实际截断同一套键：召回信号生效时
+ * 按最后召回时间（越久没被召回越先丢），否则按位置靠后 —— 预告与真丢弃不会再分叉。
  */
 export function memoryCapacity(cfg, opts = {}) {
     // 15.2：默认关 / 没有召回记录时不改变任何口径（suggestion 文本也保持「按位置决胜」）

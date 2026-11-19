@@ -138,10 +138,11 @@
 **写 MEMORY 之前先看余量。** 不新增 `zk_memory_check`：容量就是 `zk_context` 的增量字段。
 `words` / `totalWords` / `budget` 是 payload 的投影，`headroom` 与 `memoryUsage` 同口径（可为负）；
 给 `proposed_entry` 或 `extra_words` 折算出 `extraWords` 并判 `wouldTruncate`，`dropCandidates` 预告「下一条会丢谁」
-（首行摘要 / 日期 / 词数 / `reason`），顺序与 `oldestIndex` 一致：有日期按最旧、同日按位置靠后、没日期退回尾部。
+（首行摘要 / 日期 / 词数 / `reason`），顺序与 `oldestIndex` 一致：有日期按最旧、同日按位置靠后（召回信号生效时按最后召回，见下）、没日期退回尾部。
 `format` 列 `undated` / `unlinked` / `retired`，取同一份 `memoryFormatDebt` / 退役计数。
-同日 tie：`oldestIndex` 同日期时按位置决胜，但 `fellBack` 不置位 —— 于是 `sameDateCount` 把并列条数摆出来、
-候选 `reason: same-date`，`suggestion` 明说「N 条同日，按位置决胜」，不假装有使用频率。
+同日 tie：`oldestIndex` 与 `dropCandidates` 共用一套次级键 —— 召回信号（15.2）开启且有条目带最后召回时间时，同日按「越久没被召回越先丢」，
+两边 `suggestion` 明说是哪一套；否则仍按位置决胜，`fellBack` 不置位 ——
+于是 `sameDateCount` 把并列条数摆出来、候选 `reason: same-date`，`suggestion` 明说「N 条同日，按位置决胜」，不假装有使用频率。
 `zk_dream.memory` 与 `zk_lint.memoryLinks` 的 `undated` / `unlinked` / `retired` 也取同一份计数，周审入口直接看到格式债。
 **可见性收敛在 `zk_context`，不改注入 notice**：注入载荷逐字节稳定，AGENTS 只留一句指针。全程纯读：不跑 zk、不写文件。
 两份模板只在词数放得下时加指针（仍守 ≤190 / ≤90）。
@@ -172,7 +173,7 @@
 `位置（工作约定核对）：1 条新条目没写顶部（最新在第 3 条） · 8 条并列最旧（2026-11-01，按位置决胜）`；
 `zk_lint` 摘要行加同样两句；`zk_context.orderDebt` 给机器可读的四元组。
 **只报告、不搬条目、不猜谁该留、不改 `formatDebt` 形状**（`additionalProperties: false` + 逐字节稳定是硬约束，
-所以新字段走独立的 `orderDebt`）。不新增工具、不跑 zk 子进程、不动 `oldestIndex` 的淘汰行为：
+所以新字段走独立的 `orderDebt`）。不新增工具、不跑 zk 子进程、位置债本项不动 `oldestIndex` 的淘汰行为（同日的召回信号决胜见上文）：
 按日期截断之后，位置本来就不再是截断正确性的前提，这里补的是「约定有没有被守」的可见性，不是把旧规则重新变成前提。
 
 **三级切分。** 只按 `##` 小节切时，「`# 记忆` + 要点列表」这种最常见的形状一个小节都切不出来，
@@ -209,7 +210,8 @@
 所以 `AGENTS.md` 约定每条写 `结论（YYYY-MM-DD）[[来源路径]]`，退役写 `- [superseded YYYY-MM-DD] 旧结论 → [[新结论]]`，
 行留在原处：`zk_lint` 数 `undated` / `retired` / `retiredBroken`，但**不删、不改**。
 
-**截断按日期。** MEMORY 超预算时选**能解析出 `YYYY-MM-DD` 且日期最旧**的一条丢；同日期按文件位置靠后的先丢；
+**截断按日期。** MEMORY 超预算时选**能解析出 `YYYY-MM-DD` 且日期最旧**的一条丢；同日期按文件位置靠后的先丢
+（召回信号开启时改按最后召回时间，与 `dropCandidates` 预告 / `zk_context` 的 `suggestion` 同一套）；
 一条都解析不出（老库）才退回从尾部往前丢。日期真校验：`2026-99-99` 不算，按「无日期」处理。
 目录仍按原文件位置重建，不按丢弃顺序。这样「新结论写顶部」就不再是截断正确性的前提。
 退到尾部丢且 MEMORY 里有没日期的条目时，notice 明说「MEMORY 有 N 条没日期，只能按位置丢」—— 不改模板，先说清代价。

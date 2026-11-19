@@ -17,7 +17,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isLoopback, json, ROUTE_BASE } from '../../lib/http.ts'
 import { config } from '../../config/store.ts'
 import type { Config } from '../../config/store.ts'
-import { absPathOf, attachSummaries, backlinksOf, hasNotebook, inArchive, isUnderDir, localDate, outlinksOf, readNote, scanNotes, searchNotes, ZkError } from '../../lib/zk.ts'
+import { absPathOf, attachSummaries, backlinksOf, hasNotebook, inArchive, indexLagHint, isUnderDir, localDate, outlinksOf, readNote, scanNotes, searchNotes, ZkError } from '../../lib/zk.ts'
 import type { NoteDoc, NoteRecord, NoteScanResult } from '../../lib/zk.ts'
 import { isMetaPath } from '../../lib/meta.ts'
 import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
@@ -306,7 +306,11 @@ async function handleHome(res: ServerResponse, cfg: Config): Promise<void> {
   const note = scan.completeness === 'partial'
     ? `只扫描了前 ${scan.limit} 篇（库更大）；更早的请用搜索。`
     : scan.completeness === 'unknown' ? '索引结果无法完整解析：下面的数字可能偏少。' : undefined
-  sendHtml(res, 200, shell(cfg, '首页', body, note))
+  // 索引滞后提示（P0，B8）：`indexLagHint` 已在 doctor / zk_lint 用同一句文案，
+  // 视图只复用、不自己编 —— 「外部改正文一定漏报」这个口径由那边统一维护。
+  // 判不出（null）就不写：页脚不能比索引更确定。
+  const lag = indexLagHint(cfg)
+  sendHtml(res, 200, shell(cfg, '首页', body, lag ? `${note ? note + ' · ' : ''}${lag}` : note))
 }
 
 async function handleSearch(res: ServerResponse, cfg: Config, q: string): Promise<void> {
@@ -349,7 +353,7 @@ function renderMemoryBody(body: string, linkFor: (target: string) => string | nu
       }
       out.push(
         `<div class="retired"><s>${retired.map((l) => esc(l)).join('<br>')}</s>` +
-        '<span class="badge">retired</span></div>',
+        '<span class="badge retired">retired</span></div>',
       )
       continue
     }
