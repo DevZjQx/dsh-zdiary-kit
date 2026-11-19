@@ -21,6 +21,7 @@ import { buildMemoryPayload, formatFileShares } from '../../lib/memory.js';
 import { RETIRED_ENTRY_RE } from '../../lib/memory-format.js';
 import { TEMPLATE_VERSION } from '../../lib/agents-template.js';
 import { parseFrontmatter } from '../../lib/frontmatter.js';
+import { NOTE_TYPE_VALUES } from '../../lib/notebook.js';
 import { stripPersonaMarker } from '../../lib/persona-template.js';
 import { esc, layout, renderMarkdown } from './html.js';
 import { timelineIssues, timelineSummary } from '../../lib/timeline.js';
@@ -442,8 +443,7 @@ async function handleMemory(res, cfg) {
     ].join('\n');
     sendHtml(res, 200, shell(cfg, '记忆', body));
 }
-/** 结构过滤的取值：type 跟 zk_new 的目录约定走，status 只有两态 */
-const TYPE_VALUES = ['concept', 'source', 'daily', 'meeting', 'person', 'topic'];
+/** 结构过滤的 status 只有两态；type 取值跟 NOTE_TYPE_VALUES 一份真相 */
 const STATUS_VALUES = ['active', 'superseded'];
 /** 「type=source · status=superseded」这样的可读串；两个都空就是「不过滤」 */
 function structureSummary(type, status) {
@@ -457,7 +457,7 @@ function structureForm(current, tag) {
     const options = (values, picked, empty) => `<option value=""${picked ? '' : ' selected'}>${esc(empty)}</option>` +
         values.map((v) => `<option value="${v}"${v === picked ? ' selected' : ''}>${esc(v)}</option>`).join('');
     return `<form class="search" method="get" action="${VIEW}">${hidden}` +
-        `<select name="type" aria-label="按 type 过滤">${options(TYPE_VALUES, current.type, '全部 type')}</select> ` +
+        `<select name="type" aria-label="按 type 过滤">${options(NOTE_TYPE_VALUES, current.type, '全部 type')}</select> ` +
         `<select name="status" aria-label="按 status 过滤">${options(STATUS_VALUES, current.status, '全部 status')}</select> ` +
         '<button type="submit">过滤</button></form>';
 }

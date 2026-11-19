@@ -97,7 +97,7 @@ function matchesQuery(text: string, terms: string[]): boolean {
 }
 
 /** raw / 根目录 meta 都不是可导航的笔记：入口指过去也没用 */
-function isNonNotePath(cfg: Config, rel: string): boolean {
+function isNonNotePath(rel: string): boolean {
   if (isMetaPath(rel)) return true
   return rel === 'raw' || rel.startsWith('raw/')
 }
@@ -200,7 +200,7 @@ export function entryPointsOf(
         const hit = resolveWikiTarget(cfg, target, index)
         if (hit.status === 'archived') continue // 废弃结论归死胡同探针，不当活入口
         if (hit.status === 'live') {
-          if (isNonNotePath(cfg, hit.path)) continue
+          if (isNonNotePath(hit.path)) continue
           const known = byPath.get(hit.path)
           if (known) {
             add({ entry: entry.entry, title: known.title || hit.path, path: hit.path, absPath: known.absPath, via: 'query', resolved: true })
@@ -215,7 +215,7 @@ export function entryPointsOf(
         }
         // 标题 / id 写法且不在本批结果里：只给入口名，不为了补一次路径再起一个 zk 进程。
         // 落地交给 `zk_walk <标题>` —— 卢曼的索引给的本来也是卡号，不是卡片。
-        if (isNonNotePath(cfg, target)) continue
+        if (isNonNotePath(target)) continue
         add({ entry: entry.entry, title: target, path: '', absPath: '', via: 'query', resolved: false })
         break
       }

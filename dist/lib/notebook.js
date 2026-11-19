@@ -98,6 +98,12 @@ function dailyGroup(cfg) {
 }
 /** layered 的四种笔记类型（顺序与目录 / group 一致） */
 export const NOTE_KINDS = ['source', 'concept', 'entity', 'pattern'];
+/**
+ * type 过滤 / 工具枚举的取值：笔记类型 + daily。
+ * daily 不在 NOTE_KINDS 里 —— 日记模板没有 frontmatter `type`，查询时按 dailyDir 路径兜底
+ * （见 zk.ts 的 keep），但下拉 / 工具参数都得能筛到它。只读视图与 zk_query / zk_recall 共用这一份。
+ */
+export const NOTE_TYPE_VALUES = ['daily', ...NOTE_KINDS];
 /** type → 目录名的复数（entity 不规则，不能直接加 s） */
 const PLURAL_DIR = {
     source: 'sources',

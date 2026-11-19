@@ -24,6 +24,7 @@ import { buildMemoryPayload, formatFileShares } from '../../lib/memory.ts'
 import { RETIRED_ENTRY_RE } from '../../lib/memory-format.ts'
 import { TEMPLATE_VERSION } from '../../lib/agents-template.ts'
 import { parseFrontmatter } from '../../lib/frontmatter.ts'
+import { NOTE_TYPE_VALUES } from '../../lib/notebook.ts'
 import { stripPersonaMarker } from '../../lib/persona-template.ts'
 import { esc, layout, renderMarkdown } from './html.ts'
 import { timelineIssues, timelineSummary } from '../../lib/timeline.ts'
@@ -483,8 +484,7 @@ async function handleMemory(res: ServerResponse, cfg: Config): Promise<void> {
   sendHtml(res, 200, shell(cfg, '记忆', body))
 }
 
-/** 结构过滤的取值：type 跟 zk_new 的目录约定走，status 只有两态 */
-const TYPE_VALUES = ['concept', 'source', 'daily', 'meeting', 'person', 'topic']
+/** 结构过滤的 status 只有两态；type 取值跟 NOTE_TYPE_VALUES 一份真相 */
 const STATUS_VALUES = ['active', 'superseded']
 
 /** 「type=source · status=superseded」这样的可读串；两个都空就是「不过滤」 */
@@ -497,11 +497,11 @@ function structureForm(current: { type: string; status: string }, tag: string | 
   const hidden = tag !== null
     ? `<input type="hidden" name="p" value="tag"><input type="hidden" name="tag" value="${esc(tag)}">`
     : '<input type="hidden" name="p" value="tags">'
-  const options = (values: string[], picked: string, empty: string): string =>
+  const options = (values: readonly string[], picked: string, empty: string): string =>
     `<option value=""${picked ? '' : ' selected'}>${esc(empty)}</option>` +
     values.map((v) => `<option value="${v}"${v === picked ? ' selected' : ''}>${esc(v)}</option>`).join('')
   return `<form class="search" method="get" action="${VIEW}">${hidden}` +
-    `<select name="type" aria-label="按 type 过滤">${options(TYPE_VALUES, current.type, '全部 type')}</select> ` +
+    `<select name="type" aria-label="按 type 过滤">${options(NOTE_TYPE_VALUES, current.type, '全部 type')}</select> ` +
     `<select name="status" aria-label="按 status 过滤">${options(STATUS_VALUES, current.status, '全部 status')}</select> ` +
     '<button type="submit">过滤</button></form>'
 }

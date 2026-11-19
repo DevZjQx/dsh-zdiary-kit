@@ -14,8 +14,8 @@ import { config, notebookInfos, selectNotebook } from '../../config/store.js';
 import { configFor, pinSession, sessionNotebook, sessionState } from '../../config/session.js';
 import { defaultNotebook, expandHome, processWorkspace, resolveInWorkspace } from '../../config/paths.js';
 import { S, validateArgs } from '../../lib/tool.js';
-import { ensureNotebook, newNoteDir } from '../../lib/notebook.js';
-import { searchNotes, searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, runAlias, hasCjk, walkFrom, scanNotes, ZkError, } from '../../lib/zk.js';
+import { NOTE_KINDS, NOTE_TYPE_VALUES, ensureNotebook, newNoteDir } from '../../lib/notebook.js';
+import { searchNotesDetailed, createNote, appendToNote, ensureDailyNote, appendDaily, linkNotes, taglessCjkWarning, notebookStats, supersedeNote, renameNote, hasNotebook, isUnderDir, localDate as dateOnly, runAlias, hasCjk, walkFrom, scanNotes, ZkError, } from '../../lib/zk.js';
 import { configuredAliases, readAliases } from '../../lib/alias.js';
 import { buildMemoryPayload, memoryCapacity, META_FILES } from '../../lib/memory.js';
 import { assembleRecall } from '../../lib/recall.js';
@@ -624,7 +624,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     query: S.str('全文检索词（中文会自动并用子串，多词按覆盖度合并）'),
                     tags: S.arr('按标签过滤（AND）', S.str('标签名，不带 #')),
                     dirs: S.arr('只看这些目录（相对笔记本，如 notes/concepts）', S.str('相对目录')),
-                    type: S.enum('只要这个类型的笔记', ['daily', 'source', 'concept', 'entity', 'pattern']),
+                    type: S.enum('只要这个类型的笔记', NOTE_TYPE_VALUES),
                     status: S.enum('只要这个状态（默认 active）', ['active', 'superseded']),
                     since: S.str('只看这个日期之后创建的'),
                     until: S.str('只看这个日期之前创建的'),
@@ -769,7 +769,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     orphan: S.bool('只看没有反链的孤立笔记'),
                     brokenLinks: S.bool('只看含断链的笔记'),
                     include_archived: S.bool('连 archive/ 里的废弃笔记一起查（默认 false）'),
-                    type: S.enum('只要这个类型的笔记', ['daily', 'source', 'concept', 'entity', 'pattern']),
+                    type: S.enum('只要这个类型的笔记', NOTE_TYPE_VALUES),
                     status: S.enum('只要这个状态（默认 active）', ['active', 'superseded']),
                     limit: S.num('候选检索条数（1-200，默认 30；装配只在这些候选里挑）'),
                     sort: S.enum('排序方式；有 query 默认 relevance（按 FTS 相关性），无 query 回退 created-desc', ['relevance', 'created-desc', 'created-asc', 'modified-desc', 'title-asc']),
@@ -970,7 +970,7 @@ export function buildTools(workspaceOf = () => processWorkspace()) {
                     summary: S.str('一句话摘要（填进模板的 ## Summary；正文里已经写了这一节就不动）'),
                     tags: S.arr('标签（不写 #）。与设置里的默认标签合并；模板有 frontmatter tags 格就写那一格（layered），没有才追加正文 hashtag 行；与库里已有标签近义时在 tagHints 里提示', S.str('标签名')),
                     dir: S.str('放到哪个子目录（相对笔记本）。flat 默认 notesDir；layered 必须落在某个 group（notes/sources 等，子目录也行），不给就按 type 落位；两者都没有、或不在 group 里都会报错'),
-                    type: S.enum('笔记类型（写进 frontmatter；layered 结构下决定模板的分节，不给 dir 时也决定目录）', ['source', 'concept', 'entity', 'pattern']),
+                    type: S.enum('笔记类型（写进 frontmatter；layered 结构下决定模板的分节，不给 dir 时也决定目录）', NOTE_KINDS),
                     authority: S.enum('可信度（写进 frontmatter，给未来的自己判断该不该引用）', ['official', 'expert', 'informal']),
                     group: S.str('zk 的 group 名（一般不用给：目录会自动匹配 group）'),
                     links: S.arr('要链接到的笔记（相对路径或标题）', S.str('目标笔记')),

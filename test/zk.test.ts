@@ -2399,6 +2399,13 @@ describe('tools', () => {
     expect(toolLib.validateArgs(defs[0].parameters, { limit: 'many' }).length).toBe(1)
     const query = defs.find((d) => d.name === 'zk_query')!
     expect(toolLib.validateArgs(query.parameters, { type: 'nonsense' }).length).toBe(1)
+    // type 取值只有一份真相：工具枚举跟只读视图的下拉共用 NOTE_TYPE_VALUES，别再抄一份
+    for (const name of ['zk_query', 'zk_recall']) {
+      const props = defs.find((d) => d.name === name)!.parameters.properties as Record<string, { enum?: string[] }>
+      expect(props.type?.enum).toEqual([...notebookLib.NOTE_TYPE_VALUES])
+    }
+    const zkNewType = (zkNew.parameters.properties as Record<string, { enum?: string[] }>).type
+    expect(zkNewType?.enum).toEqual([...notebookLib.NOTE_KINDS])
     const supersede = defs.find((d) => d.name === 'zk_supersede')!
     expect(toolLib.validateArgs(supersede.parameters, { by: 'x' }).some((i) => i.includes('path'))).toBe(true)
   })
@@ -3653,6 +3660,11 @@ describe('只读视图', () => {
       const byType = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=tags&type=concept'))
       expect(byType.body).toContain('新结论')
       expect(byType.body).not.toContain('旧来源')
+      // type 下拉只列真实存在的类型（NOTE_KINDS + daily），别放 meeting / person / topic 这种查了恒空的选项
+      const typeSelect = byType.body.match(/<select name="type"[\s\S]*?<\/select>/)?.[0] ?? ''
+      expect(typeSelect).toBeTruthy()
+      expect([...typeSelect.matchAll(/value="([^"]*)"/g)].map((m) => m[1]).filter(Boolean).sort())
+        .toEqual(['concept', 'daily', 'entity', 'pattern', 'source'])
 
       // 标签页列出归档旧结论（includeArchived：agent 查得回，人也看得见）
       const tag = await call('/dsh-zdiary-kit/view', makeReq('/dsh-zdiary-kit/view?p=tag&tag=' + encodeURIComponent('样板')))

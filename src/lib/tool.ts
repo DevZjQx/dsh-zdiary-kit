@@ -6,7 +6,7 @@ export const S = {
   str: (description: string): SchemaNode => ({ type: 'string', description }),
   num: (description: string): SchemaNode => ({ type: 'number', description }),
   bool: (description: string): SchemaNode => ({ type: 'boolean', description }),
-  enum: (description: string, values: string[]): SchemaNode => ({ type: 'string', description, enum: values }),
+  enum: (description: string, values: readonly string[]): SchemaNode => ({ type: 'string', description, enum: values }),
   arr: (description: string, items: SchemaNode): SchemaNode => ({ type: 'array', description, items }),
   obj: (description: string, properties: Record<string, SchemaNode>, required: string[] = []): SchemaNode => ({
     type: 'object',
