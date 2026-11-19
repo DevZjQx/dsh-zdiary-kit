@@ -92,4 +92,4 @@ ZK_BIN=/path/to/zk bun run bench
 
 `bun run bench --list` 看全部用例，`--cases a,b` 只跑改动相关的几条。
 **改了工具就按同一口径补测，把新数字并回本表** —— 一次跑出一整张表，别把几轮的零散结果摞在一起
-（上一版就是这么变成测量日志的，已归档到 [`docs/archive/bench-baseline-2026-11-17.md`](archive/bench-baseline-2026-11-17.md)）。
+（上一版就是这么变成测量日志的，所以这份只留一次实跑）。
